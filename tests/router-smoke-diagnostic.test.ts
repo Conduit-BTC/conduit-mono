@@ -31,7 +31,7 @@ describe("runner-owned router phase evidence", () => {
       expect(
         workflow.slice(start, workflow.indexOf("\n      - name:", start + 1))
       ).toContain(
-        `if: always() && matrix.job.area == 'commerce' && steps.${prerequisite}.outcome == 'success'`
+        `if: \${{ !cancelled() && matrix.job.area == 'commerce' && steps.${prerequisite}.outcome == 'success' }}`
       )
     }
     for (const lane of [

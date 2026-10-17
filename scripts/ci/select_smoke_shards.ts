@@ -255,8 +255,9 @@ export function expandSmokeMatrix(
         ]
       : area === "merchant"
         ? [
-            { id: "merchant-1", area, shard: "1/2" },
-            { id: "merchant-2", area, shard: "2/2" },
+            { id: "merchant-1", area, shard: "1/3" },
+            { id: "merchant-2", area, shard: "2/3" },
+            { id: "merchant-3", area, shard: "3/3" },
           ]
         : [{ id: area, area, shard: "" }]
   )

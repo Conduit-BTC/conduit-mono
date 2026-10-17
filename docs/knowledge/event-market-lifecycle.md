@@ -57,6 +57,10 @@ Before creating a new order or payment, checkout rechecks selected signed
 market, grant, calendar, product and payee terms. A material change requires
 buyer review. Created orders pin the accepted signed evidence; subsequent
 organizer edits do not reinterpret their goods, date, assignment or payee.
+Rescheduling may update the same calendar coordinate. Known current signed dates
+govern unused allocations; merchants may explicitly accept or confirm payment
+for the original order without rewriting it. Merchants coordinate fulfillment
+changes and any refunds with buyers.
 
 Merchant-present assignment pickup is supported. New organizer acceptance is
 gated on advance delegation, writer handover and order-ID reconciliation.

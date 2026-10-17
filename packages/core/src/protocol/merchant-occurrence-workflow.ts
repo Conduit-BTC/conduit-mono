@@ -1,5 +1,6 @@
 import { verifySignedEventBatches } from "./relay-reader"
-import { db } from "../db"
+import { db, type MerchantInventoryAcceptedOrder } from "../db"
+import { normalizeCurrencyIdentity } from "../pricing"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
 import { orderSchema, type OrderSchema, type ProductSchema } from "../schemas"
 import {
@@ -40,7 +41,14 @@ import {
   readMerchantInventoryAvailability,
   resumeMerchantInventoryPublication,
   type MerchantInventoryOrderItem,
+  type MerchantInventoryPriorStockAdjustment,
 } from "./merchant-inventory"
+
+import {
+  isOccurrenceCancelled as cancelled,
+  newestAddressableEvidence as newest,
+  reconcileKnownOccurrenceLifecycle,
+} from "./merchant-occurrence-lifecycle"
 
 interface MerchantOccurrenceSession {
   merchantPubkey: string
@@ -54,31 +62,6 @@ function assertSession(input: MerchantOccurrenceSession) {
   )
     throw new Error("Reconnect the merchant account before changing inventory.")
 }
-function cancelled(event: SignedPublicNostrEvent): boolean {
-  const tags = event.tags.filter((tag) => tag[0] === "event_occurrence")
-  return (
-    tags.length > 1 ||
-    tags.some(
-      (tag) => tag.length !== 3 || tag[1] !== "1" || tag[2] !== "scheduled"
-    )
-  )
-}
-function newest(events: SignedPublicNostrEvent[], coordinate: string) {
-  return events
-    .filter(
-      (event) =>
-        `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}` ===
-          coordinate && isValidSignedPublicNostrEvent(event)
-    )
-    .sort(
-      (a, b) =>
-        -compareReplaceableEventFrontiers(
-          { createdAt: a.created_at, eventId: a.id },
-          { createdAt: b.created_at, eventId: b.id }
-        )
-    )[0]
-}
-
 /** A stale relay copy of this writer's own signed work is not a new stock writer. */
 async function assertKnownAssignmentInventoryAuthority(input: {
   coordinate: string
@@ -185,61 +168,6 @@ async function assertKnownAssignmentInventoryAuthority(input: {
     throw new Error(
       "A newer independent assignment revision needs inventory reconciliation."
     )
-}
-
-/** Only observed organizer cancellation/current scoped deletion releases early. */
-async function reconcileKnownOccurrenceLifecycle(merchantPubkey: string) {
-  const assignments = await db.merchantInventoryAssignments
-    .where("merchantPubkey")
-    .equals(merchantPubkey)
-    .toArray()
-  for (const assignment of assignments) {
-    if (assignment.terminal) continue
-    const evidence = await loadRetainedSignedEventMarketEvidence(
-      assignment.marketCoordinate
-    )
-    const occurrence = newest(evidence, assignment.occurrenceCoordinate)
-    if (!occurrence) continue
-    const hasCancellation = evidence.some(
-      (event) =>
-        event.kind === occurrence.kind &&
-        event.pubkey === occurrence.pubkey &&
-        event.tags.some(
-          (tag) =>
-            tag[0] === "d" &&
-            tag[1] ===
-              occurrence.tags.find((candidate) => candidate[0] === "d")?.[1]
-        ) &&
-        event.tags.filter((tag) => tag[0] === "event_occurrence").length ===
-          1 &&
-        event.tags.some(
-          (tag) =>
-            tag.length === 3 &&
-            tag[0] === "event_occurrence" &&
-            tag[1] === "1" &&
-            tag[2] === "cancelled"
-        )
-    )
-    const deleted = isEventMarketAddressableRevisionDeleted(
-      {
-        coordinate: assignment.occurrenceCoordinate,
-        eventId: occurrence.id,
-        createdAt: occurrence.created_at * 1000,
-      },
-      evidence.filter((event) => event.kind === 5)
-    )
-    if (hasCancellation || deleted)
-      await db.transaction("rw", db.merchantInventoryAssignments, async () => {
-        const current = await db.merchantInventoryAssignments.get(
-          assignment.coordinate
-        )
-        if (current && !current.terminal) {
-          current.terminal = true
-          current.revision += 1
-          await db.merchantInventoryAssignments.put(current)
-        }
-      })
-  }
 }
 
 export async function readMerchantOccurrenceInventory(merchantPubkey: string) {
@@ -491,29 +419,66 @@ export async function resumeMerchantOccurrencePublication(
   })
 }
 
+function acceptanceBindings(order: OrderSchema) {
+  return {
+    identityBinding: JSON.stringify([
+      order.id,
+      order.buyerPubkey,
+      order.merchantPubkey,
+    ]),
+    termsBinding: JSON.stringify(order),
+  }
+}
+
+/** A saved stock decision authorizes only its original order, not an ID alias. */
+export function matchesMerchantOccurrenceAcceptance(
+  accepted: MerchantInventoryAcceptedOrder,
+  candidate: OrderSchema
+): boolean {
+  const parsed = orderSchema.safeParse(candidate)
+  if (!parsed.success) return false
+  const binding = acceptanceBindings(parsed.data)
+  return (
+    accepted.orderId === parsed.data.id &&
+    accepted.merchantPubkey === parsed.data.merchantPubkey &&
+    accepted.identityBinding === binding.identityBinding &&
+    accepted.termsBinding === binding.termsBinding
+  )
+}
+
+export async function readMerchantOccurrenceAcceptedOrder(input: {
+  merchantPubkey: string
+  orderId: string
+  order: OrderSchema | null
+}): Promise<MerchantInventoryAcceptedOrder | undefined> {
+  const saved = await db.merchantInventoryAcceptedOrders.get(input.orderId)
+  if (!saved) return undefined
+  if (
+    !input.order ||
+    input.order.merchantPubkey !== input.merchantPubkey ||
+    input.order.id !== input.orderId ||
+    !matchesMerchantOccurrenceAcceptance(saved, input.order)
+  )
+    throw new Error("Order ID has conflicting accepted terms.")
+  return saved
+}
+
 /** Local acceptance uses committed inventory and known evidence, without a mandatory relay read. */
 export async function acceptMerchantOccurrenceOrder(
   input: MerchantOccurrenceSession & {
     order: OrderSchema
     products: readonly ProductSchema[]
+    priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
   }
 ) {
   assertSession(input)
   const order = orderSchema.parse(input.order)
   if (order.merchantPubkey !== input.merchantPubkey)
     throw new Error("Order belongs to another merchant.")
-  const identityBinding = JSON.stringify([
-    order.id,
-    order.buyerPubkey,
-    order.merchantPubkey,
-  ])
-  const termsBinding = JSON.stringify(order)
+  const { identityBinding, termsBinding } = acceptanceBindings(order)
   const previous = await db.merchantInventoryAcceptedOrders.get(order.id)
   if (previous) {
-    if (
-      previous.identityBinding !== identityBinding ||
-      previous.termsBinding !== termsBinding
-    )
+    if (!matchesMerchantOccurrenceAcceptance(previous, order))
       throw new Error("Order ID has conflicting accepted terms.")
     return { replayed: true, order: previous }
   }
@@ -581,6 +546,7 @@ export async function acceptMerchantOccurrenceOrder(
       )
     )
       throw new Error("Known deletion evidence blocks this product.")
+    const productTermsEventId = committed?.sourceProductEvent.id ?? source.id
     const product = parseProductEvent(
       (await verifySignedEventBatches([source]))[0]!
     )
@@ -591,13 +557,15 @@ export async function acceptMerchantOccurrenceOrder(
     )
       throw new Error("The product is not currently sellable.")
     if (
-      (product.sourcePrice?.amount ?? product.price) !==
-        (item.sourcePrice?.amount ?? item.priceAtPurchase) ||
-      product.currency.toUpperCase() !== item.currency.toUpperCase()
+      item.sourcePrice &&
+      normalizeCurrencyIdentity(item.sourcePrice.currency) !==
+        normalizeCurrencyIdentity(item.sourcePrice.normalizedCurrency)
     )
       throw new Error(
-        "Product terms changed. Review this order with the buyer."
+        "Order source currency does not match its normalized currency."
       )
+    // Explicit merchant acceptance honors the original order quote. Current
+    // listing metadata remains the stock projection baseline, not a repricing.
     const recovery = await recoverMerchantInventoryProduct({
       db,
       productCoordinate: product.id,
@@ -610,14 +578,28 @@ export async function acceptMerchantOccurrenceOrder(
       throw new Error(
         "Known inventory evidence needs reconciliation before accepting this product."
       )
-    if (fulfillment?.type === "event_market_pickup") {
-      if (
-        !fulfillment.occurrenceAssignment ||
-        fulfillment.mode !== "merchant_present"
+    if (recovery.product.sourceProductEvent.id !== productTermsEventId)
+      throw new Error(
+        "The product changed during acceptance. Review it and try again."
       )
-        throw new Error(
-          "This order needs its historical or delegated fulfillment workflow."
-        )
+    if (fulfillment?.type === "event_market_pickup") {
+      if (!fulfillment.occurrenceAssignment) {
+        // Existing orders already verified their original signed authority above.
+        // They consume ordinary stock, never manufacture a new assignment.
+        items.push({
+          productCoordinate: item.productId,
+          method: "ordinary",
+          quantity: item.quantity,
+          admission: {
+            kind: "validated-ordinary-product",
+            productEventId: source.id,
+            productTermsEventId,
+          },
+        })
+        continue
+      }
+      if (fulfillment.mode !== "merchant_present")
+        throw new Error("This order needs its delegated fulfillment workflow.")
       const retained = await loadRetainedSignedEventMarketEvidence(
         fulfillment.market.coordinate
       )
@@ -685,23 +667,6 @@ export async function acceptMerchantOccurrenceOrder(
         throw new Error(
           "Known event authority or occurrence state no longer permits new acceptance."
         )
-      if (
-        calendar.start !== fulfillment.calendar.start ||
-        calendar.end !== fulfillment.calendar.end ||
-        JSON.stringify(calendar.locations) !==
-          JSON.stringify(
-            parseEventMarketCalendarEvent(
-              (
-                await verifySignedEventBatches([
-                  fulfillment.calendar.signedEvent,
-                ])
-              )[0]!
-            )?.locations
-          )
-      )
-        throw new Error(
-          "This occurrence changed. Preserve the order and review the replacement with the buyer."
-        )
       if (fulfillment.schedule) {
         const scheduleEvent = newest(evidence, fulfillment.schedule.coordinate)
         const schedule =
@@ -731,6 +696,7 @@ export async function acceptMerchantOccurrenceOrder(
         admission: {
           kind: "validated-event-market-order",
           productEventId: source.id,
+          productTermsEventId,
           assignmentCoordinate: fulfillment.occurrenceAssignment.coordinate,
           assignmentEventId: fulfillment.occurrenceAssignment.eventId,
           marketEventId: market.market.eventId,
@@ -747,6 +713,7 @@ export async function acceptMerchantOccurrenceOrder(
         admission: {
           kind: "validated-ordinary-product",
           productEventId: source.id,
+          productTermsEventId,
         },
       })
   }
@@ -759,5 +726,6 @@ export async function acceptMerchantOccurrenceOrder(
     termsBinding,
     evidence: termsBinding,
     items,
+    priorStockAdjustments: input.priorStockAdjustments,
   })
 }

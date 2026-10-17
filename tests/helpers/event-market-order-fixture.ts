@@ -26,6 +26,7 @@ export function createEventMarketOrderFixture(
     productCreatedAt?: number
     price?: number
     newAssignment?: boolean
+    authorizationDepth?: number
   } = {}
 ) {
   const organizer = getPublicKey(organizerSecret)
@@ -71,7 +72,7 @@ export function createEventMarketOrderFixture(
     },
     organizerSecret
   )
-  const grant = finalizeEvent(
+  let grant = finalizeEvent(
     {
       ...buildEventMarketAuthorizationDraft({
         marketCoordinate,
@@ -84,6 +85,27 @@ export function createEventMarketOrderFixture(
     },
     organizerSecret
   )
+  const ancestry = [grant]
+  for (
+    let sequence = 1;
+    sequence < (options.authorizationDepth ?? 1);
+    sequence++
+  ) {
+    grant = finalizeEvent(
+      {
+        ...buildEventMarketAuthorizationDraft({
+          marketCoordinate,
+          merchantPubkey: merchant,
+          state: "active",
+          sequence,
+          parentIds: [grant.id],
+        }),
+        created_at: 99 + sequence,
+      },
+      organizerSecret
+    )
+    ancestry.push(grant)
+  }
   const product = finalizeEvent(
     {
       kind: 30402,
@@ -141,10 +163,10 @@ export function createEventMarketOrderFixture(
       kind: 3841,
       pubkey: organizer,
       eventId: grant.id,
-      createdAt: 99_000,
-      ancestryEventIds: [grant.id],
+      createdAt: grant.created_at * 1_000,
+      ancestryEventIds: ancestry.map((event) => event.id),
       observedDeletionEventIds: [],
-      signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
+      signedEvidence: { tip: grant, ancestry, deletions: [] },
     },
     product: {
       coordinate: productCoordinate,
@@ -189,7 +211,7 @@ export function createEventMarketOrderFixture(
     subtotal: price,
     currency: "SATS",
     shippingCostSats: 0,
-    createdAt: 102_000,
+    createdAt: (101 + (options.authorizationDepth ?? 1)) * 1_000,
   })
   return {
     order,
@@ -197,7 +219,7 @@ export function createEventMarketOrderFixture(
     events: [
       market,
       calendar,
-      grant,
+      ...ancestry,
       product,
       ...(assignmentEvent ? [assignmentEvent] : []),
     ] as SignedPublicNostrEvent[],

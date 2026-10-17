@@ -493,7 +493,10 @@ export async function commitMerchantInventoryAssignment(input: {
   )
 }
 
-export type ValidatedOrderAdmission =
+export type ValidatedOrderAdmission = {
+  /** Ordinary edits change this baseline; this writer's stock projections do not. */
+  productTermsEventId?: string
+} & (
   | { kind: "validated-ordinary-product"; productEventId: string }
   | {
       kind: "validated-event-market-order"
@@ -505,6 +508,7 @@ export type ValidatedOrderAdmission =
       grantEventId: string
       scheduleEventId?: string
     }
+)
 
 export type MerchantInventoryOrderItem = {
   productCoordinate: string
@@ -512,6 +516,14 @@ export type MerchantInventoryOrderItem = {
   method: Method
   quantity: number
   admission: ValidatedOrderAdmission
+}
+
+/** Same-order local stock decisions made before the acceptance writer existed. */
+export interface MerchantInventoryPriorStockAdjustment {
+  productCoordinate: string
+  quantity: number
+  shortfall: number
+  targetMode?: "custom"
 }
 
 /** The one merchant acceptance decision. All reads and debits share a Dexie write transaction. */
@@ -523,6 +535,7 @@ export async function acceptMerchantInventoryOrder(input: {
   termsBinding: string
   evidence: string
   items: MerchantInventoryOrderItem[]
+  priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
   acceptedAt?: number
 }): Promise<{ replayed: boolean; order: MerchantInventoryAcceptedOrder }> {
   const {
@@ -564,7 +577,11 @@ export async function acceptMerchantInventoryOrder(input: {
             admission.assignmentEventId,
           ]
         : [admission.productEventId]
-    if (ids.some((id) => id !== undefined && !HEX_ID.test(id)))
+    if (
+      [...ids, admission.productTermsEventId].some(
+        (id) => id !== undefined && !HEX_ID.test(id)
+      )
+    )
       throw new Error("Invalid order evidence")
     if (
       (item.method === "ordinary") !==
@@ -581,6 +598,7 @@ export async function acceptMerchantInventoryOrder(input: {
     db.merchantInventoryProducts,
     db.merchantInventoryAssignments,
     db.merchantInventoryAcceptedOrders,
+    db.localProductStockCheckpoints,
     async () => {
       const prior = await db.merchantInventoryAcceptedOrders.get(orderId)
       if (prior) {
@@ -625,6 +643,50 @@ export async function acceptMerchantInventoryOrder(input: {
       }
       const products = new Map<string, MerchantInventoryProduct>()
       const assignments = new Map<string, MerchantInventoryAssignment>()
+      const debitedProducts = new Set<string>()
+      const priorStock = await db.localProductStockCheckpoints
+        .where("orderId")
+        .equals(orderId)
+        .filter((checkpoint) => checkpoint.merchantPubkey === merchantPubkey)
+        .toArray()
+      const consumed = new Map<string, number>()
+      for (const coordinate of new Set(
+        items.map((item) => item.productCoordinate)
+      )) {
+        const quantity = items
+          .filter((item) => item.productCoordinate === coordinate)
+          .reduce((sum, item) => sum + item.quantity, 0)
+        const adjustments = [
+          ...priorStock
+            .filter((row) => row.productAddressId === coordinate)
+            .map((row) => row.adjustment),
+          ...(input.priorStockAdjustments ?? []).filter(
+            (row) => row.productCoordinate === coordinate
+          ),
+        ]
+        let alreadyConsumed: number | undefined
+        for (const adjustment of adjustments) {
+          if (
+            adjustment.quantity !== quantity ||
+            !Number.isSafeInteger(adjustment.shortfall) ||
+            adjustment.shortfall < 0 ||
+            adjustment.shortfall > quantity
+          )
+            throw new Error(
+              "Existing order stock decision needs reconciliation"
+            )
+          const count =
+            adjustment.targetMode === "custom"
+              ? quantity
+              : quantity - adjustment.shortfall
+          if (alreadyConsumed !== undefined && alreadyConsumed !== count)
+            throw new Error(
+              "Conflicting order stock decisions need reconciliation"
+            )
+          alreadyConsumed = count
+        }
+        consumed.set(coordinate, alreadyConsumed ?? 0)
+      }
       const output: MerchantInventoryAcceptedOrder["items"] = []
       for (const item of items) {
         let product = products.get(item.productCoordinate)
@@ -634,6 +696,13 @@ export async function acceptMerchantInventoryOrder(input: {
           )
           if (!product || product.merchantPubkey !== merchantPubkey)
             throw new Error("Committed merchant product unavailable")
+          if (
+            item.admission.productTermsEventId !== undefined &&
+            product.sourceProductEvent.id !== item.admission.productTermsEventId
+          )
+            throw new Error(
+              "The product changed during acceptance. Review it and try again."
+            )
           products.set(item.productCoordinate, product)
         }
         const siblings = await listMerchantInventoryAssignments(
@@ -665,11 +734,21 @@ export async function acceptMerchantInventoryOrder(input: {
           0
         )
         if (product.stock !== undefined) {
+          const credited = Math.min(
+            item.quantity,
+            consumed.get(item.productCoordinate) ?? 0
+          )
+          const debit = item.quantity - credited
+          consumed.set(
+            item.productCoordinate,
+            (consumed.get(item.productCoordinate) ?? 0) - credited
+          )
           if (
             siblings.some(
               (a) => a.state === "active" && a.inventory.mode !== "tracked"
             ) ||
-            effective > product.stock
+            effective >
+              product.stock + (item.method === "pickup" ? credited : 0)
           )
             throw new Error("Committed inventory requires reconciliation")
           if (item.method === "pickup") {
@@ -678,13 +757,15 @@ export async function acceptMerchantInventoryOrder(input: {
               assignment.inventory.mode !== "tracked" ||
               effectiveAllocation(assignment, acceptedAt) -
                 outstandingOrganizerStockHold(assignment) <
-                item.quantity
+                item.quantity ||
+              product.stock - debit < effective - item.quantity
             )
               throw new Error("Insufficient pickup allocation")
-          } else if (product.stock - effective < item.quantity) {
+          } else if (product.stock - effective < debit) {
             throw new Error("Insufficient ordinary stock")
           }
-          product.stock -= item.quantity
+          product.stock -= debit
+          if (debit > 0) debitedProducts.add(product.coordinate)
           if (
             item.method === "pickup" &&
             assignment?.inventory.mode === "tracked"
@@ -717,7 +798,10 @@ export async function acceptMerchantInventoryOrder(input: {
       }
       for (const product of products.values()) {
         product.revision += 1
-        if (product.stock !== undefined) {
+        if (
+          product.stock !== undefined &&
+          debitedProducts.has(product.coordinate)
+        ) {
           const nextJob = job(
             `${orderId}:product:${product.coordinate}`,
             product.revision,

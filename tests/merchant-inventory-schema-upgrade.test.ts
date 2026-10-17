@@ -15,6 +15,7 @@ import {
   readMerchantInventoryAvailability,
   resumeMerchantInventoryPublication,
 } from "../packages/core/src/protocol/merchant-inventory"
+import { acceptInstalledAssignmentOrderV25 } from "./helpers/merchant-inventory-v25"
 import histories from "./fixtures/event-market-db-histories.json"
 
 describe("composed inventory and accepted-order schema upgrades", () => {
@@ -105,9 +106,9 @@ describe("composed inventory and accepted-order schema upgrades", () => {
         (table) => table.name === "merchantInventoryProducts"
       )
       if (hadInventory) {
-        // These are real domain mutations against the exact installed preview schema.
+        // Exercise the installed v25 writer before opening the upgraded schema.
         await initialize(old as ConduitDB)
-        await acceptMerchantInventoryOrder(
+        await acceptInstalledAssignmentOrderV25(
           order(old as ConduitDB, "before-upgrade", 2)
         )
       }

@@ -62,7 +62,7 @@ beforeEach(async () => {
   await db.open()
 })
 afterEach(() => restore())
-function listing(stock: number, created_at: number) {
+function listing(stock: number | undefined, created_at: number) {
   return finalizeEvent(
     {
       kind: 30402,
@@ -73,14 +73,14 @@ function listing(stock: number, created_at: number) {
         ["title", "Product"],
         ["type", "simple", "physical"],
         ["price", "1", "SAT"],
-        ["stock", String(stock)],
+        ...(stock === undefined ? [] : [["stock", String(stock)]]),
       ],
     },
     secret
   )
 }
-async function setup() {
-  const source = listing(20, 100)
+async function setup(options: { untracked?: boolean } = {}) {
+  const source = listing(options.untracked ? undefined : 20, 100)
   const admission = await admitPublicEvent(source)
   if (admission.status !== "verified") throw new Error("Invalid fixture")
   await db.products.put(
@@ -90,7 +90,7 @@ async function setup() {
     db,
     merchantPubkey: merchant,
     productCoordinate: coordinate,
-    stock: 20,
+    stock: options.untracked ? undefined : 20,
     signedProductEvent: source,
   })
   const marketCoordinate = `30409:${organizer}:market`
@@ -102,7 +102,9 @@ async function setup() {
     assignmentCoordinate,
     marketCoordinate,
     occurrenceCoordinate,
-    inventory: { mode: "tracked", quantity: 6 },
+    inventory: options.untracked
+      ? { mode: "untracked" }
+      : { mode: "tracked", quantity: 6 },
     state: "active",
     fulfillmentMethods: ["pickup"],
     expectedRevision: null,
@@ -502,3 +504,105 @@ it("adopts an installed-preview projection once and retains superseded bytes aft
       ?.signedEvent?.id === event.id
   ).toBe(true)
 })
+
+for (const initiallyTracked of [true, false])
+  it(`ordinary acceptance allows ${initiallyTracked ? "disabling" : "enabling"} tracking without assignments`, async () => {
+    const source = listing(initiallyTracked ? 20 : undefined, 100)
+    const admission = await admitPublicEvent(source)
+    if (admission.status !== "verified") throw new Error("Invalid fixture")
+    await db.products.put(
+      projectSignedProductListingForLocalCommit(admission.event)
+    )
+    await initializeMerchantInventoryProduct({
+      db,
+      merchantPubkey: merchant,
+      productCoordinate: coordinate,
+      stock: initiallyTracked ? 20 : undefined,
+      signedProductEvent: source,
+    })
+    const acceptance = {
+      db,
+      merchantPubkey: merchant,
+      orderId: "ordinary-mode-change",
+      identityBinding: "original",
+      termsBinding: "original",
+      evidence: "original",
+      items: [
+        {
+          productCoordinate: coordinate,
+          method: "ordinary" as const,
+          quantity: 1,
+          admission: {
+            kind: "validated-ordinary-product" as const,
+            productEventId: source.id,
+          },
+        },
+      ],
+    }
+    await acceptMerchantInventoryOrder(acceptance)
+    const session = {
+      merchantPubkey: merchant,
+      authenticatedPubkey: merchant,
+      shouldContinue: () => true,
+    }
+    await resumeMerchantInventoryPublication({
+      db,
+      merchantPubkey: merchant,
+      sign: async (draft) =>
+        finalizeEvent(
+          { ...draft, tags: draft.tags.map((tag) => [...tag]) },
+          secret
+        ),
+      publish: (event) =>
+        publishMerchantInventoryProduct(session, event, {
+          plan: async () => [
+            {
+              relayUrl: config.appBackplaneRelayUrls[0]!,
+              ownerSelected: false,
+              appRelay: true,
+            },
+          ],
+          deliver: (id, options) =>
+            deliverQueuedProductListings(id, {
+              ...options,
+              retryDelayMs: 0,
+              publisher: async () => ({ status: "acked" as const }),
+            }),
+        }),
+    })
+    const current = (await db.merchantInventoryProducts.get(coordinate))!
+    const target = initiallyTracked ? undefined : 5
+    const edited = listing(target, current.signedProductEvent.created_at + 1)
+    await commitLocalProductWrite({
+      ...write(edited),
+      expectedRevisions: [
+        { addressId: coordinate, eventId: current.signedProductEvent.id },
+      ],
+    })
+    expect(
+      (await readMerchantInventoryAvailability(db, coordinate)).product.stock
+    ).toBe(target)
+    expect(await db.merchantInventoryAssignments.count()).toBe(0)
+    expect((await acceptMerchantInventoryOrder(acceptance)).replayed).toBe(true)
+    expect((await db.merchantInventoryProducts.get(coordinate))?.stock).toBe(
+      target
+    )
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+  })
+
+for (const initiallyTracked of [true, false])
+  it(`rejects ${initiallyTracked ? "disabling" : "enabling"} tracking while incompatible active assignments remain`, async () => {
+    const { source } = await setup({ untracked: !initiallyTracked })
+    const edit = write(listing(initiallyTracked ? undefined : 20, 101))
+    await expect(
+      commitLocalProductWrite({
+        ...edit,
+        expectedRevisions: [{ addressId: coordinate, eventId: source.id }],
+      })
+    ).rejects.toThrow("Reconcile occurrence allocations")
+    expect((await db.merchantInventoryProducts.get(coordinate))?.stock).toBe(
+      initiallyTracked ? 20 : undefined
+    )
+    expect(await db.merchantInventoryAssignments.count()).toBe(1)
+    expect(await db.productListingOutbox.count()).toBe(0)
+  })

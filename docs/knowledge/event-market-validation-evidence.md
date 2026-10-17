@@ -132,13 +132,15 @@ subsequent acceptance and preservation of newer ordinary product metadata.
 `merchant-inventory-schema-upgrade` uses the exact main-v26, discovery-v26 and
 assignment-v25 histories, commits real stock/allocation/order records, upgrades,
 accepts concurrent repeated orders, rejects oversell, and reloads retained signed
-retry work without another debit or signature. Structural union preservation in
+retry work without another debit or signature. The installed assignment-v25
+state is created with its frozen v25 writer before the current writer runs on
+the upgraded database. Structural union preservation in
 `event-market-schema-upgrade` remains a separate check.
 
 These are synthetic cryptographic/database integration tests. They do not prove
 external signer compatibility, independent-device reconciliation, live relay
-convergence, funded settlement or physical handout. Atomic rollover and the full
-rescheduling flow remain incomplete. New delegated organizer acceptance is gated;
+convergence, funded settlement or physical handout. Same-event rescheduling retains original order terms and updates unused
+allocation deadlines. Atomic rollover remains incomplete. New delegated organizer acceptance is gated;
 historical organizer receipt tests cannot stand in for that integration.
 
 ## Organizer stock handover foundation
@@ -171,3 +173,56 @@ still require integration. Ordinary suitability remains gated for an active or
 invalid stock commitment. These tests do not establish independent-device
 serialization, live delivery, funded handout, external signer compatibility or
 physical-device acceptance.
+
+## Order continuity regression coverage
+
+`merchant-occurrence-regressions` composes signed products, actual checkout
+pricing, existing local product writes, reopened inventory and acceptance. It
+covers order source-currency consistency, original quotes after later listing
+price edits, prior stock decisions and shortfalls,
+pending pre-assignment orders, concurrent material product edits, retained
+variation-parent withdrawal evidence, and cold/warm assignment reads with
+missing superseded history and known-fork controls. Both ordinary product
+edits and existing order stock actions honor a retained postponement before
+any assignment-panel read. `merchant-order-publish`
+verifies immutable acceptance notification identity after interruption.
+
+The `@occurrence-orders` cases in `e2e/event-market.playwright.ts` run in the
+Chromium, mobile Chromium and mobile WebKit smoke projects. They exercise the
+direct assignment and order flow, prepaid first confirmation before/after a
+same-event reschedule, paid pickup and original receipt continuity after the old
+end, revised unused-allocation deadlines in both directions, publication retry
+after payment, selected-order resolution beyond the product-search cap, and
+reload of off-graph assigned events in Selling At without product association
+tags. The selected-order case holds the requested order while another saved
+conversation is available: no acceptance action may target that other order,
+and release commits exactly one acceptance for the requested order.
+Browser payment reports, merchant confirmations and signer/relay interactions
+are synthetic; these checks establish client behavior, not funded settlement.
+
+Saved inventory acceptance is bound to the original order identity and complete
+terms. Merchant display and fulfillment recheck that binding; another valid,
+same-ID payload cannot inherit acceptance or unlock zero-cost completion.
+Explicit merchant acceptance and payment confirmation retain the original quote
+after a later listing-price edit. The current signed listing remains the stock
+projection baseline, and concurrent material edits still reject the whole debit.
+The composed browser controls cover both the conflicting-order rejection and
+first confirmation at the original price after a published listing edit.
+
+The legacy stock-credit browser case interrupts notification signing before
+transport staging, then reloads and retries against the same saved acceptance.
+A reload during an in-flight private send retains its delivery claim until
+release or expiry; an immediate successful retry is not guaranteed during that
+lease. Tests must establish their interruption boundary without bypassing the
+shared delivery owner's claim or increasing assertion timeouts.
+The first-payment controls hold the recipient ACK to distinguish observed
+publication bytes from a completed confirmation, then wait for the completed
+confirmation before reload and inventory-publication retry.
+
+Ordinary acceptance must preserve the product editor's tracking-mode controls
+when there are no incompatible active assignments. Composed shared-writer tests
+cover both mode changes after acceptance and publication, with active-assignment
+rejection controls. Checkout evidence retains the complete supported signed
+authorization history; the shared encrypted transport-size limit bounds the
+whole message rather than imposing a smaller recovery-event count. The signed
+61-event ancestry control retains all 65 required evidence events.
