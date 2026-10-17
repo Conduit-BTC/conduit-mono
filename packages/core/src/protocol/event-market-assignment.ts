@@ -407,13 +407,26 @@ export function isEventMarketAssignmentProductSuitable(input: {
   assignment: ParsedEventMarketAssignment
   product: ProductSchema
   parentProduct?: ProductSchema
+  /** Current roster delegation only; the private writer grant is verified at checkout. */
+  organizerHandoff?: { organizerPubkey: string }
 }): boolean {
-  const { assignment, product, parentProduct } = input
+  const { assignment, product, parentProduct, organizerHandoff } = input
+  const pool = assignment.stockPool
+  if (
+    organizerHandoff &&
+    (pool.state !== "valid" ||
+      pool.pool.state !== "active" ||
+      pool.pool.organizerPubkey !== organizerHandoff.organizerPubkey ||
+      pool.pool.importedQuantity >= pool.pool.quantity ||
+      assignment.inventory.mode !== "tracked")
+  )
+    return false
   if (
     assignment.state !== "active" ||
     assignment.stockPool.state === "invalid" ||
     (assignment.stockPool.state === "valid" &&
-      assignment.stockPool.pool.state === "active") ||
+      assignment.stockPool.pool.state === "active" &&
+      !organizerHandoff) ||
     product.id !== assignment.productCoordinate ||
     product.pubkey !== assignment.merchantPubkey ||
     product.visibility !== "public" ||

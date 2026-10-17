@@ -46,7 +46,7 @@ Product, Assignment and Accepted order are separate durable records. The existin
 
 Unsigned and signed projection work remains attached to these durable records. Signed retry bytes are immutable. Product projections join the existing product-write/outbox owner without consuming stock again; a subsequent ordinary edit remains the metadata baseline. Upgrades retain the complete installed main/discovery/assignment schema union at v27, including the installed-v25 repair. Cache pruning or reset must not erase committed inventory, accepted orders or signed recovery work. This provides local transaction serialization, not cross-device atomicity or proof of global network absence.
 
-The direct Merchant control supports pickup assignments. Atomic rollover, the full Reschedule/Relocate workflow, shipping/digital assignment controls and independent-writer repair remain incomplete. A real start/end or venue change requires a replacement occurrence plus merchant notice and confirmation of remaining allocations; typo, directions and booth corrections remain ordinary edits. New organizer acceptance is gated pending the separate advance-delegation, writer-handover and order-ID reconciliation integration. Existing authenticated historical release receipts remain inspectable. Organizer fees and offline checkout-wallet recovery are separate contracts.
+The direct Merchant control supports pickup assignments. Atomic rollover, the full Reschedule/Relocate workflow and shipping/digital assignment controls remain separate. A real start/end or venue change requires a replacement occurrence plus merchant notice and confirmation of remaining allocations; typo, directions and booth corrections remain ordinary edits. Current organizer acceptance uses the finite stock handover, exact order reconciliation and checkout recovery boundaries below. Existing authenticated historical release receipts remain inspectable without granting new authority.
 
 ### Market and checkout behavior
 
@@ -54,7 +54,7 @@ Read the known organizer-signed market record and calendar before candidate disc
 
 An unpaid cart resolves current open market, calendar, merchant row, active validated authorization tip, product, and payment terms again before payment. A series purchase requires an explicitly selected current or future occurrence with complete signed membership and occurrence evidence. Missing siblings do not invalidate a verified selected date; an unresolved master or selected date blocks its purchase. Its participation identity is market coordinate plus merchant pubkey and, for a series, selected occurrence coordinate. Compatible products from that merchant at the same date form one purchase; products selected for different dates remain separate. A roster revision or booth rename alone does not split it. A material mode, assignment, selected date or membership, product, price, or payee change requires buyer review before payment. Calendar time does not close the whole market; each selected assignment must still have an unended occurrence. There is no separate buyer event-pickup fee; event costs belong in merchant prices, and the merchant remains payee.
 
-Created and paid orders retain the exact market revision, merchant row, observed authorization tip and required ancestry, relevant observed deletion evidence, calendar, product and assignment revisions, payee, and accepted terms. Series orders also retain the exact signed `31924` revision and selected occurrence revision so their same-author membership can be verified later. This is a bounded observation snapshot, not proof that no unseen event existed. A later roster, schedule, or occurrence edit does not reinterpret an order. Material handoff changes to an existing order require an explicit authorized per-order update or transfer and buyer notice. Organizer handoff grants physical release duties only under the merchant's private order-specific authority. The merchant's private ready receipt carries `releaseAuthorized: true` after its paid or zero-cost check; it carries no payment confirmation or full order. Private release, delivery, and recovery remain content-minimal and encrypted, and the organizer does not gain merchant payment authority.
+Created and paid orders retain the exact market revision, merchant row, observed authorization tip and required ancestry, relevant observed deletion evidence, calendar, product and assignment revisions, payee, and accepted terms. Series orders also retain the exact signed `31924` revision and selected occurrence revision so their same-author membership can be verified later. This is a bounded observation snapshot, not proof that no unseen event existed. A later roster, schedule, or occurrence edit does not reinterpret an order. Material handoff changes to an existing order require an explicit authorized per-order update or transfer and buyer notice. Historical live-Merchant release receipts carry `releaseAuthorized: true` after the Merchant's paid or zero-cost check; they carry no payment confirmation or full order. New organizer-handoff purchases use the bounded advance stock and checkout authority below instead of requiring another live Merchant release signature. Private release, delivery, and recovery remain content-minimal and encrypted; the organizer never gains Merchant account or standing-wallet authority.
 
 ### Compatibility and validation
 
@@ -115,12 +115,15 @@ organizer obligation bears its own approved outgoing fee. Its uncertainty cannot
 undo paid commerce, ask for another full purchase or block otherwise authorized
 handout. Conduit collection cannot sweep an unresolved organizer obligation.
 
-Implementation boundary: signed term parsing, calculation and retained roster
-publication do not themselves enable fee-bearing checkout. Admission still
-requires the versioned event/router economics and evidence, receiving
-qualification, same-plan recovery and composed acceptance integration. Existing
-version-three/four funded plans must retain their original digests and amounts;
-appending an organizer recipient to their commerce weight is not that extension.
+Coordinated event checkout uses the version-five economics and source binding
+in [the router contract](universal-checkout-router.md#event-market-checkout-extension).
+Signed term parsing or roster publication alone is not financial admission:
+verify the complete signed occurrence graph, receiving qualification and exact
+same-plan recovery before funding. Existing version-three/four funded plans
+retain their original digests and amounts. The organizer fee is separate from
+the commerce/Conduit weights; it is not another commerce recipient appended to
+an old plan. Zero-price goods with a signed positive minimum require the
+disclosed fee-only plan; zero commerce and zero fee need no funding.
 No public routed zap, service-operated executor, guest inbox or automatic refund
 is introduced.
 
@@ -195,6 +198,47 @@ frozen router plan, receiving qualification and composed acceptance gates.
 
 ## Usable workflows and recovery
 
+Organizer-handoff checkout requires a current, exact finite stock grant and
+its published assignment commitment. Separately encrypted Merchant and
+organizer checkout recovery must be durably retained and acknowledged before
+funding exposure. This is a bounded exception to physical-release-only
+delegation: it entrusts only that checkout wallet and minimal machine commercial
+evidence, not a Merchant account or standing wallet. The original full buyer
+order remains encrypted to the Merchant. Organizer acceptance carries hashes
+binding that original order; Merchant import independently authenticates the
+buyer order and organizer seal, compares exact terms and debits the existing
+inventory transaction once. No hash, relay acknowledgement, funding receipt or
+fee payment substitutes for the commerce-settlement and unique-claim checks.
+
+The designated organizer writer uses the existing router after the saved buyer
+cutoff. A fresh device restores exact encrypted decisions, payout attempts and
+handout evidence; it does not mint a new wallet, reset pool consumption or
+start a parallel writer from an original grant. Incomplete or conflicting
+frontiers require explicit reconciliation/handover. The Merchant can inspect
+and import historical entries after occurrence expiry/removal without
+authorizing a new sale. Closing releases unused stock only after the complete
+accepted prefix is authenticated and imported, with a terminal replay barrier.
+
+Merchant cold recovery uses a bounded, Merchant-authored encrypted self
+checkpoint on the existing private delivery boundary. It binds exact signed
+product/assignment revisions, original grants, imported/closing frontiers and
+once-only order attribution. Related public stock projections are signed as a
+batch and require the matching exact checkpoint to be retained and acknowledged
+before publication. A fresh device restores only a positively observed and
+authenticated checkpoint with its exact signed projections; older, partial or
+conflicting evidence does not restore availability or reset a writer. Known
+newer checkpoint observations remain durable high-water evidence.
+
+The exclusive pool prevents the Merchant from independently selling entrusted
+units; it is not a distributed Buyer reservation service. Public remaining
+stock can lag private organizer consumption. Funding or paid commerce alone
+does not guarantee pickup availability: an organizer must atomically reserve
+the full order against its current journal before delegated routing/handout.
+If the remaining pool cannot cover a funded order, show Needs attention and
+retain its payment/recovery evidence; never release a second item, silently
+reset consumption or describe pickup as confirmed. No live recipient application
+ACK, guest reply inbox or automatic refund service is introduced.
+
 The same Event Market link identifies the host workspace and merchant participation surface. An authenticated request, invitation, decline or withdrawal is private coordination, never public admission authority. The merchant sees the current signed approval separately from private request delivery. The organizer can admit their own merchant identity without manually copying a public key. Approved merchants add existing products or create a product in the event context; product ownership, stock and prices stay with the merchant.
 
 Authoring supports description, banner upload/preview, location, timezone and concrete single or recurring dates. Corrections are available after creation. Merchant profiles label rosters and booth signs, with public-key fallback when a profile is unavailable.
@@ -203,7 +247,7 @@ Checkout compares material accepted terms and retains the latest authenticated e
 
 Handoff delivery retains exact encrypted operations for retry. Completed delivery leaves the bounded pending queue without erasing claim identity or stronger authenticated evidence. Merchant inbox self-copies participate in duplicate-issuance protection on a fresh device. An exact authenticated handoff acknowledgement may support completion despite an incomplete unrelated inbox read; known conflicting or revoked evidence still blocks.
 
-Finite recurrence and event pickup versus ordinary shipping compose with these workflows. New assignment purchases permit pseudonymous contact-free pickup without a separate product opt-in until the selected date ends; the buyer must retain their private receipt. Historical pre-assignment immediate pickup retains its currently-occurring-date and merchant opt-in checks. Ordinary contact-based pickup and shipping contact requirements remain available. The organizer fee and offline checkout-wallet recovery extensions require their separately reviewed payment-router contracts; basic physical handoff does not imply those capabilities.
+Finite recurrence and event pickup versus ordinary shipping compose with these workflows. New assignment purchases permit pseudonymous contact-free pickup without a separate product opt-in until the selected date ends; the buyer must retain their private receipt. Historical pre-assignment immediate pickup retains its currently-occurring-date and merchant opt-in checks. Ordinary contact-based pickup and shipping contact requirements remain available. Organizer fees and checkout-wallet recovery require the exact payment-router and stock authority described above; a historical physical-release receipt alone does not imply those capabilities.
 
 ## Validation boundary
 

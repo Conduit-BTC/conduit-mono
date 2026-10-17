@@ -705,6 +705,59 @@ export interface PreparedPrivateMessageWraps {
   wrappedToSelf: SignedPublicNostrEvent | null
 }
 
+/** Prepare ciphertext without relay I/O for an atomic multi-recipient domain save. */
+export async function preparePrivateMessageRecipientWrap(input: {
+  rumor: PrivateMessageEvent
+  senderPubkey: string
+  recipientPubkey: string
+  signer: NostrKeySigner
+  shouldContinue: () => boolean
+  giftWrapFn?: typeof wrapPrivateMessage
+}): Promise<PreparedPrivateMessageWraps> {
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
+  const rumor = createPrivateMessageRumor(
+    completePrivateMessageEvent(input.rumor)
+  )
+  const recipients = rumor.tags.filter((tag) => tag[0] === "p")
+  if (
+    rumor.id !== input.rumor.id ||
+    rumor.pubkey !== input.senderPubkey ||
+    recipients.length !== 1 ||
+    recipients[0]?.length !== 2 ||
+    recipients[0]?.[1] !== input.recipientPubkey
+  ) {
+    throw new Error(
+      "Private preparation requires one exact recipient and rumor."
+    )
+  }
+  const signer = createInteractionGatedSigner(
+    input.signer,
+    undefined,
+    input.shouldContinue
+  )
+  const wrappedToRecipient = await (input.giftWrapFn ?? wrapPrivateMessage)(
+    rumor,
+    { pubkey: input.recipientPubkey },
+    signer,
+    { rumorKind: rumor.kind }
+  )
+  assertPrivateMessageSignerSessionCurrent(input.shouldContinue)
+  if (
+    !isValidSignedPublicNostrEvent(wrappedToRecipient) ||
+    wrappedToRecipient.kind !== 1059 ||
+    wrappedToRecipient.tags.filter((tag) => tag[0] === "p").length !== 1 ||
+    !wrappedToRecipient.tags.some(
+      (tag) =>
+        tag.length === 2 && tag[0] === "p" && tag[1] === input.recipientPubkey
+    )
+  ) {
+    throw new Error(
+      "Private preparation returned invalid recipient ciphertext."
+    )
+  }
+  return { rumorId: rumor.id, wrappedToRecipient, wrappedToSelf: null }
+}
+
 export interface PreparedPrivateMessageRecipientDelivery {
   rumorId: string
   wrappedToRecipient: SignedPublicNostrEvent

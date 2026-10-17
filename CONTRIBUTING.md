@@ -473,8 +473,14 @@ These are non-negotiable across all code:
   A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
   Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
   signing to the initial private order, same-order payment reports, and the
-  separately constrained merchant-only router recovery envelopes documented in
+  separately constrained router recovery envelopes documented in
   [the protocol specification](docs/specs/protocol.md#client-ephemeral-guest-order-key-exception).
+  Event organizer delivery is limited to the organizer frozen in that order's
+  exact authorized event binding: the recovery/progress package for a
+  version-five organizer-handoff plan, or the separate zero-commerce, zero-fee
+  purchase packet with no wallet or
+  invoice. It permits no stock records, generic messages, guest inbox, other
+  order or recipient, or extension of the existing guest signing lifetime.
   It must never become an account key or nsec.
 - A revocable NIP-46 client connection key must use encrypted browser-local
   storage and must be deleted on logout. Store a CI client key only as a

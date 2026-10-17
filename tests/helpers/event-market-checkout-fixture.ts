@@ -10,10 +10,13 @@ import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
 import { createEventMarketOrderFixture } from "./event-market-order-fixture"
 
 /** Actual signed current authority reads composed with checkout authorization. */
-export async function createEventMarketCheckoutFixture() {
+export async function createEventMarketCheckoutFixture(
+  options: Parameters<typeof createEventMarketOrderFixture>[0] = {}
+) {
   const fixture = createEventMarketOrderFixture({
     mode: "merchant_present",
     newAssignment: true,
+    ...options,
   })
   const dependencies: NonNullable<Parameters<typeof readEventMarketRoster>[1]> =
     {

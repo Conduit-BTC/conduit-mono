@@ -7,6 +7,14 @@ import {
   type CheckoutRecoveryDescriptor,
 } from "./checkout-spark-recovery"
 import { parseCheckoutSparkMerchantProgressRumor } from "./checkout-spark-merchant-progress"
+import { parseCheckoutSparkOrganizerExecutionRumor } from "./checkout-spark-organizer-progress"
+import { parseEventMarketFreePurchaseRumor } from "./event-market-free-purchase"
+import { EVENT_MARKET_FREE_PURCHASE_TYPE } from "./event-market-free-purchase-marker"
+import {
+  parseCheckoutSparkOrganizerRecoveryRumor,
+  parseCheckoutSparkOrganizerRecoveryProgressRumor,
+  checkoutSparkOrganizerRecoveryPayloadDigest,
+} from "./checkout-spark-organizer-recovery"
 import { sendPrivateAttachment } from "./private-file-upload"
 import { sendAccountInboxRumor } from "./inbox-send"
 import type { AccountInboxSendResult } from "./inbox-send"
@@ -557,7 +565,25 @@ export class CommerceInbox {
             if (record.category === "machine") {
               state = "machine"
               const type = rumor.tags.find((tag) => tag[0] === "type")?.[1]
-              if (
+              if (type === EVENT_MARKET_FREE_PURCHASE_TYPE) {
+                const payload = parseEventMarketFreePurchaseRumor(rumor)
+                if (payload.organizerPubkey !== this.store.principal)
+                  throw new Error("Free organizer purchase recipient changed.")
+                projection = {
+                  kind: "event_free_purchase",
+                  message: {
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: payload.createdAt,
+                    wrapId: row.event.id,
+                    orderId: payload.orderId,
+                    merchantPubkey: payload.merchantPubkey,
+                    organizerPubkey: payload.organizerPubkey,
+                    marketCoordinate: payload.eventMarket.marketCoordinate,
+                    handoffId: payload.handoffId,
+                  },
+                }
+              } else if (
                 type === "checkout_spark_recovery" ||
                 type === "checkout_spark_recovery_progress"
               ) {
@@ -575,6 +601,68 @@ export class CommerceInbox {
                     takeoverAt: payload.plan.takeoverAt,
                     preparedAt: payload.preparedAt,
                     payloadDigest: checkoutRecoveryPayloadDigest(payload),
+                  },
+                }
+              } else if (
+                type === "checkout_spark_organizer_recovery" ||
+                type === "checkout_spark_organizer_recovery_progress"
+              ) {
+                const payload =
+                  type === "checkout_spark_organizer_recovery"
+                    ? parseCheckoutSparkOrganizerRecoveryRumor(rumor)
+                    : parseCheckoutSparkOrganizerRecoveryProgressRumor(rumor)
+                if (payload.organizerPubkey !== this.store.principal)
+                  throw new Error("Organizer recovery recipient changed.")
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    recipientRole: "organizer",
+                    organizerMessage:
+                      payload.schemaVersion === 4
+                        ? "initial"
+                        : "buyer_progress",
+                    marketCoordinate:
+                      payload.plan.eventMarket!.marketCoordinate,
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.plan.checkoutId,
+                    orderId: payload.plan.orderId,
+                    planDigest: payload.plan.planDigest,
+                    takeoverAt: payload.plan.takeoverAt,
+                    preparedAt: payload.preparedAt,
+                    payloadDigest:
+                      checkoutSparkOrganizerRecoveryPayloadDigest(payload),
+                  },
+                }
+              } else if (type === "checkout_spark_organizer_execution") {
+                const payload = parseCheckoutSparkOrganizerExecutionRumor(rumor)
+                if (
+                  ![payload.organizerPubkey, payload.merchantPubkey].includes(
+                    this.store.principal
+                  )
+                )
+                  throw new Error("Organizer progress recipient changed.")
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    ...(payload.organizerPubkey === this.store.principal
+                      ? { recipientRole: "organizer" as const }
+                      : {}),
+                    organizerMessage: "execution",
+                    marketCoordinate:
+                      payload.state.plan.eventMarket!.marketCoordinate,
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.state.plan.checkoutId,
+                    orderId: payload.state.plan.orderId,
+                    planDigest: payload.state.plan.planDigest,
+                    takeoverAt: payload.state.plan.takeoverAt,
+                    preparedAt: payload.recordedAt,
+                    payloadDigest: payload.snapshotId,
                   },
                 }
               } else if (type === "checkout_spark_merchant_progress") {

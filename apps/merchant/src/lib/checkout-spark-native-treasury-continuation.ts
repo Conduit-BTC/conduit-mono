@@ -6,6 +6,7 @@ import {
   createCheckoutSparkMerchantProgress,
   deriveCheckoutSparkNativeTreasuryBudget,
   isCheckoutSparkNativePreProviderRetry,
+  isCheckoutSparkNativeTreasuryPlan,
   getAccountSigner,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   publishMerchantCheckoutSparkProgress,
@@ -112,7 +113,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
     }
     assertEligible()
     if (
-      plan.schemaVersion !== 4 ||
+      !isCheckoutSparkNativeTreasuryPlan(plan) ||
       !plan.nativeTreasury ||
       principal !== plan.merchantPubkey ||
       initial.merchantPubkey !== principal ||

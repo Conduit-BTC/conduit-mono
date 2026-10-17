@@ -18,6 +18,12 @@ import {
 import { readEventMarketAssignment } from "./event-market-roster-read"
 import { parseProductEvent } from "./products"
 import {
+  observeMerchantOrganizerStockCheckpoint,
+  restoreMerchantOrganizerStockCheckpoint,
+} from "./event-market-stock-checkpoint"
+import { createEventMarketEvidenceStore } from "./event-market-evidence-store"
+import { getProductsByIds } from "./commerce"
+import {
   fetchSignedEventsFanoutDetailed,
   verifySignedEventBatches,
   type PublicRelayReadOptions,
@@ -47,6 +53,107 @@ const defaultDependencies: ReadDependencies = {
 const MAX_CANDIDATES = 128
 const MAX_RETAINED = 2_048
 const MAX_OCCURRENCE_REVISIONS = 64
+
+/** Cold Merchant composition: source reads stay in their existing shared owners. */
+export async function recoverMerchantOrganizerStockFromInbox(
+  input: Omit<
+    Parameters<typeof restoreMerchantOrganizerStockCheckpoint>[0],
+    "signedProductEvent" | "signedAssignmentEvents"
+  > & { signal?: AbortSignal },
+  dependencies: {
+    products?: typeof getProductsByIds
+    read?: ReadDependencies
+  } = {}
+): Promise<MerchantInventoryRecoveryResult> {
+  input = { ...input, envelope: structuredClone(input.envelope) }
+  const check = () => {
+    if (input.signal?.aborted || !input.shouldContinue())
+      throw new Error("Merchant recovery session changed")
+  }
+  check()
+  const retained = await observeMerchantOrganizerStockCheckpoint(input)
+  check()
+  if (
+    retained.observation.sequence !== retained.payload.sequence ||
+    retained.observation.rumorId !== retained.rumor.id
+  )
+    throw new Error("A newer Merchant stock checkpoint requires reconciliation")
+  const snapshot = retained.payload.snapshot
+  const evidence = createEventMarketEvidenceStore(input.db)
+  for (const assignment of snapshot.assignments) {
+    await evidence.retain(assignment.marketCoordinate, [
+      assignment.signedAssignmentEvent!,
+      ...snapshot.pools
+        .filter(
+          ({ pool }) => pool.assignmentCoordinate === assignment.coordinate
+        )
+        .map(({ initialCommitment }) => initialCommitment),
+    ])
+    check()
+  }
+  const publicRead = dependencies.read ?? defaultDependencies
+  const productRead = await (dependencies.products ?? getProductsByIds)(
+    [snapshot.product.coordinate],
+    {
+      includeMarketHidden: true,
+      accountPubkey: input.authenticatedPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      signal: input.signal,
+      shouldContinue: input.shouldContinue,
+    }
+  )
+  check()
+  const product = productRead.data.find(
+    (record) => record.addressId === snapshot.product.coordinate
+  )
+  // Positive historical checkpoint evidence remains usable after withdrawal or
+  // a partial read. This is stock reconciliation, not current listing admission.
+  const signedProductEvent =
+    product?.product.signedProductEvent ?? snapshot.product.signedProductEvent
+  const signedAssignmentEvents: SignedPublicNostrEvent[] = []
+  let coverage: Coverage = product ? "complete" : "partial"
+  for (const assignment of snapshot.assignments) {
+    const resolved = await readEventMarketAssignment(
+      {
+        marketCoordinate: assignment.marketCoordinate,
+        occurrenceCoordinate: assignment.occurrenceCoordinate,
+        productCoordinate: assignment.productCoordinate,
+        authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      },
+      { ...publicRead, load: evidence.load, retain: evidence.retain }
+    )
+    check()
+    if (["conflicting", "malformed", "incomplete"].includes(resolved.state))
+      throw new Error("Signed assignment history needs reconciliation")
+    coverage = mergeCoverage(
+      coverage,
+      resolved.coverage === "stale" ? "partial" : resolved.coverage
+    )
+    signedAssignmentEvents.push(
+      resolved.assignment?.signedEvent ?? assignment.signedAssignmentEvent!
+    )
+  }
+  const result = await recoverMerchantInventoryProduct({
+    db: input.db,
+    merchantPubkey: input.authenticatedPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    productCoordinate: snapshot.product.coordinate,
+    signedProductEvent,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+    organizerCheckpoint: {
+      signer: input.signer,
+      authorization: input.authorization,
+      store: input.store,
+      envelope: input.envelope,
+      signedAssignmentEvents,
+    },
+  })
+  check()
+  return { ...result, coverage }
+}
 
 function options(
   plan: EventMarketReadPlan,
@@ -317,10 +424,45 @@ export async function recoverMerchantInventoryProduct(
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
+    /** Explicit positive private recovery, never inferred from public absence. */
+    organizerCheckpoint?: Omit<
+      Parameters<typeof restoreMerchantOrganizerStockCheckpoint>[0],
+      "db" | "authenticatedPubkey" | "shouldContinue" | "signedProductEvent"
+    >
   },
   dependencies: ReadDependencies = defaultDependencies
 ): Promise<MerchantInventoryRecoveryResult> {
   const { db, merchantPubkey, productCoordinate, signedProductEvent } = input
+  if (input.organizerCheckpoint) {
+    if (coordinateOf(signedProductEvent) !== productCoordinate)
+      throw new Error("Merchant recovery product coordinate mismatch")
+    if (
+      input.authenticatedPubkey !== merchantPubkey ||
+      input.signal?.aborted ||
+      input.shouldContinue?.() === false
+    )
+      throw new Error("Merchant recovery session changed")
+    const restored = await restoreMerchantOrganizerStockCheckpoint({
+      ...input.organizerCheckpoint,
+      db,
+      authenticatedPubkey: merchantPubkey,
+      signedProductEvent,
+      shouldContinue: () =>
+        !input.signal?.aborted && input.shouldContinue?.() !== false,
+    })
+    if (restored.product.coordinate !== productCoordinate)
+      throw new Error(
+        "Recovered Merchant product does not match requested coordinate"
+      )
+    return {
+      state: "ready",
+      coverage: "complete",
+      product: restored.product,
+      recoveredAssignments:
+        input.organizerCheckpoint.signedAssignmentEvents.length,
+      alreadyCommitted: restored.replayed,
+    }
+  }
   const existing = await db.merchantInventoryProducts.get(productCoordinate)
   if (existing)
     return {

@@ -7,7 +7,7 @@ export function CheckoutCoordinationSummary({
   formatSats = (sats) =>
     `${sats.toLocaleString()} ${sats === 1 ? "sat" : "sats"}`,
 }: {
-  price: CheckoutSparkBuyerPrice
+  price: CheckoutSparkBuyerPrice & { readonly organizerFeeSats?: number }
   estimate?: boolean
   formatSats?: (sats: number) => string
 }) {
@@ -26,6 +26,14 @@ export function CheckoutCoordinationSummary({
             {formatSats(price.shippingSubtotalSats)}
           </dd>
         </div>
+        {price.organizerFeeSats !== undefined && (
+          <div className="flex items-start justify-between gap-4">
+            <dt>Event organizer fee</dt>
+            <dd className="shrink-0 text-right tabular-nums">
+              {formatSats(price.organizerFeeSats)}
+            </dd>
+          </div>
+        )}
         <div className="flex items-start justify-between gap-4">
           <dt>Coordination fee</dt>
           <dd className="shrink-0 text-right tabular-nums">

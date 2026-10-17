@@ -9,6 +9,7 @@ import {
   getCheckoutSparkSettledLegGeneration,
   getAccountSigner,
   hasCheckoutSparkProviderSendWindow,
+  isCheckoutSparkNativeTreasuryPlan,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   proveSparkCheckoutReceiveCredit,
   publishMerchantCheckoutSparkProgress,
@@ -311,7 +312,7 @@ export async function selectMerchantCheckoutSparkSignedNextPayout(
       return
     }
     if (
-      state.plan.schemaVersion === 4 &&
+      isCheckoutSparkNativeTreasuryPlan(state.plan) &&
       state.plan.recipients.find((recipient) => recipient.legId === next.legId)
         ?.kind === "conduit"
     ) {

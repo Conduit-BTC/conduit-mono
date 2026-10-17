@@ -329,6 +329,40 @@ loss of recoverable credentials remain correctness defects. Recovery guidance
 must state this bounded trust assumption without suggesting guaranteed recovery
 or cryptographic enforcement of the client timer.
 
+### Event checkout recovery
+
+Version-five Event Market plans and version-six reconciliation reuse this
+wallet and executor, not a second payment runtime. The exact signed event
+binding, organizer fee and stock-grant commitment are retained before funding.
+Merchant/supplier Lightning payments precede the organizer's fixed allocation;
+the existing native Conduit rail collects the remaining attributed funds last.
+The [event router contract](universal-checkout-router.md#event-market-checkout-extension)
+defines funding math, zero-price cases and required commerce settlement.
+
+In organizer-handoff mode, the explicitly authorized organizer receives a
+separate recipient-encrypted package containing only the isolated checkout
+credential and bounded commercial/source/attempt evidence. Require the same
+durable exact-wrap and signed-inbox acknowledgement gates for both recipients.
+Neither envelope contains the buyer's funding credential or Merchant account
+key. Keep contacts and the full buyer order out of the organizer package,
+generic inbox, diagnostics and handout views. This credential is bearer control
+of one checkout, not cryptographic enforcement of the plan or takeover timer.
+
+After the original buyer deadline, only the designated delegated writer may
+dispatch; Merchant observation/import remains read-only until verified writer
+handover. Fresh-device continuation must restore and reconcile the same attempts
+and stock/handout frontier. Never infer a fresh attempt from a partial inbox or
+zero balance. Existing native offline-receiver completion, claim/retirement
+separation and no-replay protections remain unchanged.
+
+Genuinely free event pickup (zero commerce and zero organizer fee) has no
+checkout wallet, funding invoice or payment plan. Its separately encrypted
+organizer purchase packet binds the signed zero-price commercial graph and
+original order hashes only. The same finite stock, account/session and unique
+claim checks still apply. A bounded guest signer may seal that exact packet to
+the frozen organizer within its original order lifetime; it gains no inbox,
+decryption or general-purpose signing authority.
+
 ### Pricing and receiving authority
 
 Fiat-priced products, variations and shipping use an authenticated bounded

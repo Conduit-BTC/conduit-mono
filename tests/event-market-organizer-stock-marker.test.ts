@@ -258,6 +258,34 @@ describe("Conduit assignment stock-pool commitment", () => {
       isEventMarketAssignmentProductSuitable({ assignment: active, product })
     ).toBe(false)
     expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: active,
+        product,
+        organizerHandoff: { organizerPubkey: organizer },
+      })
+    ).toBe(true)
+    expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: active,
+        product,
+        organizerHandoff: { organizerPubkey: merchant },
+      })
+    ).toBe(false)
+    expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: absent,
+        product,
+        organizerHandoff: { organizerPubkey: organizer },
+      })
+    ).toBe(false)
+    expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: closed,
+        product,
+        organizerHandoff: { organizerPubkey: organizer },
+      })
+    ).toBe(false)
+    expect(
       isEventMarketAssignmentProductSuitable({ assignment: invalid, product })
     ).toBe(false)
     expect(

@@ -74,8 +74,25 @@ export interface EventMarketStockClose extends EventMarketStockAuthorityParties 
   readonly acceptedQuantity: number
 }
 
+export interface EventMarketStockHandout extends EventMarketStockAuthorityParties {
+  readonly type: "handed_out"
+  readonly orderId: string
+  readonly identityBinding: string
+  readonly termsBinding: string
+  readonly claimRef: string
+  readonly entries: readonly {
+    readonly poolId: string
+    readonly acceptedId: string
+    readonly quantity: number
+  }[]
+  readonly handedOutAtMs: number
+}
+
 export type EventMarketStockAuthorityPayload =
-  EventMarketStockGrant | EventMarketStockAcceptance | EventMarketStockClose
+  | EventMarketStockGrant
+  | EventMarketStockAcceptance
+  | EventMarketStockClose
+  | EventMarketStockHandout
 
 function invalid(): never {
   throw new Error("Event Market stock authority is invalid.")
@@ -271,6 +288,68 @@ function parsePayload(value: unknown): EventMarketStockAuthorityPayload {
       acceptedAtMs: input.acceptedAtMs,
     })
   }
+  if (input.type === "handed_out") {
+    exactKeys(input, [
+      ...commonKeys,
+      "orderId",
+      "identityBinding",
+      "termsBinding",
+      "claimRef",
+      "entries",
+      "handedOutAtMs",
+    ])
+    if (
+      typeof input.orderId !== "string" ||
+      !input.orderId ||
+      input.orderId.length > 512 ||
+      input.orderId.trim() !== input.orderId ||
+      /\p{Cc}/u.test(input.orderId) ||
+      ![input.identityBinding, input.termsBinding, input.claimRef].every(
+        hash
+      ) ||
+      !time(input.handedOutAtMs) ||
+      !Array.isArray(input.entries) ||
+      input.entries.length < 1 ||
+      input.entries.length > 128
+    )
+      return invalid()
+    const entries = input.entries.map((entry: unknown) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry))
+        return invalid()
+      const item = entry as Record<string, unknown>
+      exactKeys(item, ["poolId", "acceptedId", "quantity"])
+      if (
+        !hash(item.poolId) ||
+        !hash(item.acceptedId) ||
+        !count(item.quantity, true)
+      )
+        return invalid()
+      return Object.freeze({
+        poolId: item.poolId,
+        acceptedId: item.acceptedId,
+        quantity: item.quantity,
+      })
+    })
+    if (
+      new Set(entries.map((entry) => entry.acceptedId)).size !==
+        entries.length ||
+      entries.some(
+        (entry, index) =>
+          index > 0 && entries[index - 1]!.poolId >= entry.poolId
+      )
+    )
+      return invalid()
+    return Object.freeze({
+      ...common,
+      type: "handed_out",
+      orderId: input.orderId,
+      identityBinding: input.identityBinding as string,
+      termsBinding: input.termsBinding as string,
+      claimRef: input.claimRef as string,
+      entries: Object.freeze(entries),
+      handedOutAtMs: input.handedOutAtMs,
+    })
+  }
   if (input.type === "closed") {
     exactKeys(input, [
       ...commonKeys,
@@ -318,6 +397,11 @@ function assertTimeBinding(
   if (
     payload.type === "accepted" &&
     Math.floor(payload.acceptedAtMs / 1_000) !== createdAt
+  )
+    invalid()
+  if (
+    payload.type === "handed_out" &&
+    Math.floor(payload.handedOutAtMs / 1_000) !== createdAt
   )
     invalid()
 }

@@ -16,6 +16,8 @@ import {
 } from "./checkout-spark-shipping-evidence"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { assertCheckoutSparkCommerceProductPrice } from "./checkout-spark-commerce-pricing"
+import type { CheckoutSparkEventMarketBinding } from "./checkout-spark-event-market"
+import { assertCheckoutSparkSignedEventMarketSources } from "./checkout-spark-event-market-sources"
 
 const EVENT_ID = /^[0-9a-f]{64}$/
 const MAX_SAFE_SATS = BigInt(Number.MAX_SAFE_INTEGER)
@@ -40,6 +42,9 @@ interface SignedCommerceInput {
   pickupSourceEvents?: readonly SignedPublicNostrEvent[]
   acceptedAtMs?: number
   organizer?: CheckoutSparkOrganizerObligationInput | null
+  /** New event plans only; full signed graph is independently revalidated. */
+  eventMarket?: CheckoutSparkEventMarketBinding
+  eventSourceEvents?: readonly SignedPublicNostrEvent[]
 }
 
 /**
@@ -61,9 +66,21 @@ export function deriveCheckoutSparkSignedCommerceObligations(
     products.length !== quote.lines.length ||
     quote.lines.length === 0 ||
     !Number.isSafeInteger(quote.commerceTotalSats) ||
-    quote.commerceTotalSats <= 0
+    (input.eventMarket
+      ? quote.commerceTotalSats < 0
+      : quote.commerceTotalSats <= 0)
   ) {
     unavailable()
+  }
+  if (input.eventMarket) {
+    if (input.acceptedAtMs === undefined) unavailable()
+    assertCheckoutSparkSignedEventMarketSources({
+      eventMarket: input.eventMarket,
+      commerceQuote: quote,
+      merchantPubkey,
+      sourceEvents: input.eventSourceEvents ?? [],
+      acceptedAtMs: input.acceptedAtMs,
+    })
   }
 
   const byCoordinate = new Map(products.map((product) => [product.id, product]))
@@ -108,7 +125,9 @@ export function deriveCheckoutSparkSignedCommerceObligations(
       !Number.isSafeInteger(line.quantity) ||
       line.quantity <= 0 ||
       !Number.isSafeInteger(line.unitMerchandiseSats) ||
-      line.unitMerchandiseSats <= 0
+      (input.eventMarket
+        ? line.unitMerchandiseSats < 0
+        : line.unitMerchandiseSats <= 0)
     ) {
       unavailable()
     }
@@ -173,8 +192,12 @@ export function deriveCheckoutSparkSignedCommerceObligations(
         line,
         pricing: quote.pricing,
         acceptedAtMs: input.acceptedAtMs,
+        ...(input.eventMarket ? { allowZero: true as const } : {}),
       })
-      if (line.pickup !== undefined) {
+      if (input.eventMarket) {
+        // Exact current occurrence assignment and zero-shipping terms were
+        // verified above. Never reinterpret these as legacy pickup/shipping.
+      } else if (line.pickup !== undefined) {
         if (input.acceptedAtMs === undefined) unavailable()
         resolveCheckoutSparkSignedPickup({
           productEvent: event,
@@ -199,10 +222,15 @@ export function deriveCheckoutSparkSignedCommerceObligations(
     const shippingSats = line.shippingPolicy
       ? BigInt(line.shippingPolicy.allocatedCostSats)
       : BigInt(line.quantity) * BigInt(line.unitShippingSats)
-    if (lineSats <= 0n || lineSats > MAX_SAFE_SATS) unavailable()
+    if (
+      (input.eventMarket ? lineSats < 0n : lineSats <= 0n) ||
+      lineSats > MAX_SAFE_SATS
+    )
+      unavailable()
     total += lineSats + shippingSats
     if (total > MAX_SAFE_SATS) unavailable()
     if (shippingSats > 0n) addShare("merchant", merchantPubkey, shippingSats)
+    if (lineSats === 0n) continue
 
     if (signed.state === "absent") {
       addShare("merchant", merchantPubkey, lineSats)
@@ -224,7 +252,11 @@ export function deriveCheckoutSparkSignedCommerceObligations(
   }
 
   if (total !== BigInt(quote.commerceTotalSats)) unavailable()
-  if (!expected.has(`merchant:${merchantPubkey}`)) unavailable()
+  if (
+    quote.commerceTotalSats > 0 &&
+    !expected.has(`merchant:${merchantPubkey}`)
+  )
+    unavailable()
   return Object.freeze(
     [...expected.entries()]
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
@@ -273,7 +305,8 @@ export function assertCheckoutSparkSignedCommerceAllocations(
   }
   if (
     actual.size !== expected.size ||
-    !actual.has(`merchant:${input.merchantPubkey}`)
+    (input.quote.commerceTotalSats > 0 &&
+      !actual.has(`merchant:${input.merchantPubkey}`))
   ) {
     unavailable()
   }

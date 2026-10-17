@@ -6,6 +6,7 @@ import {
   orderPickupFulfillmentSchema,
   orderSchema,
   type OrderSchema,
+  type OrderEventMarketPickupFulfillmentSchema,
 } from "../schemas"
 import {
   canonicalizeShippingCost,
@@ -42,6 +43,8 @@ import {
   restoreCheckoutSparkSettledPlan,
   type CheckoutSparkSettledPlan,
 } from "./checkout-spark-settled-router"
+import { validateCheckoutSparkPlanSources } from "./checkout-spark-plan-sources"
+import { matchesCheckoutSparkOrderEventMarketSnapshot } from "./checkout-spark-event-market"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const CONTENT_DOMAIN = "conduit:checkout-spark-merchant-order-content:v1"
@@ -157,6 +160,7 @@ export interface CheckoutSparkMerchantOrderEvidence {
     readonly variation?: CheckoutSparkCommerceVariation
     readonly shipping?: OrderShippingSnapshot
     readonly pickup?: OrderPickupSnapshot
+    readonly eventPickup?: OrderEventMarketPickupFulfillmentSchema
   }[]
 }
 
@@ -292,6 +296,9 @@ export function readCheckoutSparkMerchantOrderEvidence(
               },
             }
           : {}),
+        ...(item.fulfillment?.type === "event_market_pickup"
+          ? { eventPickup: item.fulfillment }
+          : {}),
         ...(item.sourcePrice
           ? {
               sourcePriceAmount: item.sourcePrice.amount,
@@ -315,6 +322,8 @@ export function createCheckoutSparkMerchantOrderWitness(
 ): CheckoutSparkMerchantOrderWitness | null {
   try {
     const frozen = restoreCheckoutSparkSettledPlan(plan)
+    if (frozen.schemaVersion === 5)
+      validateCheckoutSparkPlanSources(frozen, sourceEvents ?? [])
     const quote = frozen.commerceQuote
     assertCheckoutSparkCommerceShippingPolicies(quote, frozen.createdAt)
     const lines = new Map(
@@ -363,14 +372,30 @@ export function createCheckoutSparkMerchantOrderWitness(
             pricing: quote.pricing,
             acceptedAtMs:
               quote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
+            ...(frozen.schemaVersion === 5 ? { allowZero: true as const } : {}),
           })
         }
         let fulfillmentMatches =
           !line?.shippingOption &&
           !line?.pickup &&
           item.shipping === undefined &&
-          item.pickup === undefined
-        if (line?.pickup && item.pickup && item.shipping === undefined) {
+          item.pickup === undefined &&
+          item.eventPickup === undefined
+        if (frozen.schemaVersion === 5 && line && item.eventPickup) {
+          fulfillmentMatches =
+            item.shipping === undefined &&
+            item.pickup === undefined &&
+            matchesCheckoutSparkOrderEventMarketSnapshot(
+              item.eventPickup,
+              frozen.eventMarket!,
+              item.productCoordinate
+            )
+        } else if (
+          line?.pickup &&
+          item.pickup &&
+          item.shipping === undefined &&
+          item.eventPickup === undefined
+        ) {
           const productEvent = sourceEvents?.find(
             (event) => event.id === line.productEventId
           )

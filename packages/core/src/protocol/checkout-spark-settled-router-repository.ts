@@ -192,7 +192,7 @@ function projectState(
         : {}),
     })),
     updatedAt: valid.updatedAt,
-    ...(valid.schemaVersion === 5
+    ...(valid.schemaVersion === 5 || valid.schemaVersion === 6
       ? {
           treasuryFinalization: {
             ...valid.treasuryFinalization!,
@@ -257,7 +257,8 @@ function snapshotFromRows(
       active.revision < 1 ||
       (active.state.schemaVersion !== 3 &&
         active.state.schemaVersion !== 4 &&
-        active.state.schemaVersion !== 5)
+        active.state.schemaVersion !== 5 &&
+        active.state.schemaVersion !== 6)
     ) {
       throw new CheckoutSparkSettledRepositoryIntegrityError()
     }
@@ -297,6 +298,7 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   if (
     (previous.schemaVersion === 4 && next.schemaVersion !== 4) ||
     (previous.schemaVersion === 5 && next.schemaVersion !== 5) ||
+    (previous.schemaVersion === 6 && next.schemaVersion !== 6) ||
     next.updatedAt < previous.updatedAt ||
     next.plan.planDigest !== previous.plan.planDigest ||
     (previous.credit !== null &&
@@ -304,7 +306,7 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   ) {
     throw new CheckoutSparkSettledRepositoryConflictError()
   }
-  if (previous.schemaVersion === 5) {
+  if (previous.schemaVersion === 5 || previous.schemaVersion === 6) {
     const before = previous.treasuryFinalization!
     const after = next.treasuryFinalization!
     if (
@@ -720,7 +722,7 @@ export class DexieCheckoutSparkSettledRepository {
         }
         assertGuestOrderCurrent()
         const next: CheckoutSparkBuyerOrderBinding = {
-          schemaVersion: 1,
+          schemaVersion: canonical.schemaVersion === 5 ? 2 : 1,
           checkoutId: canonical.checkoutId,
           planDigest: canonical.planDigest,
           orderId: canonical.orderId,
@@ -817,7 +819,9 @@ export class DexieCheckoutSparkSettledRepository {
           const plan = snapshot.state.plan
           if (
             buyerBinding &&
-            (buyerBinding.orderId !== plan.orderId ||
+            (buyerBinding.schemaVersion !==
+              (plan.schemaVersion === 5 ? 2 : 1) ||
+              buyerBinding.orderId !== plan.orderId ||
               buyerBinding.merchantPubkey !== plan.merchantPubkey ||
               buyerBinding.walletId !== plan.walletId ||
               buyerBinding.commerceTotalSats !==
@@ -2003,7 +2007,8 @@ export class DexieCheckoutSparkSettledRepository {
           current.state
         )
         if (
-          current.state.schemaVersion === 5 &&
+          (current.state.schemaVersion === 5 ||
+            current.state.schemaVersion === 6) &&
           current.state.treasuryFinalization!.status === "paid" &&
           !binding.merchantSettlement?.nativeTreasury
         ) {
@@ -2020,6 +2025,7 @@ export class DexieCheckoutSparkSettledRepository {
             binding.buyerOrderBinding
           )
           if (
+            buyer.schemaVersion !== (summary.schemaVersion === 4 ? 2 : 1) ||
             buyer.checkoutId !== summary.checkoutId ||
             buyer.planDigest !== summary.planDigest ||
             buyer.orderId !== summary.orderId ||

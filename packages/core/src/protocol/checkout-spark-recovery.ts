@@ -124,6 +124,10 @@ export type CheckoutSparkRecoveryPayload =
 
 /** Encrypted local discovery metadata. Wallet material remains in the original wrapper. */
 export interface CheckoutRecoveryDescriptor {
+  /** Absent in historical Merchant descriptors. Never grants role authority. */
+  recipientRole?: "organizer"
+  organizerMessage?: "initial" | "buyer_progress" | "execution"
+  marketCoordinate?: string
   id: string
   senderPubkey: string
   createdAt: number
@@ -279,7 +283,11 @@ function canonicalSettledState(
     // The envelope is unchanged. New native plans use an explicitly versioned
     // nested state; older clients fail closed at the nested plan decoder.
     // Historical Lightning renewal remains Merchant-only.
-    if (state.schemaVersion !== 3 && state.schemaVersion !== 5)
+    if (
+      state.schemaVersion !== 3 &&
+      state.schemaVersion !== 5 &&
+      state.schemaVersion !== 6
+    )
       throw new Error("unsupported buyer state")
     const plan = restoreCheckoutSparkSettledPlan(state.plan)
     const restored = restoreCheckoutSparkSettledReconciliation(state)
@@ -947,6 +955,18 @@ function buildRecoveryDeliveryRecord(
   return record
 }
 
+/** Prepare-only composition: exact rumor/wrap metadata, without relay I/O. */
+export function createCheckoutSparkRecoveryDeliveryRecord(
+  payloadInput: CheckoutSparkRecoveryPayload,
+  prepared: PreparedPrivateMessageWraps
+): CheckoutSparkRecoveryDeliveryRecord {
+  const payload = parseRecoveryPayload(payloadInput)
+  if (prepared.rumorId !== buildCheckoutSparkRecoveryRumor(payload).id) {
+    throw new Error("Checkout recovery rumor changed before persistence.")
+  }
+  return buildRecoveryDeliveryRecord(payload, prepared)
+}
+
 function mergeAcknowledgedRelayRefs(input: {
   existing: readonly string[]
   attemptedRelayUrls: readonly string[]
@@ -1050,6 +1070,7 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
   record: CheckoutSparkRecoveryDeliveryRecord
   deliveryProgress: CheckoutSparkRecoveryDeliveryProgress
   recipientInboxRelays?: readonly string[]
+  resolveInboxRelays?: (pubkey: string) => Promise<string[]>
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
   shouldContinue?: () => boolean
   publishFn?: typeof publishWithPlanner
@@ -1065,6 +1086,7 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
     recipientPubkey: input.record.merchantPubkey,
     wrappedToRecipient: input.record.signedRecipientWrap,
     recipientInboxRelays: input.recipientInboxRelays,
+    resolveInboxRelays: input.resolveInboxRelays,
     inboxDeclarationOptions: input.inboxDeclarationOptions,
     shouldContinue:
       input.shouldContinue ?? input.inboxDeclarationOptions?.shouldContinue,

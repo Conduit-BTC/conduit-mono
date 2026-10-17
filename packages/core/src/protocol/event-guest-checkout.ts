@@ -3,6 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils.js"
 import { z } from "zod"
 import type { OrderItemFulfillmentSchema, OrderSchema } from "../schemas"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
 
 /** Experimental Conduit product extension; absent or ambiguous means contact required. */
 export const EVENT_GUEST_CONTACT_TAG = "conduit_event_guest"
@@ -14,6 +15,35 @@ export function hasSignedEventGuestOptIn(
     policies.length === 1 &&
     policies[0]?.length === 2 &&
     policies[0]?.[1] === "contact_optional"
+  )
+}
+
+function hasReservedOrganizerHandoff(
+  fulfillment: Extract<
+    OrderItemFulfillmentSchema,
+    { type: "event_market_pickup" }
+  >
+): boolean {
+  const evidence = fulfillment.occurrenceAssignment
+  if (!evidence) return false
+  const assignment = parseEventMarketAssignmentEvent(evidence.signedEvent)
+  return (
+    !!assignment &&
+    assignment.eventId === evidence.eventId &&
+    assignment.coordinate === evidence.coordinate &&
+    assignment.state === "active" &&
+    assignment.merchantPubkey === fulfillment.merchantPubkey &&
+    assignment.organizerPubkey === fulfillment.organizerPubkey &&
+    assignment.merchantPubkey !== assignment.organizerPubkey &&
+    assignment.marketCoordinate === fulfillment.market.coordinate &&
+    assignment.occurrenceCoordinate === fulfillment.calendar.coordinate &&
+    assignment.productCoordinate === fulfillment.product.coordinate &&
+    assignment.fulfillmentMethods.includes("pickup") &&
+    assignment.stockPool.state === "valid" &&
+    assignment.stockPool.pool.state === "active" &&
+    assignment.stockPool.pool.organizerPubkey === fulfillment.organizerPubkey &&
+    assignment.stockPool.pool.quantity >
+      assignment.stockPool.pool.importedQuantity
   )
 }
 
@@ -29,7 +59,9 @@ export function isContactFreeEventHandoff(
       const fulfillment = item.fulfillment
       return (
         fulfillment?.type === "event_market_pickup" &&
-        fulfillment.mode === "merchant_present" &&
+        (fulfillment.mode === "merchant_present" ||
+          (fulfillment.mode === "organizer_handoff" &&
+            hasReservedOrganizerHandoff(fulfillment))) &&
         now < fulfillment.calendar.end &&
         isValidSignedPublicNostrEvent(fulfillment.product.signedEvent) &&
         fulfillment.product.signedEvent.pubkey === fulfillment.merchantPubkey &&

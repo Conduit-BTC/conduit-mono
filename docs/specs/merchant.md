@@ -55,8 +55,10 @@ The current product uses focused pages plus dashboard readiness. Do not re-open 
 
 For `guest_ephemeral` orders, buyer contact occurs out of band using the
 structured recovery channel required by that checkout flow and available to the
-merchant handling the order. New guest pickup orders require both email and
-phone; shipping retains its contact and address contract. The guest pubkey is an
+merchant handling the order. Ordinary guest pickup requires both email and
+phone; eligible Event Market pickup supports the contact-free receipt/claim
+path in `event-markets.md` without a separate Merchant opt-in. Shipping retains
+its contact and address contract. The guest pubkey is an
 outbound order sender, not a reply-capable Nostr inbox; Merchant must not claim
 to send Nostr invoice, status, shipping, or reply messages to that key. Merchant
 may still
@@ -95,25 +97,30 @@ fields and merchant self-copy records preserve the operational history.
 ### Organizer Event Markets
 
 A signed-in merchant may also act as an event organizer without a separate
-Conduit-controlled account. The organizer workspace composes shared Core
-workflows to publish and update the NIP-52 calendar record, optional
-organizer-handoff pickup option, and authoritative product collection with the
-active external signer. It shows record-level relay acknowledgement and retry
-state, participation requests, each accepted merchant booth's handoff party,
-and the canonical collection `naddr` share link.
+Conduit-controlled account. Shared Core workflows publish the current signed
+roster, authorization and concrete NIP-52 dates. Merchants assign their own
+products to occurrences; collection-based event commerce remains retired. The
+workspace shows exact signed-operation delivery/retry, participation, handoff
+mode and the Event Market `naddr` share link.
 
-An accepted merchant chooses either a merchant-authored booth pickup, which
-keeps orders and receipts merchant-only, or the organizer-authored pickup,
-which opts future orders into the minimal private fulfillment-receipt workflow.
-The organizer view exposes only those redacted delegated receipts addressed to
-the active organizer and may issue only the scoped `handed_out`
-acknowledgement. It never grants organizer access to full orders, buyer contact,
-payment material, refunds, price changes, or ordinary merchant status actions.
-The queue displays the same opaque short pickup code that the buyer derives
-locally from the private order; it does not receive the order id or buyer
-identity.
-See
-`docs/specs/event-markets.md`.
+Merchant-booth pickup keeps the original order and receipts Merchant-only.
+Organizer pickup uses the approved finite stock grant and separately encrypted
+one-checkout recovery in `event-markets.md`, `protocol.md` and `wallets.md`.
+This grants bearer control of that checkout wallet, never the Merchant account,
+standing wallet or unrelated order. The machine-processing boundary receives
+the exact plan, attempts, source evidence and order hashes/identifiers; ordinary
+messages, search, notifications and human handout views do not expose wallet
+credentials or the full Buyer order/contact data.
+
+The designated organizer verifies required commerce payments and the exact
+pickup claim before one physical release. Seller reconciliation authenticates
+the original Buyer order plus organizer acceptance/handout and decrements stock
+once. Missing or conflicting history keeps the hold; roster removal or date
+expiry cannot erase historical import/recovery. Historical minimal ready
+receipts remain readable under their original live-Merchant release rules;
+they do not grant the new checkout-wallet recovery authority. Organizer fee
+receipt alone is never goods settlement or physical-release authority. Refunds,
+price changes and ordinary Merchant status actions remain Merchant-owned.
 
 ## Pages
 

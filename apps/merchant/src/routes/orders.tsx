@@ -11,6 +11,8 @@ import {
 import { db } from "@conduit/core/db"
 import {
   getProfilePaymentAddress,
+  classifyEventMarketOrderHandoff,
+  assertMerchantOrganizerStockOrderHandout,
   acceptMerchantOccurrenceOrder,
   getMerchantInventoryAcceptedOrder,
   readMerchantOccurrenceAcceptedOrder,
@@ -1224,12 +1226,10 @@ function OrdersWorkspace() {
   const selectedFuturePickup = selectedOrder?.items.find(
     (item) => item.fulfillment?.type === "event_market_pickup"
   )?.fulfillment
+  const selectedOrganizerHandoffPolicy =
+    classifyEventMarketOrderHandoff(selectedOrder)
   const selectedFutureOrganizerHandoff =
-    selectedOrder?.items.some(
-      (item) =>
-        item.fulfillment?.type === "event_market_pickup" &&
-        item.fulfillment.mode === "organizer_handoff"
-    ) ?? false
+    selectedOrganizerHandoffPolicy === "legacy_merchant_release"
   const selectedFutureClaimRef =
     selectedOrder &&
     selectedFuturePickup?.type === "event_market_pickup" &&
@@ -3117,7 +3117,24 @@ function OrdersWorkspace() {
           nextStatus === "complete" &&
           snapshottedOrderFulfillment.hasPickupClaim
         ) {
-          await assertCurrentPickupAuthorization(authority)
+          if (
+            selectedOrganizerHandoffPolicy === "stock_reconciliation_required"
+          )
+            throw new Error(
+              "The reserved organizer stock commitment needs reconciliation before completion."
+            )
+          if (selectedOrganizerHandoffPolicy === "reserved_organizer_stock") {
+            const signer = getAccountSigner()
+            if (!signer || !selectedOrder)
+              throw new Error("Reconnect the Merchant signer.")
+            await assertMerchantOrganizerStockOrderHandout({
+              db,
+              signer,
+              authenticatedPubkey: pubkey,
+              order: selectedOrder,
+              shouldContinue: () => isCurrentOrderAction(authority),
+            })
+          } else await assertCurrentPickupAuthorization(authority)
           if (selectedFutureOrganizerHandoff) {
             const current = await futureAckQuery.refetch()
             if (

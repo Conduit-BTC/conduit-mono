@@ -1371,7 +1371,7 @@ export const orderSchema = z
         code: "custom",
         path: ["contactFreePickup"],
         message:
-          "Contact-free checkout requires every merchant-signed opt-in and immediate merchant-present event handoff.",
+          "Contact-free checkout requires current signed event pickup and authorized Merchant or reserved-stock organizer handoff.",
       })
     }
     if (

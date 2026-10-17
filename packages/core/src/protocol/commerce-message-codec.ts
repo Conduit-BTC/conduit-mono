@@ -1,5 +1,7 @@
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
 import { isEventMarketStockAuthorityRumor } from "./event-market-stock-marker"
+import { isCheckoutSparkRecoveryMachineRumor } from "./checkout-spark-recovery-marker"
+import { isEventMarketFreePurchaseRumor } from "./event-market-free-purchase-marker"
 
 /** An already authenticated inner NIP-17 rumor. Authentication belongs to unwrap. */
 export interface CommerceRumor {
@@ -246,7 +248,11 @@ export function decodeCommerceMessageRumor(
   rumor: CommerceRumor
 ): DecodedCommerceMessage {
   const source = provenance(rumor)
-  if (isEventMarketStockAuthorityRumor(rumor))
+  if (
+    isEventMarketStockAuthorityRumor(rumor) ||
+    isEventMarketFreePurchaseRumor(rumor) ||
+    isCheckoutSparkRecoveryMachineRumor(rumor)
+  )
     return { category: "machine", provenance: source }
   const tags = rumor.tags ?? []
   const typeTags = values(tags, "type")

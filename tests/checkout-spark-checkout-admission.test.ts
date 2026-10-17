@@ -3,6 +3,8 @@ import type { PreparedProductFulfillment } from "@conduit/core"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
 import { assessCheckoutSparkCheckoutAdmission } from "../apps/market/src/lib/checkout-spark-checkout-admission"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
+import { isCheckoutSparkSettledCart } from "../apps/market/src/lib/checkout-spark-settled-cart"
+import { createEventMarketCheckoutFixture } from "./helpers/event-market-checkout-fixture"
 
 const merchant = "1".repeat(64)
 const digital: CartItem = {
@@ -33,6 +35,70 @@ function assess(
 }
 
 describe("required checkout routing is separate from readiness", () => {
+  test("admits one uniform current event assignment without treating the hint as authority", async () => {
+    const event = await createEventMarketCheckoutFixture()
+    expect(isCheckoutSparkSettledCart([event.item])).toBe(true)
+    expect(assess([event.item])).toEqual({ mode: "router", ready: true })
+    expect(assess([event.item, digital])).toEqual({
+      mode: "router",
+      ready: false,
+    })
+    for (const changed of [
+      {
+        ...event.item,
+        fulfillment: { ...event.fulfillment, occurrenceAssignment: undefined },
+      },
+      {
+        ...event.item,
+        fulfillment: { ...event.fulfillment, payeePubkey: event.organizer },
+      },
+      { ...event.item, merchantPubkey: event.organizer },
+      {
+        ...event.item,
+        shippingOptionId: `30406:${event.merchant}:wrong-shipping`,
+      },
+    ])
+      expect(isCheckoutSparkSettledCart([changed])).toBe(false)
+    expect(
+      isCheckoutSparkSettledCart([
+        event.item,
+        {
+          ...event.item,
+          fulfillment: { ...event.fulfillment, assignment: "Different terms" },
+        },
+      ])
+    ).toBe(false)
+  })
+
+  test("free goods with a signed positive organizer minimum still require router funding", async () => {
+    for (const minimumSats of [0, 5]) {
+      const event = await createEventMarketCheckoutFixture({
+        price: 0,
+        organizerFee: {
+          state: "active",
+          basisPoints: 250,
+          minimumSats,
+          lightningAddress: "organizer@example.test",
+        },
+      })
+      const input = {
+        enabled: true,
+        freeOrderVerified: true,
+        items: [event.item],
+        fulfillment: new Map<string, PreparedProductFulfillment>(),
+      }
+      expect(assessCheckoutSparkCheckoutAdmission(input)).toEqual(
+        minimumSats === 0 ? { mode: "free" } : { mode: "router", ready: true }
+      )
+      const tampered = structuredClone(event.item)
+      if (tampered.fulfillment?.type !== "event_market_pickup")
+        throw new Error("Missing event")
+      tampered.fulfillment.market.signedEvent.content = "Changed signed terms"
+      expect(
+        assessCheckoutSparkCheckoutAdmission({ ...input, items: [tampered] })
+      ).toEqual({ mode: "router", ready: false })
+    }
+  })
   test("supported SAT and fiat digital purchases require routing", () => {
     expect(assess([digital])).toEqual({ mode: "router", ready: true })
     expect(assess([{ ...digital, currency: "USD", price: 1 }])).toEqual({

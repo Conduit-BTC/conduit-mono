@@ -147,9 +147,17 @@ export function buildEventMarketRosterDraft(
 export function parseEventMarketRosterEvent(
   event: VerifiedNostrEvent
 ): ParsedEventMarketRoster | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketRosterFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private evidence only; callers verify its exact signature first. */
+export function parseEventMarketRosterFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedEventMarketRoster | null {
   if (
     event.kind !== EVENT_KINDS.EVENT_MARKET ||
-    !isVerifiedNostrEvent(event) ||
     new TextEncoder().encode(JSON.stringify(event)).length > MAX_EVENT_BYTES
   ) {
     return null
@@ -442,6 +450,13 @@ export function resolveEventMarketProduct(input: {
         assignment,
         product,
         parentProduct: input.parentProduct,
+        ...(merchant.mode === "organizer_handoff"
+          ? {
+              organizerHandoff: {
+                organizerPubkey: input.market.organizerPubkey,
+              },
+            }
+          : {}),
       })
     ) {
       return { state: "malformed" }

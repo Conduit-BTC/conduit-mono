@@ -25,6 +25,10 @@ function requireTime(nowMs: number): void {
   if (!Number.isSafeInteger(nowMs) || nowMs < 0)
     throw new Error("Invalid stock journal time")
 }
+function requireSession(input: { shouldContinue?: () => boolean }): void {
+  if (input.shouldContinue?.() === false)
+    throw new Error("Stock authority session changed")
+}
 
 function readGrant(rumor: PrivateMessageRumor): EventMarketStockGrant {
   const payload = parseEventMarketStockAuthorityRumor(rumor)
@@ -56,6 +60,16 @@ function assertPool(
     !count(pool.importedSequence) ||
     pool.acceptedSequence > pool.acceptedQuantity ||
     pool.importedSequence > pool.importedQuantity ||
+    pool.importedSequence > pool.acceptedSequence ||
+    pool.importedQuantity > pool.acceptedQuantity ||
+    (pool.importedSequence === pool.acceptedSequence &&
+      (pool.importedQuantity !== pool.acceptedQuantity ||
+        pool.lastImportedId !== pool.lastAcceptedId)) ||
+    (pool.readOnlyRecovery !== undefined && pool.readOnlyRecovery !== true) ||
+    (pool.state === "closed" &&
+      (!pool.closingRumor ||
+        pool.importedSequence !== pool.acceptedSequence ||
+        pool.importedQuantity !== pool.acceptedQuantity)) ||
     (pool.acceptedSequence === 0 &&
       (pool.acceptedQuantity !== 0 || pool.lastAcceptedId !== pool.poolId)) ||
     (pool.importedSequence === 0 &&
@@ -66,6 +80,13 @@ function assertPool(
   )
     throw new Error("Organizer stock journal requires reconciliation")
   return grant
+}
+
+/** Internal reload validation; lifecycle coverage never substitutes for a frontier. */
+export function validateOrganizerStockJournalPool(
+  pool: EventMarketOrganizerStockPool
+): EventMarketStockGrant {
+  return assertPool(pool)
 }
 
 function newPool(
@@ -105,6 +126,7 @@ export async function prepareMerchantOrganizerStockPool(input: {
   authenticatedPubkey: string
   grantRumor: PrivateMessageRumor
   expectedAssignmentRevision: number
+  shouldContinue?(): boolean
   nowMs?: number
 }): Promise<EventMarketOrganizerStockPool> {
   input = { ...input, grantRumor: clone(input.grantRumor) }
@@ -113,6 +135,7 @@ export async function prepareMerchantOrganizerStockPool(input: {
   const expectedRevision = input.expectedAssignmentRevision
   const nowMs = input.nowMs ?? Date.now()
   requireTime(nowMs)
+  requireSession(input)
   if (
     input.authenticatedPubkey !== grant.merchantPubkey ||
     rumor.created_at * 1000 > nowMs ||
@@ -135,6 +158,7 @@ export async function prepareMerchantOrganizerStockPool(input: {
         assertPool(prior)
         if (JSON.stringify(prior.grantRumor) !== JSON.stringify(rumor))
           throw new Error("Stock grant identity conflict")
+        requireSession(input)
         return prior
       }
       const assignment = await db.merchantInventoryAssignments.get(
@@ -202,8 +226,10 @@ export async function prepareMerchantOrganizerStockPool(input: {
         },
       })
       const pool = newPool(grant.merchantPubkey, rumor, "prepared")
+      requireSession(input)
       await db.merchantInventoryAssignments.put(assignment)
       await db.eventMarketOrganizerStockPools.add(pool)
+      requireSession(input)
       return pool
     }
   )
@@ -220,6 +246,7 @@ export async function installOrganizerStockHandover(input: {
   writerId: string
   grantRumor: PrivateMessageRumor
   committedAssignmentEvent: SignedPublicNostrEvent
+  shouldContinue?(): boolean
   nowMs?: number
 }): Promise<EventMarketOrganizerStockPool> {
   input = {
@@ -234,6 +261,7 @@ export async function installOrganizerStockHandover(input: {
   )
   const nowMs = input.nowMs ?? Date.now()
   requireTime(nowMs)
+  requireSession(input)
   if (
     input.authenticatedPubkey !== grant.organizerPubkey ||
     input.writerId !== grant.writerId ||
@@ -268,6 +296,7 @@ export async function installOrganizerStockHandover(input: {
         assertPool(prior)
         if (JSON.stringify(prior.grantRumor) !== JSON.stringify(rumor))
           throw new Error("Stock grant identity conflict")
+        requireSession(input)
         return prior
       }
       const overlapping = await input.db.eventMarketOrganizerStockPools
@@ -277,7 +306,9 @@ export async function installOrganizerStockHandover(input: {
       if (overlapping.some((pool) => pool.state !== "closed"))
         throw new Error("An organizer writer already holds this assignment")
       const pool = newPool(grant.organizerPubkey, rumor, "active")
+      requireSession(input)
       await input.db.eventMarketOrganizerStockPools.add(pool)
+      requireSession(input)
       return pool
     }
   )
@@ -296,11 +327,15 @@ export async function commitOrganizerStockAcceptance(input: {
   quantity: number
   /** Exact private, already validated original order evidence. */
   evidence: string
+  /** Supplied only by the whole-order journal transaction. */
+  orderPoolBinding?: string
+  shouldContinue?(): boolean
   nowMs?: number
 }): Promise<{ replayed: boolean; entry: EventMarketOrganizerStockEntry }> {
   input = { ...input }
   const nowMs = input.nowMs ?? Date.now()
   requireTime(nowMs)
+  requireSession(input)
   if (
     !input.evidence ||
     new TextEncoder().encode(input.evidence).length > 65_536
@@ -333,13 +368,17 @@ export async function commitOrganizerStockAcceptance(input: {
           accepted.termsBinding !== input.termsBinding ||
           accepted.claimRef !== input.claimRef ||
           accepted.quantity !== input.quantity ||
+          (prior.orderPoolBinding !== undefined &&
+            prior.orderPoolBinding !== input.orderPoolBinding) ||
           prior.evidence !== input.evidence
         )
           throw new Error("Organizer order ID is bound to different terms")
+        requireSession(input)
         return { replayed: true, entry: prior }
       }
       if (
         pool.state !== "active" ||
+        pool.readOnlyRecovery ||
         nowMs >= grant.expiresAtMs ||
         nowMs < pool.grantRumor.created_at * 1000
       )
@@ -396,14 +435,130 @@ export async function commitOrganizerStockAcceptance(input: {
         rumor,
         quantity: input.quantity,
         evidence: input.evidence,
+        ...(input.orderPoolBinding
+          ? { orderPoolBinding: input.orderPoolBinding }
+          : {}),
         imported: false,
       }
       pool.acceptedQuantity += input.quantity
       pool.acceptedSequence += 1
       pool.lastAcceptedId = rumor.id
+      requireSession(input)
       await db.eventMarketOrganizerStockEntries.add(entry)
       await db.eventMarketOrganizerStockPools.put(pool)
+      requireSession(input)
       return { replayed: false, entry }
+    }
+  )
+}
+
+/** A multi-product order consumes all entrusted pools or none, before sealing. */
+export async function commitOrganizerStockOrder(input: {
+  db: ConduitDB
+  authenticatedPubkey: string
+  orderId: string
+  identityBinding: string
+  termsBinding: string
+  claimRef: string
+  evidence: string
+  entries: readonly { poolId: string; writerId: string; quantity: number }[]
+  shouldContinue?(): boolean
+  nowMs?: number
+}): Promise<{ replayed: boolean; entries: EventMarketOrganizerStockEntry[] }> {
+  input = {
+    ...input,
+    entries: input.entries.map(({ poolId, writerId, quantity }) => ({
+      poolId,
+      writerId,
+      quantity,
+    })),
+    nowMs: input.nowMs ?? Date.now(),
+  }
+  requireTime(input.nowMs!)
+  requireSession(input)
+  if (
+    !input.entries.length ||
+    input.entries.some(
+      (entry) =>
+        !/^[0-9a-f]{64}$/.test(entry.poolId) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          entry.writerId
+        ) ||
+        !Number.isInteger(entry.quantity) ||
+        entry.quantity < 1 ||
+        entry.quantity > 2_147_483_647
+    ) ||
+    new Set(input.entries.map((entry) => entry.poolId)).size !==
+      input.entries.length
+  )
+    throw new Error(
+      "An exact unique organizer pool is required for every order line"
+    )
+  const orderPoolBinding = JSON.stringify(
+    [...input.entries].sort((a, b) => a.poolId.localeCompare(b.poolId))
+  )
+  return input.db.transaction(
+    "rw",
+    [
+      input.db.eventMarketOrganizerStockPools,
+      input.db.eventMarketOrganizerStockEntries,
+    ],
+    async () => {
+      requireSession(input)
+      const priorEntries = await input.db.eventMarketOrganizerStockEntries
+        .where("accountPubkey")
+        .equals(input.authenticatedPubkey)
+        .filter((entry) => entry.orderId === input.orderId)
+        .toArray()
+      if (
+        priorEntries.some(
+          (entry) =>
+            !input.entries.some(
+              (candidate) => candidate.poolId === entry.poolId
+            ) ||
+            (entry.orderPoolBinding !== undefined &&
+              entry.orderPoolBinding !== orderPoolBinding)
+        )
+      )
+        throw new Error(
+          "Organizer order is bound to a different complete pool manifest"
+        )
+      if (priorEntries.length && priorEntries.length !== input.entries.length)
+        throw new Error(
+          "Partial legacy organizer order needs reconciliation before whole-order replay"
+        )
+      const priorTimes = priorEntries.map((entry) => {
+        const accepted = parseEventMarketStockAuthorityRumor(entry.rumor)
+        if (accepted.type !== "accepted")
+          throw new Error("Organizer order entry requires reconciliation")
+        return accepted.acceptedAtMs
+      })
+      if (new Set(priorTimes).size > 1)
+        throw new Error(
+          "Organizer order acceptance times do not form one atomic decision"
+        )
+      const results = [] as Awaited<
+        ReturnType<typeof commitOrganizerStockAcceptance>
+      >[]
+      for (const entry of input.entries)
+        results.push(
+          await commitOrganizerStockAcceptance({
+            ...input,
+            ...entry,
+            orderPoolBinding,
+          })
+        )
+      for (const result of results) {
+        if (result.entry.orderPoolBinding === undefined) {
+          result.entry.orderPoolBinding = orderPoolBinding
+          await input.db.eventMarketOrganizerStockEntries.put(result.entry)
+        }
+      }
+      requireSession(input)
+      return {
+        replayed: results.every((result) => result.replayed),
+        entries: results.map((result) => result.entry),
+      }
     }
   )
 }
@@ -414,11 +569,13 @@ export async function beginOrganizerStockClose(input: {
   authenticatedPubkey: string
   writerId: string
   poolId: string
+  shouldContinue?(): boolean
   nowMs?: number
 }): Promise<PrivateMessageRumor> {
   input = { ...input }
   const nowMs = input.nowMs ?? Date.now()
   requireTime(nowMs)
+  requireSession(input)
   return input.db.transaction(
     "rw",
     [
@@ -436,7 +593,10 @@ export async function beginOrganizerStockClose(input: {
       )
         throw new Error("Organizer stock writer unavailable")
       assertPool(pool)
-      if (pool.closingRumor) return pool.closingRumor
+      if (pool.closingRumor) {
+        requireSession(input)
+        return pool.closingRumor
+      }
       if (pool.state !== "active")
         throw new Error("Organizer stock pool cannot close")
       if (nowMs < pool.grantRumor.created_at * 1000)
@@ -474,7 +634,9 @@ export async function beginOrganizerStockClose(input: {
       })
       pool.state = "closing"
       pool.closingRumor = rumor
+      requireSession(input)
       await input.db.eventMarketOrganizerStockPools.put(pool)
+      requireSession(input)
       return rumor
     }
   )
@@ -558,6 +720,10 @@ export async function prepareOrganizerStockEnvelopes(input: {
         : entry?.wraps
   await check()
   if (retained) return retained
+  if (pool.readOnlyRecovery)
+    throw new Error(
+      "Recovered stock history cannot recreate missing delivery bytes"
+    )
   const recipientPubkey =
     payload.type === "grant" ? pool.organizerPubkey : pool.merchantPubkey
   const recipient = await wrapPrivateMessage(
@@ -579,6 +745,7 @@ export async function prepareOrganizerStockEnvelopes(input: {
       // No asynchronous external signer work belongs inside this transaction.
       if (
         !input.shouldContinue() ||
+        input.signer.pubkey !== input.authenticatedPubkey ||
         input.signer.revision !== revision ||
         input.signer.authMethod !== authMethod
       )

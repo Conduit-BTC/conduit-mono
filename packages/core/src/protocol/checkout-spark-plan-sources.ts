@@ -7,6 +7,7 @@ import { parseAddressableCoordinate } from "./event-market"
 import { isValidLud16Address } from "./lightning"
 import { projectProfileContent } from "./profile-cache"
 import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
+import { getCheckoutSparkEventMarketSourceReferences } from "./checkout-spark-event-market-sources"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -24,7 +25,8 @@ const VALIDATION_KEYS = [
 
 export interface CheckoutSparkPlanSourceReference {
   readonly eventId: string
-  readonly kind: 0 | 30402 | 30405 | 30406 | 31922 | 31923
+  readonly kind:
+    0 | 5 | 3841 | 30402 | 30405 | 30406 | 30409 | 30410 | 31922 | 31923 | 31924
   readonly pubkey: string
 }
 
@@ -67,6 +69,11 @@ export function snapshotCheckoutSparkPlanSourceEvents(
           source.kind !== 30_402 &&
           source.kind !== 30_405 &&
           source.kind !== 30_406 &&
+          source.kind !== 5 &&
+          source.kind !== 3_841 &&
+          source.kind !== 30_409 &&
+          source.kind !== 30_410 &&
+          source.kind !== 31_924 &&
           source.kind !== 31_922 &&
           source.kind !== 31_923) ||
         ids.has(source.id)
@@ -190,8 +197,24 @@ function referencesFor(
       })
     }
   }
+  if (plan.schemaVersion === 5) {
+    for (const reference of getCheckoutSparkEventMarketSourceReferences(
+      plan.eventMarket!,
+      plan.merchantPubkey
+    ))
+      add(reference)
+  }
   for (const recipient of plan.recipients) {
     if (recipient.kind === "conduit") continue
+    if (recipient.kind === "organizer" && plan.schemaVersion === 5) {
+      const source = recipient.destination.source
+      if (
+        source.type !== "signed_event_market" ||
+        source.eventId !== plan.eventMarket!.marketEventId
+      )
+        unavailable()
+      continue
+    }
     if (recipient.kind !== "merchant" && recipient.kind !== "supplier") {
       unavailable()
     }
@@ -295,8 +318,19 @@ export function validateCheckoutSparkPlanSources(
       // checked against the independent provider creation time and rate keyring.
       acceptedAtMs:
         frozen.commerceQuote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
+      ...(frozen.schemaVersion === 5
+        ? {
+            eventMarket: frozen.eventMarket,
+            eventSourceEvents: [...sources.values()],
+            // Event availability/expiry is anchored to plan creation, independently
+            // of the possibly earlier signed pricing snapshot's observation time.
+            acceptedAtMs: frozen.createdAt,
+          }
+        : {}),
       commerce: frozen.recipients.flatMap((recipient) => {
         if (recipient.kind === "conduit") return []
+        if (recipient.kind === "organizer" && frozen.schemaVersion === 5)
+          return []
         if (recipient.kind !== "merchant" && recipient.kind !== "supplier") {
           return unavailable()
         }
@@ -312,6 +346,23 @@ export function validateCheckoutSparkPlanSources(
 
     for (const recipient of frozen.recipients) {
       if (recipient.kind === "conduit") continue
+      if (recipient.kind === "organizer" && frozen.schemaVersion === 5) {
+        const binding = frozen.eventMarket!
+        const source = recipient.destination.source
+        const fee = binding.organizerFee
+        if (
+          source.type !== "signed_event_market" ||
+          fee.state !== "active" ||
+          source.marketCoordinate !== binding.marketCoordinate ||
+          source.eventId !== binding.marketEventId ||
+          source.eventCreatedAt !== fee.createdAt ||
+          recipient.recipientId !== binding.organizerPubkey ||
+          recipient.weightSats !== binding.organizerFeeSats ||
+          recipient.destination.value !== fee.lightningAddress
+        )
+          unavailable()
+        continue
+      }
       const source = recipient.destination.source
       if (source.type !== "signed_profile") unavailable()
       const event = sources.get(source.profileEventId)!

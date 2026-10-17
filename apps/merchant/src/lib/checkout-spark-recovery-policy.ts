@@ -1,6 +1,7 @@
 import {
   checkoutSparkConduitFeeRecipient,
   assertCheckoutSparkTreasuryAddressAllowed,
+  isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkSettledPlan,
 } from "@conduit/core"
 import { isLocalCheckoutSparkRecoveryRehearsal } from "./checkout-spark-settled-recovery"
@@ -31,7 +32,15 @@ export function assertMerchantCheckoutSparkDispatchPlan(
   plan: CheckoutSparkSettledPlan,
   allowLocalCanary = canUseMerchantCheckoutSparkRecipientCompatibility()
 ): void {
-  if (plan.schemaVersion === 4) {
+  if (
+    plan.schemaVersion === 5 &&
+    plan.eventMarket?.mode === "organizer_handoff"
+  ) {
+    throw new Error(
+      "This checkout delegates payment continuation to its organizer."
+    )
+  }
+  if (isCheckoutSparkNativeTreasuryPlan(plan)) {
     if (!plan.nativeTreasury)
       throw new Error("Checkout Spark native treasury is unavailable.")
     assertCheckoutSparkTreasuryAddressAllowed(

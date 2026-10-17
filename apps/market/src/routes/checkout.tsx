@@ -1,4 +1,5 @@
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
+import { CheckoutEventOrganizerFeeDisclosure } from "../components/CheckoutEventOrganizerFeeDisclosure"
 import { CheckoutSparkNativeTreasuryNotice } from "../components/CheckoutSparkNativeTreasuryNotice"
 import {
   AlertCircle,
@@ -215,6 +216,7 @@ import {
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
 import { getCheckoutCoordinationPriceEstimate } from "../lib/checkout-coordination-pricing"
+import { getCheckoutEventFeePreview } from "../lib/checkout-event-fee-preview"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   findCheckoutOrderRecovery,
@@ -225,6 +227,7 @@ import {
 import {
   publishBuyerOrderMessage,
   shouldPreserveCheckoutOrderAttempt,
+  BuyerOrderPublishError,
   type BuyerOrderSigningIdentity,
 } from "../lib/order-publish"
 import {
@@ -257,6 +260,16 @@ import type { CheckoutPaymentTarget } from "../lib/payment-rails"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import { buildCheckoutSparkQuoteAuthority } from "../lib/checkout-spark-quote-authority"
 import { buildCheckoutSparkCommerceEvidence } from "../lib/checkout-spark-commerce-evidence"
+import { createEventMarketFreePurchase } from "@conduit/core/protocol/event-market-free-purchase"
+import {
+  listEventMarketFreePurchaseDeliveries,
+  createFreePurchaseScope,
+  discardUnsubmittedFreePurchaseDelivery,
+  markFreePurchaseMerchantDelivered,
+  prepareEventMarketFreePurchaseDelivery,
+  retryStoredEventMarketFreePurchaseDelivery,
+  type EventMarketFreePurchaseDelivery,
+} from "../lib/event-market-free-purchase-delivery"
 import { fetchCheckoutSparkAuthorizedPricing } from "../lib/checkout-spark-authorized-pricing"
 import { getCheckoutSparkRequiredFiatCurrencies } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
@@ -956,11 +969,27 @@ function OrderSummary({
                 currency: "SATS",
                 priceSats: shippingCost.totalSats,
               }).primary
+  const eventFeePreview = getCheckoutEventFeePreview(
+    items,
+    pricing.status === "ok" ? pricing.totalSats : 0,
+    Date.now()
+  )
+  const organizerFeeIdentity = useEventActorIdentity(
+    eventFeePreview.status === "ready" &&
+      eventFeePreview.terms.state === "active"
+      ? eventFeePreview.terms.organizerPubkey
+      : null
+  )
   const routerPrice =
-    routerFundingSeparate && pricing.status === "ok"
+    routerFundingSeparate &&
+    pricing.status === "ok" &&
+    eventFeePreview.status !== "unavailable"
       ? getCheckoutCoordinationPriceEstimate({
           itemSubtotalSats: pricing.itemSubtotalSats,
           shippingSubtotalSats: pricing.shippingCost.totalSats,
+          ...(eventFeePreview.status === "ready"
+            ? { organizerFeeSats: eventFeePreview.organizerFeeSats }
+            : {}),
         })
       : null
 
@@ -1086,6 +1115,13 @@ function OrderSummary({
                     }).primary
               }
             />
+            {eventFeePreview.status === "ready" &&
+              eventFeePreview.terms.state === "active" && (
+                <CheckoutEventOrganizerFeeDisclosure
+                  terms={eventFeePreview.terms}
+                  organizerIdentity={organizerFeeIdentity}
+                />
+              )}
             {nativeTreasuryConfigured ? (
               <div className="mt-3">
                 <CheckoutSparkNativeTreasuryNotice
@@ -1589,6 +1625,28 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
+  const freePurchaseDeliveriesQuery = useQuery({
+    queryKey: [
+      "event-free-purchase-deliveries",
+      authGeneration,
+      selectedPurchase?.id,
+    ],
+    queryFn: async () => {
+      const scope = await createFreePurchaseScope(selectedPurchase!.id)
+      return listEventMarketFreePurchaseDeliveries().filter(
+        (row) =>
+          !row.acknowledged &&
+          row.purchaseScope === scope &&
+          row.merchantPubkey === selectedMerchant &&
+          (signedBuyerPubkey
+            ? row.senderPubkey === signedBuyerPubkey
+            : isGuestCheckout && row.buyerIdentityKind === "guest_ephemeral")
+      )
+    },
+    enabled: cart.hydrated && Boolean(selectedPurchase) && !authPending,
+    retry: false,
+  })
+  const pendingFreePurchase = freePurchaseDeliveriesQuery.data?.[0] ?? null
   // Async work must keep its originating buyer frame, not adopt a newer session.
   const getCheckoutReferralScope = useCallback(
     () => checkoutReferralSessionFence.getScope(accountPubkey, authGeneration),
@@ -1904,8 +1962,18 @@ function CheckoutPage() {
     () => buildCheckoutPricingIntent(checkoutItems, btcUsdRate, Date.now()),
     [btcUsdRate, checkoutItems]
   )
+  const eventFeePreview = getCheckoutEventFeePreview(
+    checkoutItems,
+    pricingPreview.status === "ok" ? pricingPreview.totalSats : 0,
+    Date.now()
+  )
+  const eventPaymentRequired =
+    eventFeePreview.status === "ready" && eventFeePreview.organizerFeeSats > 0
   const verifiedZeroCostPickup =
-    pricingPreview.status === "ok" && !pricingPreview.paymentRequired
+    pricingPreview.status === "ok" &&
+    !pricingPreview.paymentRequired &&
+    !eventPaymentRequired &&
+    eventFeePreview.status !== "unavailable"
   const routerAdmission = assessCheckoutSparkCheckoutAdmission({
     enabled: isQuantumRouterEnabled(),
     freeOrderVerified: verifiedZeroCostPickup,
@@ -1915,7 +1983,9 @@ function CheckoutPage() {
   const routerBranchTargetCheckout = routerAdmission.mode === "router"
   const routerPreparationUnavailableMessage =
     routerAdmission.mode === "router" && !routerAdmission.ready
-      ? "This checkout’s fulfillment is not supported by the router yet."
+      ? eventFeePreview.status === "unavailable"
+        ? "The signed event fee terms are unavailable. Refresh the event before paying."
+        : "This checkout’s fulfillment is not supported by the router yet."
       : null
   const nativeTreasuryConfigured = (() => {
     if (!routerBranchTargetCheckout) return false
@@ -1932,9 +2002,11 @@ function CheckoutPage() {
     }
   })()
   const paymentRequired =
-    pricingPreview.status !== "ok" || pricingPreview.paymentRequired
-  const paymentPathEnabled =
-    pricingPreview.status === "ok" && pricingPreview.paymentRequired
+    pricingPreview.status !== "ok" ||
+    pricingPreview.paymentRequired ||
+    eventPaymentRequired ||
+    eventFeePreview.status === "unavailable"
+  const paymentPathEnabled = pricingPreview.status === "ok" && paymentRequired
   const total = useMemo(() => {
     if (pricingPreview.status === "ok") return pricingPreview.totalSats
     const itemSubtotal = checkoutItems.reduce((sum, item) => {
@@ -2993,7 +3065,7 @@ function CheckoutPage() {
       : null
     if (!isGuestCheckout && !signedIdentity) return
     const guestContact = buildGuestContact()
-    if (isGuestCheckout && !guestContact) return
+    if (isGuestCheckout && !guestContact && !contactFreeActive) return
     // Freeze the submitted private details before the authoritative quote reads.
     // Entry rechecks address consistency and the exact signed option's coverage.
     const shippingAddress = buildShippingAddress()
@@ -3011,7 +3083,10 @@ function CheckoutPage() {
     setStep(isGuestCheckout ? "sending" : "signing")
     setError(null)
     const checkoutId = crypto.randomUUID()
-    const orderId = crypto.randomUUID()
+    const orderId =
+      contactFreeActive && currentEventReceipt?.saved
+        ? currentEventReceipt.receipt.orderId
+        : crypto.randomUUID()
     let guestIdentity: GuestOrderSigningIdentity | null = null
     const canContinueSettledPreparation = () => {
       if (!shouldContinueBuyerSession() || !isQuantumRouterEnabled()) {
@@ -3130,6 +3205,10 @@ function CheckoutPage() {
             shouldContinue: canContinueSettledPreparation,
             note: submittedNote,
             guestContact,
+            contactFreePickup: buildContactFreePickup(
+              authorization.items,
+              Date.now()
+            ),
             shippingAddress,
             relayAuthMethod: guestIdentity
               ? undefined
@@ -3206,6 +3285,73 @@ function CheckoutPage() {
     }
   }
 
+  async function continueFreePurchaseDelivery(
+    saved: EventMarketFreePurchaseDelivery,
+    capturedClaim?: CartPurchaseClaim | null
+  ): Promise<void> {
+    if (!shouldContinueBuyerSession())
+      throw new Error("The buyer session changed.")
+    let row = saved
+    if (!row.merchantDelivered) {
+      const lifecycle = await getOrderLifecycle(row.orderId)
+      if (lifecycle?.orderDeliveryStatus !== "sent") {
+        throw new Error(
+          "The original Merchant order still needs delivery. Open the existing order in Orders; do not submit a new one."
+        )
+      }
+      row = await markFreePurchaseMerchantDelivered({
+        handoffId: row.handoffId,
+        shouldContinue: shouldContinueBuyerSession,
+      })
+    }
+    await retryStoredEventMarketFreePurchaseDelivery({
+      handoffId: row.handoffId,
+      shouldContinue: shouldContinueBuyerSession,
+    })
+    if (!shouldContinueBuyerSession())
+      throw new Error("The buyer session changed after relay acceptance.")
+    const claim =
+      capturedClaim ??
+      (selectedPurchase
+        ? await cart.capturePurchase(selectedPurchase.id, rawCheckoutItems)
+        : null)
+    // Do not consume newly-added cart batches while finishing an older order.
+    if (
+      claim &&
+      (await createCheckoutSparkPurchaseClaimDigest(claim)) ===
+        row.purchaseClaimDigest
+    )
+      await cart.consumePurchase(claim)
+    await resolveCheckoutOrderAttempt(row.orderId)
+    clearCheckoutShippingSession()
+    void freePurchaseDeliveriesQuery.refetch()
+    void navigate({
+      to: "/orders",
+      search: { order: row.orderId },
+      replace: true,
+    })
+  }
+
+  async function retryFreePurchaseDelivery(): Promise<void> {
+    if (!pendingFreePurchase || paymentInFlightRef.current) return
+    paymentInFlightRef.current = true
+    setError(null)
+    setStep("sending")
+    try {
+      await continueFreePurchaseDelivery(pendingFreePurchase)
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Saved pickup delivery needs retry."
+      )
+      setStep("payment")
+    } finally {
+      paymentInFlightRef.current = false
+      void freePurchaseDeliveriesQuery.refetch()
+    }
+  }
+
   async function placeOrder(): Promise<void> {
     if (routerBranchTargetCheckout) {
       setError(
@@ -3254,6 +3400,7 @@ function CheckoutPage() {
     let orderDeliveryStartedAt: number | null = null
     const checkoutRevalidationStartedAt = performance.now()
     let purchaseClaim: CartPurchaseClaim | null = null
+    let freePurchaseDelivery: EventMarketFreePurchaseDelivery | null = null
 
     setError(null)
     setStep(isGuestCheckout ? "sending" : "signing")
@@ -3281,6 +3428,33 @@ function CheckoutPage() {
         selectedPurchase.id,
         rawCheckoutItems
       )
+      const freeOrganizerPurchase =
+        checkoutPricing.totalSats === 0 &&
+        authoritativeCheckoutItems.some(
+          (item) =>
+            item.fulfillment?.type === "event_market_pickup" &&
+            item.fulfillment.mode === "organizer_handoff"
+        )
+      const purchaseClaimDigest = freeOrganizerPurchase
+        ? await createCheckoutSparkPurchaseClaimDigest(purchaseClaim)
+        : null
+      const previousFreePurchase = freeOrganizerPurchase
+        ? listEventMarketFreePurchaseDeliveries().find(
+            (row) =>
+              row.purchaseClaimDigest === purchaseClaimDigest &&
+              row.merchantPubkey === selectedMerchant &&
+              (signedBuyerPubkey
+                ? row.senderPubkey === signedBuyerPubkey
+                : row.buyerIdentityKind === "guest_ephemeral")
+          )
+        : undefined
+      if (previousFreePurchase) {
+        freePurchaseDelivery = previousFreePurchase
+        publishedOrderId = previousFreePurchase.orderId
+        await continueFreePurchaseDelivery(previousFreePurchase, purchaseClaim)
+        paymentInFlightRef.current = false
+        return
+      }
       checkoutRevalidationCompleted = true
       recordCheckoutStepResult({
         checkoutMode: "order_first",
@@ -3349,6 +3523,40 @@ function CheckoutPage() {
         createdAt: orderCreatedAt,
       }
       const validatedPayload = orderSchema.parse(payload)
+      if (
+        orderTotalSats === 0 &&
+        validatedPayload.items.some(
+          (item) =>
+            item.fulfillment?.type === "event_market_pickup" &&
+            item.fulfillment.mode === "organizer_handoff"
+        )
+      ) {
+        const authority = buildCheckoutSparkQuoteAuthority({
+          authorization: checkoutAuthorization,
+          rateInput: freshPricingRate,
+          nowMs: orderCreatedAt,
+        })
+        if (!authority.eventMarket || !authority.pickupSourceEvents)
+          throw new Error("Current organizer pickup evidence is unavailable.")
+        const freePurchase = createEventMarketFreePurchase({
+          order: validatedPayload,
+          commerceQuote: buildCheckoutSparkCommerceEvidence(authority),
+          eventMarket: authority.eventMarket,
+          sourceEvents: authority.pickupSourceEvents,
+        })
+        freePurchaseDelivery = await prepareEventMarketFreePurchaseDelivery({
+          payload: freePurchase,
+          identity: guestIdentity ?? {
+            kind: "signed_in",
+            pubkey: buyerIdentity.pubkey,
+            signer: buyerIdentity.signer,
+          },
+          purchaseId: selectedPurchase.id,
+          purchaseClaimDigest: purchaseClaimDigest!,
+          shouldContinue: shouldContinueBuyerSession,
+        })
+        void freePurchaseDeliveriesQuery.refetch()
+      }
 
       const rumor = {
         id: "",
@@ -3434,6 +3642,19 @@ function CheckoutPage() {
       )
       startOrderPostAcceptanceWork = delivery.startPostAcceptanceWork ?? null
       orderDelivered = true
+      // Merchant delivery ends the contact draft's lifetime, even if the
+      // separate organizer packet still needs exact-wrap delivery repair.
+      clearCheckoutShippingSession()
+      if (freePurchaseDelivery) {
+        freePurchaseDelivery = await markFreePurchaseMerchantDelivered({
+          handoffId: freePurchaseDelivery.handoffId,
+          shouldContinue: shouldContinueBuyerSession,
+        })
+        await retryStoredEventMarketFreePurchaseDelivery({
+          handoffId: freePurchaseDelivery.handoffId,
+          shouldContinue: shouldContinueBuyerSession,
+        })
+      }
       recordCheckoutReferralOrderSubmitted(
         selectedMerchant,
         selectedPurchase?.id,
@@ -3447,7 +3668,6 @@ function CheckoutPage() {
         stepName: "order_delivery",
         amountSats: orderTotalSats,
       })
-      clearCheckoutShippingSession()
       if (!shouldContinueBuyerSession()) {
         throw new Error(
           "Order delivery stopped after relay acceptance because the buyer session changed."
@@ -3491,6 +3711,37 @@ function CheckoutPage() {
       const acceptedOrder =
         orderDelivered || stagedOrder?.orderDeliveryStatus === "sent"
       const buyerSessionCurrent = shouldContinueBuyerSession()
+      if (
+        freePurchaseDelivery &&
+        !stagedOrderReadFailed &&
+        !stagedOrder &&
+        !acceptedOrder &&
+        e instanceof BuyerOrderPublishError &&
+        e.phase === "not_staged"
+      ) {
+        try {
+          await discardUnsubmittedFreePurchaseDelivery({
+            handoffId: freePurchaseDelivery.handoffId,
+            originalOrderFailure: e,
+          })
+          freePurchaseDelivery = null
+        } catch {
+          // Retain the exact attempt when durable cleanup cannot be confirmed.
+        }
+      }
+      if (freePurchaseDelivery) {
+        // Merchant acceptance is not organizer delivery. Retain the original
+        // order and exact ciphertext rather than silently consuming the cart.
+        setError(
+          e instanceof Error
+            ? e.message
+            : "Continue the saved pickup request; do not send a new order."
+        )
+        setStep("payment")
+        paymentInFlightRef.current = false
+        void freePurchaseDeliveriesQuery.refetch()
+        return
+      }
       if (acceptedOrder && publishedOrderId && !buyerSessionCurrent) {
         setError(
           "A merchant relay accepted this order, but checkout stopped because the buyer session changed. Switch back to the original session and open Orders; do not submit another order."
@@ -5567,42 +5818,190 @@ function CheckoutPage() {
                   </div>
                 )}
 
-                {/* Action buttons */}
-                <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-4 sm:border-0 sm:pt-0">
-                  {routerBranchTargetCheckout && (
-                    <div className="w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
-                      <Button
-                        type="button"
-                        className="h-11 w-full px-5 text-sm sm:w-auto"
-                        disabled={
-                          checkoutRecoveryIsChecking ||
-                          checkoutRecoveryBlockingMessage !== null ||
-                          checkoutEvidenceIsChecking ||
-                          hasUnavailableCheckoutItems ||
-                          fulfillmentBlockingMessage !== null ||
-                          routerPreparationUnavailableMessage !== null ||
-                          authPending ||
-                          !!signerBlockedMessage ||
-                          !!routerPreparedOrderRef.current
-                        }
-                        onClick={() => void prepareSettledRouterOrder()}
-                      >
-                        Continue to payment
+                {pendingFreePurchase && (
+                  <div className="mt-5 grid gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                    <p className="text-sm text-[var(--text-secondary)]">
+                      This free order has a saved pickup request. Continue it
+                      without creating another order. Relay acceptance does not
+                      reserve stock or confirm pickup.
+                    </p>
+                    <div className="flex flex-wrap gap-3">
+                      <Button onClick={() => void retryFreePurchaseDelivery()}>
+                        Continue saved pickup request
                       </Button>
-                      {routerPreparationUnavailableMessage && (
-                        <p
-                          role="status"
-                          className="mt-2 text-sm text-[var(--text-secondary)]"
-                        >
-                          {routerPreparationUnavailableMessage}
-                        </p>
-                      )}
+                      <Link
+                        to="/orders"
+                        search={{ order: pendingFreePurchase.orderId }}
+                        className="self-center text-sm text-[var(--link-text)] underline"
+                      >
+                        Open existing order
+                      </Link>
                     </div>
-                  )}
-                  {!routerBranchTargetCheckout &&
-                    !isGuestCheckout &&
-                    directCheckoutEligible && (
-                      <HoldToReleaseButton
+                  </div>
+                )}
+                {/* Action buttons */}
+                {!pendingFreePurchase && (
+                  <div className="mt-6 flex flex-wrap gap-3 border-t border-[var(--border)] pt-4 sm:border-0 sm:pt-0">
+                    {routerBranchTargetCheckout && (
+                      <div className="w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-3">
+                        <Button
+                          type="button"
+                          className="h-11 w-full px-5 text-sm sm:w-auto"
+                          disabled={
+                            checkoutRecoveryIsChecking ||
+                            checkoutRecoveryBlockingMessage !== null ||
+                            checkoutEvidenceIsChecking ||
+                            hasUnavailableCheckoutItems ||
+                            fulfillmentBlockingMessage !== null ||
+                            routerPreparationUnavailableMessage !== null ||
+                            authPending ||
+                            !!signerBlockedMessage ||
+                            !!routerPreparedOrderRef.current
+                          }
+                          onClick={() => void prepareSettledRouterOrder()}
+                        >
+                          Continue to payment
+                        </Button>
+                        {routerPreparationUnavailableMessage && (
+                          <p
+                            role="status"
+                            className="mt-2 text-sm text-[var(--text-secondary)]"
+                          >
+                            {routerPreparationUnavailableMessage}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {!routerBranchTargetCheckout &&
+                      !isGuestCheckout &&
+                      directCheckoutEligible && (
+                        <HoldToReleaseButton
+                          className="h-11 w-full px-5 text-sm sm:w-auto"
+                          disabled={
+                            checkoutRecoveryIsChecking ||
+                            checkoutRecoveryBlockingMessage !== null ||
+                            checkoutEvidenceIsChecking ||
+                            hasUnavailableCheckoutItems ||
+                            fulfillmentBlockingMessage !== null ||
+                            selectedPaymentTargetIsStale ||
+                            authPending ||
+                            !!signerBlockedMessage
+                          }
+                          canComplete={() =>
+                            directCheckoutEligible &&
+                            !checkoutAvailability.isChecking &&
+                            !checkoutRecoveryIsChecking &&
+                            !checkoutRecoveryBlockingMessage &&
+                            !hasUnavailableCheckoutItems &&
+                            !paymentInFlightRef.current
+                          }
+                          onHoldComplete={() => {
+                            void payNow()
+                          }}
+                          chargedLabel={
+                            selectedPaymentTarget.type === "manual"
+                              ? "Release to show invoice"
+                              : "Release to zap out"
+                          }
+                        >
+                          <LightningIcon className="h-4 w-4" />
+                          {isGuestCheckout
+                            ? "Hold to send order and show invoice"
+                            : selectedPaymentTargetIsStale
+                              ? "Choose how to pay"
+                              : selectedPaymentTarget.type === "manual"
+                                ? "Hold to send order and show invoice"
+                                : canAttemptLightningPayment
+                                  ? "Hold to zap out"
+                                  : "Hold to send order and review payment"}
+                        </HoldToReleaseButton>
+                      )}
+                    {!routerBranchTargetCheckout &&
+                      isGuestCheckout &&
+                      !fastEligible &&
+                      manualInvoiceEligible && (
+                        <Button
+                          className="h-11 w-full px-5 text-sm sm:w-auto"
+                          disabled={
+                            checkoutRecoveryIsChecking ||
+                            checkoutRecoveryBlockingMessage !== null ||
+                            checkoutAvailability.isChecking ||
+                            hasUnavailableCheckoutItems
+                          }
+                          onClick={() => void payNow()}
+                        >
+                          <OrderIcon className="h-4 w-4" />
+                          Send order
+                        </Button>
+                      )}
+                    {!routerBranchTargetCheckout &&
+                      pricingOnlyFastCheckoutBlocker &&
+                      !directCheckoutEligible && (
+                        <Button
+                          className="h-11 w-full px-5 text-sm sm:w-auto"
+                          disabled={pricingRefreshState === "refreshing"}
+                          onClick={() => void refreshCheckoutPricing(true)}
+                        >
+                          {pricingRefreshState === "refreshing" ? (
+                            <>
+                              <SpinnerIcon className="h-4 w-4 animate-spin" />
+                              Refreshing total...
+                            </>
+                          ) : (
+                            <>
+                              <LightningIcon className="h-4 w-4" />
+                              Refresh total
+                            </>
+                          )}
+                        </Button>
+                      )}
+
+                    {!routerBranchTargetCheckout &&
+                      isGuestCheckout &&
+                      !fastEligible &&
+                      (verifiedZeroCostPickup ? (
+                        <Button
+                          className="h-11 w-full px-5 text-sm sm:w-auto"
+                          disabled={
+                            checkoutRecoveryIsChecking ||
+                            checkoutRecoveryBlockingMessage !== null ||
+                            checkoutEvidenceIsChecking ||
+                            hasUnavailableCheckoutItems ||
+                            fulfillmentBlockingMessage !== null
+                          }
+                          onClick={placeOrder}
+                        >
+                          <OrderIcon className="h-4 w-4" />
+                          {checkoutEvidenceCheckingLabel
+                            ? checkoutEvidenceCheckingLabel
+                            : "Send order"}
+                        </Button>
+                      ) : !manualInvoiceEligible ? (
+                        <Button
+                          variant={
+                            pricingOnlyFastCheckoutBlocker
+                              ? "outline"
+                              : "primary"
+                          }
+                          className="h-11 w-full px-5 text-sm sm:w-auto"
+                          disabled={hasUnpricedCheckoutItems}
+                          onClick={() => setConnectOpen(true)}
+                        >
+                          <KeyRound className="h-4 w-4" />
+                          {hasUnpricedCheckoutItems
+                            ? "Price unavailable"
+                            : "Connect signer to send order"}
+                        </Button>
+                      ) : null)}
+
+                    {!routerBranchTargetCheckout && !isGuestCheckout && (
+                      <Button
+                        variant={
+                          directCheckoutEligible ||
+                          pricingOnlyFastCheckoutBlocker
+                            ? "outline"
+                            : "primary"
+                        }
                         className="h-11 w-full px-5 text-sm sm:w-auto"
                         disabled={
                           checkoutRecoveryIsChecking ||
@@ -5610,153 +6009,30 @@ function CheckoutPage() {
                           checkoutEvidenceIsChecking ||
                           hasUnavailableCheckoutItems ||
                           fulfillmentBlockingMessage !== null ||
-                          selectedPaymentTargetIsStale ||
+                          hasUnpricedCheckoutItems ||
                           authPending ||
                           !!signerBlockedMessage
-                        }
-                        canComplete={() =>
-                          directCheckoutEligible &&
-                          !checkoutAvailability.isChecking &&
-                          !checkoutRecoveryIsChecking &&
-                          !checkoutRecoveryBlockingMessage &&
-                          !hasUnavailableCheckoutItems &&
-                          !paymentInFlightRef.current
-                        }
-                        onHoldComplete={() => {
-                          void payNow()
-                        }}
-                        chargedLabel={
-                          selectedPaymentTarget.type === "manual"
-                            ? "Release to show invoice"
-                            : "Release to zap out"
-                        }
-                      >
-                        <LightningIcon className="h-4 w-4" />
-                        {isGuestCheckout
-                          ? "Hold to send order and show invoice"
-                          : selectedPaymentTargetIsStale
-                            ? "Choose how to pay"
-                            : selectedPaymentTarget.type === "manual"
-                              ? "Hold to send order and show invoice"
-                              : canAttemptLightningPayment
-                                ? "Hold to zap out"
-                                : "Hold to send order and review payment"}
-                      </HoldToReleaseButton>
-                    )}
-                  {!routerBranchTargetCheckout &&
-                    isGuestCheckout &&
-                    !fastEligible &&
-                    manualInvoiceEligible && (
-                      <Button
-                        className="h-11 w-full px-5 text-sm sm:w-auto"
-                        disabled={
-                          checkoutRecoveryIsChecking ||
-                          checkoutRecoveryBlockingMessage !== null ||
-                          checkoutAvailability.isChecking ||
-                          hasUnavailableCheckoutItems
-                        }
-                        onClick={() => void payNow()}
-                      >
-                        <OrderIcon className="h-4 w-4" />
-                        Send order
-                      </Button>
-                    )}
-                  {!routerBranchTargetCheckout &&
-                    pricingOnlyFastCheckoutBlocker &&
-                    !directCheckoutEligible && (
-                      <Button
-                        className="h-11 w-full px-5 text-sm sm:w-auto"
-                        disabled={pricingRefreshState === "refreshing"}
-                        onClick={() => void refreshCheckoutPricing(true)}
-                      >
-                        {pricingRefreshState === "refreshing" ? (
-                          <>
-                            <SpinnerIcon className="h-4 w-4 animate-spin" />
-                            Refreshing total...
-                          </>
-                        ) : (
-                          <>
-                            <LightningIcon className="h-4 w-4" />
-                            Refresh total
-                          </>
-                        )}
-                      </Button>
-                    )}
-
-                  {!routerBranchTargetCheckout &&
-                    isGuestCheckout &&
-                    !fastEligible &&
-                    (verifiedZeroCostPickup ? (
-                      <Button
-                        className="h-11 w-full px-5 text-sm sm:w-auto"
-                        disabled={
-                          checkoutRecoveryIsChecking ||
-                          checkoutRecoveryBlockingMessage !== null ||
-                          checkoutEvidenceIsChecking ||
-                          hasUnavailableCheckoutItems ||
-                          fulfillmentBlockingMessage !== null
                         }
                         onClick={placeOrder}
                       >
                         <OrderIcon className="h-4 w-4" />
                         {checkoutEvidenceCheckingLabel
                           ? checkoutEvidenceCheckingLabel
-                          : "Send order"}
+                          : hasUnavailableCheckoutItems
+                            ? "Update cart quantities"
+                            : hasUnpricedCheckoutItems
+                              ? "Price unavailable"
+                              : "Send order"}
                       </Button>
-                    ) : !manualInvoiceEligible ? (
-                      <Button
-                        variant={
-                          pricingOnlyFastCheckoutBlocker ? "outline" : "primary"
-                        }
-                        className="h-11 w-full px-5 text-sm sm:w-auto"
-                        disabled={hasUnpricedCheckoutItems}
-                        onClick={() => setConnectOpen(true)}
-                      >
-                        <KeyRound className="h-4 w-4" />
-                        {hasUnpricedCheckoutItems
-                          ? "Price unavailable"
-                          : "Connect signer to send order"}
-                      </Button>
-                    ) : null)}
-
-                  {!routerBranchTargetCheckout && !isGuestCheckout && (
-                    <Button
-                      variant={
-                        directCheckoutEligible || pricingOnlyFastCheckoutBlocker
-                          ? "outline"
-                          : "primary"
-                      }
-                      className="h-11 w-full px-5 text-sm sm:w-auto"
-                      disabled={
-                        checkoutRecoveryIsChecking ||
-                        checkoutRecoveryBlockingMessage !== null ||
-                        checkoutEvidenceIsChecking ||
-                        hasUnavailableCheckoutItems ||
-                        fulfillmentBlockingMessage !== null ||
-                        hasUnpricedCheckoutItems ||
-                        authPending ||
-                        !!signerBlockedMessage
-                      }
-                      onClick={placeOrder}
-                    >
-                      <OrderIcon className="h-4 w-4" />
-                      {checkoutEvidenceCheckingLabel
-                        ? checkoutEvidenceCheckingLabel
-                        : hasUnavailableCheckoutItems
-                          ? "Update cart quantities"
-                          : hasUnpricedCheckoutItems
-                            ? "Price unavailable"
-                            : "Send order"}
-                    </Button>
-                  )}
-                  {pickupHandoff?.mode === "organizer_handoff" && (
-                    <p className="w-full text-pretty text-xs leading-4 text-[var(--text-muted)]">
-                      When your order is ready, the merchant privately shares
-                      its items, quantities, and pickup code with the event
-                      organizer.
-                    </p>
-                  )}
-                </div>
+                    )}
+                    {pickupHandoff?.mode === "organizer_handoff" && (
+                      <p className="w-full text-pretty text-xs leading-4 text-[var(--text-muted)]">
+                        Keep your private pickup receipt and code. Show the code
+                        to the event organizer when collecting your items.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </>
           }

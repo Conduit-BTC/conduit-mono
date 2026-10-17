@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { createHash } from "node:crypto"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import { ConduitDB, type OrderLifecycle } from "@conduit/core/db"
 import {
@@ -8,14 +9,17 @@ import {
   createCheckoutSparkRetiredSettlementSummary,
   createCheckoutSparkSettledReconciliation,
   deriveCheckoutSparkSettledTransferId,
-  freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledPlan as freezeOrdinaryPlan,
+  restoreCheckoutSparkSettledPlan,
   prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
   recordCheckoutSparkSettledLegStatus,
   validateCheckoutSparkRetiredSettlementRecord,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
+  type FreezeCheckoutSparkSettledPlanInput,
 } from "@conduit/core/protocol"
+import { checkoutSparkCommerceQuoteDigestValue } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -30,6 +34,85 @@ const BUYER = "a".repeat(64)
 const MERCHANT = "b".repeat(64)
 const ORGANIZER = "c".repeat(64)
 const RECEIVER = `02${"d".repeat(64)}`
+
+/** Historical v3 organizer shares remain readable, but new writers reject them. */
+function freezeCheckoutSparkSettledPlan(
+  input: FreezeCheckoutSparkSettledPlanInput
+): CheckoutSparkSettledPlan {
+  const base = freezeOrdinaryPlan({
+    ...input,
+    recipients: input.recipients.map((recipient) =>
+      recipient.kind === "organizer"
+        ? { ...recipient, kind: "supplier" }
+        : recipient
+    ),
+  })
+  const digest = (value: unknown) =>
+    createHash("sha256").update(JSON.stringify(value)).digest("hex")
+  const sourceValue = (
+    source: CheckoutSparkSettledPlan["recipients"][number]["destination"]["source"]
+  ) => {
+    if (source.type === "signed_profile")
+      return [source.type, source.profileEventId, source.profileEventCreatedAt]
+    if (source.type !== "conduit_allowlist")
+      throw new Error("Not a historical source.")
+    return [source.type, source.policy]
+  }
+  const recipients = base.recipients.map((recipient, position) => {
+    const kind = input.recipients[position]!.kind
+    return {
+      ...recipient,
+      kind,
+      legId: digest([
+        "conduit:checkout-spark-settled-leg:v3",
+        base.checkoutId,
+        base.orderId,
+        position,
+        kind,
+        recipient.recipientId,
+        recipient.destination.type,
+        recipient.destination.value,
+        sourceValue(recipient.destination.source),
+        recipient.weightSats,
+      ]),
+    }
+  })
+  return restoreCheckoutSparkSettledPlan({
+    ...base,
+    recipients,
+    planDigest: digest([
+      "conduit:checkout-spark-settled-plan:v3",
+      3,
+      base.checkoutId,
+      base.orderId,
+      base.merchantPubkey,
+      base.walletId,
+      base.network,
+      base.createdAt,
+      base.takeoverAt,
+      checkoutSparkCommerceQuoteDigestValue(base.commerceQuote),
+      [
+        base.funding.requestId,
+        base.funding.paymentRequest,
+        base.funding.paymentHash,
+        base.funding.receiverIdentityPublicKey,
+        base.funding.grossFundingSats,
+        base.funding.createdAt,
+        base.funding.expiresAt,
+      ],
+      recipients.map((recipient) => [
+        recipient.position,
+        recipient.legId,
+        recipient.kind,
+        recipient.recipientId,
+        recipient.destination.type,
+        recipient.destination.value,
+        sourceValue(recipient.destination.source),
+        recipient.weightSats,
+      ]),
+    ]),
+  })
+}
 
 function invoice(amountSats: number, hashByte: number): string {
   return makeSignedBolt11Fixture({

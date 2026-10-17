@@ -366,14 +366,16 @@ function normalizeCommerceCoordinate(
 
 function normalizeCommerceQuote(
   input: CheckoutSparkCommerceQuote,
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: { allowZeroTotal?: boolean } = {}
 ): CheckoutSparkCommerceQuote {
   if (input.pricingAuthority !== undefined && input.pricing === undefined) {
     throw new Error("Checkout Spark pricing authority requires its exact rate.")
   }
   const commerceTotalSats = normalizeSats(
     input.commerceTotalSats,
-    "Commerce quote total"
+    "Commerce quote total",
+    { allowZero: options.allowZeroTotal }
   )
   if (!Array.isArray(input.lines) || input.lines.length === 0) {
     throw new Error("Checkout Spark commerce quote needs product lines.")
@@ -563,11 +565,13 @@ function normalizeCommerceQuote(
 /** Validate and copy quote evidence before a checkout wallet is opened. */
 export function freezeCheckoutSparkCommerceQuote(
   input: CheckoutSparkCommerceQuote,
-  merchantPubkey: string
+  merchantPubkey: string,
+  options: { allowZeroTotal?: boolean } = {}
 ): CheckoutSparkCommerceQuote {
   return normalizeCommerceQuote(
     input,
-    normalizeHex64(merchantPubkey, "Commerce merchant")
+    normalizeHex64(merchantPubkey, "Commerce merchant"),
+    options
   )
 }
 

@@ -1,5 +1,8 @@
 import { parseCachedDirectMessage } from "./cached-direct-message"
+import { isCheckoutSparkRecoveryMessageType } from "./checkout-spark-recovery-marker"
 import type { CheckoutRecoveryDescriptor } from "./checkout-spark-recovery"
+import type { EventMarketFreePurchaseDescriptor } from "./event-market-free-purchase"
+import { EVENT_MARKET_FREE_PURCHASE_TYPE } from "./event-market-free-purchase-marker"
 import {
   db,
   type ConduitDB,
@@ -82,6 +85,7 @@ export type InboxProjection =
   | { kind: "direct"; message: ParsedDirectMessage }
   | { kind: "order"; message: ParsedOrderMessage }
   | { kind: "checkout_recovery"; message: CheckoutRecoveryDescriptor }
+  | { kind: "event_free_purchase"; message: EventMarketFreePurchaseDescriptor }
   | { kind: "recovery"; message: ParsedEventMarketPrivateMessage }
   | { kind: "record"; record: DecodedCommerceMessage }
 
@@ -162,7 +166,7 @@ export interface InboxDeliveryCheckpointRow {
   id: string
   accountPubkey: string
   value: InboxCipher
-  kind: "merchant_paid_confirmation"
+  kind: "merchant_paid_confirmation" | "merchant_stock_recovery"
   updatedAt: number
   /** Absent on checkpoints; keeps Dexie's non-distributive write type explicit. */
   state?: never
@@ -213,7 +217,7 @@ function freezeProjection<T>(value: T): T {
 }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-export const INBOX_DECODE_RULES_VERSION = 2
+export const INBOX_DECODE_RULES_VERSION = 4
 const LEASE_MS = 60_000
 const KEY_ID = "commerce-inbox-aes-gcm-v1"
 
@@ -725,11 +729,8 @@ export class CommerceInboxStore {
         try {
           const payload = JSON.parse(content)
           machine =
-            [
-              "checkout_spark_recovery",
-              "checkout_spark_recovery_progress",
-              "checkout_spark_merchant_progress",
-            ].includes(String(payload?.type ?? "")) ||
+            isCheckoutSparkRecoveryMessageType(payload?.type) ||
+            payload?.type === EVENT_MARKET_FREE_PURCHASE_TYPE ||
             payload?.wallet?.mnemonic !== undefined ||
             String(payload?.type ?? "").startsWith("organizer_")
         } catch {

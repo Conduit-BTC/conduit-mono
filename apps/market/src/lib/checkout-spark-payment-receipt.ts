@@ -56,8 +56,8 @@ export function createCheckoutSparkPaymentReceipt(
     )
     if (!record.credit) return null
     const nativeTreasury =
-      summary.schemaVersion === 3 &&
-      record.schemaVersion === 2 &&
+      (summary.schemaVersion === 3 || summary.schemaVersion === 4) &&
+      (record.schemaVersion === 2 || record.schemaVersion === 3) &&
       record.nativeTreasury
         ? {
             baseConduitAllocationSats:
@@ -76,7 +76,9 @@ export function createCheckoutSparkPaymentReceipt(
     const rows = summary.legs.map((leg) => {
       const observed = record.paidLegs.find((row) => row.legId === leg.legId)
       const payment =
-        summary.schemaVersion === 3 && leg.kind === "conduit" && nativeTreasury
+        (summary.schemaVersion === 3 || summary.schemaVersion === 4) &&
+        leg.kind === "conduit" &&
+        nativeTreasury
           ? {
               invoiceAmountSats: nativeTreasury.principalSats,
               feeSats: nativeTreasury.feeSats,
@@ -119,7 +121,9 @@ export function createCheckoutSparkPaymentReceipt(
       recordedDebitSats: safeSats(debits),
       recordedUnspentSats: allPayoutsRecorded ? safeSats(unspent) : null,
       allPayoutsRecorded,
-      ...(summary.schemaVersion === 3 ? { nativeTreasury } : {}),
+      ...(summary.schemaVersion === 3 || summary.schemaVersion === 4
+        ? { nativeTreasury }
+        : {}),
     }
   } catch {
     return null

@@ -117,10 +117,15 @@ status are maintained in the guide rather than duplicated here.
   credentials in source/history and raw-key app/service/diagnostic/artifact sinks
   remain prohibited.
   The guest capability in `docs/specs/protocol.md` is limited to one guest
-  order, same-order payment reports and separately constrained Merchant-only
-  router recovery sealing. Sealing binds the same order, Merchant, canonical
-  payload and existing deadline; generic messages, direct rumors and other
-  recipients are prohibited. Existing Portable Wallet boundaries and
+  order, same-order payment reports and separately constrained router recovery
+  sealing. In an authorized Event Market organizer handoff, the exact frozen
+  organizer may receive its separately typed recovery/progress package for a
+  version-five organizer-handoff plan or the zero-commerce, zero-fee purchase
+  packet without a wallet or
+  invoice. Sealing binds the same order, canonical payload, exact authorized
+  recipient role and existing deadline. Stock records, generic messages, direct
+  rumor signatures, other recipients and a guest reply inbox remain prohibited.
+  Existing Portable Wallet boundaries and
   protected-smoke checks remain enforced.
 - The approved server-side signing exceptions are the Anon Conduit Shopper
   public zap signer, scoped to authenticated merchant-

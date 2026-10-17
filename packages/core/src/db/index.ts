@@ -1261,6 +1261,8 @@ export interface StoredCheckoutSparkPlanBinding {
   retiredSettlementSummary?: CheckoutSparkRetiredSettlementSummary
   /** Exact signed ciphertext wraps pending private relay delivery; never plaintext. */
   merchantProgressOutbox?: StoredMerchantCheckoutSparkProgressDelivery[]
+  /** Exact organizer execution ciphertext only; authenticated afresh on recovery. */
+  organizerProgressOutbox?: unknown[]
   /** Immutable supplier notices; retained after wallet retirement for exact retry/dedup. */
   supplierNotificationOutbox?: StoredCheckoutSparkSupplierNotification[]
   /** Minimal provider-verified notification eligibility; contains no wallet recovery data. */
@@ -1310,6 +1312,15 @@ export interface MerchantInventoryProduct {
   sourceProductEvent: SignedPublicNostrEvent
   signedProductEvent: SignedPublicNostrEvent
   publicationJobs: MerchantInventoryPublicationJob[]
+  /** Exact Merchant-only encrypted stock checkpoint; not a relay cache. */
+  organizerStockCheckpoint?: {
+    sequence: number
+    previousId: string | null
+    snapshotKey: string
+    rumor: PrivateMessageRumor
+    selfEnvelope?: SignedPublicNostrEvent
+    acknowledgedRelayUrls: string[]
+  }
 }
 
 export interface MerchantInventoryAssignment {
@@ -1355,6 +1366,18 @@ export interface MerchantInventoryAcceptedOrder {
     remainingAllocation?: number
   }>
   acceptedAt: number
+  /** Authenticated delegated stock provenance, not payment or handout proof. */
+  organizerImport?: {
+    originalOrderRumorId: string
+    organizerPubkey: string
+    claimRef: string
+    entries: Array<{
+      poolId: string
+      entryId: string
+      writerId: string
+      quantity: number
+    }>
+  }
 }
 
 /** Durable, account-scoped private stock authority; never a relay cache. */
@@ -1368,6 +1391,8 @@ export interface EventMarketOrganizerStockPool {
   assignmentCoordinate: string
   productCoordinate: string
   grantRumor: PrivateMessageRumor
+  /** Original Merchant-authenticated grant delivered to the organizer. */
+  receivedEnvelope?: SignedPublicNostrEvent
   quantity: number
   acceptedQuantity: number
   acceptedSequence: number
@@ -1378,6 +1403,10 @@ export interface EventMarketOrganizerStockPool {
   /** Preparation consumes Merchant availability before any external signing. */
   state: "prepared" | "active" | "closing" | "closed"
   closingRumor?: PrivateMessageRumor
+  /** Authenticated incoming organizer close retained by the Merchant. */
+  receivedClosingEnvelope?: SignedPublicNostrEvent
+  /** Closed-prefix history on a replacement device never reactivates its writer. */
+  readOnlyRecovery?: true
   /** Exact encrypted retries, not proof of recipient observation. */
   grantWraps?: {
     recipient: SignedPublicNostrEvent
@@ -1400,7 +1429,17 @@ export interface EventMarketOrganizerStockEntry {
   quantity: number
   /** Exact original evidence retained privately, never displayed as a message. */
   evidence: string
+  /** Exact private whole-order pool manifest; prevents subset replay. */
+  orderPoolBinding?: string
   wraps?: { recipient: SignedPublicNostrEvent; self: SignedPublicNostrEvent }
+  /** Original incoming organizer seal, independently rechecked on close. */
+  receivedEnvelope?: SignedPublicNostrEvent
+  /** Authenticated whole-order handout, independent of stock import/payment. */
+  handout?: {
+    rumor: PrivateMessageRumor
+    wraps?: { recipient: SignedPublicNostrEvent; self: SignedPublicNostrEvent }
+    receivedEnvelope?: SignedPublicNostrEvent
+  }
   imported: boolean
 }
 

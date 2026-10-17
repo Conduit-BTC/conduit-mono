@@ -4,7 +4,20 @@ import type {
   MerchantInventoryAssignment,
   MerchantInventoryProduct,
   MerchantInventoryPublicationJob,
+  EventMarketOrganizerStockPool,
 } from "../db"
+import {
+  readVerifiedOrganizerStockImport,
+  sameOrganizerStockRumor,
+  validateMerchantOrganizerStockPool,
+  type VerifiedOrganizerStockImport,
+} from "./event-market-stock-import-authority"
+import { parseEventMarketStockAuthorityRumor } from "./event-market-stock-authority"
+import {
+  publishMerchantOrganizerStockCheckpoint,
+  type MerchantStockCheckpointDelivery,
+} from "./event-market-stock-checkpoint"
+import type { AccountSigner } from "./nostr-event-signer"
 import {
   buildEventMarketAssignmentDraft,
   computeEventMarketAssignmentDTag,
@@ -536,6 +549,7 @@ export async function acceptMerchantInventoryOrder(input: {
   evidence: string
   items: MerchantInventoryOrderItem[]
   priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
+  organizerImport?: VerifiedOrganizerStockImport
   acceptedAt?: number
 }): Promise<{ replayed: boolean; order: MerchantInventoryAcceptedOrder }> {
   const {
@@ -548,6 +562,30 @@ export async function acceptMerchantInventoryOrder(input: {
     items,
   } = input
   const acceptedAt = input.acceptedAt ?? Date.now()
+  const delegated = input.organizerImport
+    ? readVerifiedOrganizerStockImport(input.organizerImport)
+    : undefined
+  const orderPoolBinding = delegated
+    ? JSON.stringify(
+        delegated.entries
+          .map(({ payload }) => ({
+            poolId: payload.poolId,
+            writerId: payload.writerId,
+            quantity: payload.quantity,
+          }))
+          .sort((left, right) => left.poolId.localeCompare(right.poolId))
+      )
+    : undefined
+  if (
+    delegated &&
+    (delegated.orderId !== orderId ||
+      delegated.merchantPubkey !== merchantPubkey ||
+      delegated.identityBinding !== identityBinding ||
+      delegated.termsBinding !== termsBinding ||
+      evidence !== termsBinding ||
+      input.priorStockAdjustments?.length)
+  )
+    throw new Error("Organizer import does not match the stock decision")
   if (
     !orderId ||
     !merchantPubkey ||
@@ -595,11 +633,16 @@ export async function acceptMerchantInventoryOrder(input: {
   }
   return db.transaction(
     "rw",
-    db.merchantInventoryProducts,
-    db.merchantInventoryAssignments,
-    db.merchantInventoryAcceptedOrders,
-    db.localProductStockCheckpoints,
+    [
+      db.merchantInventoryProducts,
+      db.merchantInventoryAssignments,
+      db.merchantInventoryAcceptedOrders,
+      db.localProductStockCheckpoints,
+      db.eventMarketOrganizerStockPools,
+      db.eventMarketOrganizerStockEntries,
+    ],
     async () => {
+      delegated?.checkSession()
       const prior = await db.merchantInventoryAcceptedOrders.get(orderId)
       if (prior) {
         if (
@@ -607,23 +650,9 @@ export async function acceptMerchantInventoryOrder(input: {
           prior.identityBinding !== identityBinding ||
           prior.termsBinding !== termsBinding ||
           prior.evidence !== evidence ||
-          JSON.stringify(
-            prior.items.map(
-              ({
-                productCoordinate,
-                assignmentCoordinate,
-                method,
-                quantity,
-              }) => ({
-                productCoordinate,
-                assignmentCoordinate,
-                method,
-                quantity,
-              })
-            )
-          ) !==
+          ((!delegated || prior.organizerImport) &&
             JSON.stringify(
-              items.map(
+              prior.items.map(
                 ({
                   productCoordinate,
                   assignmentCoordinate,
@@ -636,10 +665,69 @@ export async function acceptMerchantInventoryOrder(input: {
                   quantity,
                 })
               )
-            )
+            ) !==
+              JSON.stringify(
+                items.map(
+                  ({
+                    productCoordinate,
+                    assignmentCoordinate,
+                    method,
+                    quantity,
+                  }) => ({
+                    productCoordinate,
+                    assignmentCoordinate,
+                    method,
+                    quantity,
+                  })
+                )
+              ))
         )
           throw new Error("Order ID is bound to different identity or terms")
-        return { replayed: true, order: prior }
+        if (!delegated) return { replayed: true, order: prior }
+        if (prior.organizerImport) {
+          if (
+            JSON.stringify(prior.organizerImport) !==
+            JSON.stringify(delegated.attribution)
+          )
+            throw new Error(
+              "Order ID is bound to different organizer provenance"
+            )
+          for (const entry of delegated.entries) {
+            const saved = await db.eventMarketOrganizerStockEntries.get(
+              `${merchantPubkey}:${entry.rumor.id}`
+            )
+            const pool = await db.eventMarketOrganizerStockPools.get(
+              `${merchantPubkey}:${entry.payload.poolId}`
+            )
+            if (
+              !saved?.imported ||
+              !pool ||
+              saved.accountPubkey !== merchantPubkey ||
+              saved.poolId !== entry.payload.poolId ||
+              saved.sequence !== entry.payload.sequence ||
+              saved.quantity !== entry.payload.quantity ||
+              saved.orderId !== orderId ||
+              saved.claimRef !== entry.payload.claimRef ||
+              saved.evidence !== evidence ||
+              (saved.orderPoolBinding !== undefined &&
+                saved.orderPoolBinding !== orderPoolBinding) ||
+              !sameOrganizerStockRumor(saved.rumor, entry.rumor) ||
+              JSON.stringify(pool.grantRumor) !==
+                JSON.stringify(entry.grantRumor) ||
+              pool.importedSequence < entry.payload.sequence
+            )
+              throw new Error(
+                "Imported organizer provenance requires reconciliation"
+              )
+            validateMerchantOrganizerStockPool(pool, merchantPubkey)
+            if (saved.orderPoolBinding === undefined)
+              await db.eventMarketOrganizerStockEntries.update(saved.id, {
+                orderPoolBinding,
+              })
+          }
+          delegated.checkSession()
+          return { replayed: true, order: prior }
+        }
       }
       const products = new Map<string, MerchantInventoryProduct>()
       const assignments = new Map<string, MerchantInventoryAssignment>()
@@ -649,6 +737,115 @@ export async function acceptMerchantInventoryOrder(input: {
         .equals(orderId)
         .filter((checkpoint) => checkpoint.merchantPubkey === merchantPubkey)
         .toArray()
+      if (delegated && priorStock.some((row) => row.state !== "applied"))
+        throw new Error("Prior stock debit is not durably confirmed")
+      // An ordinary ID alone is not delegated provenance. Adoption is limited
+      // to a positive, durable full same-order debit already applied by the
+      // legacy stock owner; the shared credit loop below prevents a second one.
+      if (
+        delegated &&
+        prior &&
+        items.some((item) => {
+          const quantity = items
+            .filter(
+              (candidate) =>
+                candidate.productCoordinate === item.productCoordinate
+            )
+            .reduce((sum, candidate) => sum + candidate.quantity, 0)
+          return !priorStock.some(
+            (row) =>
+              row.productAddressId === item.productCoordinate &&
+              row.state === "applied" &&
+              row.adjustment.quantity === quantity &&
+              row.adjustment.shortfall === 0
+          )
+        })
+      )
+        throw new Error(
+          "Existing acceptance lacks verified delegated stock provenance"
+        )
+      const delegatedPools = new Map<string, EventMarketOrganizerStockPool>()
+      if (delegated) {
+        for (const entry of delegated.entries) {
+          const pool = await db.eventMarketOrganizerStockPools.get(
+            `${merchantPubkey}:${entry.payload.poolId}`
+          )
+          if (
+            !pool ||
+            JSON.stringify(pool.grantRumor) !== JSON.stringify(entry.grantRumor)
+          )
+            throw new Error("Merchant stock grant changed during import")
+          const grant = validateMerchantOrganizerStockPool(pool, merchantPubkey)
+          const assignment = await db.merchantInventoryAssignments.get(
+            grant.assignmentCoordinate
+          )
+          if (
+            !assignment ||
+            assignment.merchantPubkey !== merchantPubkey ||
+            assignment.organizerStockHold?.poolId !== pool.poolId ||
+            assignment.organizerStockHold.organizerPubkey !==
+              pool.organizerPubkey ||
+            assignment.organizerStockHold.quantity !== pool.quantity ||
+            assignment.organizerStockHold.importedQuantity !==
+              pool.importedQuantity ||
+            assignment.organizerStockHold.closed ||
+            pool.state === "closed" ||
+            entry.payload.writerId !== pool.writerId ||
+            entry.payload.sequence !== pool.importedSequence + 1 ||
+            entry.payload.previousId !== pool.lastImportedId ||
+            entry.payload.quantity > outstandingOrganizerStockHold(assignment)
+          )
+            throw new Error(
+              "Organizer stock import is not the next held journal entry"
+            )
+          if (pool.importedSequence > 0) {
+            const previous = await db.eventMarketOrganizerStockEntries.get(
+              `${merchantPubkey}:${pool.lastImportedId}`
+            )
+            const payload =
+              previous && parseEventMarketStockAuthorityRumor(previous.rumor)
+            if (
+              !previous?.imported ||
+              !payload ||
+              payload.type !== "accepted" ||
+              payload.sequence !== pool.importedSequence ||
+              payload.poolId !== pool.poolId ||
+              payload.acceptedAtMs > entry.payload.acceptedAtMs
+            )
+              throw new Error(
+                "Organizer stock predecessor requires reconciliation"
+              )
+          }
+          const staged = await db.eventMarketOrganizerStockEntries.get(
+            `${merchantPubkey}:${entry.rumor.id}`
+          )
+          if (
+            staged &&
+            (staged.imported ||
+              staged.accountPubkey !== merchantPubkey ||
+              staged.poolId !== pool.poolId ||
+              staged.sequence !== entry.payload.sequence ||
+              staged.quantity !== entry.payload.quantity ||
+              staged.claimRef !== entry.payload.claimRef ||
+              staged.orderId !== orderId ||
+              staged.evidence !== evidence ||
+              (staged.orderPoolBinding !== undefined &&
+                staged.orderPoolBinding !== orderPoolBinding) ||
+              !sameOrganizerStockRumor(staged.rumor, entry.rumor))
+          )
+            throw new Error("Organizer entry conflicts with its accepted order")
+          if (
+            pool.acceptedSequence === entry.payload.sequence &&
+            (pool.lastAcceptedId !== entry.rumor.id ||
+              pool.acceptedQuantity !==
+                pool.importedQuantity + entry.payload.quantity)
+          )
+            throw new Error(
+              "Organizer entry conflicts with the observed frontier"
+            )
+          delegatedPools.set(grant.assignmentCoordinate, pool)
+        }
+      }
       const consumed = new Map<string, number>()
       for (const coordinate of new Set(
         items.map((item) => item.productCoordinate)
@@ -717,12 +914,14 @@ export async function acceptMerchantInventoryOrder(input: {
           if (
             !assignment ||
             assignment.productCoordinate !== item.productCoordinate ||
-            assignment.state !== "active" ||
-            assignment.terminal ||
-            acceptedAt >= assignment.occurrenceEndMs ||
-            !assignment.fulfillmentMethods.includes(
-              item.method as "pickup" | "shipping" | "digital"
-            )
+            (!delegated &&
+              (assignment.state !== "active" ||
+                assignment.terminal ||
+                acceptedAt >= assignment.occurrenceEndMs ||
+                !assignment.fulfillmentMethods.includes(
+                  item.method as "pickup" | "shipping" | "digital"
+                ))) ||
+            (delegated && !delegatedPools.has(assignment.coordinate))
           )
             throw new Error("Assignment is not available for this order")
           assignments.set(assignment.coordinate, assignment)
@@ -744,14 +943,53 @@ export async function acceptMerchantInventoryOrder(input: {
             (consumed.get(item.productCoordinate) ?? 0) - credited
           )
           if (
-            siblings.some(
+            !delegated &&
+            (siblings.some(
               (a) => a.state === "active" && a.inventory.mode !== "tracked"
             ) ||
-            effective >
-              product.stock + (item.method === "pickup" ? credited : 0)
+              effective >
+                product.stock + (item.method === "pickup" ? credited : 0))
           )
             throw new Error("Committed inventory requires reconciliation")
-          if (item.method === "pickup") {
+          if (delegated) {
+            if (
+              !assignment ||
+              assignment.inventory.mode !== "tracked" ||
+              product.stock < debit ||
+              outstandingOrganizerStockHold(assignment) < item.quantity
+            )
+              throw new Error("Insufficient held organizer stock")
+            assignment.organizerStockHold!.importedQuantity += item.quantity
+            const remainingEffective = siblings.reduce(
+              (sum, sibling) =>
+                sum +
+                effectiveAllocation(
+                  assignments.get(sibling.coordinate) ?? sibling,
+                  acceptedAt
+                ),
+              0
+            )
+            // A removed/reduced public allocation cannot discard an already
+            // authenticated organizer sale. The hold shrinks with its debit.
+            const nextQuantity = Math.max(
+              0,
+              assignment.inventory.quantity - item.quantity
+            )
+            const currentEffective = effectiveAllocation(assignment, acceptedAt)
+            const nextEffective = Math.max(
+              assignment.state === "active" &&
+                !assignment.terminal &&
+                acceptedAt < assignment.occurrenceEndMs
+                ? nextQuantity
+                : 0,
+              outstandingOrganizerStockHold(assignment)
+            )
+            if (
+              product.stock - debit <
+              remainingEffective - currentEffective + nextEffective
+            )
+              throw new Error("Organizer inventory requires reconciliation")
+          } else if (item.method === "pickup") {
             if (
               !assignment ||
               assignment.inventory.mode !== "tracked" ||
@@ -772,7 +1010,9 @@ export async function acceptMerchantInventoryOrder(input: {
           ) {
             assignment.inventory = {
               mode: "tracked",
-              quantity: assignment.inventory.quantity - item.quantity,
+              quantity: delegated
+                ? Math.max(0, assignment.inventory.quantity - item.quantity)
+                : assignment.inventory.quantity - item.quantity,
             }
           }
         } else if (
@@ -795,6 +1035,37 @@ export async function acceptMerchantInventoryOrder(input: {
               ? assignment.inventory.quantity
               : undefined,
         })
+      }
+      if (delegated) {
+        for (const entry of delegated.entries) {
+          const pool = [...delegatedPools.values()].find(
+            (candidate) => candidate.poolId === entry.payload.poolId
+          )!
+          pool.importedSequence = entry.payload.sequence
+          pool.lastImportedId = entry.rumor.id
+          pool.importedQuantity += entry.payload.quantity
+          if (pool.acceptedSequence < pool.importedSequence) {
+            pool.acceptedSequence = pool.importedSequence
+            pool.lastAcceptedId = pool.lastImportedId
+            pool.acceptedQuantity = pool.importedQuantity
+          }
+          if (pool.state === "prepared") pool.state = "active"
+          await db.eventMarketOrganizerStockEntries.put({
+            id: `${merchantPubkey}:${entry.rumor.id}`,
+            accountPubkey: merchantPubkey,
+            poolId: pool.poolId,
+            sequence: entry.payload.sequence,
+            orderId,
+            claimRef: entry.payload.claimRef,
+            rumor: structuredClone(entry.rumor),
+            quantity: entry.payload.quantity,
+            evidence,
+            orderPoolBinding,
+            receivedEnvelope: structuredClone(entry.envelope),
+            imported: true,
+          })
+          await db.eventMarketOrganizerStockPools.put(pool)
+        }
       }
       for (const product of products.values()) {
         product.revision += 1
@@ -851,9 +1122,14 @@ export async function acceptMerchantInventoryOrder(input: {
         evidence,
         items: output,
         acceptedAt,
+        ...(delegated
+          ? { organizerImport: structuredClone(delegated.attribution) }
+          : {}),
       }
-      await db.merchantInventoryAcceptedOrders.add(order)
-      return { replayed: false, order }
+      delegated?.checkSession()
+      if (prior) await db.merchantInventoryAcceptedOrders.put(order)
+      else await db.merchantInventoryAcceptedOrders.add(order)
+      return { replayed: Boolean(prior), order }
     }
   )
 }
@@ -1042,6 +1318,13 @@ async function markDelivered(
 export async function resumeMerchantInventoryPublication(input: {
   db: ConduitDB
   merchantPubkey: string
+  /** Optional explicit action scope; omitted preserves the ordinary queue. */
+  coordinates?: readonly string[]
+  stockCheckpoint?: {
+    signer: AccountSigner
+    shouldContinue(): boolean
+    delivery?: MerchantStockCheckpointDelivery
+  }
   sign(draft: Draft): Promise<SignedPublicNostrEvent>
   publish(signed: SignedPublicNostrEvent): Promise<boolean | "superseded">
 }): Promise<{ signed: number; delivered: number; pending: number }> {
@@ -1063,6 +1346,8 @@ export async function resumeMerchantInventoryPublication(input: {
     ).map((r) => ({ kind: "assignment" as const, coordinate: r.coordinate })),
   ]
   for (const record of records) {
+    if (input.coordinates && !input.coordinates.includes(record.coordinate))
+      continue
     // Signing is sequential per address, so each prev points at exact saved bytes.
     while (true) {
       const prepared = await prepareNextPublication(
@@ -1089,12 +1374,67 @@ export async function resumeMerchantInventoryPublication(input: {
       )
         signed += 1
     }
+  }
+  // Sign the complete selected batch first. A cold device must never pair a
+  // newer product debit with a stale assignment imported frontier.
+  const blockedProducts = new Set<string>()
+  const checkpointEvents = new Map<string, Set<string>>()
+  const pools = await db.eventMarketOrganizerStockPools
+    .where("accountPubkey")
+    .equals(merchantPubkey)
+    .toArray()
+  for (const coordinate of new Set(
+    pools.map((pool) => pool.productCoordinate)
+  )) {
+    try {
+      if (!input.stockCheckpoint)
+        throw new Error("Stock checkpoint signer required")
+      const checkpoint = await publishMerchantOrganizerStockCheckpoint({
+        db,
+        authenticatedPubkey: merchantPubkey,
+        productCoordinate: coordinate,
+        ...input.stockCheckpoint,
+      })
+      const state = JSON.parse(checkpoint.rumor.content).snapshot
+      checkpointEvents.set(
+        coordinate,
+        new Set<string>([
+          state.product.signedProductEvent.id,
+          ...state.assignments.map(
+            (assignment: MerchantInventoryAssignment) =>
+              assignment.signedAssignmentEvent!.id
+          ),
+          ...state.pools.map(
+            (row: { initialCommitment: SignedPublicNostrEvent }) =>
+              row.initialCommitment.id
+          ),
+        ])
+      )
+    } catch {
+      blockedProducts.add(coordinate)
+    }
+  }
+  for (const record of records) {
+    if (input.coordinates && !input.coordinates.includes(record.coordinate))
+      continue
     const current =
       record.kind === "product"
         ? await db.merchantInventoryProducts.get(record.coordinate)
         : await db.merchantInventoryAssignments.get(record.coordinate)
+    const productCoordinate =
+      record.kind === "product"
+        ? record.coordinate
+        : (current as MerchantInventoryAssignment | undefined)
+            ?.productCoordinate
+    if (productCoordinate && blockedProducts.has(productCoordinate)) continue
     for (const work of current?.publicationJobs ?? []) {
       if (work.state !== "signed" || !work.signedEvent) continue
+      if (
+        productCoordinate &&
+        checkpointEvents.has(productCoordinate) &&
+        !checkpointEvents.get(productCoordinate)!.has(work.signedEvent.id)
+      )
+        continue
       let acknowledged: boolean | "superseded" = false
       try {
         acknowledged = await publish(work.signedEvent)
@@ -1110,6 +1450,33 @@ export async function resumeMerchantInventoryPublication(input: {
           acknowledged === "superseded" ? "superseded" : "delivered"
         )
         if (acknowledged === true) delivered += 1
+      }
+    }
+    if (productCoordinate && checkpointEvents.has(productCoordinate)) {
+      const latest =
+        record.kind === "product"
+          ? await db.merchantInventoryProducts.get(record.coordinate)
+          : await db.merchantInventoryAssignments.get(record.coordinate)
+      const deliveredRevision = Math.max(
+        -1,
+        ...(latest?.publicationJobs ?? [])
+          .filter(
+            (work) =>
+              work.state === "delivered" &&
+              work.signedEvent &&
+              checkpointEvents.get(productCoordinate)!.has(work.signedEvent.id)
+          )
+          .map((work) => work.revision)
+      )
+      for (const work of latest?.publicationJobs ?? []) {
+        if (work.state === "signed" && work.revision < deliveredRevision)
+          await markDelivered(
+            db,
+            record.kind,
+            record.coordinate,
+            work.id,
+            "superseded"
+          )
       }
     }
   }

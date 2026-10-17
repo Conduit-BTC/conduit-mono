@@ -7,8 +7,18 @@ import {
   EVENT_KINDS,
   GUEST_ORDER_LOCAL_RETENTION_MS,
   parseCheckoutSparkRecoveryRumor,
+  buildCheckoutSparkOrganizerRecoveryRumor,
+  parseCheckoutSparkOrganizerRecoveryRumor,
+  parseCheckoutSparkOrganizerRecoveryProgressRumor,
+  type CheckoutSparkOrganizerRecoveryMessage,
   type NostrKeySigner,
 } from "@conduit/core"
+import {
+  buildEventMarketFreePurchaseRumor,
+  parseEventMarketFreePurchaseRumor,
+  restoreEventMarketFreePurchase,
+  type EventMarketFreePurchasePayload,
+} from "@conduit/core/protocol/event-market-free-purchase"
 
 const GUEST_ORDER_SIGNER_STORAGE_KEY = "conduit:guest-order-signers:v1"
 export const GUEST_ORDER_SESSION_TTL_MS = GUEST_ORDER_LOCAL_RETENTION_MS
@@ -260,11 +270,22 @@ function createGuestOrderSigningIdentityFromPrivateSigner(
  */
 export function createGuestCheckoutSparkRecoverySigner(
   identity: GuestOrderSigningIdentity,
-  options: { now?: () => number } = {}
+  options: {
+    now?: () => number
+    organizerRecovery?: {
+      organizerPubkey: string
+      checkoutId: string
+      planDigest: string
+    }
+  } = {}
 ): NostrKeySigner {
   const { signer, pubkey, orderId, merchantPubkey, createdAt, expiresAt } =
     identity
   const now = options.now ?? Date.now
+  const organizerScope = options.organizerRecovery
+    ? { ...options.organizerRecovery }
+    : null
+  const recoveryRecipient = organizerScope?.organizerPubkey ?? merchantPubkey
   const pendingSeals = new Map<string, number>()
   const scopeError = () =>
     new Error("Guest recovery signer cannot act outside its checkout scope.")
@@ -305,27 +326,44 @@ export function createGuestCheckoutSparkRecoverySigner(
     getPublicKey: currentPubkey,
     encryptNip44: async (recipient, value) => {
       const currentTime = assertActive()
-      if (recipient !== merchantPubkey) {
+      if (recipient !== recoveryRecipient) {
         throw scopeError()
       }
       let payload
+      let canonicalRumor
       try {
         const raw = JSON.parse(value)
         if (raw.sig) throw scopeError()
         const rumor = new NDKEvent(undefined, raw)
-        payload = parseCheckoutSparkRecoveryRumor(rumor)
+        payload = organizerScope
+          ? JSON.parse(rumor.content)?.schemaVersion === 5
+            ? parseCheckoutSparkOrganizerRecoveryProgressRumor(rumor)
+            : parseCheckoutSparkOrganizerRecoveryRumor(rumor)
+          : parseCheckoutSparkRecoveryRumor(rumor)
+        canonicalRumor = organizerScope
+          ? buildCheckoutSparkOrganizerRecoveryRumor(
+              payload as CheckoutSparkOrganizerRecoveryMessage
+            )
+          : buildCheckoutSparkRecoveryRumor(
+              payload as ReturnType<typeof parseCheckoutSparkRecoveryRumor>
+            )
         if (
           payload.schemaVersion === 1 ||
           (payload.plan.schemaVersion !== 3 &&
-            payload.plan.schemaVersion !== 4) ||
+            payload.plan.schemaVersion !== 4 &&
+            payload.plan.schemaVersion !== 5) ||
+          (organizerScope !== null &&
+            ((payload.schemaVersion !== 4 && payload.schemaVersion !== 5) ||
+              payload.organizerPubkey !== organizerScope.organizerPubkey ||
+              payload.plan.checkoutId !== organizerScope.checkoutId ||
+              payload.plan.planDigest !== organizerScope.planDigest)) ||
           payload.senderPubkey !== pubkey ||
           payload.merchantPubkey !== merchantPubkey ||
           payload.plan.orderId !== orderId ||
           payload.preparedAt < createdAt ||
           payload.preparedAt > currentTime ||
           rumor.content !== JSON.stringify(payload) ||
-          JSON.stringify(rumor.tags) !==
-            JSON.stringify(buildCheckoutSparkRecoveryRumor(payload).tags)
+          JSON.stringify(rumor.tags) !== JSON.stringify(canonicalRumor.tags)
         ) {
           throw scopeError()
         }
@@ -334,8 +372,8 @@ export function createGuestCheckoutSparkRecoverySigner(
       }
       assertActive(payload.plan.takeoverAt)
       const ciphertext = await signer.encryptNip44(
-        merchantPubkey,
-        JSON.stringify(buildCheckoutSparkRecoveryRumor(payload))
+        recoveryRecipient,
+        JSON.stringify(canonicalRumor)
       )
       assertActive(payload.plan.takeoverAt)
       pendingSeals.set(ciphertext, payload.plan.takeoverAt)
@@ -363,6 +401,96 @@ export function createGuestCheckoutSparkRecoverySigner(
     },
     decryptLegacy: async () => {
       throw new Error("Guest recovery signer cannot decrypt inbound messages.")
+    },
+  }
+}
+
+/** One exact contact-free, zero-cost organizer packet; no general signing grant. */
+export function createGuestEventMarketFreePurchaseSigner(
+  identity: GuestOrderSigningIdentity,
+  options: { payload: EventMarketFreePurchasePayload; now?: () => number }
+): NostrKeySigner {
+  const payload = restoreEventMarketFreePurchase(options.payload)
+  const rumor = buildEventMarketFreePurchaseRumor(payload)
+  const canonical = JSON.stringify(rumor)
+  const { signer, pubkey, orderId, merchantPubkey } = identity
+  const now = options.now ?? Date.now
+  const pending = new Set<string>()
+  const invalid = (): never => {
+    pending.clear()
+    throw new Error("Guest free-purchase signer is outside its order scope.")
+  }
+  const check = () => {
+    const time = now()
+    if (
+      identity.signer !== signer ||
+      !isCurrentGuestOrderSigningIdentity(
+        identity,
+        { orderId, merchantPubkey, pubkey },
+        time
+      ) ||
+      payload.senderPubkey !== pubkey ||
+      payload.merchantPubkey !== merchantPubkey ||
+      payload.orderId !== orderId ||
+      payload.createdAt < identity.createdAt ||
+      payload.createdAt > time
+    )
+      invalid()
+  }
+  check()
+  return {
+    get pubkey() {
+      check()
+      return pubkey
+    },
+    getPublicKey: async () => {
+      check()
+      const actual = await signer.getPublicKey()
+      check()
+      if (actual !== pubkey) invalid()
+      return pubkey
+    },
+    encryptNip44: async (recipient, value) => {
+      check()
+      if (recipient !== payload.organizerPubkey) invalid()
+      try {
+        const raw = JSON.parse(value)
+        if (raw.sig !== undefined) invalid()
+        const candidate = new NDKEvent(undefined, raw)
+        const parsed = parseEventMarketFreePurchaseRumor(candidate)
+        if (
+          JSON.stringify(parsed) !== JSON.stringify(payload) ||
+          JSON.stringify(buildEventMarketFreePurchaseRumor(parsed)) !==
+            canonical
+        )
+          invalid()
+      } catch {
+        invalid()
+      }
+      const ciphertext = await signer.encryptNip44(recipient, canonical)
+      check()
+      pending.add(ciphertext)
+      return ciphertext
+    },
+    signEvent: async (event) => {
+      check()
+      if (
+        event.kind !== EVENT_KINDS.SEAL ||
+        event.pubkey !== pubkey ||
+        event.tags.length !== 0 ||
+        !pending.has(event.content)
+      )
+        invalid()
+      pending.delete(event.content)
+      const signed = await signer.signEvent({ ...event, tags: [] })
+      check()
+      return signed
+    },
+    decryptNip44: async () => {
+      throw new Error("Guest order signing cannot open an inbox.")
+    },
+    decryptLegacy: async () => {
+      throw new Error("Guest order signing cannot open an inbox.")
     },
   }
 }
