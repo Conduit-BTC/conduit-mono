@@ -18,6 +18,25 @@ import {
 } from "../scripts/ci/router_smoke_diagnostic"
 
 describe("runner-owned router phase evidence", () => {
+  it("distinguishes ordinary preparation and reload checks without payment content", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "buyer order preparation rejected",
+      "buyer prepared funding matches the frozen total",
+      "cold Merchant restores exact saved funding deadlines",
+      "cold Merchant remains before the original shopper cutoff",
+      "cold Merchant reload preserves recorded accounting",
+      "cold Merchant reload preserves the native send count",
+      "cold Merchant retains one supplier notification",
+      "private router keeps public zap history empty",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)?.phase).toBe(
+        phase
+      )
+    }
+  })
   it("runs both isolated lanes independently and retains separate SHA-bound artifacts", () => {
     const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8")
     for (const [step, prerequisite] of [
@@ -65,6 +84,35 @@ describe("runner-owned router phase evidence", () => {
       lifecycle: "body",
       body: "running",
     })
+  })
+
+  it("records replacement-device boundaries without journal or identity content", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event replacement device registration",
+      "event source device handover",
+      "event retired device cannot continue",
+      "event replacement journal restoration",
+      "event replacement transfer discovery",
+      "event replacement transfer activation",
+      "event replacement writer projection",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        lifecycle: "body",
+        body: "running",
+      })
+    }
+    expect(
+      parseRouterSmokeDiagnostic({
+        phase: "event replacement journal restoration",
+        lifecycle: "body",
+        body: "running",
+        deviceId: "unexpected",
+      })
+    ).toBeUndefined()
   })
 
   it("retains the remaining offline completion checkpoints", () => {
@@ -123,6 +171,9 @@ describe("runner-owned router phase evidence", () => {
       "event buyer catalog admission",
       "event buyer cart checkout",
       "event buyer price presentation",
+      "event guest contact-free fields",
+      "event mobile checkout layout",
+      "event organizer fee disclosure",
       "event buyer plan preparation",
       "event buyer funding authorization",
       "event buyer automatic payment routing",

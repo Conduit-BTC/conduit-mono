@@ -14,6 +14,45 @@ import { createPlaywrightRouterConfig } from "../scripts/dev/playwright_router_c
 import { parseCheckoutSparkReceiverContracts } from "../packages/core/src/protocol/checkout-spark-receiver-capability"
 
 describe("isolated router Playwright launcher", () => {
+  it("partitions native event coverage without losing ordinary or receiver cases", () => {
+    const nativeTitles = [
+      "native router funding automatically @commerce",
+      "native router Event Market Buyer completes @commerce",
+    ]
+    const all = createPlaywrightRouterConfig({})
+    const ordinary = createPlaywrightRouterConfig({
+      PLAYWRIGHT_ROUTER_NATIVE_PROFILE: "ordinary",
+    })
+    const event = createPlaywrightRouterConfig({
+      PLAYWRIGHT_ROUTER_NATIVE_PROFILE: "event",
+    })
+    for (const title of nativeTitles) {
+      expect((all.grep as RegExp).test(title)).toBe(true)
+      expect(
+        Number((ordinary.grep as RegExp).test(title)) +
+          Number((event.grep as RegExp).test(title))
+      ).toBe(1)
+    }
+    expect((ordinary.grep as RegExp).test(nativeTitles[0]!)).toBe(true)
+    expect((event.grep as RegExp).test(nativeTitles[1]!)).toBe(true)
+    for (const config of [all, ordinary, event]) {
+      expect(
+        (config.grep as RegExp).test("receiver setup profile @commerce")
+      ).toBe(false)
+      expect(config.retries).toBe(0)
+      expect(config.workers).toBe(1)
+      expect(config.use?.trace).toBe("off")
+    }
+    expect(() =>
+      createPlaywrightRouterConfig({ PLAYWRIGHT_ROUTER_NATIVE_PROFILE: "typo" })
+    ).toThrow()
+    expect(() =>
+      createPlaywrightRouterConfig({
+        PLAYWRIGHT_ROUTER_NATIVE_PROFILE: "event",
+        PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true",
+      })
+    ).toThrow()
+  })
   it("selects receiver setup and pre-funding admission separately from all routing lanes", () => {
     const setup = createPlaywrightRouterConfig({
       PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE: "true",

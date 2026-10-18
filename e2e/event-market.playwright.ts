@@ -12,7 +12,10 @@ import { createWrap } from "nostr-tools/nip59"
 
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
 import { resolveFutureMarketReceiptMerchandiseEvidence } from "@conduit/core/protocol/future-market-merchandise"
-import type { FutureMarketReadyReceiptSchema } from "@conduit/core/schemas"
+import {
+  orderSchema,
+  type FutureMarketReadyReceiptSchema,
+} from "@conduit/core/schemas"
 import {
   buildEventMarketAssignmentDraft,
   parseEventMarketAssignmentEvent,
@@ -2097,7 +2100,7 @@ test("Event Market variable products select a purchasable variation before check
   ).toBe(true)
 })
 
-test("two future market products form one order and one private organizer release @market @merchant", async ({
+test("two historical future market products retain one authenticated order and private organizer release @market @merchant", async ({
   page,
 }) => {
   test.setTimeout(300_000)
@@ -2163,14 +2166,16 @@ test("two future market products form one order and one private organizer releas
     })
   const soap = product("Future handoff soap", "future-handoff-soap")
   const candle = product("Future handoff candle", "future-handoff-candle")
+  const soapAssignment = signedAssignment(market, calendar, soap)
+  const candleAssignment = signedAssignment(market, calendar, candle)
   relay.seed(
     calendar,
     market,
     grant,
     soap,
     candle,
-    signedAssignment(market, calendar, soap),
-    signedAssignment(market, calendar, candle),
+    soapAssignment,
+    candleAssignment,
     createInboxDeclaration("organizer", createdAt),
     createInboxDeclaration("merchant", createdAt),
     createInboxDeclaration("buyer", createdAt)
@@ -2180,89 +2185,122 @@ test("two future market products form one order and one private organizer releas
     pubkey: ORGANIZER_PUBKEY,
     identifier: "future-handoff-fair",
   })
-  await gotoAs(page, marketUrl, `/events/${marketNaddr}`, "buyer")
-  for (const [index, name] of [
-    "Future handoff soap",
-    "Future handoff candle",
-  ].entries()) {
-    if (index === 1) {
-      relay.seed(
-        signEvent(ORGANIZER_SECRET, {
-          ...market,
-          created_at: createdAt + 1,
-          tags: [
-            ...market.tags,
-            ["prev", market.id],
-            [
-              "merchant",
-              getPublicKey(generateSecretKey()),
-              "merchant_present",
-              "Other booth",
-            ],
-          ],
-        })
-      )
-      await page.reload()
+  // New organizer checkout requires its finite reserved stock grant. Replay
+  // this older release profile through a genuine Buyer-authored NIP-59 order,
+  // retaining its exact signed terms rather than bypassing current admission.
+  const snapshot = (event: SignedEvent) => ({
+    coordinate: eventCoordinate(event),
+    eventId: event.id,
+    createdAt: event.created_at * 1_000,
+    signedEvent: event,
+  })
+  const order = orderSchema.parse({
+    id: "historical-grouped-organizer-handoff",
+    buyerPubkey: BUYER_PUBKEY,
+    merchantPubkey: MERCHANT_PUBKEY,
+    items: [
+      { event: soap, assignment: soapAssignment, quantity: 2 },
+      { event: candle, assignment: candleAssignment, quantity: 1 },
+    ].map(({ event, assignment, quantity }) => ({
+      productId: eventCoordinate(event),
+      title: event.tags.find((tag) => tag[0] === "title")?.[1],
+      format: "physical",
+      quantity,
+      priceAtPurchase: 0,
+      currency: "SATS",
+      sourcePrice: { amount: 0, currency: "SAT", normalizedCurrency: "SAT" },
+      shippingCostSats: 0,
+      fulfillment: {
+        type: "event_market_pickup",
+        organizerPubkey: ORGANIZER_PUBKEY,
+        merchantPubkey: MERCHANT_PUBKEY,
+        payeePubkey: MERCHANT_PUBKEY,
+        market: snapshot(market),
+        calendar: {
+          ...snapshot(calendar),
+          start: (createdAt + 7_200) * 1_000,
+          end: (createdAt + 10_800) * 1_000,
+        },
+        grant: {
+          kind: 3841,
+          pubkey: ORGANIZER_PUBKEY,
+          eventId: grant.id,
+          createdAt: grant.created_at * 1_000,
+          ancestryEventIds: [grant.id],
+          observedDeletionEventIds: [],
+          signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
+        },
+        product: snapshot(event),
+        occurrenceAssignment: snapshot(assignment),
+        mode: "organizer_handoff",
+        assignment: "Pickup Desk",
+      },
+    })),
+    subtotal: 0,
+    currency: "SATS",
+    shippingCostSats: 0,
+    createdAt: (createdAt + 1) * 1_000,
+  })
+  const originalOrderWraps = signedBuyerOrder(order, createdAt + 1)
+  expect(originalOrderWraps).toHaveLength(2)
+  expect(originalOrderWraps.every((event) => verifyEvent(event))).toBe(true)
+  const originalOrders = uniquePrivatePublications(
+    decryptPrivatePublications(
+      originalOrderWraps.map((event) => ({ event, relayUrl: FIXTURE_RELAY })),
+      MERCHANT_SECRET
+    )
+  ).filter((message) => rumorType(message.rumor) === "order")
+  expect(originalOrders).toHaveLength(1)
+  expect(JSON.parse(originalOrders[0]!.rumor.content)).toEqual(order)
+  relay.seed(
+    ...originalOrderWraps,
+    signEvent(ORGANIZER_SECRET, {
+      ...market,
+      created_at: createdAt + 1,
+      tags: [
+        ...market.tags,
+        ["prev", market.id],
+        [
+          "merchant",
+          getPublicKey(generateSecretKey()),
+          "merchant_present",
+          "Other booth",
+        ],
+      ],
+    })
+  )
+  await gotoAs(page, marketUrl, "/orders", "buyer", { order: order.id })
+  expect(order.items.reduce((total, item) => total + item.quantity, 0)).toBe(3)
+  expect(
+    order.items.every((item) => item.fulfillment?.type !== "shipping")
+  ).toBe(true)
+  expect(order.shippingAddress).toBeUndefined()
+  for (const item of order.items) {
+    expect(item.fulfillment?.type).toBe("event_market_pickup")
+    if (item.fulfillment?.type === "event_market_pickup") {
+      expect(item.fulfillment.market.eventId).toBe(market.id)
+      expect(
+        sameSignedPublicEvent(item.fulfillment.market.signedEvent, market)
+      ).toBe(true)
     }
-    const card = page.getByRole("listitem").filter({ hasText: name })
-    await expect(
-      card.getByRole("button", { name: /^Add .+ to cart$/ })
-    ).toBeEnabled()
-    await card.getByRole("button", { name: /^Add .+ to cart$/ }).click()
-    await expect(
-      page.getByRole("button", {
-        name: `Cart, ${index + 1} item${index === 0 ? "" : "s"}`,
-      })
-    ).toBeVisible()
-  }
-  await gotoAs(page, marketUrl, "/cart", "buyer")
-  await page
-    .getByRole("button", { name: "Increase quantity for Future handoff soap" })
-    .click()
-  await expect(page.getByText("1 purchase/1 merchant/3 items")).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: /^Clear Event pickup/ })
-  ).toHaveCount(1)
-  await page.getByRole("button", { name: "Order", exact: true }).click()
-  await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible()
-  await expect(
-    page.getByText(/Pickup from event organizer/).first()
-  ).toBeVisible()
-  await expect(page.getByText(/Pickup Desk/).first()).toBeVisible()
-  await expect(page.getByLabel(/Street address/i)).toHaveCount(0)
-  const orderStart = relay.publications.length
-  await page.getByRole("button", { name: /^Send order$/i }).click()
-  await expect(page).toHaveURL(/\/orders(?:\?|$)/)
-  const orderMessages = () =>
-    uniquePrivatePublications(
-      decryptPrivatePublications(
-        relay.publications,
-        MERCHANT_SECRET,
-        orderStart
-      )
-    ).filter((message) => rumorType(message.rumor) === "order")
-  await expect.poll(() => orderMessages().length).toBe(1)
-  const order = JSON.parse(orderMessages()[0]!.rumor.content) as {
-    id: string
-    items: Array<{
-      fulfillment?: {
-        type?: string
-        market?: { coordinate: string }
-        occurrenceAssignment?: { eventId: string }
-      }
-    }>
   }
   expect(order.items).toHaveLength(2)
   expect(
-    order.items.every((item) => !!item.fulfillment?.occurrenceAssignment)
+    order.items.every(
+      (item) =>
+        item.fulfillment?.type === "event_market_pickup" &&
+        !!item.fulfillment.occurrenceAssignment
+    )
   ).toBe(true)
   expect(
     order.items.every(
       (item) => item.fulfillment?.type === "event_market_pickup"
     )
   ).toBe(true)
+  const firstPickup = order.items[0]?.fulfillment
   expect(
-    order.items[0]?.fulfillment?.market?.coordinate === eventCoordinate(market)
+    firstPickup?.type === "event_market_pickup" &&
+      firstPickup.market.coordinate === eventCoordinate(market)
   ).toBe(true)
   const buyerPickup = page.getByTestId("future-market-order-pickup")
   await expect(buyerPickup).toBeVisible()
@@ -5032,6 +5070,12 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
           exact: true,
         })
         .click()
+      await expect(
+        page.getByText(
+          "This device's handover ID is saved. Share it with the seller.",
+          { exact: true }
+        )
+      ).toBeVisible({ timeout: 30_000 })
       const writerId = await page
         .getByRole("textbox", {
           name: "This device's handover ID",
@@ -5107,6 +5151,17 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
       name: new RegExp(`Open free pickup ${result.order.id.slice(-8)}$`),
     })
     .click()
+  const handoutItems = page.getByRole("region", {
+    name: "Items to hand out",
+    exact: true,
+  })
+  await expect(
+    handoutItems.getByText(
+      result.product.tags.find((tag) => tag[0] === "title")![1]!,
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(handoutItems.getByText("Qty 1", { exact: true })).toBeVisible()
   await page
     .getByRole("button", { name: "Check free pickup", exact: true })
     .click()
@@ -5749,7 +5804,7 @@ test("event variation shipping rejects changed and deleted listings before addin
       ["d", "future-handoff-fair"],
       ["a", eventCoordinate(calendar)],
       ["event_market", "2", "open"],
-      ["merchant", MERCHANT_PUBKEY, "organizer_handoff", "Pickup Desk"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Pickup Desk"],
     ],
   })
   const grant = signEvent(ORGANIZER_SECRET, {

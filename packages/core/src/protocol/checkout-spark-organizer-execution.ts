@@ -15,16 +15,23 @@ import {
 } from "./checkout-spark-settled-router"
 import { inspectEventMarketStockPacket } from "./event-market-stock-workflow"
 import { validateOrganizerStockJournalPool } from "./event-market-stock-journal"
+import { assertOrganizerStockWriterCurrent } from "./event-market-stock-writer-guard"
 import { getFutureMarketClaimRef } from "./future-market-handoff"
 import { parseEventMarketStockAuthorityRumor } from "./event-market-stock-authority"
 import { openCheckoutSparkOrganizerExecutionProgress } from "./checkout-spark-organizer-progress"
+import { openCheckoutSparkMerchantEventProgress } from "./checkout-spark-merchant-event-progress"
 import type { CheckoutSparkEventMarketBinding } from "./checkout-spark-event-market"
+import {
+  projectEventMarketOrganizerMerchandise,
+  type EventMarketOrganizerMerchandise,
+} from "./event-market-organizer-merchandise"
 
 export interface CheckoutSparkOrganizerPurchase {
   readonly handoffId: string
   readonly plan: CheckoutSparkSettledPlan
   readonly orderBinding: CheckoutSparkOrganizerOrderBinding
   readonly claimRef: string
+  readonly merchandise: EventMarketOrganizerMerchandise
   readonly writerBindings: readonly {
     poolId: string
     writerId: string
@@ -46,6 +53,7 @@ type OpenInput = {
   initialWrap: SignedPublicNostrEvent
   buyerProgressWraps?: readonly SignedPublicNostrEvent[]
   organizerProgressWraps?: readonly SignedPublicNostrEvent[]
+  merchantProgressWraps?: readonly SignedPublicNostrEvent[]
   shouldContinue(): boolean
   now?: () => number
 }
@@ -115,6 +123,13 @@ export async function assertEventMarketOrganizerStockWriters(input: {
       input.writerBindings.length
   )
     unavailable()
+  await assertOrganizerStockWriterCurrent({
+    db: input.db,
+    accountPubkey: input.organizerPubkey,
+    marketCoordinate: binding.marketCoordinate,
+    writerId: input.writerId,
+  })
+  input.assertCurrent()
   for (const writer of input.writerBindings) {
     input.assertCurrent()
     const pool = await input.db.eventMarketOrganizerStockPools.get(
@@ -162,6 +177,15 @@ export async function assertEventMarketOrganizerStockWriters(input: {
     )
       unavailable()
   }
+  // Grant authentication can wait on an external signer after the first
+  // observation. The durable writer fence must still hold when it finishes.
+  await assertOrganizerStockWriterCurrent({
+    db: input.db,
+    accountPubkey: input.organizerPubkey,
+    marketCoordinate: binding.marketCoordinate,
+    writerId: input.writerId,
+  })
+  input.assertCurrent()
 }
 
 /**
@@ -178,6 +202,9 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
     buyerProgressWraps: structuredClone([...(input.buyerProgressWraps ?? [])]),
     organizerProgressWraps: structuredClone([
       ...(input.organizerProgressWraps ?? []),
+    ]),
+    merchantProgressWraps: structuredClone([
+      ...(input.merchantProgressWraps ?? []),
     ]),
   }
   const signerRevision = input.signer.revision
@@ -202,10 +229,16 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
   }
   assertCurrent()
   if (
-    input.buyerProgressWraps!.length + input.organizerProgressWraps!.length >
+    input.buyerProgressWraps!.length +
+      input.organizerProgressWraps!.length +
+      input.merchantProgressWraps!.length >
       512 ||
     new TextEncoder().encode(
-      JSON.stringify([input.buyerProgressWraps, input.organizerProgressWraps])
+      JSON.stringify([
+        input.buyerProgressWraps,
+        input.organizerProgressWraps,
+        input.merchantProgressWraps,
+      ])
     ).length >
       4 * 1024 * 1024
   )
@@ -288,10 +321,38 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
       unavailable()
     state = advance(state, progress.state)
   }
+  for (const wrap of input.merchantProgressWraps!) {
+    const progress = await openCheckoutSparkMerchantEventProgress({
+      signedRecipientWrap: wrap,
+      signer: input.signer,
+      shouldContinue: () => {
+        assertCurrent()
+        return true
+      },
+    })
+    assertCurrent()
+    if (
+      progress.initialOrganizerHandoffId !== initial.handoffId ||
+      progress.initialHandoffId !== initial.merchantHandoffId ||
+      progress.organizerPubkey !== initial.organizerPubkey ||
+      progress.merchantPubkey !== initial.merchantPubkey ||
+      progress.state.plan.planDigest !== initial.plan.planDigest ||
+      JSON.stringify(progress.orderBinding) !==
+        JSON.stringify(initial.orderBinding)
+    )
+      unavailable()
+    state = advance(state, progress.state)
+  }
   const purchase: CheckoutSparkOrganizerPurchase = Object.freeze({
     handoffId: initial.handoffId,
     plan: initial.plan,
     orderBinding: initial.orderBinding,
+    merchandise: projectEventMarketOrganizerMerchandise({
+      merchantPubkey: initial.merchantPubkey,
+      eventMarket: initial.plan.eventMarket!,
+      commerceQuote: initial.plan.commerceQuote,
+      sourceEvents: initial.sourceEvents ?? [],
+    }),
     claimRef: getFutureMarketClaimRef({
       orderId: initial.plan.orderId,
       merchantPubkey: initial.merchantPubkey,
@@ -397,4 +458,13 @@ export async function assertCheckoutSparkOrganizerRecoveryWriterCurrent(
     })
   )
     throw new Error("Reserve this complete organizer order before routing.")
+  // The journal read above is asynchronous too; retirement cannot be hidden
+  // behind a capability whose account/session itself remains unchanged.
+  await assertOrganizerStockWriterCurrent({
+    db: context.input.db,
+    accountPubkey: context.initial.organizerPubkey,
+    marketCoordinate: context.initial.plan.eventMarket!.marketCoordinate,
+    writerId: context.input.writerId,
+  })
+  context.assertCurrent()
 }

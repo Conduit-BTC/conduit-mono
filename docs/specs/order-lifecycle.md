@@ -220,9 +220,15 @@ fulfillment remains shipment-safe.
 
 The snapshot also preserves `merchant_handoff` or `organizer_handoff` and the
 exact handler identity. Merchant handoff stays inside the buyer/merchant order
-conversation. Organizer handoff creates no organizer authority until the
-merchant has confirmed payment (or the order total is zero) and separately
-publishes a minimal encrypted ready-for-pickup receipt. A valid organizer
+conversation. Historical pre-reserved-pool Organizer handoff creates no
+organizer authority until the merchant has confirmed payment (or the order
+total is zero) and separately publishes a minimal encrypted ready-for-pickup
+receipt. New reserved-pool Event Market orders instead use the advance signed
+Merchant grant, exact stock journal, independently verified required commerce
+settlement (or an authenticated free purchase), and the order-bound claim under
+`docs/specs/event-markets.md`. They require no new live Merchant release signature.
+Merchant financial recovery grants no stock-writer or physical release authority.
+A valid organizer
 `handed_out` acknowledgement may unlock the merchant's completion workflow, but
 does not itself become payment, cancellation, refund, shipping, or ordinary
 merchant status evidence. An authenticated zero-cost pickup may expose the
@@ -234,12 +240,14 @@ Merchant order handling must allow the merchant to find work by settlement,
 decision, fulfillment, and communication needs. The exact queue labels and
 filter set are presentation choices.
 
-For guest orders, the merchant contacts the buyer out of band and records the
-same decision, payment, shipment, and completion milestones through
+For guest orders with supplied contact details, the merchant contacts the buyer
+out of band and records the same decision, payment, shipment, and completion milestones through
 merchant-addressed encrypted self-copies. Those records provide local/relay
 operational history without claiming that the ephemeral guest pubkey is a
 reply-capable DM inbox or that Conduit delivered the external phone/email
-message.
+message. Contact-free Event Market pickup instead relies on the buyer's saved
+private receipt and exact claim; it does not acquire a guest inbox or require
+contact details merely to preserve these operational records.
 
 This iteration preserves Conduit's current kind `16` private commerce-message
 encoding and reads. Resolving the kind collision and migrating to a future

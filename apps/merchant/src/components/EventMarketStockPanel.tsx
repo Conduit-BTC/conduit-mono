@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  beginOrganizerStockWriterHandover,
+  disposeOrganizerStockWriterHandoverCursor,
+  prepareOrganizerStockWriterTarget,
+  publishOrganizerStockWriterHandover,
+  readOrganizerStockWriterHandovers,
+  registerOrganizerStockWriterDevice,
+  restoreOrganizerStockWriterHandover,
+  type OrganizerStockWriterHandoverCursor,
+} from "@conduit/core/protocol/event-market-stock-writer-handover"
+import {
   closeAndPublishOrganizerStockPool,
   createEventMarketStockDiscovery,
   db,
@@ -33,6 +43,7 @@ import {
 } from "@conduit/core"
 import {
   Button,
+  Checkbox,
   Card,
   CardContent,
   CardDescription,
@@ -48,8 +59,11 @@ import {
 } from "@conduit/ui"
 import {
   buildMerchantOrganizerStockGrant,
+  confirmOrganizerStockDeviceRegistration,
   createOrganizerStockDevice,
   readOrganizerStockDevice,
+  organizerStockDeviceId,
+  prepareOrganizerStockTargetDevice,
   reserveOrganizerStockInstallation,
   stockPoolBelongsToOccurrence,
   type OrganizerStockDevice,
@@ -62,6 +76,7 @@ export function EventMarketStockPoolList(props: {
   pools: readonly EventMarketOrganizerStockPool[]
   accountPubkey: string
   writerId?: string
+  writerBlocked?: boolean
   busy: boolean
   onAction(pool: EventMarketOrganizerStockPool, action: StockAction): void
 }) {
@@ -78,7 +93,8 @@ export function EventMarketStockPoolList(props: {
         const ownWriter =
           organizer &&
           props.writerId === pool.writerId &&
-          !pool.readOnlyRecovery
+          !pool.readOnlyRecovery &&
+          !props.writerBlocked
         return (
           <section
             key={pool.poolId}
@@ -113,7 +129,7 @@ export function EventMarketStockPoolList(props: {
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={props.busy}
+                  disabled={props.busy || (organizer && props.writerBlocked)}
                   onClick={() => props.onAction(pool, "retry")}
                 >
                   Retry saved {organizer ? "closing" : "grant"} delivery
@@ -167,6 +183,11 @@ export function EventMarketStockPanel(props: {
   const [assignmentId, setAssignmentId] = useState("")
   const [writerId, setWriterId] = useState("")
   const [quantity, setQuantity] = useState("")
+  const [replacementId, setReplacementId] = useState("")
+  const [confirmMove, setConfirmMove] = useState(false)
+  const [writerHandovers, setWriterHandovers] = useState<
+    Awaited<ReturnType<typeof readOrganizerStockWriterHandovers>>["selections"]
+  >([])
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
   const [error, setError] = useState("")
@@ -174,7 +195,9 @@ export function EventMarketStockPanel(props: {
   const [packets, setPackets] = useState<
     readonly AuthenticatedEventMarketStockPacket[]
   >([])
-  const [hasMore, setHasMore] = useState(false)
+  const [stockHasMore, setStockHasMore] = useState(false)
+  const [handoverHasMore, setHandoverHasMore] = useState(false)
+  const hasMore = stockHasMore || handoverHasMore
   const [stockImports, setStockImports] = useState<
     readonly MerchantOrganizerStockImportSelection[]
   >([])
@@ -182,7 +205,30 @@ export function EventMarketStockPanel(props: {
   const discovery = useRef<Awaited<
     ReturnType<typeof createEventMarketStockDiscovery>
   > | null>(null)
+  const handoverScan = useRef<{
+    epoch: number
+    cursor?: OrganizerStockWriterHandoverCursor
+  }>({ epoch: 0 })
+  const targetDeviceId = device ? organizerStockDeviceId(device) : undefined
   useEffect(() => {
+    const scan = handoverScan.current
+    setWriterHandovers([])
+    setHandoverHasMore(false)
+    return () => {
+      scan.epoch++
+      if (scan.cursor) disposeOrganizerStockWriterHandoverCursor(scan.cursor)
+      scan.cursor = undefined
+    }
+  }, [account, market.coordinate, authGeneration, targetDeviceId])
+  useEffect(() => {
+    setDevice(null)
+    setDeviceError("")
+    setWriterHandovers([])
+    setConfirmMove(false)
+    setReplacementId("")
+    setPackets([])
+    setStockHasMore(false)
+    setStockImports([])
     if (organizer) {
       try {
         setDevice(
@@ -196,7 +242,7 @@ export function EventMarketStockPanel(props: {
       discovery.current?.dispose()
       discovery.current = null
     }
-  }, [account, market.coordinate, organizer])
+  }, [account, market.coordinate, organizer, authGeneration])
   const local = useQuery({
     queryKey: [
       "event-stock-panel",
@@ -238,12 +284,31 @@ export function EventMarketStockPanel(props: {
           (!occurrence || row.occurrenceCoordinate === occurrence.coordinate)
       )
       if (!shouldContinue()) throw new Error("Account session changed.")
-      return { pools, assignments, hasRetainedPools: retainedPools.length > 0 }
+      const writerRegistration = organizer
+        ? await db.eventMarketOrganizerStockWriters.get(
+            `${account}:${market.coordinate}`
+          )
+        : undefined
+      if (!shouldContinue()) throw new Error("Account session changed.")
+      return {
+        pools,
+        assignments,
+        hasRetainedPools: retainedPools.length > 0,
+        writerRegistration,
+      }
     },
     retry: false,
   })
   const pools = local.data?.pools ?? []
   const assignments = local.data?.assignments ?? []
+  const registration = local.data?.writerRegistration
+  const deviceReady =
+    !!device &&
+    device.mode !== "target" &&
+    registration?.state === "active" &&
+    registration.deviceId === organizerStockDeviceId(device) &&
+    registration.writerId === device.writerId
+  const writerRetired = registration?.state === "retired"
   async function run(operation: () => Promise<void>) {
     if (inFlight.current) return
     inFlight.current = true
@@ -290,6 +355,39 @@ export function EventMarketStockPanel(props: {
     }
     if (!shouldContinue()) return
     setPackets(page.packets)
+    let moreHandovers = false,
+      handoverCapped = false
+    if (organizer && targetDeviceId) {
+      const epoch = handoverScan.current.epoch
+      try {
+        const handovers = await readOrganizerStockWriterHandovers({
+          ...current,
+          store: getCommerceInbox(account).store,
+          marketCoordinate: market.coordinate,
+          targetDeviceId,
+          cursor: handoverScan.current.cursor,
+        })
+        if (!shouldContinue() || epoch !== handoverScan.current.epoch) {
+          disposeOrganizerStockWriterHandoverCursor(handovers.cursor)
+          return
+        }
+        handoverScan.current.cursor = handovers.cursor
+        moreHandovers = handovers.hasMore
+        handoverCapped = handovers.capped
+        setHandoverHasMore(moreHandovers)
+        setWriterHandovers(handovers.selections)
+      } catch (cause) {
+        if (epoch === handoverScan.current.epoch) {
+          if (handoverScan.current.cursor)
+            disposeOrganizerStockWriterHandoverCursor(
+              handoverScan.current.cursor
+            )
+          handoverScan.current.cursor = undefined
+          setHandoverHasMore(false)
+        }
+        throw cause
+      }
+    }
     if (!organizer) {
       const result = await readRetainedMerchantOrganizerStockImports({
         inbox: getCommerceInbox(account),
@@ -301,14 +399,112 @@ export function EventMarketStockPanel(props: {
       setStockImports(result.selections)
       setImportAttention(result.capped || result.conflictingOrders > 0)
     }
-    setHasMore(page.hasMore)
+    setStockHasMore(page.hasMore)
     setNotice(
-      page.pageStatus === "unavailable"
-        ? "Private stock messages are unavailable. Saved stock remains unchanged."
-        : page.hasMore
-          ? "More stock history can be checked. Missing messages do not reset reserved stock."
-          : "The bounded message check finished. Saved stock remains authoritative; older history may still exist elsewhere."
+      handoverCapped
+        ? "The saved handover check reached its safe bound. No partial handover was activated; keep the original device history intact."
+        : page.pageStatus === "unavailable"
+          ? "Private stock messages are unavailable. Saved stock remains unchanged."
+          : page.hasMore || moreHandovers
+            ? "More stock history can be checked. Missing messages do not reset reserved stock."
+            : "The bounded message check finished. Saved stock remains authoritative; older history may still exist elsewhere."
     )
+  }
+  async function registerDevice(selected: OrganizerStockDevice) {
+    const current = session()
+    const id = organizerStockDeviceId(selected)
+    await registerOrganizerStockWriterDevice({
+      ...current,
+      marketCoordinate: market.coordinate,
+      writerId: selected.writerId,
+      deviceId: id,
+      expectedPoolIds: selected.installedPoolIds,
+    })
+    const confirmed = await confirmOrganizerStockDeviceRegistration({
+      db,
+      storage: localStorage,
+      account,
+      market: market.coordinate,
+      expectedDeviceId: id,
+      shouldContinue,
+    })
+    if (shouldContinue()) {
+      setDevice(confirmed)
+      setDeviceError("")
+    }
+  }
+  async function prepareReplacement() {
+    const selected = prepareOrganizerStockTargetDevice({
+      storage: localStorage,
+      account,
+      market: market.coordinate,
+      hasRetainedPools: local.data?.hasRetainedPools ?? true,
+    })
+    if (shouldContinue()) setDevice(selected)
+    await prepareOrganizerStockWriterTarget({
+      ...session(),
+      marketCoordinate: market.coordinate,
+      targetDeviceId: organizerStockDeviceId(selected),
+    })
+    if (shouldContinue())
+      setNotice(
+        "Replacement device is prepared. Copy its ID to the original device; no stock or payment authority has moved yet."
+      )
+  }
+  async function moveWriter() {
+    if (!device || !deviceReady || !confirmMove)
+      throw new Error(
+        "Confirm the original active device and replacement ID first."
+      )
+    const current = session()
+    await beginOrganizerStockWriterHandover({
+      ...current,
+      marketCoordinate: market.coordinate,
+      writerId: device.writerId,
+      targetDeviceId: replacementId.trim(),
+    })
+    await local.refetch()
+    if (shouldContinue())
+      setNotice(
+        "This device is frozen. Its complete stock history is saved for the selected replacement device."
+      )
+    await publishOrganizerStockWriterHandover({
+      ...current,
+      marketCoordinate: market.coordinate,
+    })
+    if (shouldContinue())
+      setNotice(
+        "The exact complete handover was sent privately to your account. Verify and restore it on the prepared replacement device."
+      )
+  }
+  async function restoreWriter(selection: (typeof writerHandovers)[number]) {
+    if (!device)
+      throw new Error(
+        "Prepare this replacement device before restoring its handover."
+      )
+    const id = organizerStockDeviceId(device)
+    const result = await restoreOrganizerStockWriterHandover({
+      ...session(),
+      envelope: selection.envelope,
+      envelopes: selection.envelopes,
+      expectedTargetDeviceId: id,
+    })
+    const restored = await confirmOrganizerStockDeviceRegistration({
+      db,
+      storage: localStorage,
+      account,
+      market: market.coordinate,
+      expectedDeviceId: id,
+      restored: result,
+      shouldContinue,
+    })
+    if (shouldContinue()) {
+      setDevice(restored)
+      setDeviceError("")
+      setNotice(
+        "Complete stock history is verified on this device. Existing payment attempts and prior handouts are preserved; do not repeat them."
+      )
+    }
   }
   async function grant(assignment: MerchantInventoryAssignment) {
     if (!occurrence)
@@ -372,6 +568,7 @@ export function EventMarketStockPanel(props: {
     if (
       payload.type !== "grant" ||
       !device ||
+      !deviceReady ||
       payload.writerId !== device.writerId
     )
       throw new Error("This grant is for another handover device.")
@@ -412,7 +609,7 @@ export function EventMarketStockPanel(props: {
   ) {
     const current = session()
     if (action === "close") {
-      if (!device || device.writerId !== pool.writerId)
+      if (!device || !deviceReady || device.writerId !== pool.writerId)
         throw new Error("Use the designated handover device.")
       await closeAndPublishOrganizerStockPool({
         ...current,
@@ -593,16 +790,30 @@ export function EventMarketStockPanel(props: {
         {organizer ? (
           <div className="space-y-3">
             <p className="text-sm text-[var(--text-secondary)]">
-              Use this same browser and device for delegated sales. Share its
-              handover ID with the seller before they reserve stock. A
-              replacement device must recover the full journal, not restart from
-              a grant.
+              Use one designated browser for stock sales and pickup. A
+              replacement must be prepared first, then receive the original
+              device's complete saved history. A grant alone cannot restart a
+              stock writer.
             </p>
             {device ? (
               <>
-                <Field label="This device's handover ID">
+                <Field
+                  label={
+                    device.mode === "target"
+                      ? "Replacement device handover ID"
+                      : "This device's handover ID"
+                  }
+                >
                   {(control) => (
-                    <Input {...control} readOnly value={device.writerId} />
+                    <Input
+                      {...control}
+                      readOnly
+                      value={
+                        device.mode === "target"
+                          ? organizerStockDeviceId(device)
+                          : device.writerId
+                      }
+                    />
                   )}
                 </Field>
                 <Button
@@ -611,15 +822,41 @@ export function EventMarketStockPanel(props: {
                   disabled={busy}
                   onClick={() =>
                     void run(async () => {
-                      await navigator.clipboard.writeText(device.writerId)
+                      await navigator.clipboard.writeText(
+                        device.mode === "target"
+                          ? organizerStockDeviceId(device)
+                          : device.writerId
+                      )
                       setNotice("Device handover ID copied.")
                     })
                   }
                 >
-                  Copy handover ID
+                  {device.mode === "target"
+                    ? "Copy replacement device ID"
+                    : "Copy handover ID"}
                 </Button>
+                {device.mode !== "target" &&
+                !registration &&
+                local.isSuccess ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void run(async () => {
+                        await registerDevice(device)
+                        if (shouldContinue())
+                          setNotice(
+                            "This original device and its complete saved stock journal are verified."
+                          )
+                      })
+                    }
+                  >
+                    Verify this original device
+                  </Button>
+                ) : null}
               </>
-            ) : (
+            ) : !writerRetired && !registration ? (
               <Button
                 type="button"
                 disabled={
@@ -635,6 +872,12 @@ export function EventMarketStockPanel(props: {
                         hasRetainedPools: local.data?.hasRetainedPools ?? true,
                       })
                     )
+                    const selected = readOrganizerStockDevice(
+                      localStorage,
+                      account,
+                      market.coordinate
+                    )!
+                    await registerDevice(selected)
                     setNotice(
                       "This device's handover ID is saved. Share it with the seller."
                     )
@@ -643,7 +886,105 @@ export function EventMarketStockPanel(props: {
               >
                 Use this device for stock handover
               </Button>
-            )}
+            ) : null}
+            {!device || (device.mode === "target" && !registration) ? (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={
+                  busy ||
+                  !!deviceError ||
+                  !local.isSuccess ||
+                  local.data.hasRetainedPools ||
+                  !!registration
+                }
+                onClick={() => void run(prepareReplacement)}
+              >
+                Prepare replacement device
+              </Button>
+            ) : null}
+            {device?.mode === "target" && registration?.state === "target" ? (
+              <p role="status" className="text-sm text-[var(--info-text)]">
+                This replacement is prepared, not active. Copy its ID to the
+                original device, then check private stock messages and verify
+                the complete handover here.
+              </p>
+            ) : null}
+            {writerRetired ? (
+              <div className="space-y-3">
+                <p role="status" className="text-sm text-[var(--warning-text)]">
+                  This device's stock writer has moved. Continue on the
+                  replacement device.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(async () => {
+                      await publishOrganizerStockWriterHandover({
+                        ...session(),
+                        marketCoordinate: market.coordinate,
+                      })
+                      if (shouldContinue())
+                        setNotice(
+                          "Retried the exact saved private device handover. This device remains stopped."
+                        )
+                    })
+                  }
+                >
+                  Retry saved device handover
+                </Button>
+              </div>
+            ) : null}
+            {deviceReady && local.data?.hasRetainedPools ? (
+              <section className="space-y-3 border-t border-[var(--border)] pt-3">
+                <h3 className="font-medium">Move stock to another device</h3>
+                <p className="text-sm text-[var(--text-secondary)]">
+                  Prepare the replacement first. Moving freezes this device
+                  before sending the complete journal, including accepted orders
+                  and previous handouts. It does not restart payments.
+                </p>
+                <p className="text-sm text-[var(--text-secondary)]">
+                  If the complete history exceeds the safe transfer limit, this
+                  device stays active for normal work. Moving a larger history
+                  needs expanded transfer support; never prune, reset or move
+                  only part of the history.
+                </p>
+                <Field label="Replacement device ID">
+                  {(control) => (
+                    <Input
+                      {...control}
+                      value={replacementId}
+                      disabled={busy}
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      onChange={(event) => setReplacementId(event.target.value)}
+                    />
+                  )}
+                </Field>
+                <label className="flex items-start gap-3 text-sm">
+                  <Checkbox
+                    checked={confirmMove}
+                    onCheckedChange={setConfirmMove}
+                    disabled={busy}
+                    aria-label="I understand this stops stock sales and pickup on this device"
+                  />
+                  <span>
+                    I understand this stops stock sales and pickup on this
+                    device
+                  </span>
+                </label>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || !confirmMove || !replacementId.trim()}
+                  onClick={() => void run(moveWriter)}
+                >
+                  Freeze this device and send handover
+                </Button>
+              </section>
+            ) : null}
           </div>
         ) : occurrence && merchant?.mode === "organizer_handoff" ? (
           <form
@@ -781,6 +1122,7 @@ export function EventMarketStockPanel(props: {
               disabled={
                 busy ||
                 !device ||
+                !deviceReady ||
                 packet.payload.type !== "grant" ||
                 packet.payload.writerId !== device.writerId
               }
@@ -796,6 +1138,30 @@ export function EventMarketStockPanel(props: {
             ) : null}
           </section>
         ))}
+        {organizer &&
+          device &&
+          writerHandovers.map((selection) => (
+            <section
+              key={selection.transferId}
+              className="space-y-3 border-t border-[var(--border)] pt-3"
+            >
+              <p className="text-sm">
+                A complete private handover for this replacement is available
+                for {selection.poolCount} stock{" "}
+                {selection.poolCount === 1 ? "pool" : "pools"}. Verification
+                preserves accepted orders, previous handouts and the original
+                stock writer.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={busy || writerRetired}
+                onClick={() => void run(() => restoreWriter(selection))}
+              >
+                Verify and restore complete handover
+              </Button>
+            </section>
+          ))}
         {checkpoints.map((packet) => (
           <section
             key={packet.rumor.id}
@@ -874,11 +1240,12 @@ export function EventMarketStockPanel(props: {
         <EventMarketStockPoolList
           pools={pools}
           accountPubkey={account}
-          writerId={device?.writerId}
+          writerId={deviceReady ? device?.writerId : undefined}
+          writerBlocked={organizer && !deviceReady}
           busy={busy}
           onAction={(pool, action) => void run(() => poolAction(pool, action))}
         />
-        {organizer && device ? (
+        {organizer && device && deviceReady ? (
           <EventMarketOrganizerRecoveryQueue
             authenticatedPubkey={account}
             marketCoordinate={market.coordinate}

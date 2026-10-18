@@ -28,6 +28,7 @@ export async function checkoutSparkOrganizerFixture(
     commerceTotalSats?: number
     supplier?: boolean
     receiverDomain?: string
+    stockQuantity?: number
     wallet?: { mnemonic: string; accountNumber: number }
     preparePlan?: (
       graph: ReturnType<typeof checkoutSparkEventMarketFixture>
@@ -38,7 +39,7 @@ export async function checkoutSparkOrganizerFixture(
   const sourceGraph = checkoutSparkEventMarketFixture({
     ...options,
     mode: "organizer_handoff",
-    stockGrant: { writerId, quantity: 5 },
+    stockGrant: { writerId, quantity: options.stockQuantity ?? 5 },
   })
   const graph = {
     ...sourceGraph,

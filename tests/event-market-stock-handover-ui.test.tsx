@@ -12,9 +12,11 @@ import {
 } from "@conduit/core"
 import { EventMarketStockPoolList } from "../apps/merchant/src/components/EventMarketStockPanel"
 import { EventMarketOrganizerPickupForm } from "../apps/merchant/src/components/EventMarketOrganizerPickupCard"
+import { projectEventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   buildMerchantOrganizerStockGrant,
   createOrganizerStockDevice,
+  prepareOrganizerStockTargetDevice,
   readOrganizerStockDevice,
   reserveOrganizerStockInstallation,
   stockPoolBelongsToOccurrence,
@@ -201,6 +203,113 @@ describe("explicit organizer device handover", () => {
       "recovery"
     )
   })
+  it("retains the complete supported 2048-pool frontier and rejects an oversized label without trimming", () => {
+    const storage = memoryStorage(),
+      account = hash(),
+      market = `30409:${account}:bounded`,
+      writerId = crypto.randomUUID(),
+      installedPoolIds = Array.from({ length: 2048 }, (_, index) =>
+        index.toString(16).padStart(64, "0")
+      )
+    const key = `conduit:event-stock-device:1:${account}:${market}`
+    storage.setItem(
+      key,
+      JSON.stringify({ version: 1, writerId, installedPoolIds })
+    )
+    expect(
+      readOrganizerStockDevice(storage, account, market)?.installedPoolIds
+    ).toEqual(installedPoolIds)
+    expect(() =>
+      reserveOrganizerStockInstallation({
+        storage,
+        account,
+        market,
+        poolId: hash(),
+        writerId,
+      })
+    ).toThrow("more stock")
+    storage.setItem(
+      key,
+      JSON.stringify({
+        version: 1,
+        writerId,
+        installedPoolIds: [...installedPoolIds, hash()],
+      })
+    )
+    expect(() => readOrganizerStockDevice(storage, account, market)).toThrow(
+      "recovery"
+    )
+  })
+  it("does not turn malformed v2 labels into a replacement or logical writer", () => {
+    const writerId = crypto.randomUUID(),
+      deviceId = crypto.randomUUID()
+    for (const record of [
+      { version: 2, writerId, deviceId, mode: "writer", installedPoolIds: [] },
+      {
+        version: 2,
+        writerId: deviceId,
+        deviceId,
+        mode: "target",
+        installedPoolIds: [hash()],
+      },
+      {
+        version: 2,
+        writerId: deviceId,
+        deviceId,
+        mode: "target",
+        installedPoolIds: [],
+        extra: true,
+      },
+      {
+        version: 2,
+        writerId,
+        deviceId,
+        mode: "writer",
+        installedPoolIds: [],
+        transferId: hash(),
+      },
+    ])
+      expect(() =>
+        readOrganizerStockDevice(
+          { getItem: () => JSON.stringify(record), setItem: () => {} },
+          hash(),
+          "event"
+        )
+      ).toThrow("recovery")
+    expect(() =>
+      prepareOrganizerStockTargetDevice({
+        storage: { getItem: () => null, setItem: () => {} },
+        account: hash(),
+        market: "event",
+        hasRetainedPools: false,
+      })
+    ).toThrow("Save")
+    expect(() =>
+      readOrganizerStockDevice(
+        {
+          getItem: () => {
+            throw new Error("Blocked")
+          },
+          setItem: () => {},
+        },
+        hash(),
+        "event"
+      )
+    ).toThrow("storage is unavailable")
+    expect(() =>
+      prepareOrganizerStockTargetDevice({
+        storage: {
+          getItem: () => null,
+          setItem: () => {
+            throw new Error("Quota")
+          },
+        },
+        account: hash(),
+        market: "event",
+        hasRetainedPools: false,
+      })
+    ).toThrow("Save")
+  })
 })
 
 describe("stock grant form composition", () => {
@@ -310,12 +419,34 @@ describe("stock pool controls", () => {
       expect(html).not.toContain("Stop new sales and close pool")
     }
   })
+  it("keeps a retired or target device read-only even when its saved logical writer matches", async () => {
+    const f = await grantFixture()
+    const html = renderToStaticMarkup(
+      <EventMarketStockPoolList
+        pools={[f.pool]}
+        accountPubkey={f.organizerPubkey}
+        writerId={f.writerId}
+        writerBlocked
+        busy={false}
+        onAction={() => undefined}
+      />
+    )
+    expect(html).not.toContain("Stop new sales and close pool")
+    expect(html).toContain("Read-only here")
+  })
 })
 
 describe("organizer pickup controls", () => {
+  const fixture = checkoutSparkEventMarketFixture()
   const props = {
     orderLabel: "example",
-    quantity: 2,
+    quantity: 1,
+    merchandise: projectEventMarketOrganizerMerchandise({
+      merchantPubkey: fixture.merchantPubkey,
+      eventMarket: fixture.eventMarket,
+      commerceQuote: fixture.plan.commerceQuote,
+      sourceEvents: fixture.sourceEvents,
+    }),
     routing: false,
     paymentVerified: false,
     handedOut: false,
@@ -342,6 +473,22 @@ describe("organizer pickup controls", () => {
     expect(verified).toContain("Buyer&#x27;s pickup code")
     expect(verified).toContain("Confirm code and hand out once")
     expect(verified).toContain('disabled=""')
+  })
+  it("enables one handout only with verified goods, exact merchandise and the entered claim", () => {
+    const html = renderToStaticMarkup(
+      <EventMarketOrganizerPickupForm
+        {...props}
+        paymentVerified
+        historyReady
+        claimCode="A-VALID-PICKUP-CODE"
+      />
+    )
+    expect(html).toContain("Fixture apples")
+    const handout = html.match(
+      /<button\b[^>]*>Confirm code and hand out once<\/button>/
+    )?.[0]
+    expect(handout).toBeDefined()
+    expect(handout).not.toContain('disabled=""')
   })
   it("shows an already recorded handout as exact-delivery retry only", () => {
     const html = renderToStaticMarkup(

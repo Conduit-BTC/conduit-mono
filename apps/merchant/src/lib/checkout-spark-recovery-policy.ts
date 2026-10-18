@@ -32,14 +32,6 @@ export function assertMerchantCheckoutSparkDispatchPlan(
   plan: CheckoutSparkSettledPlan,
   allowLocalCanary = canUseMerchantCheckoutSparkRecipientCompatibility()
 ): void {
-  if (
-    plan.schemaVersion === 5 &&
-    plan.eventMarket?.mode === "organizer_handoff"
-  ) {
-    throw new Error(
-      "This checkout delegates payment continuation to its organizer."
-    )
-  }
   if (isCheckoutSparkNativeTreasuryPlan(plan)) {
     if (!plan.nativeTreasury)
       throw new Error("Checkout Spark native treasury is unavailable.")
@@ -48,6 +40,14 @@ export function assertMerchantCheckoutSparkDispatchPlan(
       plan.nativeTreasury.sparkAddress
     )
   }
+  assertCheckoutSparkRecoveryDestination(plan, allowLocalCanary)
+}
+
+/** Shared financial policy; this never grants stock-writer or handout authority. */
+export function assertCheckoutSparkRecoveryDestination(
+  plan: CheckoutSparkSettledPlan,
+  allowLocalCanary = canUseMerchantCheckoutSparkRecipientCompatibility()
+): void {
   const conduit = plan.recipients.find(
     (recipient) => recipient.kind === "conduit"
   )
@@ -55,12 +55,13 @@ export function assertMerchantCheckoutSparkDispatchPlan(
   if (
     !conduit ||
     source?.type !== "conduit_allowlist" ||
+    (source.policy !== "production" &&
+      source.policy !== "local_router_canary") ||
+    conduit.destination.value !==
+      checkoutSparkConduitFeeRecipient(source.policy) ||
+    conduit.recipientId !== checkoutSparkConduitFeeRecipient(source.policy) ||
     (!allowLocalCanary &&
-      (plan.network !== "mainnet" ||
-        source.policy !== "production" ||
-        conduit.destination.value !==
-          checkoutSparkConduitFeeRecipient("production") ||
-        conduit.recipientId !== checkoutSparkConduitFeeRecipient("production")))
+      (plan.network !== "mainnet" || source.policy !== "production"))
   ) {
     throw new Error(
       "Checkout Spark recovery destination is unavailable in this deployment."

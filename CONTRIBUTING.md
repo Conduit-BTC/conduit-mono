@@ -307,8 +307,11 @@ job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
-25-minute limit for its serial ordinary, native-router, and receiver setup
-lanes, including setup, evidence upload, and cleanup. Individual test deadlines
+25-minute limit for its serial ordinary, ordinary native-router, and receiver setup
+lanes. Event native-router cases run in a separate parallel, 25-minute job with
+independent app, relay, wallet, signer and browser-storage state. Both jobs remain
+required whenever commerce is selected. Limits include setup, evidence upload,
+and cleanup. Individual test deadlines
 remain unchanged. Job cancellation still fails the aggregate gate, even when
 all test artifacts were uploaded successfully.
 
@@ -332,6 +335,11 @@ execution; the separate manifest/SHA/first-attempt verifier remains the gate.
 
 The isolated router and receiver setup lanes retain separate `smoke-evidence-router-<attempt>`
 and `smoke-evidence-router-receiver-setup-<attempt>` artifacts under the same policy.
+Event native cases retain `smoke-evidence-event-router-<attempt>` under that same
+policy. Before execution, project-aware discovery verifies that the ordinary and
+Event native profiles form the exact full native manifest with no omissions or
+overlap. The default local router profile still runs the complete native set;
+`PLAYWRIGHT_ROUTER_NATIVE_PROFILE=ordinary` or `event` selects a CI partition.
 Each lane runs after an earlier lane fails only when its own setup and selection
 succeeded. A later passing lane does not replace an earlier failure.
 

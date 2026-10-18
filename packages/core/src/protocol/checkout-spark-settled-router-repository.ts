@@ -41,6 +41,7 @@ import {
   type CheckoutSparkNativePreProviderCancellation,
 } from "./checkout-spark-treasury-finalization"
 import {
+  isAuthenticatedCheckoutSparkOrganizerOrderWitness,
   restoreCheckoutSparkMerchantOrderWitness,
   type CheckoutSparkMerchantOrderWitness,
 } from "./checkout-spark-merchant-order-witness"
@@ -1265,6 +1266,8 @@ export class DexieCheckoutSparkSettledRepository {
     const exactWitness = witness
       ? restoreCheckoutSparkMerchantOrderWitness(witness, next.plan)
       : undefined
+    const authenticatedOrganizerWitness =
+      witness && isAuthenticatedCheckoutSparkOrganizerOrderWitness(witness)
     return this.database.transaction(
       "rw",
       this.database.checkoutSparkPlanBindings,
@@ -1342,7 +1345,24 @@ export class DexieCheckoutSparkSettledRepository {
             exactWitness &&
             JSON.stringify(previous) !== JSON.stringify(exactWitness)
           ) {
-            throw new CheckoutSparkSettledRepositoryConflictError()
+            if (
+              !authenticatedOrganizerWitness ||
+              previous.schemaVersion !== 1 ||
+              exactWitness.schemaVersion !== 2 ||
+              previous.merchantPubkey !== exactWitness.merchantPubkey ||
+              previous.buyerPubkey !== exactWitness.buyerPubkey ||
+              previous.orderId !== exactWitness.orderId ||
+              previous.rumorId !== exactWitness.rumorId ||
+              previous.contentHash !== exactWitness.contentHash ||
+              previous.checkoutId !== exactWitness.checkoutId ||
+              previous.planDigest !== exactWitness.planDigest
+            )
+              throw new CheckoutSparkSettledRepositoryConflictError()
+            await this.database.checkoutSparkPlanBindings.put({
+              ...binding,
+              orderWitness: exactWitness,
+            })
+            assertCurrent()
           }
         } else if (exactWitness) {
           await this.database.checkoutSparkPlanBindings.put({

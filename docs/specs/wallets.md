@@ -348,12 +348,18 @@ key. Keep contacts and the full buyer order out of the organizer package,
 generic inbox, diagnostics and handout views. This credential is bearer control
 of one checkout, not cryptographic enforcement of the plan or takeover timer.
 
-After the original buyer deadline, only the designated delegated writer may
-dispatch; Merchant observation/import remains read-only until verified writer
-handover. Fresh-device continuation must restore and reconcile the same attempts
-and stock/handout frontier. Never infer a fresh attempt from a partial inbox or
-zero balance. Existing native offline-receiver completion, claim/retirement
-separation and no-replay protections remain unchanged.
+After the original buyer deadline, Merchant and the authorized organizer remain
+financial recovery actors for the same wallet, obligations and outgoing IDs.
+Each authenticates and merges the other actor's retained machine progress before
+exact provider reconciliation or dispatch; actor changes never mint a new
+invoice, attempt or wallet. Merchant recovery still requires the actual original
+Buyer-to-Merchant order witness. Financial fallback grants no organizer stock
+writer, reservation, claim or physical-release authority. Those remain with the
+designated stock writer until verified handover. Fresh-device continuation must
+restore the applicable payment and stock/handout frontiers independently. Never
+infer a fresh attempt from a partial inbox or zero balance. Existing native
+offline-receiver completion, claim/retirement separation and no-replay
+protections remain unchanged.
 
 Genuinely free event pickup (zero commerce and zero organizer fee) has no
 checkout wallet, funding invoice or payment plan. Its separately encrypted

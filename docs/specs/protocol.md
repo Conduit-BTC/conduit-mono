@@ -237,6 +237,19 @@ The exception is constrained as follows:
   before provider invocation. A retry uses those identical wraps. These
   machine messages remain outside conversations, search and notifications;
   neither an acknowledgement nor a saved paid label establishes settlement.
+  Merchant financial continuation of that same organizer-handoff checkout
+  retains its original self-progress wrap plus a separately Merchant-sealed
+  `checkout_spark_merchant_event_progress` schema-one companion addressed only
+  to the frozen organizer. The companion contains canonical payment state,
+  the original Merchant and derived Organizer initial-handoff IDs, and opaque
+  original-order hashes, never another wallet credential, full order or contact
+  data. Both exact ciphertexts are atomically retained before publication and
+  both recipient acknowledgements precede Merchant provider dispatch. Partial
+  delivery retries the identical wraps, not a new signature or payment intent.
+  Recovery authenticates the original author and merges only compatible
+  monotonic state before fresh exact provider/recipient verification. This
+  preserves all three financial actors without transferring stock-writer or
+  physical-handout authority. Ordinary historical progress bytes are unchanged.
   A zero-commerce, zero-organizer-fee purchase creates no financial plan, wallet
   or invoice. Its separate `event_market_free_purchase` packet contains only the
   exact zero-price quote, signed event/source graph, original order hashes and

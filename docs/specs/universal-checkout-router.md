@@ -144,18 +144,23 @@ claim/handout views retain their minimal receipt contract.
 Every Buyer payout checkpoint also retains both role-bound encrypted progress
 copies before use. Organizer continuation retains a separately organizer-signed
 Merchant/self checkpoint containing the same exact attempts and writer manifest.
-The existing executor rechecks the designated stock writer at provider
+Organizer execution rechecks the designated stock writer at its provider
 boundaries; an active account session or restored plaintext alone grants no
-dispatch authority.
+organizer dispatch authority. Merchant financial fallback retains its separate
+original-order and exact-payment verification, not the organizer's stock role.
 
-Both roles use the same immutable plan, attempt identifiers and executor.
+All three financial actors use the same immutable plan, attempt identifiers and executor.
 Buyer dispatch ends at the saved two-minute cutoff; the fifteen-minute funding
-invoice remains separate. The designated organizer writer may then continue
-that delegated checkout; Merchant observation/import does not start a competing
-executor. An explicit verified journal/writer handover is needed before another
-writer dispatches. Local locks and encrypted credentials are not a distributed
-lease or cryptographic spending restrictions. Reconcile every possible send
-before continuing, including after device restoration. The bounded guest
+invoice remains separate. Merchant financial recovery remains available alongside
+the authorized organizer; neither actor restarts a paid leg or replaces a saved
+outgoing intent. Authenticate and merge role-attributed progress, then independently
+reconcile exact provider and recipient evidence before continuation. The original
+Buyer-to-Merchant order witness remains required for Merchant recovery. Financial
+recovery does not adopt the exclusive organizer stock writer or authorize a claim
+or handout; those require their own complete journal and verified writer handover.
+Local locks and encrypted credentials are not a distributed lease or cryptographic
+spending restrictions. Reconcile every possible send before continuing, including
+after device restoration. The bounded guest
 wrapping exception permits only these exact version-five recipient/role bindings,
 with its unchanged lifetime and no guest inbox or generic signing permission.
 

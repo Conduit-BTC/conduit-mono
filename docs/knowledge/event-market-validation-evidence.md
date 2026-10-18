@@ -139,9 +139,12 @@ the upgraded database. Structural union preservation in
 
 These are synthetic cryptographic/database integration tests. They do not prove
 external signer compatibility, independent-device reconciliation, live relay
-convergence, funded settlement or physical handout. Same-event rescheduling retains original order terms and updates unused
-allocation deadlines. Atomic rollover remains incomplete. New delegated organizer acceptance is gated;
-historical organizer receipt tests cannot stand in for that integration.
+convergence, funded settlement or physical handout. Same-event rescheduling
+retains original order terms and updates unused allocation deadlines. Atomic
+rollover remains incomplete. Current organizer checkout, stock and recovery
+integration has separate coverage in the
+[router acceptance map](event-market-router-acceptance.md); historical organizer
+receipts are not a substitute for it.
 
 ## Organizer stock handover foundation
 
@@ -163,16 +166,19 @@ It covers atomic acceptance/claim uniqueness, exact replay, closing races,
 chronology, input mutation, reload, external signing refusal, session changes
 and durable exact recipient/owner envelope retries. No test publishes to public
 relays or transfers funds. `event-market-stock-schema` preserves populated
-installed v25/v26/v26.1/v27 histories through additive v28 and proves that
+installed v25/v26/v26.1/v27/v28 histories through additive v29 and proves that
 normal cache clearing/pruning retains inventory and private journals.
 
-This is a local foundation, not completed delegated checkout. Authenticated
-Merchant import/closing reconciliation, fresh-device writer handover, current
-roster/settlement/claim composition, event router economics and app workflows
-still require integration. Ordinary suitability remains gated for an active or
-invalid stock commitment. These tests do not establish independent-device
-serialization, live delivery, funded handout, external signer compatibility or
-physical-device acceptance.
+The current extension composes authenticated Merchant import/closing,
+checkout routing and claims, plus complete cooperative fresh-device writer
+handover. The [router acceptance map](event-market-router-acceptance.md) identifies
+the matching shared integration suites and actual-screen browser journeys,
+including interrupted Organizer-to-Merchant continuation and replacement-device
+recovery. Ordinary suitability remains gated for an active or invalid stock
+commitment. These controlled tests do not establish live delivery, funded
+handout, external signer compatibility or physical-device acceptance. An
+unavailable original device without a complete positive handover still requires
+reconciliation; an empty inbox never grants a replacement writer.
 
 ## Order continuity regression coverage
 

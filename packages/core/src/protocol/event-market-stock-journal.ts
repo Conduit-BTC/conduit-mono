@@ -16,6 +16,8 @@ import {
   type PrivateMessageRumor,
 } from "./private-message-primitives"
 import type { SignedPublicNostrEvent } from "./signed-event"
+import { assertOrganizerStockWriterCurrent } from "./event-market-stock-writer-guard"
+import { organizerStockWriterKey } from "./event-market-stock-writer-guard"
 
 const poolKey = (account: string, pool: string) => `${account}:${pool}`
 const entryKey = (account: string, entry: string) => `${account}:${entry}`
@@ -288,10 +290,29 @@ export async function installOrganizerStockHandover(input: {
     throw new Error("Organizer stock handover does not match its commitment")
   return input.db.transaction(
     "rw",
-    input.db.eventMarketOrganizerStockPools,
+    [
+      input.db.eventMarketOrganizerStockPools,
+      input.db.eventMarketOrganizerStockWriters,
+    ],
     async () => {
+      await assertOrganizerStockWriterCurrent({
+        db: input.db,
+        accountPubkey: input.authenticatedPubkey,
+        marketCoordinate: grant.marketCoordinate,
+        writerId: input.writerId,
+      })
       const id = poolKey(grant.organizerPubkey, rumor.id)
       const prior = await input.db.eventMarketOrganizerStockPools.get(id)
+      const registration = await input.db.eventMarketOrganizerStockWriters.get(
+        organizerStockWriterKey(
+          input.authenticatedPubkey,
+          grant.marketCoordinate
+        )
+      )
+      if (registration?.installedPoolIds.includes(rumor.id) && !prior)
+        throw new Error(
+          "The original stock journal is missing; recover it before continuing."
+        )
       if (prior) {
         assertPool(prior)
         if (JSON.stringify(prior.grantRumor) !== JSON.stringify(rumor))
@@ -308,6 +329,12 @@ export async function installOrganizerStockHandover(input: {
       const pool = newPool(grant.organizerPubkey, rumor, "active")
       requireSession(input)
       await input.db.eventMarketOrganizerStockPools.add(pool)
+      if (registration) {
+        registration.installedPoolIds = [
+          ...new Set([...registration.installedPoolIds, rumor.id]),
+        ]
+        await input.db.eventMarketOrganizerStockWriters.put(registration)
+      }
       requireSession(input)
       return pool
     }
@@ -344,7 +371,11 @@ export async function commitOrganizerStockAcceptance(input: {
   const { db } = input
   return db.transaction(
     "rw",
-    [db.eventMarketOrganizerStockPools, db.eventMarketOrganizerStockEntries],
+    [
+      db.eventMarketOrganizerStockPools,
+      db.eventMarketOrganizerStockEntries,
+      db.eventMarketOrganizerStockWriters,
+    ],
     async () => {
       const pool = await db.eventMarketOrganizerStockPools.get(
         poolKey(input.authenticatedPubkey, input.poolId)
@@ -356,6 +387,12 @@ export async function commitOrganizerStockAcceptance(input: {
       )
         throw new Error("Organizer stock writer unavailable")
       const grant = assertPool(pool)
+      await assertOrganizerStockWriterCurrent({
+        db,
+        accountPubkey: input.authenticatedPubkey,
+        marketCoordinate: grant.marketCoordinate,
+        writerId: input.writerId,
+      })
       const prior = await db.eventMarketOrganizerStockEntries
         .where("[accountPubkey+poolId+orderId]")
         .equals([input.authenticatedPubkey, input.poolId, input.orderId])
@@ -502,6 +539,7 @@ export async function commitOrganizerStockOrder(input: {
     [
       input.db.eventMarketOrganizerStockPools,
       input.db.eventMarketOrganizerStockEntries,
+      input.db.eventMarketOrganizerStockWriters,
     ],
     async () => {
       requireSession(input)
@@ -581,6 +619,7 @@ export async function beginOrganizerStockClose(input: {
     [
       input.db.eventMarketOrganizerStockPools,
       input.db.eventMarketOrganizerStockEntries,
+      input.db.eventMarketOrganizerStockWriters,
     ],
     async () => {
       const pool = await input.db.eventMarketOrganizerStockPools.get(
@@ -592,7 +631,13 @@ export async function beginOrganizerStockClose(input: {
         pool.writerId !== input.writerId
       )
         throw new Error("Organizer stock writer unavailable")
-      assertPool(pool)
+      const grant = assertPool(pool)
+      await assertOrganizerStockWriterCurrent({
+        db: input.db,
+        accountPubkey: input.authenticatedPubkey,
+        marketCoordinate: grant.marketCoordinate,
+        writerId: input.writerId,
+      })
       if (pool.closingRumor) {
         requireSession(input)
         return pool.closingRumor
@@ -683,7 +728,27 @@ export async function prepareOrganizerStockEnvelopes(input: {
     poolKey(input.authenticatedPubkey, input.poolId)
   )
   if (!pool) throw new Error("Stock pool unavailable")
-  assertPool(pool)
+  const grant = assertPool(pool)
+  const checkWriter = async () => {
+    await check()
+    if (pool.accountPubkey === pool.organizerPubkey)
+      await assertOrganizerStockWriterCurrent({
+        db,
+        accountPubkey: input.authenticatedPubkey,
+        marketCoordinate: grant.marketCoordinate,
+        writerId: pool.writerId,
+      })
+    await check()
+    // Identity confirmation may wait on the external signer. Re-observe the
+    // durable fence after it, including before returning cached ciphertext.
+    if (pool.accountPubkey === pool.organizerPubkey)
+      await assertOrganizerStockWriterCurrent({
+        db,
+        accountPubkey: input.authenticatedPubkey,
+        marketCoordinate: grant.marketCoordinate,
+        writerId: pool.writerId,
+      })
+  }
   const entry =
     typeof work === "object"
       ? await db.eventMarketOrganizerStockEntries.get(
@@ -718,7 +783,7 @@ export async function prepareOrganizerStockEnvelopes(input: {
       : work === "close"
         ? pool.closingWraps
         : entry?.wraps
-  await check()
+  await checkWriter()
   if (retained) return retained
   if (pool.readOnlyRecovery)
     throw new Error(
@@ -731,16 +796,20 @@ export async function prepareOrganizerStockEnvelopes(input: {
     { pubkey: recipientPubkey },
     input.signer
   )
-  await check()
+  await checkWriter()
   const self = await wrapPrivateMessage(
     rumor,
     { pubkey: expectedAuthor },
     input.signer
   )
-  await check()
+  await checkWriter()
   return db.transaction(
     "rw",
-    [db.eventMarketOrganizerStockPools, db.eventMarketOrganizerStockEntries],
+    [
+      db.eventMarketOrganizerStockPools,
+      db.eventMarketOrganizerStockEntries,
+      db.eventMarketOrganizerStockWriters,
+    ],
     async () => {
       // No asynchronous external signer work belongs inside this transaction.
       if (
@@ -750,6 +819,13 @@ export async function prepareOrganizerStockEnvelopes(input: {
         input.signer.authMethod !== authMethod
       )
         throw new Error("Stock authority session changed")
+      if (pool.accountPubkey === pool.organizerPubkey)
+        await assertOrganizerStockWriterCurrent({
+          db,
+          accountPubkey: input.authenticatedPubkey,
+          marketCoordinate: grant.marketCoordinate,
+          writerId: pool.writerId,
+        })
       if (typeof work === "object") {
         const current = await db.eventMarketOrganizerStockEntries.get(entry!.id)
         if (!current || JSON.stringify(current.rumor) !== JSON.stringify(rumor))

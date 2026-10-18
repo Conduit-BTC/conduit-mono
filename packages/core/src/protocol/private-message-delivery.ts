@@ -57,6 +57,7 @@ import {
 import {
   assertProtectedReadAuthorization,
   getProtectedReadAuthorization,
+  type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { getRelayLists } from "./relay-list"
 import {
@@ -274,6 +275,59 @@ export async function holdPrivateDeliveryClaim(
   }
 }
 
+type ForegroundPrivateDeliveryAuthentication = {
+  signer: AccountSigner
+  method: "nip07" | "nip46"
+  waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
+}
+
+/** The same active-account AUTH capability for fresh and already-staged replay. */
+function prepareForegroundPrivateDeliveryAuthentication(
+  principal: string,
+  authorization: ProtectedReadAuthorization | null,
+  supplied?: ForegroundPrivateDeliveryAuthentication,
+  shouldContinue?: () => boolean
+) {
+  const foregroundAuth = supplied ? { ...supplied } : undefined
+  const assertForegroundAuthority = () => {
+    if (!foregroundAuth) return
+    assertPrivateMessageSignerSessionCurrent(shouldContinue)
+    if (!authorization)
+      throw new Error(
+        "Foreground relay auth requires the active account signer"
+      )
+    assertProtectedReadAuthorization(authorization, principal)
+    if (
+      foregroundAuth.signer !== authorization.signer ||
+      foregroundAuth.signer.pubkey !== principal ||
+      foregroundAuth.signer.authMethod !== foregroundAuth.method
+    )
+      throw new Error(
+        "Foreground relay auth requires the active account signer"
+      )
+  }
+  assertForegroundAuthority()
+  return {
+    assertForegroundAuthority,
+    relayAuthentication: foregroundAuth
+      ? {
+          expectedPubkey: principal,
+          signer: foregroundAuth.signer,
+          sessionScope: foregroundAuth.signer,
+          waitForSignerVisibility: async (signal?: AbortSignal) => {
+            assertForegroundAuthority()
+            await (
+              foregroundAuth.waitForSignerVisibility ??
+              ((signal?: AbortSignal) =>
+                waitForVisibleDocument(undefined, signal))
+            )(signal)
+            assertForegroundAuthority()
+          },
+        }
+      : undefined,
+  }
+}
+
 /** Retry preserves saved wrap bytes and targets. Foreground relay AUTH may sign
  * a separate NIP-42 event, but never signs or replaces the message wrap.
  */
@@ -287,11 +341,7 @@ export async function retryPrivateDeliveries(
     replayAcknowledged?: boolean
     shouldContinue?: () => boolean
     inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
-    foregroundRelayAuthentication?: {
-      signer: AccountSigner
-      method: "nip07" | "nip46"
-      waitForSignerVisibility?: (signal?: AbortSignal) => Promise<void>
-    }
+    foregroundRelayAuthentication?: ForegroundPrivateDeliveryAuthentication
   } = {}
 ): Promise<Map<string, PublishWithPlannerResult>> {
   if (options.replayAcknowledged && !onlyId)
@@ -300,36 +350,13 @@ export async function retryPrivateDeliveries(
   const authorization = getProtectedReadAuthorization(principal)
   if (!authorization)
     throw new Error("Reconnect the intended account to retry delivery")
-  const foregroundAuth = options.foregroundRelayAuthentication
-  const assertForegroundAuthority = () => {
-    if (!foregroundAuth) return
-    assertProtectedReadAuthorization(authorization, principal)
-    if (
-      foregroundAuth.signer !== authorization.signer ||
-      foregroundAuth.signer.pubkey !== principal ||
-      foregroundAuth.signer.authMethod !== foregroundAuth.method
+  const { assertForegroundAuthority, relayAuthentication } =
+    prepareForegroundPrivateDeliveryAuthentication(
+      principal,
+      authorization,
+      options.foregroundRelayAuthentication,
+      options.shouldContinue
     )
-      throw new Error(
-        "Foreground relay auth requires the active account signer"
-      )
-  }
-  assertForegroundAuthority()
-  const relayAuthentication = foregroundAuth
-    ? {
-        expectedPubkey: principal,
-        signer: foregroundAuth.signer,
-        sessionScope: foregroundAuth.signer,
-        waitForSignerVisibility: async (signal?: AbortSignal) => {
-          assertForegroundAuthority()
-          await (
-            foregroundAuth.waitForSignerVisibility ??
-            ((signal?: AbortSignal) =>
-              waitForVisibleDocument(undefined, signal))
-          )(signal)
-          assertForegroundAuthority()
-        },
-      }
-    : undefined
   const store = suppliedStore ?? new CommerceInboxStore(authorization)
   const rows = await store.database.commerceInboxDeliveries
     .where("accountPubkey")
@@ -1975,6 +2002,7 @@ export async function retryPrivateMessageWraps(
     inboxDeclarationOptions?: ResolveInboxDeclarationOptions
     acknowledged?: (url: string) => boolean
     deliveryStore?: CommerceInboxStore
+    foregroundRelayAuthentication?: ForegroundPrivateDeliveryAuthentication
   }
 ): Promise<{
   recipientDelivery: PublishWithPlannerResult | null
@@ -1986,6 +2014,22 @@ export async function retryPrivateMessageWraps(
     input.authenticatedPubkey === input.senderPubkey
       ? getProtectedReadAuthorization(input.senderPubkey)
       : null
+  const { assertForegroundAuthority, relayAuthentication } =
+    prepareForegroundPrivateDeliveryAuthentication(
+      input.senderPubkey,
+      authorization,
+      input.foregroundRelayAuthentication,
+      input.shouldContinue
+    )
+  const originalShouldContinue = input.shouldContinue
+  input = {
+    ...input,
+    shouldContinue: () => {
+      assertPrivateMessageSignerSessionCurrent(originalShouldContinue)
+      assertForegroundAuthority()
+      return true
+    },
+  }
   const store =
     input.deliveryStore ??
     (authorization ? new CommerceInboxStore(authorization) : null)
@@ -2031,6 +2075,7 @@ export async function retryPrivateMessageWraps(
           shouldContinue: input.shouldContinue,
           inboxDeclarationEvidenceRepository:
             input.inboxDeclarationEvidenceRepository,
+          foregroundRelayAuthentication: input.foregroundRelayAuthentication,
         }
       )
       if (replayAcknowledged) {
@@ -2098,6 +2143,7 @@ export async function retryPrivateMessageWraps(
       ...input,
       store,
       leg,
+      relayAuthentication,
       selfCopy: self,
     })
   }

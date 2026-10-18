@@ -12,6 +12,7 @@ export interface CheckoutSparkOrganizerRecoverySelection {
   initialWrap: SignedPublicNostrEvent
   buyerProgressWraps: SignedPublicNostrEvent[]
   organizerProgressWraps: SignedPublicNostrEvent[]
+  merchantProgressWraps: SignedPublicNostrEvent[]
 }
 /** A zero-cost pickup has no financial checkout, plan or wallet to restore. */
 export interface EventMarketFreePurchaseSelection {
@@ -127,7 +128,9 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     const first = initial[0]!
     const initialWrap = byWrap.get(first.wrapId)
     if (!initialWrap) continue
-    const collect = (kind: "buyer_progress" | "execution") =>
+    const collect = (
+      kind: "buyer_progress" | "execution" | "merchant_progress"
+    ) =>
       [
         ...new Map(
           group
@@ -146,6 +149,7 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
       initialWrap,
       buyerProgressWraps: collect("buyer_progress"),
       organizerProgressWraps: collect("execution"),
+      merchantProgressWraps: collect("merchant_progress"),
     }
     const size = new TextEncoder().encode(JSON.stringify(selection)).length
     if (bytes + size > 4 * 1024 * 1024) {

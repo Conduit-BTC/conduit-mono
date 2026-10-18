@@ -196,6 +196,36 @@ are not cache and survive relay changes and schema upgrades. This contract does
 not itself activate organizer purchasing or relax the separate wallet recovery,
 frozen router plan, receiving qualification and composed acceptance gates.
 
+Active device replacement is an explicit cooperative handover. The destination
+first registers a recovery target without writer authority. The source verifies
+its durable installed-pool manifest and complete market journal, then durably
+retires itself before requesting signatures or publishing the transfer. The
+self-only encrypted snapshot includes original grants, all acceptance/handout
+decisions, complete-order manifests, pending exact delivery operations and
+frontiers. Its reserved subject is `conduit-event-stock-handover`, with marker
+`["conduit", "event-stock-handover", "1"]`; generic Messages quarantines this
+family, including malformed or unknown versions. Only the organizer account
+signer may author it, addressed to that same account, never another Merchant
+or a guest. The destination authenticates every part and original authority
+before atomically activating the same logical writer and unchanged pool,
+order, claim and payment identifiers. Retired source devices cannot accept
+future grants, route delegated payments, close pools or hand out goods.
+
+Transfers support at most 8 MiB of complete snapshot JSON and 2,048 rows per
+snapshot collection, split when necessary into at most 128 authenticated
+64-KiB binary parts plus their ordered hash manifest. Every encoded packet must
+also fit the existing private-message transport bound. All exact encrypted
+packets are retained before publication and independently acknowledged;
+partial delivery retries those same packets. Missing, conflicting or incomplete
+parts never activate the target. An oversized journal is rejected before source
+retirement; the original device remains active for existing workflows. Closing
+and reconciliation do not erase terminal replay evidence or shrink this complete
+snapshot. Replacement beyond these supported bounds needs a separately reviewed
+larger-transfer or terminal-history compaction capability, never truncation or a
+fresh writer reset. Loss of the source without a complete retained transfer does
+not prove that unobserved decisions never happened and requires reconciliation;
+this is not a remote revocation service.
+
 ## Usable workflows and recovery
 
 Organizer-handoff checkout requires a current, exact finite stock grant and
@@ -218,6 +248,14 @@ frontiers require explicit reconciliation/handover. The Merchant can inspect
 and import historical entries after occurrence expiry/removal without
 authorizing a new sale. Closing releases unused stock only after the complete
 accepted prefix is authenticated and imported, with a terminal replay barrier.
+
+The organizer is an additional financial recovery actor, not a replacement for
+the Merchant. After the buyer cutoff, Merchant may finish the same checkout's
+remaining payments using its original Buyer-order witness, authenticated actor
+progress and fresh exact provider/recipient reconciliation. All actors preserve
+the same wallet, frozen obligations, invoices and outgoing IDs. This financial
+fallback does not reserve stock, redeem a claim or transfer the exclusive stock
+writer; physical handout retains its independent settlement/journal/claim gates.
 
 Merchant cold recovery uses a bounded, Merchant-authored encrypted self
 checkpoint on the existing private delivery boundary. It binds exact signed

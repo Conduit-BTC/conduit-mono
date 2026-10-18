@@ -14,6 +14,7 @@ import {
   pruneCommerceCaches,
   type EventMarketOrganizerStockEntry,
   type EventMarketOrganizerStockPool,
+  type EventMarketOrganizerStockWriter,
 } from "@conduit/core/db"
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import frozenHistories from "./fixtures/event-market-db-histories.json"
@@ -113,9 +114,20 @@ function records() {
     evidence: "retained-private-fixture",
     imported: false,
   }
+  const writer: EventMarketOrganizerStockWriter = {
+    id: `${organizerPubkey}:${grant.marketCoordinate}`,
+    accountPubkey: organizerPubkey,
+    marketCoordinate: grant.marketCoordinate,
+    deviceId: crypto.randomUUID(),
+    writerId: grant.writerId,
+    state: "active",
+    generation: 0,
+    installedPoolIds: [pool.poolId],
+  }
   return {
     pool,
     entry,
+    writer,
     inventory: {
       product: {
         coordinate: productCoordinate,
@@ -177,6 +189,17 @@ const histories = [
     version: 27,
     stores: unionStores,
   },
+  {
+    name: "installed organizer stock journals",
+    version: 28,
+    stores: {
+      ...unionStores,
+      eventMarketOrganizerStockPools:
+        "id, accountPubkey, &[accountPubkey+poolId], [accountPubkey+assignmentCoordinate]",
+      eventMarketOrganizerStockEntries:
+        "id, accountPubkey, [accountPubkey+poolId], &[accountPubkey+poolId+sequence], &[accountPubkey+poolId+orderId], &[accountPubkey+poolId+claimRef]",
+    },
+  },
 ]
 
 async function expectConstraint(operation: Promise<unknown>) {
@@ -191,7 +214,7 @@ async function expectConstraint(operation: Promise<unknown>) {
 
 describe("durable organizer stock schema", () => {
   for (const history of histories) {
-    it(`preserves populated v${history.version} ${history.name} tables and adds durable v28 stock journals`, async () => {
+    it(`preserves populated v${history.version} ${history.name} tables and adds the durable v29 writer registry`, async () => {
       const options = { indexedDB: new IDBFactory(), IDBKeyRange }
       const name = `organizer-stock-upgrade-${crypto.randomUUID()}`
       const old = new Dexie(name, options)
@@ -199,6 +222,7 @@ describe("durable organizer stock schema", () => {
       const fixture = records()
       const retained = new Map<string, object[]>()
       await old.open()
+      if (history.version === 28) expect(old.backendDB().version).toBe(280)
       try {
         for (const [table, schema] of Object.entries(history.stores)) {
           const primary = String(schema)
@@ -217,6 +241,15 @@ describe("durable organizer stock schema", () => {
           if (old.tables.some((candidate) => candidate.name === table))
             await old.table(table).put(row)
         }
+        if (history.version === 28) {
+          for (const [table, row] of [
+            ["eventMarketOrganizerStockPools", fixture.pool],
+            ["eventMarketOrganizerStockEntries", fixture.entry],
+          ] as const) {
+            await old.table(table).clear()
+            await old.table(table).put(row)
+          }
+        }
         for (const table of old.tables)
           retained.set(table.name, await table.toArray())
       } finally {
@@ -225,8 +258,8 @@ describe("durable organizer stock schema", () => {
       const upgraded = new ConduitDB(name, options)
       try {
         await upgraded.open()
-        expect(upgraded.verno).toBe(28)
-        expect(upgraded.backendDB().version).toBe(280)
+        expect(upgraded.verno).toBe(29)
+        expect(upgraded.backendDB().version).toBe(290)
         for (const [table, rows] of retained) {
           expect(
             upgraded.tables.some((candidate) => candidate.name === table)
@@ -245,6 +278,9 @@ describe("durable organizer stock schema", () => {
           "localProductShippingOutbox",
           "commerceInboxWrappers",
           "sparkRecoveryEvidence",
+          "eventMarketOrganizerStockPools",
+          "eventMarketOrganizerStockEntries",
+          "eventMarketOrganizerStockWriters",
         ])
           expect(
             upgraded.tables.some((candidate) => candidate.name === table)
@@ -252,16 +288,43 @@ describe("durable organizer stock schema", () => {
         expect(
           upgraded.eventMarketRosterEvidence.schema.idxByName.discoveryBytes
         ).toBeDefined()
-        expect(await upgraded.eventMarketOrganizerStockPools.count()).toBe(0)
-        expect(await upgraded.eventMarketOrganizerStockEntries.count()).toBe(0)
-        await upgraded.eventMarketOrganizerStockPools.add(fixture.pool)
-        await upgraded.eventMarketOrganizerStockEntries.add(fixture.entry)
+        expect(await upgraded.eventMarketOrganizerStockWriters.count()).toBe(0)
+        expect(
+          upgraded.eventMarketOrganizerStockWriters.schema.indexes
+            .map((index) => index.name)
+            .sort()
+        ).toEqual(["accountPubkey", "[accountPubkey+marketCoordinate]"].sort())
+        expect(
+          upgraded.eventMarketOrganizerStockWriters.schema.idxByName[
+            "[accountPubkey+marketCoordinate]"
+          ]?.unique
+        ).toBe(true)
+        const previousStockCount = history.version === 28 ? 1 : 0
+        expect(await upgraded.eventMarketOrganizerStockPools.count()).toBe(
+          previousStockCount
+        )
+        expect(await upgraded.eventMarketOrganizerStockEntries.count()).toBe(
+          previousStockCount
+        )
+        if (history.version !== 28) {
+          await upgraded.eventMarketOrganizerStockPools.add(fixture.pool)
+          await upgraded.eventMarketOrganizerStockEntries.add(fixture.entry)
+        }
+        await upgraded.eventMarketOrganizerStockWriters.add(fixture.writer)
         upgraded.close({ disableAutoOpen: false })
         await upgraded.open()
         expect(
           isDeepStrictEqual(
             await upgraded.eventMarketOrganizerStockPools.get(fixture.pool.id),
             fixture.pool
+          )
+        ).toBe(true)
+        expect(
+          isDeepStrictEqual(
+            await upgraded.eventMarketOrganizerStockWriters.get(
+              fixture.writer.id
+            ),
+            fixture.writer
           )
         ).toBe(true)
         expect(
@@ -282,6 +345,48 @@ describe("durable organizer stock schema", () => {
       }
     })
   }
+
+  it("keeps one writer per account and market without cross-account or cross-market collisions", async () => {
+    const database = new ConduitDB(
+      `organizer-writer-keys-${crypto.randomUUID()}`,
+      { indexedDB: new IDBFactory(), IDBKeyRange }
+    )
+    const { writer } = records()
+    try {
+      await database.open()
+      await database.eventMarketOrganizerStockWriters.add(writer)
+      await expectConstraint(
+        database.eventMarketOrganizerStockWriters.add({
+          ...writer,
+          id: crypto.randomUUID(),
+          deviceId: crypto.randomUUID(),
+        })
+      )
+      await database.eventMarketOrganizerStockWriters.add({
+        ...writer,
+        id: crypto.randomUUID(),
+        accountPubkey: getPublicKey(generateSecretKey()),
+      })
+      await database.eventMarketOrganizerStockWriters.add({
+        ...writer,
+        id: crypto.randomUUID(),
+        marketCoordinate: `${writer.marketCoordinate}-other`,
+      })
+      expect(await database.eventMarketOrganizerStockWriters.count()).toBe(3)
+      database.close({ disableAutoOpen: false })
+      await database.open()
+      expect(await database.eventMarketOrganizerStockWriters.count()).toBe(3)
+      expect(
+        isDeepStrictEqual(
+          await database.eventMarketOrganizerStockWriters.get(writer.id),
+          writer
+        )
+      ).toBe(true)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
 
   it("enforces account/pool/sequence/order/claim uniqueness without cross-account collisions", async () => {
     const options = { indexedDB: new IDBFactory(), IDBKeyRange }
@@ -365,11 +470,12 @@ describe("durable organizer stock schema", () => {
     )
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
     const descriptors = new Map<string, PropertyDescriptor | undefined>()
-    const { pool, entry, inventory } = records()
+    const { pool, entry, writer, inventory } = records()
     try {
       await database.open()
       await database.eventMarketOrganizerStockPools.add(pool)
       await database.eventMarketOrganizerStockEntries.add(entry)
+      await database.eventMarketOrganizerStockWriters.add(writer)
       await database.merchantInventoryProducts.add(inventory.product)
       await database.merchantInventoryAssignments.add(
         inventory.assignment as never
@@ -414,6 +520,12 @@ describe("durable organizer stock schema", () => {
         )
       ).toBe(true)
       expect(await database.merchantInventoryProducts.count()).toBe(1)
+      expect(
+        isDeepStrictEqual(
+          await database.eventMarketOrganizerStockWriters.get(writer.id),
+          writer
+        )
+      ).toBe(true)
       expect(await database.merchantInventoryAssignments.count()).toBe(1)
       expect(await database.merchantInventoryAcceptedOrders.count()).toBe(1)
     } finally {

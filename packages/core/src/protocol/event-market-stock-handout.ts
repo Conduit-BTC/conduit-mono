@@ -15,6 +15,7 @@ import {
 } from "./event-market-stock-authority"
 import { sameOrganizerStockRumor } from "./event-market-stock-import-authority"
 import { validateOrganizerStockJournalPool } from "./event-market-stock-journal"
+import { assertOrganizerStockWriterCurrent } from "./event-market-stock-writer-guard"
 import {
   acceptAndPublishOrganizerStockOrder,
   inspectEventMarketStockPacket,
@@ -126,6 +127,25 @@ async function entriesForOrder(
     .sort((a, b) => a.poolId.localeCompare(b.poolId))
 }
 
+async function assertHandoutWriter(
+  input: Session,
+  entries: readonly EventMarketOrganizerStockEntry[]
+) {
+  for (const entry of entries) {
+    const pool = await input.db.eventMarketOrganizerStockPools.get(
+      `${input.authenticatedPubkey}:${entry.poolId}`
+    )
+    if (!pool) throw new Error("Saved stock pool unavailable.")
+    const grant = validateOrganizerStockJournalPool(pool)
+    await assertOrganizerStockWriterCurrent({
+      db: input.db,
+      accountPubkey: input.authenticatedPubkey,
+      marketCoordinate: grant.marketCoordinate,
+      writerId: pool.writerId,
+    })
+  }
+}
+
 function assertManifest(
   entries: readonly EventMarketOrganizerStockEntry[],
   payload: EventMarketStockHandout
@@ -214,8 +234,16 @@ export async function confirmOrganizerStockOrderHandout(
     [
       input.db.eventMarketOrganizerStockPools,
       input.db.eventMarketOrganizerStockEntries,
+      input.db.eventMarketOrganizerStockWriters,
     ],
     async () => {
+      check()
+      await assertOrganizerStockWriterCurrent({
+        db: input.db,
+        accountPubkey: input.authenticatedPubkey,
+        marketCoordinate: purchase.eventMarket.marketCoordinate,
+        writerId: purchase.writerBindings[0]!.writerId,
+      })
       check()
       const entries = await entriesForOrder(
         input.db,
@@ -324,6 +352,8 @@ export async function retryOrganizerStockOrderHandout(
     payload.organizerPubkey !== input.authenticatedPubkey
   )
     throw new Error("Only the original organizer can retry this handout.")
+  await assertHandoutWriter(input, entries)
+  authority.check()
   assertManifest(entries, payload)
   if (
     entries.some(
@@ -349,7 +379,11 @@ export async function retryOrganizerStockOrderHandout(
     authority.check()
     wraps = await input.db.transaction(
       "rw",
-      input.db.eventMarketOrganizerStockEntries,
+      [
+        input.db.eventMarketOrganizerStockEntries,
+        input.db.eventMarketOrganizerStockPools,
+        input.db.eventMarketOrganizerStockWriters,
+      ],
       async () => {
         authority.check()
         const current = await entriesForOrder(
@@ -357,6 +391,8 @@ export async function retryOrganizerStockOrderHandout(
           input.authenticatedPubkey,
           input.orderId
         )
+        await assertHandoutWriter(input, current)
+        authority.check()
         assertManifest(current, payload)
         if (
           current.some(
@@ -378,6 +414,7 @@ export async function retryOrganizerStockOrderHandout(
       }
     )
   }
+  await assertHandoutWriter(input, entries)
   authority.check()
   return retryPrivateMessageWraps({
     ...input.delivery,

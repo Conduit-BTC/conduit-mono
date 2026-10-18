@@ -1443,6 +1443,36 @@ export interface EventMarketOrganizerStockEntry {
   imported: boolean
 }
 
+/** Durable local device ownership; never inferred from an inbox/cache miss. */
+export interface EventMarketOrganizerStockWriter {
+  id: string
+  accountPubkey: string
+  marketCoordinate: string
+  deviceId: string
+  /** Immutable logical writer in the original Merchant grants and plans. */
+  writerId?: string
+  state: "target" | "active" | "retired"
+  /** Monotonic positive installation frontier, including closed pools. */
+  installedPoolIds: string[]
+  generation: number
+  transferId?: string
+  previousTransferId?: string
+  /** Retired source keeps the exact complete draft and ciphertext for retry. */
+  outgoing?: {
+    rumor: PrivateMessageRumor
+    envelope?: SignedPublicNostrEvent
+    relayAccepted?: true
+    /** Root plus ordered chunks; all ciphertext is saved before the first I/O. */
+    packets?: Array<{
+      rumor: PrivateMessageRumor
+      envelope?: SignedPublicNostrEvent
+      relayAccepted?: true
+    }>
+  }
+  /** Positive authenticated activation evidence on the replacement device. */
+  receivedEnvelope?: SignedPublicNostrEvent
+}
+
 export class ConduitDB extends Dexie {
   sparkRecoveryEvidence!: EntityTable<SparkRecoveryState, "ownerPubkey">
   orders!: EntityTable<StoredOrder, "id">
@@ -1524,6 +1554,10 @@ export class ConduitDB extends Dexie {
   >
   eventMarketOrganizerStockEntries!: EntityTable<
     EventMarketOrganizerStockEntry,
+    "id"
+  >
+  eventMarketOrganizerStockWriters!: EntityTable<
+    EventMarketOrganizerStockWriter,
     "id"
   >
 
@@ -1838,6 +1872,11 @@ export class ConduitDB extends Dexie {
         "id, accountPubkey, &[accountPubkey+poolId], [accountPubkey+assignmentCoordinate]",
       eventMarketOrganizerStockEntries:
         "id, accountPubkey, [accountPubkey+poolId], &[accountPubkey+poolId+sequence], &[accountPubkey+poolId+orderId], &[accountPubkey+poolId+claimRef]",
+    })
+    this.version(29).stores({
+      // Additive device handover owner. All installed stock/inventory rows stay.
+      eventMarketOrganizerStockWriters:
+        "id, accountPubkey, &[accountPubkey+marketCoordinate]",
     })
   }
 }

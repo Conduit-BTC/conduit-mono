@@ -992,8 +992,10 @@ async function rehearseRouter(
             await page
               .getByText(/Settled router preparation could not be confirmed/)
               .isVisible()
-          )
+          ) {
+            setStage("buyer order preparation rejected")
             throw new Error("Router preparation failed")
+          }
           return page
             .getByRole("heading", { name: "Orders", exact: true })
             .isVisible()
@@ -1001,6 +1003,7 @@ async function rehearseRouter(
         { timeout: 45_000 }
       )
       .toBe(true)
+    setStage("buyer prepared funding matches the frozen total")
     expect(grossFundingSats).toBe(1_113)
     expect(control().snapshot()).toEqual({
       fundingInvoiceCount: 1,
@@ -1358,12 +1361,15 @@ async function rehearseRouter(
         await expect(recoveredOrder).toBeVisible()
         expect(coldPage.url() === selectedUrl).toBe(true)
       }
-      setStage("cold Merchant respects the frozen shopper handoff")
+      setStage("cold Merchant restores exact saved funding deadlines")
       expect(await frozenRouterTiming(coldPage, orderId)).toEqual(frozenTiming)
+      setStage("cold Merchant respects the frozen shopper handoff")
       const beforeHandoffTime = await coldPage.evaluate(() => Date.now())
       expect(beforeHandoffTime).toBeGreaterThanOrEqual(coldObservationStartedAt)
-      if (!scopedRecovery)
+      if (!scopedRecovery) {
+        setStage("cold Merchant remains before the original shopper cutoff")
         expect(beforeHandoffTime).toBeLessThan(frozenTiming!.takeoverAt)
+      }
       setStage("cold Merchant requests query-only native authentication")
       await expect
         .poll(() => observationOpenAttempts - observationAttemptsBeforeCold, {
@@ -1846,9 +1852,11 @@ async function rehearseRouter(
       setStage("cold Merchant retained reload does not replay payments")
       expect(control().snapshot()).toEqual(completed)
       expect(completed.sendInvocationCount).toBe(2)
+      setStage("cold Merchant reload preserves recorded accounting")
       expect(
         await merchantRecordedCompletion(coldPage, merchant.pubkey, orderId)
       ).toEqual(completedReceipt)
+      setStage("cold Merchant reload preserves the native send count")
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
       if (scopedRecovery) {
         await assertScopedPaymentsComplete()
@@ -1860,7 +1868,9 @@ async function rehearseRouter(
           "retired"
         )
       }
+      setStage("cold Merchant retains one supplier notification")
       expect(await supplierNoticeCount()).toBe(1)
+      setStage("private router keeps public zap history empty")
       expect(
         (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
       ).toBe(0)
@@ -2445,7 +2455,9 @@ test("native router funding automatically reconciles commerce and the exact nati
 
 async function rehearseEventRouter(
   browser: Browser,
-  continuation: "buyer" | "organizer"
+  continuation:
+    "buyer" | "organizer" | "organizer-merchant" | "organizer-replacement",
+  buyerMode: "signed-in" | "guest" = "signed-in"
 ) {
   test.setTimeout(300_000)
   const sharedClock = openPlaywrightRouterClock()
@@ -2466,6 +2478,11 @@ async function rehearseEventRouter(
   const recorder = createRouterSmokeRecorder(test.info().annotations)
   let stage: RouterSmokePhase = "event setup"
   let bodyCompleted = false
+  let heldOrganizerSend = false
+  let releaseOrganizerSend: () => void = () => undefined
+  const organizerSendResponse = new Promise<void>((resolve) => {
+    releaseOrganizerSend = resolve
+  })
   const setStage = (next: RouterSmokePhase) => {
     stage = next
     recorder.phase(next)
@@ -2475,7 +2492,12 @@ async function rehearseEventRouter(
     identity: RuntimeSignerIdentity,
     appUrl: string
   ) => {
-    const context = await browser.newContext({ serviceWorkers: "block" })
+    const context = await browser.newContext({
+      serviceWorkers: "block",
+      ...(appUrl === marketUrl && buyerMode === "guest"
+        ? { viewport: { width: 390, height: 844 } }
+        : {}),
+    })
     contexts.push(context)
     await context.grantPermissions(["local-network-access"], { origin: appUrl })
     const network = await installHermeticCommerceNetwork(context, {
@@ -2483,9 +2505,32 @@ async function rehearseEventRouter(
       lnurl: provider.lnurl.respond,
     })
     teardowns.push(network)
-    await installHermeticSparkTransport(context, provider.transport, { appUrl })
+    await installHermeticSparkTransport(
+      context,
+      {
+        async request(command) {
+          const result = await provider.transport.request(command)
+          if (
+            (continuation === "organizer-merchant" ||
+              continuation === "organizer-replacement") &&
+            identity === organizer &&
+            !heldOrganizerSend &&
+            command.type === "wallet.call" &&
+            command.method === "payLightningInvoice"
+          ) {
+            // Delay only the external provider response. Its payment really
+            // happened; neither actor receives manufactured application proof.
+            heldOrganizerSend = true
+            await organizerSendResponse
+          }
+          return result
+        },
+      },
+      { appUrl }
+    )
     const page = await context.newPage()
-    await installRealTestSigner(page, identity, TEST_RELAY_URL)
+    if (appUrl !== marketUrl || buyerMode !== "guest")
+      await installRealTestSigner(page, identity, TEST_RELAY_URL)
     return { page, context }
   }
   try {
@@ -2556,7 +2601,8 @@ async function rehearseEventRouter(
     await publishTestRelayEvents([calendar, market, grant, listing])
     const eventPath = `/events/${nip19.naddrEncode({ kind: 30409, pubkey: organizer.pubkey, identifier: "native-event-market", relays: [TEST_RELAY_URL] })}`
     const { page: merchantPage } = await contextFor(merchant, merchantUrl)
-    const { page: organizerPage } = await contextFor(organizer, merchantUrl)
+    const organizerSession = await contextFor(organizer, merchantUrl)
+    let organizerPage = organizerSession.page
     setStage("event occurrence assignment")
     await merchantPage.goto(
       `${merchantUrl}/products?eventMarket=${eventPath.split("/").at(-1)}`
@@ -2605,6 +2651,12 @@ async function rehearseEventRouter(
         exact: true,
       })
       .click()
+    await expect(
+      organizerPage.getByText(
+        "This device's handover ID is saved. Share it with the seller.",
+        { exact: true }
+      )
+    ).toBeVisible({ timeout: 30_000 })
     const writerId = await organizerPage
       .getByRole("textbox", { name: "This device's handover ID", exact: true })
       .inputValue()
@@ -2659,6 +2711,15 @@ async function rehearseEventRouter(
     const product = buyerPage
       .getByRole("listitem")
       .filter({ hasText: productTitle })
+    setStage("buyer catalog product visibility")
+    await expect(product).toBeVisible({ timeout: 30_000 })
+    setStage("buyer add product to cart")
+    await expect(
+      product.getByRole("button", {
+        name: `Add ${productTitle} to cart`,
+        exact: true,
+      })
+    ).toBeEnabled({ timeout: 30_000 })
     await product
       .getByRole("button", { name: `Add ${productTitle} to cart`, exact: true })
       .click()
@@ -2668,10 +2729,38 @@ async function rehearseEventRouter(
       .getByRole("link", { name: "Continue to checkout", exact: true })
       .click()
     setStage("event buyer price presentation")
+    if (buyerMode === "guest") {
+      setStage("event guest contact-free fields")
+      await buyerPage
+        .getByRole("checkbox", { name: "Use a name only for handoff" })
+        .check()
+      await buyerPage
+        .getByRole("textbox", { name: "Name or pseudonym for handoff" })
+        .fill("Event visitor")
+      const receiptPending = buyerPage.waitForEvent("download")
+      await buyerPage
+        .getByRole("button", { name: "Save event receipt", exact: true })
+        .click()
+      const receipt = await receiptPending
+      expect((await receipt.failure()) === null).toBe(true)
+      await buyerPage
+        .getByRole("checkbox", { name: "I saved my private receipt" })
+        .check()
+      await expect(buyerPage.locator("#ship-email")).toHaveCount(0)
+      await expect(buyerPage.locator("#ship-phone")).toHaveCount(0)
+      await expect(buyerPage.getByLabel(/Street address/i)).toHaveCount(0)
+      setStage("event mobile checkout layout")
+      expect(
+        await buyerPage.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1
+        )
+      ).toBe(true)
+    }
     const checkoutPrice = buyerPage.getByRole("region", {
       name: "Order price",
       exact: true,
     })
+    setStage("event organizer fee disclosure")
     await expect(
       checkoutPrice.getByText("Event organizer fee", { exact: true })
     ).toBeVisible()
@@ -2699,6 +2788,12 @@ async function rehearseEventRouter(
     await expect(
       buyerPage.getByText(/Pay once, then return here to check progress/)
     ).toBeVisible()
+    if (buyerMode === "guest")
+      expect(
+        await buyerPage.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1
+        )
+      ).toBe(true)
     provider.control().setNativeCompletion(false)
     provider.control().setNativeSenderCommitment(true)
     if (continuation === "buyer") {
@@ -2721,7 +2816,7 @@ async function rehearseEventRouter(
     // exact attempts, whether Buyer already sent them or disappeared before credit.
     teardowns[2]!()
     await buyerContext.close()
-    if (continuation === "organizer") provider.control().completeFunding()
+    if (continuation !== "buyer") provider.control().completeFunding()
     setStage("event organizer observes the buyer cutoff")
     await organizerPage.clock.install({ time: new Date(sharedClock.nowMs()) })
     await organizerPage
@@ -2732,6 +2827,16 @@ async function rehearseEventRouter(
         name: new RegExp(`Open saved order ${orderId.slice(-8)}$`),
       })
       .click()
+    setStage("event exact pickup claim and handout")
+    const handoutItems = organizerPage.getByRole("region", {
+      name: "Items to hand out",
+      exact: true,
+    })
+    await expect(
+      handoutItems.getByText(productTitle, { exact: true })
+    ).toBeVisible()
+    await expect(handoutItems.getByText("Qty 1", { exact: true })).toBeVisible()
+    setStage("event organizer observes the buyer cutoff")
     const continueOrder = organizerPage.getByRole("button", {
       name: "Continue this order",
       exact: true,
@@ -2746,6 +2851,227 @@ async function rehearseEventRouter(
     await expect(continueOrder).toBeEnabled()
     setStage("event organizer automatic payment routing")
     await continueOrder.click()
+    if (
+      continuation === "organizer-merchant" ||
+      continuation === "organizer-replacement"
+    ) {
+      setStage(
+        "buyer disappears after commerce and before the remaining payment"
+      )
+      await expect
+        .poll(() => provider.control().snapshot().outgoingPaymentCount, {
+          timeout: 30_000,
+        })
+        .toBe(1)
+      expect(heldOrganizerSend).toBe(true)
+      setStage("partial execution stop requests buyer pause")
+      await organizerPage
+        .getByRole("button", { name: "Pause this order", exact: true })
+        .click()
+      releaseOrganizerSend()
+      setStage("partial execution stop waits for buyer pause")
+      await expect(
+        organizerPage.getByRole("button", {
+          name: "Pause this order",
+          exact: true,
+        })
+      ).toHaveCount(0, { timeout: 30_000 })
+      await expect(
+        organizerPage.getByRole("button", {
+          name: "Continue this order",
+          exact: true,
+        })
+      ).toBeEnabled()
+      setStage("partial execution stop preserves provider and wallet counters")
+      expect(provider.control().snapshot().sendInvocationCount).toBe(1)
+      if (continuation === "organizer-merchant") {
+        await organizerPage.close()
+        // A fresh Merchant session has neither Organizer stock-writer state nor
+        // Buyer storage. It must authenticate the original order and exact
+        // Organizer progress, independently check that send, then finish once.
+        setStage("cold Merchant discovers the signed recovery")
+        const coldMerchant = await contextFor(merchant, merchantUrl)
+        await coldMerchant.page.clock.install({
+          time: new Date(sharedClock.nowMs()),
+        })
+        await coldMerchant.page.goto(
+          `${merchantUrl}/orders?order=${orderId}&recovery=paused`
+        )
+        const recovery = coldMerchant.page.getByRole("region", {
+          name: "Order payment",
+          exact: true,
+        })
+        await expect(recovery).toBeVisible({ timeout: 45_000 })
+        setStage("cold Merchant retains the exact admitted recovery witness")
+        await expect
+          .poll(() => merchantRecoveryAdmission(coldMerchant.page, orderId), {
+            timeout: 30_000,
+          })
+          .toMatchObject({ uniqueWitness: true, sourcesValidated: true })
+        setStage(
+          "cold Merchant automatically continues after handoff without a prompt"
+        )
+        await recovery
+          .getByRole("button", { name: "Continue this order", exact: true })
+          .click()
+        setStage("cold Merchant preserves exact commerce payment counters")
+        await expect
+          .poll(() => provider.control().snapshot().sendInvocationCount, {
+            timeout: 60_000,
+          })
+          .toBe(3)
+        setStage("cold Merchant submits the final native treasury transfer")
+        await expect
+          .poll(
+            () => provider.control().nativeSnapshot().nativeSendInvocationCount,
+            { timeout: 30_000 }
+          )
+          .toBe(1)
+        setStage(
+          "cold Merchant completes payment while retaining checkout recovery"
+        )
+        await expect(
+          recovery.getByText(
+            "Payment complete. The checkout wallet and recovery remain saved with this order.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 60_000 })
+        expect(provider.control().snapshot().sendInvocationCount).toBe(3)
+        expect(
+          provider.control().nativeSnapshot().nativeSendInvocationCount
+        ).toBe(1)
+        teardowns.at(-1)!()
+        await coldMerchant.context.close()
+
+        // Restore the original designated stock device. Merchant financial
+        // completion must be observable without granting it physical handout.
+        setStage("event organizer automatic payment routing")
+        organizerPage = await organizerSession.context.newPage()
+        await installRealTestSigner(organizerPage, organizer, TEST_RELAY_URL)
+        await organizerPage.clock.install({
+          time: new Date(sharedClock.nowMs()),
+        })
+        await organizerPage.goto(`${merchantUrl}${eventPath}`)
+      } else {
+        // Registration is not authority. Only the complete positive transfer
+        // from the quiesced source may activate this independent fresh device.
+        setStage("event replacement device registration")
+        const replacement = await contextFor(organizer, merchantUrl)
+        await replacement.page.clock.install({
+          time: new Date(sharedClock.nowMs()),
+        })
+        await replacement.page.goto(`${merchantUrl}${eventPath}`)
+        await replacement.page
+          .getByRole("button", {
+            name: "Prepare replacement device",
+            exact: true,
+          })
+          .click()
+        await expect(
+          replacement.page.getByText(
+            "Replacement device is prepared. Copy its ID to the original device; no stock or payment authority has moved yet.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 30_000 })
+        const targetId = await replacement.page
+          .getByRole("textbox", {
+            name: "Replacement device handover ID",
+            exact: true,
+          })
+          .inputValue()
+        setStage("event source device handover")
+        await organizerPage
+          .getByRole("textbox", { name: "Replacement device ID", exact: true })
+          .fill(targetId)
+        await organizerPage
+          .getByRole("checkbox", {
+            name: "I understand this stops stock sales and pickup on this device",
+            exact: true,
+          })
+          .check()
+        await organizerPage
+          .getByRole("button", {
+            name: "Freeze this device and send handover",
+            exact: true,
+          })
+          .click()
+        setStage("event retired device cannot continue")
+        await expect(
+          organizerPage.getByText(
+            "This device's stock writer has moved. Continue on the replacement device.",
+            { exact: true }
+          )
+        ).toBeVisible()
+        await expect(
+          organizerPage.getByRole("button", {
+            name: "Continue this order",
+            exact: true,
+          })
+        ).toHaveCount(0)
+        expect(provider.control().snapshot().sendInvocationCount).toBe(1)
+        // Retirement precedes external signing/publication. Its visible fence
+        // is not a relay ACK and cannot promise fresh target discovery yet.
+        setStage("event source device handover")
+        await expect(
+          organizerPage.getByText(
+            "The exact complete handover was sent privately to your account. Verify and restore it on the prepared replacement device.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 45_000 })
+        setStage("event replacement transfer discovery")
+        await replacement.page
+          .getByRole("button", {
+            name: "Check private stock messages",
+            exact: true,
+          })
+          .click()
+        const restoreHandover = replacement.page.getByRole("button", {
+          name: "Verify and restore complete handover",
+          exact: true,
+        })
+        // The existing reader first processes retained history, then advertises
+        // bounded continuation. Follow those pages, not an implicit fresh read.
+        const historyCheck = replacement.page.getByRole("button", {
+          name: /^(?:Check private stock messages|Check more stock history)$/,
+        })
+        const moreHistory = replacement.page.getByRole("button", {
+          name: "Check more stock history",
+          exact: true,
+        })
+        for (let page = 0; page < 32; page++) {
+          await expect(historyCheck).toBeEnabled({ timeout: 30_000 })
+          if (await restoreHandover.isVisible()) break
+          if (!(await moreHistory.isVisible())) break
+          await moreHistory.click()
+        }
+        await expect(restoreHandover).toBeVisible({ timeout: 30_000 })
+        setStage("event replacement transfer activation")
+        await restoreHandover.click()
+        setStage("event replacement writer projection")
+        await expect(
+          replacement.page.getByRole("textbox", {
+            name: "This device's handover ID",
+            exact: true,
+          })
+        ).toHaveValue(writerId, { timeout: 30_000 })
+        organizerPage = replacement.page
+      }
+      setStage("event organizer automatic payment routing")
+      await organizerPage
+        .getByRole("button", {
+          name: "Refresh saved event orders",
+          exact: true,
+        })
+        .click()
+      await organizerPage
+        .getByRole("button", {
+          name: new RegExp(`Open saved order ${orderId.slice(-8)}$`),
+        })
+        .click()
+      await organizerPage
+        .getByRole("button", { name: "Continue this order", exact: true })
+        .click()
+    }
     await expect
       .poll(
         async () => {
@@ -2938,6 +3264,7 @@ async function rehearseEventRouter(
     recorder.failed()
     throw new Error(`Isolated Event router smoke failed during ${stage}.`)
   } finally {
+    releaseOrganizerSend()
     recorder.teardown(bodyCompleted)
     for (const teardown of teardowns) teardown()
     await Promise.allSettled(
@@ -2962,6 +3289,18 @@ test("native router Event Market checkout hands funded routing to the organizer 
 test("native router Event Market Buyer completes all payments before organizer pickup without replaying any transfer @commerce", async ({
   browser,
 }) => rehearseEventRouter(browser, "buyer"))
+
+test("native router Event Market Merchant finishes an interrupted Organizer payout and returns exact progress for one handout @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "organizer-merchant"))
+
+test("native router Event Market mobile guest pays one external invoice and the Organizer finishes pickup without login or contact fields @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "buyer", "guest"))
+
+test("native router Event Market replacement device resumes a complete transferred journal and exact partial payment without a second handout @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "organizer-replacement"))
 
 test("native router records sender-committed treasury payment while receiver claim remains pending and recovery stays saved @commerce", async ({
   browser,

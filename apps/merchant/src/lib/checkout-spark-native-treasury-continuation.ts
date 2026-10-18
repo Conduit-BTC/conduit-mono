@@ -501,6 +501,15 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
         consumeSettled: async (initial, latest, guard) =>
           consume(initial, latest.state, guard),
         consumeMerchantProgress: async (initial, _buyer, progress, guard) => {
+          if (progress.type === "checkout_spark_organizer_execution") {
+            if (
+              progress.merchantPubkey !== principal ||
+              progress.initialMerchantHandoffId !== initial.handoffId
+            )
+              throw new Error("Organizer native progress selection changed.")
+            await consume(initial, progress.state, guard)
+            return
+          }
           if (
             progress.merchantPubkey !== principal ||
             progress.initialHandoffId !== initial.handoffId ||

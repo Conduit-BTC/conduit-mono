@@ -208,7 +208,7 @@ export function checkoutSparkEventMarketFixture(
         ["price", String(commerceTotalSats), "SAT"],
         ["type", options.variation ? "variation" : "simple", "physical"],
         ["visibility", "public"],
-        ["stock", "10"],
+        ["stock", String(Math.max(10, options.stockGrant?.quantity ?? 5))],
         ...(parentProduct
           ? [
               ["a", parentCoordinate],
@@ -233,7 +233,10 @@ export function checkoutSparkEventMarketFixture(
       productCoordinate,
       merchantPubkey,
       state: "active",
-      inventory: { mode: "tracked", quantity: 5 },
+      inventory: {
+        mode: "tracked",
+        quantity: Math.max(5, options.stockGrant?.quantity ?? 5),
+      },
       fulfillmentMethods: ["pickup"],
     }),
     merchantSecret
@@ -290,7 +293,10 @@ export function checkoutSparkEventMarketFixture(
       productCoordinate,
       merchantPubkey,
       state: "active",
-      inventory: { mode: "tracked", quantity: 5 },
+      inventory: {
+        mode: "tracked",
+        quantity: Math.max(5, options.stockGrant?.quantity ?? 5),
+      },
       fulfillmentMethods: ["pickup"],
       ...(stockPool ? { organizerStockPool: stockPool } : {}),
       ...(stockGrant ? { previousEventId: originalAssignment.id } : {}),

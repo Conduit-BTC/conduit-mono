@@ -8,6 +8,7 @@ import {
 } from "./checkout-spark-recovery"
 import { parseCheckoutSparkMerchantProgressRumor } from "./checkout-spark-merchant-progress"
 import { parseCheckoutSparkOrganizerExecutionRumor } from "./checkout-spark-organizer-progress"
+import { parseCheckoutSparkMerchantEventProgressRumor } from "./checkout-spark-merchant-event-progress"
 import { parseEventMarketFreePurchaseRumor } from "./event-market-free-purchase"
 import { EVENT_MARKET_FREE_PURCHASE_TYPE } from "./event-market-free-purchase-marker"
 import {
@@ -651,6 +652,30 @@ export class CommerceInbox {
                       ? { recipientRole: "organizer" as const }
                       : {}),
                     organizerMessage: "execution",
+                    marketCoordinate:
+                      payload.state.plan.eventMarket!.marketCoordinate,
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.state.plan.checkoutId,
+                    orderId: payload.state.plan.orderId,
+                    planDigest: payload.state.plan.planDigest,
+                    takeoverAt: payload.state.plan.takeoverAt,
+                    preparedAt: payload.recordedAt,
+                    payloadDigest: payload.snapshotId,
+                  },
+                }
+              } else if (type === "checkout_spark_merchant_event_progress") {
+                const payload =
+                  parseCheckoutSparkMerchantEventProgressRumor(rumor)
+                if (payload.organizerPubkey !== this.store.principal)
+                  throw new Error("Merchant Event progress recipient changed.")
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    recipientRole: "organizer",
+                    organizerMessage: "merchant_progress",
                     marketCoordinate:
                       payload.state.plan.eventMarket!.marketCoordinate,
                     id: rumor.id,

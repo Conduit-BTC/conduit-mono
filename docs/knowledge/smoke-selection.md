@@ -34,7 +34,13 @@ group when a PR mixes both kinds of changes. Renames include both paths;
 all test and helper edits use full coverage. Current tags cannot establish a
 changed test's former owning areas, runtime or dependencies between files. Even
 small test-only edits therefore keep all areas and their existing parallelism.
-Commerce remains complete, including isolated router and receiver setup profiles.
+Commerce remains complete, including isolated ordinary native-router, Event
+native-router and receiver setup profiles. The Event native profile runs in its
+own required parallel job; the existing Commerce job retains ordinary Commerce,
+ordinary native routing and receiver setup. Both use independent test state.
+The native discovery guard compares their project-aware manifests with the full
+native selection and rejects missing or repeated cases before execution. These
+are execution partitions within `@commerce`, not new area ownership tags.
 
 Do not extend the map merely because a filename looks app-local. Check callers,
 protected behavior and existing browser coverage first, then add a composed
@@ -48,7 +54,7 @@ Measured About and legal source scopes run unsharded. Scopes above 150 project
 cases fall back to full-area partitions as the inventory grows. This count is a
 size guard, not a runtime bound. General test-file edits always keep full-area
 partitions in all areas, regardless of case count. Full areas retain the existing
-three Market, two Merchant and one Commerce jobs. Build runs independently of
+three Market, three Merchant, one Commerce and one Event-router jobs. Build runs independently of
 quality checks;
 preview verification still requires the validated build and configuration digest.
 Every required check must pass independently.
@@ -56,8 +62,11 @@ Every required check must pass independently.
 Report selected case counts, setup-inclusive wall time and runner-minutes by
 change cohort. A faster selective run is not a full-coverage run or proof of
 sustained reliability. Keep first-attempt failures and canceled work visible.
-Broad changes may remain slower; do not add runner fanout, weaken coverage or
-introduce a dependency framework solely to reach a timing goal. Unit execution
+Broad changes may remain slower; do not weaken coverage or introduce arbitrary
+runner fanout or a dependency framework solely to reach a timing goal. The
+bounded Event-router split preserves all native cases while keeping the existing
+Commerce job's serial lanes within their unchanged deadline; it does not increase
+test deadlines or make a failed lane optional. Unit execution
 and broader preview scheduling remain independent performance limits.
 
 To roll back narrower selection, omit `--inventory` from the selector invocation.

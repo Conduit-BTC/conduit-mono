@@ -29,20 +29,37 @@ retain evidence until the separate retirement requirements are met.
 
 ## Automated evidence map
 
-| Boundary                                                              | Primary local coverage                                                                                                              | Fidelity                                                                                   |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| Signed event/price/variation binding and additive fees                | `checkout-spark-event-market-sources`, `checkout-spark-event-allocation`, `checkout-spark-event-entry`, `checkout-spark-event-fiat` | Real runtime-generated signatures; deterministic quotes/providers                          |
-| Actual Buyer preparation and payment continuation                     | `checkout-spark-event-execution`                                                                                                    | Existing app preparation/runner and SDK adapter; controlled external wallet/provider/relay |
-| Organizer recovery, exact progress and current writer                 | `checkout-spark-organizer-authority`, `checkout-spark-organizer-progress`, `checkout-spark-organizer-routing`                       | Real NIP-44/NIP-59, shared executor, fake IndexedDB and controlled providers               |
-| Free purchase and bounded guest delivery                              | `event-market-free-purchase`, `event-market-free-purchase-delivery`, `event-market-free-purchase-authority`                         | Real cryptography, exact ciphertext retry, no payment wallet                               |
-| Claim, once-only handout, stock import and cold history               | `event-market-stock-handout`, `event-market-stock-import`, `event-market-stock-merchant-inbox`                                      | Authenticated private envelopes and existing inventory transaction                         |
-| Stock checkpoint before listing publication                           | `event-market-stock-import`, `product-listing-delivery`                                                                             | Existing product outbox and real encrypted checkpoint                                      |
-| Screen-to-screen stock, free pickup, reload and seller reconciliation | `e2e/event-market.playwright.ts`, “reserved organizer stock carries a free purchase…”                                               | Runner-held NIP-07 keys; real crypto; controlled signature-validating relay; no funds      |
+| Boundary                                                              | Primary local coverage                                                                                                                                  | Fidelity                                                                                                           |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Signed event/price/variation binding and additive fees                | `checkout-spark-event-market-sources`, `checkout-spark-event-allocation`, `checkout-spark-event-entry`, `checkout-spark-event-fiat`                     | Real runtime-generated signatures; deterministic quotes/providers                                                  |
+| Actual Buyer preparation and payment continuation                     | `checkout-spark-event-execution`                                                                                                                        | Existing app preparation/runner and SDK adapter; controlled external wallet/provider/relay                         |
+| Organizer recovery, exact progress and current writer                 | `checkout-spark-organizer-authority`, `checkout-spark-organizer-progress`, `checkout-spark-organizer-routing`                                           | Real NIP-44/NIP-59, shared executor, fake IndexedDB and controlled providers                                       |
+| Merchant financial fallback and reciprocal actor progress             | `checkout-spark-event-actor-recovery`, `checkout-spark-event-order-witness`, `checkout-spark-merchant-event-progress`, `checkout-spark-event-execution` | Authenticated original Buyer order, role-authentic encrypted checkpoints and exact provider reconciliation         |
+| Free purchase and bounded guest delivery                              | `event-market-free-purchase`, `event-market-free-purchase-delivery`, `event-market-free-purchase-authority`                                             | Real cryptography, exact ciphertext retry, no payment wallet                                                       |
+| Claim, once-only handout, stock import and cold history               | `event-market-stock-handout`, `event-market-stock-import`, `event-market-stock-merchant-inbox`                                                          | Authenticated private envelopes and existing inventory transaction                                                 |
+| Active replacement device and old-device fence                        | `event-market-stock-writer-handover`, `event-market-stock-writer-fence`, `event-market-stock-device-projection`                                         | Complete real-crypto multipart journal, independent recipient ACKs, atomic restore and controlled in-flight checks |
+| Stock checkpoint before listing publication                           | `event-market-stock-import`, `product-listing-delivery`                                                                                                 | Existing product outbox and real encrypted checkpoint                                                              |
+| Screen-to-screen stock, free pickup, reload and seller reconciliation | `e2e/event-market.playwright.ts`, “reserved organizer stock carries a free purchase…”                                                                   | Runner-held NIP-07 keys; real crypto; controlled signature-validating relay; no funds                              |
+| Buyer, Organizer and Merchant routing through actual screens          | Event Market cases in `e2e/commerce-router-recovery.playwright.ts`                                                                                      | Real local signatures and SDK identity derivation; controlled providers; no live funds                             |
 
 Names above identify suites, not a claim that their latest execution passed.
 Use current-head check output for results. Historical Merchant release receipts
 remain readable; new finite-pool orders use the organizer stock/claim workflow
 instead of requesting another live Merchant release signature.
+
+`checkout-spark-event-merchant-worker` additionally exercises the real Merchant
+discovery and automatic worker after a partial Organizer payout, using an
+independent database and controlled external providers. The handout presentation
+is covered by `event-market-organizer-merchandise` and
+`event-market-organizer-pickup`: exact signed product/parent revisions, selected
+options and per-line quantities come from the frozen purchase, not a current
+catalog fetch. Missing or conflicting item details do not permit physical release.
+
+`checkout-spark-event-concurrent-actors` exercises independent Merchant and
+Organizer stores at the real preparation/executor seam. Its controlled provider
+deduplicates the identical transfer ID; divergent invoices remain a paused
+conflict without another economic payout. This does not establish deployed
+provider concurrency behavior or a distributed client lock.
 
 ## Final preview acceptance
 
@@ -68,16 +85,30 @@ and the test spending limit separately.
    or a partial payout, leave the seller offline, then open the organizer's saved
    order after the original buyer cutoff. Continue the same attempts; independently
    verify paid legs are skipped. Verify the buyer's exact code before one physical
-   handout. A wrong or repeated claim cannot release another item.
+   handout, matching each displayed product, variation and quantity to the goods.
+   A wrong or repeated claim cannot release another item.
+   Exercise Merchant financial fallback separately after an interrupted Organizer
+   payout. A fresh Merchant session authenticates the original Buyer order and
+   Organizer checkpoints, reconciles exact attempts, and publishes its own
+   separately encrypted progress before further sends. The original Organizer
+   stock device can then verify the same attempts without paying again. Merchant
+   financial recovery neither requires nor grants the Organizer stock-writer
+   role, a claim, physical handout, or a second inventory debit.
 5. Reload organizer history. The saved handout is retry-only. Have the seller
    import the original Buyer order and organizer acceptance once, then retry it;
    stock must not decrement again. Close the pool and reconcile the complete
    accepted prefix before returning unused stock.
 6. On a fresh seller session recover the encrypted stock checkpoint and confirm
    holds/imported frontiers remain intact. On a replacement organizer device,
-   recover complete closed history read-only. An empty/partial inbox cannot reset
-   the former writer or start another active pool; unresolved active history
-   requires explicit reconciliation/handover, not automatic writer adoption.
+   first register its recovery target without granting it writer authority.
+   The original device must stop its entire active market writer and retain an
+   exact encrypted complete-journal transfer for that target. Restore it on the
+   target, verify pending handouts and original pool/claim identifiers survive,
+   and verify the original device cannot resume stock writes or handout.
+   Completed closed history can also restore read-only. An empty/partial inbox
+   cannot reset the former writer or start another active pool. Without the
+   positive complete transfer/frontier, unresolved active history requires
+   explicit reconciliation rather than automatic writer adoption.
 7. Check free goods with no organizer fee separately: no wallet/invoice, one
    stock reservation, exact claim and one handout. Check a signed positive
    minimum on free goods still requires its fee-only payment.

@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import type { EventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   acceptCheckoutSparkOrganizerStockOrder,
   assertCheckoutSparkOrganizerCommerceProof,
@@ -78,6 +79,7 @@ export async function continueEventMarketOrganizerPickup(
 export function EventMarketOrganizerPickupForm(props: {
   orderLabel: string
   quantity: number
+  merchandise?: EventMarketOrganizerMerchandise
   routing: boolean
   free?: boolean
   historyReady?: boolean
@@ -127,6 +129,47 @@ export function EventMarketOrganizerPickupForm(props: {
               ? "No payment required"
               : "Goods payment not yet verified"}
       </p>
+      {props.merchandise?.state === "ready" ? (
+        <section aria-label="Items to hand out" className="space-y-2">
+          <h4 className="text-sm font-medium">Items to hand out</h4>
+          <ul className="space-y-3">
+            {props.merchandise.lines.map((line) => (
+              <li
+                key={line.productCoordinate}
+                className="flex min-w-0 items-start justify-between gap-3 text-sm"
+              >
+                <div className="min-w-0 break-words">
+                  <p className="font-medium">
+                    {line.familyTitle ?? line.title}
+                  </p>
+                  {line.familyTitle && line.familyTitle !== line.title ? (
+                    <p className="text-[var(--text-secondary)]">{line.title}</p>
+                  ) : null}
+                  {line.specifications.map((specification) => (
+                    <p
+                      key={JSON.stringify([
+                        specification.key,
+                        specification.value,
+                      ])}
+                      className="text-[var(--text-secondary)]"
+                    >
+                      {specification.key}: {specification.value}
+                    </p>
+                  ))}
+                </div>
+                <span className="shrink-0 tabular-nums">
+                  Qty {line.quantity}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <p role="status" className="text-sm text-[var(--warning-text)]">
+          Exact item details are unavailable. Reopen this saved order before
+          handing out goods.
+        </p>
+      )}
       {props.routing ? (
         <>
           {props.free ? (
@@ -215,7 +258,9 @@ export function EventMarketOrganizerPickupForm(props: {
               <Button
                 type="submit"
                 disabled={
-                  !props.claimCode.trim() || props.historyReady === false
+                  !props.claimCode.trim() ||
+                  props.historyReady === false ||
+                  props.merchandise?.state !== "ready"
                 }
               >
                 Confirm code and hand out once
@@ -413,6 +458,7 @@ export function EventMarketOrganizerPickupCard(props: {
         (total, row) => total + row.quantity,
         0
       )}
+      merchandise={purchase.merchandise}
       routing={routing}
       free={purchase.kind === "free"}
       historyReady={saved.isSuccess}

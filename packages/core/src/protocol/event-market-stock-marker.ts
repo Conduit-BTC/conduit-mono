@@ -17,9 +17,11 @@ export function isEventMarketStockAuthorityRumor(rumor: {
         Array.isArray(tag) &&
         ((tag[0] === "subject" &&
           (tag[1] === EVENT_MARKET_STOCK_AUTHORITY_SUBJECT ||
+            tag[1] === "conduit-event-stock-handover" ||
             tag[1] === "conduit-event-stock-checkpoint")) ||
           (tag[0] === EVENT_MARKET_STOCK_AUTHORITY_MARKER[0] &&
             (tag[1] === EVENT_MARKET_STOCK_AUTHORITY_MARKER[1] ||
+              tag[1] === "event-stock-handover" ||
               tag[1] === "event-stock-checkpoint")))
     )
   )

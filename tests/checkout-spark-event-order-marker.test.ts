@@ -126,11 +126,20 @@ describe("explicit v5 event router order marker", () => {
     }
   })
 
-  it("prevents Merchant dispatch of an organizer-delegated plan without rejecting its recoverable canonical plan", () => {
+  it("preserves Merchant financial fallback for the same organizer-handoff plan", () => {
     const f = checkoutSparkEventMarketFixture({ mode: "organizer_handoff" })
     expect(f.plan.schemaVersion).toBe(5)
-    expect(() => assertMerchantCheckoutSparkDispatchPlan(f.plan)).toThrow(
-      "delegates payment continuation to its organizer"
-    )
+    const prior = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+    process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS =
+      f.plan.nativeTreasury!.sparkAddress
+    try {
+      expect(() =>
+        assertMerchantCheckoutSparkDispatchPlan(f.plan, true)
+      ).not.toThrow()
+    } finally {
+      if (prior === undefined)
+        delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+      else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = prior
+    }
   })
 })

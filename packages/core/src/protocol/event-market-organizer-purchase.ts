@@ -18,6 +18,10 @@ import {
 import { getFutureMarketClaimRef } from "./future-market-handoff"
 import type { CheckoutSparkEventMarketBinding } from "./checkout-spark-event-market"
 import type { CheckoutSparkOrganizerOrderBinding } from "./checkout-spark-organizer-recovery"
+import {
+  projectEventMarketOrganizerMerchandise,
+  type EventMarketOrganizerMerchandise,
+} from "./event-market-organizer-merchandise"
 
 declare const freePurchaseBrand: unique symbol
 export interface EventMarketFreePurchaseAuthority {
@@ -36,6 +40,7 @@ export interface EventMarketOrganizerPurchase {
   eventMarket: CheckoutSparkEventMarketBinding
   orderBinding: CheckoutSparkOrganizerOrderBinding
   claimRef: string
+  merchandise: EventMarketOrganizerMerchandise
   writerBindings: CheckoutSparkOrganizerPurchase["writerBindings"]
   /** Opaque original financial-plan or free-purchase digest, never a payment flag. */
   recoveryBinding: { planDigest: string } | { freePurchaseId: string }
@@ -129,6 +134,12 @@ export async function openEventMarketFreePurchaseAuthority(input: {
     organizerPubkey: payload.organizerPubkey,
     eventMarket: payload.eventMarket,
     orderBinding: payload.orderBinding,
+    merchandise: projectEventMarketOrganizerMerchandise({
+      merchantPubkey: payload.merchantPubkey,
+      eventMarket: payload.eventMarket,
+      commerceQuote: payload.commerceQuote,
+      sourceEvents: payload.sourceEvents,
+    }),
     writerBindings,
     recoveryBinding: { freePurchaseId: payload.handoffId },
     claimRef: getFutureMarketClaimRef({
@@ -182,6 +193,7 @@ export function assertEventMarketOrganizerPurchaseAuthority(
     orderBinding: financial.orderBinding,
     writerBindings: financial.writerBindings,
     claimRef: financial.claimRef,
+    merchandise: financial.merchandise,
     recoveryBinding: { planDigest: financial.plan.planDigest },
   }
 }

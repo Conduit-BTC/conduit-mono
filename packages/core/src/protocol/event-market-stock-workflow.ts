@@ -69,6 +69,8 @@ import {
   observeMerchantOrganizerStockCheckpoint,
   type EventMarketStockCheckpointPayload,
 } from "./event-market-stock-checkpoint"
+import { isOrganizerStockWriterHandoverRumor } from "./event-market-stock-writer-handover"
+import { assertOrganizerStockWriterCurrent } from "./event-market-stock-writer-guard"
 
 type StockSession = {
   db: ConduitDB
@@ -145,6 +147,9 @@ export async function inspectEventMarketStockPacket(
     await unwrapPrivateMessageEnvelope(input.envelope, input.signer)
   )
   authority.check()
+  // This self-only subtype has its own bounded transfer consumer, not a
+  // Merchant-stock packet or a malformed human message.
+  if (isOrganizerStockWriterHandoverRumor(rumor)) return null
   if (!isEventMarketStockAuthorityRumor(rumor)) return null
   let payload: AuthenticatedEventMarketStockPacket["payload"]
   try {
@@ -197,6 +202,15 @@ export async function publishEventMarketStockWork(
         ? pool.closingRumor
         : entry?.rumor
   if (!rumor) throw new Error("Exact saved stock work unavailable")
+  if (pool.accountPubkey === pool.organizerPubkey) {
+    const grant = validateOrganizerStockJournalPool(pool)
+    await assertOrganizerStockWriterCurrent({
+      db: input.db,
+      accountPubkey: input.authenticatedPubkey,
+      marketCoordinate: grant.marketCoordinate,
+      writerId: pool.writerId,
+    })
+  }
   authority.check()
   const result = await retryPrivateMessageWraps({
     ...input.delivery,

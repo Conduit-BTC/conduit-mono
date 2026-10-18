@@ -126,7 +126,8 @@ export type CheckoutSparkRecoveryPayload =
 export interface CheckoutRecoveryDescriptor {
   /** Absent in historical Merchant descriptors. Never grants role authority. */
   recipientRole?: "organizer"
-  organizerMessage?: "initial" | "buyer_progress" | "execution"
+  organizerMessage?:
+    "initial" | "buyer_progress" | "execution" | "merchant_progress"
   marketCoordinate?: string
   id: string
   senderPubkey: string

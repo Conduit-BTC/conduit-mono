@@ -116,7 +116,15 @@ describe("composed inventory and accepted-order schema upgrades", () => {
       const upgraded = new ConduitDB(name, options)
       try {
         await upgraded.open()
-        expect(upgraded.backendDB().version).toBe(280)
+        expect(upgraded.backendDB().version).toBe(290)
+        expect(upgraded.tables.map((table) => table.name)).toEqual(
+          expect.arrayContaining([
+            "eventMarketOrganizerStockPools",
+            "eventMarketOrganizerStockEntries",
+            "eventMarketOrganizerStockWriters",
+          ])
+        )
+        expect(await upgraded.eventMarketOrganizerStockWriters.count()).toBe(0)
         if (!hadInventory) {
           await initialize(upgraded)
           await acceptMerchantInventoryOrder(

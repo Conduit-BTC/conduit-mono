@@ -33,6 +33,7 @@ import {
   freezeCheckoutSparkSettledEventPlan,
   SessionSigner,
   createInMemoryInboxDeclarationEvidenceRepository,
+  orderSchema,
 } from "@conduit/core"
 import {
   receiveOrganizerStockGrant,
@@ -705,11 +706,11 @@ async function fixture(
     pubkey: buyer.pubkey,
     signer: buyer,
   }
-  const order = createCheckoutSparkEventMarketFixtureOrder(
-    graph,
-    buyer.pubkey,
-    AT
-  )
+  const order = orderSchema.parse({
+    ...createCheckoutSparkEventMarketFixtureOrder(graph, buyer.pubkey, AT),
+    buyerIdentityKind: "signed_in",
+    shippingCostStatus: "included",
+  })
   const product = {
     ...parseProductEvent(await admitFixture(graph.events.product)),
     sourceEventId: graph.events.product.id,
@@ -1342,206 +1343,212 @@ describe("composed event checkout preparation and execution", () => {
     }
   }, 30_000)
 
-  it("continues the remaining native fee in Merchant recovery after Buyer cutoff, independently checking every earlier recipient", async () => {
-    const f = await fixture({ commerceTotalSats: 1_000 })
-    try {
-      f.hooks.handoffAfterOrganizer = true
-      f.control.setNativeCompletion(false)
-      f.control.setNativeSenderCommitment(true)
-      const buyerResult = await f.runner.run(f.runInput)
-      expect(buyerResult).toEqual({
-        status: "paused",
-        reason: "authority_transferred",
-      })
-      const before = await f.repository.load(
-        f.plan.checkoutId,
-        f.plan.planDigest
-      )
-      if (before.status !== "active")
-        throw new Error("Expected partial event checkout")
-      expect(
-        before.state.legs.filter((leg) => leg.status === "paid").length
-      ).toBe(3)
-      expect(before.state.treasuryFinalization?.status).toBe("unprepared")
-
-      const order = {
-        ...f.order,
-        buyerIdentityKind: "signed_in",
-        shippingCostStatus: "included",
-        createdAt: f.plan.createdAt,
-        checkoutSparkPricing: f.plan.commerceQuote.pricing,
-      }
-      const draft = {
-        kind: EVENT_KINDS.ORDER,
-        pubkey: f.buyer.pubkey,
-        created_at: AT / 1_000,
-        tags: [
-          ["p", f.plan.merchantPubkey],
-          ["type", "order"],
-          ["order", order.id],
-          ["amount", String(order.subtotal)],
-          ["currency", "SATS"],
-          ["item", order.items[0]!.productId, "1"],
-          [...CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG],
-          ...buildEventMarketOrderRumorTags(order),
-        ],
-        content: JSON.stringify(order),
-      }
-      const orderWrap = await wrapPrivateMessage(
-        { ...draft, id: getEventHash(draft) },
-        { pubkey: f.plan.merchantPubkey },
-        f.buyer
-      )
-      const authenticatedOrder = await unwrapPrivateMessageEnvelope(
-        orderWrap,
-        f.merchantSigner
-      )
-      const evidence =
-        readCheckoutSparkMerchantOrderEvidence(authenticatedOrder)
-      expect(evidence !== null).toBe(true)
-      const witness =
-        evidence &&
-        createCheckoutSparkMerchantOrderWitness(
-          f.plan,
-          evidence,
-          f.buyer.pubkey,
-          f.sourceEvents
-        )
-      expect(witness !== null).toBe(true)
-      await f.repository.importMerchantOrderRecovery(
-        before.state,
-        witness!,
-        () => {}
-      )
-      const deliveries = listCheckoutSparkRecoveryDeliveries(f.storage).sort(
-        (a, b) => b.savedAt - a.savedAt
-      )
-      const initialDelivery = getCheckoutSparkRecoveryDelivery(
-        f.prepared.recoveryHandoffId,
-        f.storage
-      )!
-      const initial = await openCheckoutSparkRecoveryDelivery({
-        record: initialDelivery.record,
-        signer: f.merchantSigner,
-      })
-      const latest = await openCheckoutSparkRecoveryDelivery({
-        record: deliveries[0]!.record,
-        signer: f.merchantSigner,
-      })
-      if (initial.schemaVersion !== 2 || latest.schemaVersion !== 3)
-        throw new Error("Expected authenticated wallet and progress recovery")
-      const candidate: MerchantCheckoutSparkRecoveryCandidate = {
-        wrapId: deliveries[0]!.record.signedRecipientWrap.id,
-        schemaVersion: 3,
-        checkoutId: f.plan.checkoutId,
-        orderId: f.plan.orderId,
-        planDigest: f.plan.planDigest,
-        takeoverAt: f.plan.takeoverAt,
-        preparedAt: latest.preparedAt,
-        initialWrapId: initialDelivery.record.signedRecipientWrap.id,
-        initialHandoffId: initial.handoffId,
-      }
-      const progressStore = new DexieMerchantCheckoutSparkProgressRepository(
-        f.database
-      )
-      const inbox = await createInboxDeclarationFixtureEvidence(
-        f.signMerchant({
-          kind: 10_050,
-          created_at: AT / 1_000,
-          tags: [["relay", relays[0]!]],
-          content: "",
+  it.each(["merchant_present", "organizer_handoff"] as const)(
+    "continues the remaining native fee in Merchant recovery after Buyer cutoff for %s, independently checking every earlier recipient",
+    async (mode) => {
+      const f = await fixture({ commerceTotalSats: 1_000, mode })
+      try {
+        f.hooks.handoffAfterOrganizer = true
+        f.control.setNativeCompletion(false)
+        f.control.setNativeSenderCommitment(true)
+        const buyerResult = await f.runner.run(f.runInput)
+        expect(buyerResult).toEqual({
+          status: "paused",
+          reason: "authority_transferred",
         })
-      )
-      const result = await continueMerchantCheckoutSparkNativeTreasury(
-        f.plan.merchantPubkey,
-        candidate,
-        {
-          repository: f.repository,
-          progressStore,
-          signer: f.merchantSigner,
-          now: () => ++f.clock.now,
-          requireCrossTabLock: false,
-          lockManager: null,
-          shouldContinue: () => true,
-          consumeRecovery: async (_principal, selected, adapter) => {
-            await adapter.consumeSettled!(initial, latest, () => {})
-            return {
-              status: "consumed",
-              coverage: "complete",
-              discoveryCoverage: "complete",
-              declarationState: "declared",
-              candidate: selected,
-            }
-          },
-          openWallet: async (input) => {
-            const { wallet } = await f.native.module.initialize({
-              mnemonicOrSeed: input.mnemonic,
-              accountNumber: input.accountNumber,
-              options: { log: false, network: "MAINNET" },
-            })
-            let closed = false
-            const treasury = createCheckoutSparkNativeTreasurySdkAdapter({
-              network: "MAINNET",
-              isClosed: () => closed,
-              read: (read) => read(),
-              codec: {
-                ...codec,
-                nativeTreasuryPolicy:
-                  CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
-              },
-              wallet: {
-                getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
-                getBalance: () => wallet.getBalance(),
-                getTransfer: (id) => wallet.getTransfer(id),
-                querySparkInvoices: (invoices) =>
-                  wallet.querySparkInvoices!(invoices),
-                fulfillSparkInvoice: (invoices) =>
-                  wallet.fulfillSparkInvoice!(invoices),
-              },
-            })
-            return {
-              nativeTreasury: treasury,
-              ensurePrivateReady: async () => {},
-              getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
-              getLightningReceiveRequest: (id) =>
-                wallet.getLightningReceiveRequest(id),
-              getTransfer: (id) => wallet.getTransfer(id),
-              getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
-              getLightningSendRequest: (id) =>
-                wallet.getLightningSendRequest(id),
-              openRetirementReader: () =>
-                f.native.openAuthenticatedRetirementReader(f.credentials),
-              cleanup: async () => {
-                closed = true
-                await wallet.cleanup?.()
-              },
-            }
-          },
-          progressTransport: {
-            ...f.transport,
-            inboxDeclarationEvidenceRepository: inbox,
-            accountNetworkLocalStateRepository: { get: async () => undefined },
-          },
+        const before = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        if (before.status !== "active")
+          throw new Error("Expected partial event checkout")
+        expect(
+          before.state.legs.filter((leg) => leg.status === "paid").length
+        ).toBe(3)
+        expect(before.state.treasuryFinalization?.status).toBe("unprepared")
+
+        const order = {
+          ...f.order,
+          buyerIdentityKind: "signed_in",
+          shippingCostStatus: "included",
+          createdAt: f.plan.createdAt,
+          checkoutSparkPricing: f.plan.commerceQuote.pricing,
         }
-      )
-      expect(result.status).toBe("consumed")
-      expect(result.payout?.outcome).toBe("paid")
-      expect(f.control.snapshot().sendInvocationCount).toBe(3)
-      expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
-      expect(f.calls.payer).toBe(1)
-      const saved = await f.repository.load(
-        f.plan.checkoutId,
-        f.plan.planDigest
-      )
-      expect(
-        saved.status === "active" &&
-          saved.state.legs.every((leg) => leg.status === "paid")
-      ).toBe(true)
-      expect(
-        (await f.manager.getFundsState(f.plan.walletId)).availableSats
-      ).toBe(0)
-    } finally {
-      await f.cleanup()
-    }
-  }, 30_000)
+        const draft = {
+          kind: EVENT_KINDS.ORDER,
+          pubkey: f.buyer.pubkey,
+          created_at: AT / 1_000,
+          tags: [
+            ["p", f.plan.merchantPubkey],
+            ["type", "order"],
+            ["order", order.id],
+            ["amount", String(order.subtotal)],
+            ["currency", "SATS"],
+            ["item", order.items[0]!.productId, "1"],
+            [...CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG],
+            ...buildEventMarketOrderRumorTags(order),
+          ],
+          content: JSON.stringify(order),
+        }
+        const orderWrap = await wrapPrivateMessage(
+          { ...draft, id: getEventHash(draft) },
+          { pubkey: f.plan.merchantPubkey },
+          f.buyer
+        )
+        const authenticatedOrder = await unwrapPrivateMessageEnvelope(
+          orderWrap,
+          f.merchantSigner
+        )
+        const evidence =
+          readCheckoutSparkMerchantOrderEvidence(authenticatedOrder)
+        expect(evidence !== null).toBe(true)
+        const witness =
+          evidence &&
+          createCheckoutSparkMerchantOrderWitness(
+            f.plan,
+            evidence,
+            f.buyer.pubkey,
+            f.sourceEvents
+          )
+        expect(witness !== null).toBe(true)
+        await f.repository.importMerchantOrderRecovery(
+          before.state,
+          witness!,
+          () => {}
+        )
+        const deliveries = listCheckoutSparkRecoveryDeliveries(f.storage).sort(
+          (a, b) => b.savedAt - a.savedAt
+        )
+        const initialDelivery = getCheckoutSparkRecoveryDelivery(
+          f.prepared.recoveryHandoffId,
+          f.storage
+        )!
+        const initial = await openCheckoutSparkRecoveryDelivery({
+          record: initialDelivery.record,
+          signer: f.merchantSigner,
+        })
+        const latest = await openCheckoutSparkRecoveryDelivery({
+          record: deliveries[0]!.record,
+          signer: f.merchantSigner,
+        })
+        if (initial.schemaVersion !== 2 || latest.schemaVersion !== 3)
+          throw new Error("Expected authenticated wallet and progress recovery")
+        const candidate: MerchantCheckoutSparkRecoveryCandidate = {
+          wrapId: deliveries[0]!.record.signedRecipientWrap.id,
+          schemaVersion: 3,
+          checkoutId: f.plan.checkoutId,
+          orderId: f.plan.orderId,
+          planDigest: f.plan.planDigest,
+          takeoverAt: f.plan.takeoverAt,
+          preparedAt: latest.preparedAt,
+          initialWrapId: initialDelivery.record.signedRecipientWrap.id,
+          initialHandoffId: initial.handoffId,
+        }
+        const progressStore = new DexieMerchantCheckoutSparkProgressRepository(
+          f.database
+        )
+        const inbox = await createInboxDeclarationFixtureEvidence(
+          f.signMerchant({
+            kind: 10_050,
+            created_at: AT / 1_000,
+            tags: [["relay", relays[0]!]],
+            content: "",
+          })
+        )
+        const result = await continueMerchantCheckoutSparkNativeTreasury(
+          f.plan.merchantPubkey,
+          candidate,
+          {
+            repository: f.repository,
+            progressStore,
+            signer: f.merchantSigner,
+            now: () => ++f.clock.now,
+            requireCrossTabLock: false,
+            lockManager: null,
+            shouldContinue: () => true,
+            consumeRecovery: async (_principal, selected, adapter) => {
+              await adapter.consumeSettled!(initial, latest, () => {})
+              return {
+                status: "consumed",
+                coverage: "complete",
+                discoveryCoverage: "complete",
+                declarationState: "declared",
+                candidate: selected,
+              }
+            },
+            openWallet: async (input) => {
+              const { wallet } = await f.native.module.initialize({
+                mnemonicOrSeed: input.mnemonic,
+                accountNumber: input.accountNumber,
+                options: { log: false, network: "MAINNET" },
+              })
+              let closed = false
+              const treasury = createCheckoutSparkNativeTreasurySdkAdapter({
+                network: "MAINNET",
+                isClosed: () => closed,
+                read: (read) => read(),
+                codec: {
+                  ...codec,
+                  nativeTreasuryPolicy:
+                    CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+                },
+                wallet: {
+                  getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
+                  getBalance: () => wallet.getBalance(),
+                  getTransfer: (id) => wallet.getTransfer(id),
+                  querySparkInvoices: (invoices) =>
+                    wallet.querySparkInvoices!(invoices),
+                  fulfillSparkInvoice: (invoices) =>
+                    wallet.fulfillSparkInvoice!(invoices),
+                },
+              })
+              return {
+                nativeTreasury: treasury,
+                ensurePrivateReady: async () => {},
+                getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
+                getLightningReceiveRequest: (id) =>
+                  wallet.getLightningReceiveRequest(id),
+                getTransfer: (id) => wallet.getTransfer(id),
+                getTransferFromSsp: (id) => wallet.getTransferFromSsp(id),
+                getLightningSendRequest: (id) =>
+                  wallet.getLightningSendRequest(id),
+                openRetirementReader: () =>
+                  f.native.openAuthenticatedRetirementReader(f.credentials),
+                cleanup: async () => {
+                  closed = true
+                  await wallet.cleanup?.()
+                },
+              }
+            },
+            progressTransport: {
+              ...f.transport,
+              inboxDeclarationEvidenceRepository: inbox,
+              accountNetworkLocalStateRepository: {
+                get: async () => undefined,
+              },
+            },
+          }
+        )
+        expect(result.status).toBe("consumed")
+        expect(result.payout?.outcome).toBe("paid")
+        expect(f.control.snapshot().sendInvocationCount).toBe(3)
+        expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        expect(f.calls.payer).toBe(1)
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(
+          saved.status === "active" &&
+            saved.state.legs.every((leg) => leg.status === "paid")
+        ).toBe(true)
+        expect(
+          (await f.manager.getFundsState(f.plan.walletId)).availableSats
+        ).toBe(0)
+      } finally {
+        await f.cleanup()
+      }
+    },
+    30_000
+  )
 })

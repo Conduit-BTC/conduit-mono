@@ -1,12 +1,17 @@
 import { afterEach, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { ConduitDB } from "@conduit/core/db"
-import { assertCheckoutSparkOrganizerCommerceProof } from "@conduit/core"
+import {
+  assertCheckoutSparkOrganizerCommerceProof,
+  assertEventMarketOrganizerPurchaseAuthority,
+} from "@conduit/core"
+import type { EventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   EventMarketOrganizerPickupForm,
   continueEventMarketOrganizerPickup,
 } from "../apps/merchant/src/components/EventMarketOrganizerPickupCard"
 import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purchase-fixture"
+import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
 import { createInMemoryInboxDeclarationEvidenceRepository } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { admitFixture } from "./helpers/public-event"
 
@@ -28,6 +33,62 @@ const controls = {
   onHandout: () => {},
   onRetryHandout: () => {},
 }
+
+it("shows each exact pickup product, selected variation and quantity before handout", () => {
+  const merchandise = {
+    state: "ready" as const,
+    lines: [
+      {
+        productCoordinate: "first-item",
+        title: "Tasting apples",
+        familyTitle: "Orchard fruit",
+        quantity: 2,
+        specifications: [{ key: "Size", value: "Large" }],
+      },
+      {
+        productCoordinate: "second-item",
+        title: "Pear juice",
+        quantity: 1,
+        specifications: [],
+      },
+    ],
+  }
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      {...{ merchandise }}
+      quantity={3}
+      paymentVerified
+    />
+  )
+  expect(markup).toContain("Tasting apples")
+  expect(markup).toContain("Orchard fruit")
+  expect(markup).toContain("Size: Large")
+  expect(markup).toContain("Qty 2")
+  expect(markup).toContain("Pear juice")
+  expect(markup).toContain("Qty 1")
+  expect(markup).not.toContain("first-item")
+  expect(markup).not.toContain("second-item")
+})
+
+it("shows unavailable exact details honestly and disables physical handout", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      paymentVerified
+      historyReady
+      claimCode="A-VALID-PICKUP-CODE"
+      merchandise={{ state: "unavailable" }}
+    />
+  )
+  expect(markup).toContain("Exact item details are unavailable")
+  expect(markup).not.toContain('aria-label="Items to hand out"')
+  const handout = markup.match(
+    /<button\b[^>]*>Confirm code and hand out once<\/button>/
+  )?.[0]
+  expect(handout).toBeDefined()
+  expect(handout).toContain('disabled=""')
+})
 
 it("describes free pickup without a payment, wallet, routing spinner or claim release before verification", () => {
   const initial = renderToStaticMarkup(
@@ -56,6 +117,31 @@ it("describes free pickup without a payment, wallet, routing spinner or claim re
   expect(ready).toContain("Free pickup verified")
   expect(ready).toContain("Confirm code and hand out once")
   expect(ready).toContain('disabled=""')
+})
+
+it("carries only frozen merchandise into the actual paid and free organizer handout views", async () => {
+  const paid = await checkoutSparkOrganizerFixture()
+  const free = await eventMarketFreePurchaseFixture()
+  databases.push(paid.database, free.database)
+  for (const authority of [paid.authority, free.freeAuthority]) {
+    const purchase = assertEventMarketOrganizerPurchaseAuthority(authority)
+    expect(Object.hasOwn(purchase, "merchandise")).toBe(true)
+    const merchandise = (
+      purchase as { merchandise?: EventMarketOrganizerMerchandise }
+    ).merchandise
+    const markup = renderToStaticMarkup(
+      <EventMarketOrganizerPickupForm
+        {...controls}
+        merchandise={merchandise}
+        free={purchase.kind === "free"}
+      />
+    )
+    expect(markup).toContain("Fixture apples")
+    expect(markup).toContain("Qty 1")
+    expect(markup).not.toContain("Exact item details are unavailable")
+    expect(Object.hasOwn(purchase, "wallet")).toBe(false)
+    expect(Object.hasOwn(purchase, "sourceEvents")).toBe(false)
+  }
 })
 
 it("uses the actual free authority to reserve stock and verify a zero-cost pickup without any financial state", async () => {

@@ -6,7 +6,6 @@ import {
   assertCheckoutSparkTreasuryAddressAllowed,
   assertCheckoutSparkSettledMerchantPreparationWindow,
   assertCheckoutSparkSettledRecoveryProgression,
-  checkoutSparkConduitFeeRecipient,
   createCheckoutSparkSettledNativeOutgoingProvider,
   deriveCheckoutSparkNativeTreasuryBudget,
   isCheckoutSparkNativePreProviderRetry,
@@ -47,6 +46,7 @@ import {
   proveMerchantCheckoutSparkNativeCommerce,
 } from "./checkout-spark-settled-recovery"
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
+import { assertCheckoutSparkRecoveryDestination } from "./checkout-spark-recovery-policy"
 
 export interface CheckoutSparkOrganizerRoutingInput {
   db: ConduitDB
@@ -161,14 +161,7 @@ export async function routeCheckoutSparkOrganizerOrder(
         )
           throw new Error("Exact organizer checkout plan is unavailable.")
         const conduit = plan.recipients.find((row) => row.kind === "conduit")!
-        if (
-          conduit.destination.source.type !== "conduit_allowlist" ||
-          conduit.destination.source.policy !== "production" ||
-          conduit.destination.value !==
-            checkoutSparkConduitFeeRecipient("production") ||
-          conduit.recipientId !== checkoutSparkConduitFeeRecipient("production")
-        )
-          throw new Error("Organizer checkout destination is unavailable.")
+        assertCheckoutSparkRecoveryDestination(plan)
         assertCheckoutSparkTreasuryAddressAllowed(
           plan.network,
           plan.nativeTreasury.sparkAddress

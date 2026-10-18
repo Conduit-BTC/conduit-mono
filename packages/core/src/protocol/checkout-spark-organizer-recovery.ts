@@ -184,6 +184,20 @@ export function createCheckoutSparkOrganizerOrderBinding(
   })
 }
 
+/** Deterministic role-bound identity, not a separate payment or wallet. */
+export function deriveCheckoutSparkOrganizerRecoveryHandoffId(input: {
+  merchantHandoffId: string
+  organizerPubkey: string
+  orderBinding: CheckoutSparkOrganizerOrderBinding
+}): string {
+  return hash([
+    DOMAIN,
+    input.merchantHandoffId,
+    input.organizerPubkey,
+    orderBindingSchema.parse(input.orderBinding),
+  ])
+}
+
 export function checkoutSparkOrganizerRecoveryPayloadDigest(
   payload: CheckoutSparkOrganizerRecoveryMessage
 ): string {
@@ -244,12 +258,11 @@ export function createCheckoutSparkOrganizerRecoveryPayload(input: {
     ...initial,
     schemaVersion: 4,
     type: "checkout_spark_organizer_recovery",
-    handoffId: hash([
-      DOMAIN,
+    handoffId: deriveCheckoutSparkOrganizerRecoveryHandoffId({
       merchantHandoffId,
-      binding.organizerPubkey,
-      createCheckoutSparkOrganizerOrderBinding(order),
-    ]),
+      organizerPubkey: binding.organizerPubkey,
+      orderBinding: createCheckoutSparkOrganizerOrderBinding(order),
+    }),
     merchantHandoffId,
     organizerPubkey: binding.organizerPubkey,
     orderBinding: createCheckoutSparkOrganizerOrderBinding(order),
@@ -292,7 +305,11 @@ export function restoreCheckoutSparkOrganizerRecoveryPayload(
     orderBinding.identityHash !==
       hash([plan.orderId, raw.senderPubkey, plan.merchantPubkey]) ||
     raw.handoffId !==
-      hash([DOMAIN, merchant.handoffId, binding.organizerPubkey, orderBinding])
+      deriveCheckoutSparkOrganizerRecoveryHandoffId({
+        merchantHandoffId: merchant.handoffId,
+        organizerPubkey: binding.organizerPubkey,
+        orderBinding,
+      })
   )
     invalid()
   const sources = canonicalizeCheckoutSparkPlanSourceEvents(
