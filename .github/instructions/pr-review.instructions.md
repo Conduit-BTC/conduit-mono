@@ -1,6 +1,9 @@
 # PR Review Instructions
 
 Apply these instructions when generating automated pull request reviews.
+Read [AGENTS.md](../../AGENTS.md) from the trusted base for repository safeguards
+and task-specific references. Apply only the references relevant to the changed
+boundary; the documentation index is not a mandatory startup read.
 
 ## Code Review And Human Handoff
 
@@ -11,6 +14,9 @@ approval, and GitHub determines mergeability.
 Review the complete base-to-head diff and report only actionable P0-P2 defects
 introduced or worsened by the pull request, required by a trusted default-branch
 repository invariant, or required by a canonical public protocol source.
+Read connected callers, callees, and relevant tests, fixtures, exports,
+configuration, and persisted data when a changed interface or behavior affects
+them. An unchanged caller can contain a regression caused by the diff.
 Prioritize:
 
 1. Functional correctness and regressions.
@@ -151,7 +157,9 @@ delivery failures separately from code findings. Do not expose internal terms su
   messaging preserves NIP-59 wrapping and NIP-44 compatibility. NIP-44 v3 work remains
   gated on public draft and client references plus explicit capability
   detection.
-- Payments remain non-custodial and do not introduce balance management.
+- Payments remain non-custodial. User-owned wallet operations stay within
+  `docs/specs/wallets.md`; Conduit-operated services must not receive wallet
+  credentials, control funds, or process refunds.
 - Telemetry remains allowlisted, content-free, and non-behavioral.
 - Shared package dependency boundaries remain intact.
 - Product listings remain NIP-99 plus the Open Markets working specification
