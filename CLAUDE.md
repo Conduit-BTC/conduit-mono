@@ -1,273 +1,33 @@
 # Claude Instructions - Conduit Monorepo
 
-## Project Context
-
-This is the Conduit monorepo - a decentralized Nostr-based commerce platform. See AGENTS.md for project overview and tech stack.
-
-## Documentation
-
-- **Docs Index**: `docs/README.md` - Documentation layout and source-of-truth rules
-- **Architecture**: `docs/ARCHITECTURE.md` - System diagrams, protocol, data flow
-- **Design**: `docs/DESIGN.md` - Shared design system and theming guidance
-- **Specs**: `docs/specs/*.md` - Feature specifications
-
-## Before Starting Implementation
-
-1. Read `docs/README.md` to understand which docs are authoritative.
-2. Read the relevant `docs/specs/*.md` before changing feature or protocol behavior.
-3. For UI/theming work, read `docs/DESIGN.md` before introducing shared style values or tokens.
-4. If the work changes product requirements, protocol behavior, or shared implementation expectations, update the relevant contract in the implementation PR before merge and keep contract and code aligned.
-5. Use `@conduit/core` Zod schemas for validation. Interop parsing stays best-effort, but shared contracts should be reflected in repo docs first.
-6. For Nostr protocol, relay, signer, messaging, payment, product-event, cache, or outbox work, read `docs/knowledge/external-nostr-references.md` and the relevant public NIP/Open Markets source before implementation.
-
-Product strategy, ticket status, ownership, sequencing, private commercial plans, and private operating context live outside this public repository.
-
-Reviewer-owned contract check:
-
-- Implementation PRs should separate contract changes from implementation changes in the PR description.
-- Reviewers block merge when a required contract is missing or disagrees with the implementation, not because it was not pre-merged on another branch.
-- Reviewer decisions are `Contract updated in this PR`, `No contract change needed`, `Follow-up docs cleanup`, or `External/architecture decision required before merge`.
-- Draft docs-only follow-up PRs only when a reviewer or maintainer asks.
-
-## UI Component Rules
-
-- Use shadcn-style primitives through `@conduit/ui` before adding app-local controls.
-- Do not hand-roll native `<select>`, custom listboxes/comboboxes, dialogs, dropdowns, tabs, sheets, or textareas in app routes when `@conduit/ui` already provides the primitive.
-- If a common primitive is missing, add it to `packages/ui/src/components`, export it from `@conduit/ui`, and consume it from apps.
-- Keep route files focused on workflow composition and state. Shared keyboard behavior, focus management, overlay behavior, and reusable control styling belong in `@conduit/ui`.
-- If an exception is intentional, document the reason and expected follow-up in the PR description.
-
-## Critical Protocol Constraints
-
-### Authentication
-
-- External signers ONLY (NIP-07, NIP-46)
-- NO Nostr account-key generation, custody, or storage in apps
-- Merchant/buyer identity = pubkey only
-- Portable Wallet credentials are a distinct, device-local exception governed
-  by `docs/specs/wallets.md`; they must never be used as or derived from a
-  buyer/merchant Nostr identity
-- `/wallet` is device-owned and remains usable without a connected Nostr signer
-
-### Privacy
-
-- NO behavioral tracking or profiling
-- NO message content inspection
-- System metrics only (relay success, load times)
-- All user data stays on user's device or relays
-- NO wallet credentials, recovery material, invoices, payment content, selected
-  wallet instance IDs, or wallet balances in logs or telemetry
-
-### Payments
-
-- Non-custodial Lightning through Portable Wallets, NWC/WebLN payment rails,
-  invoices, and payment proofs
-- Market may display and manage device-local Portable Wallet balances through
-  the provider boundary, but Conduit-operated services never receive
-  credentials, control funds, or process refunds
-- A selected wallet instance is local payment state and must not be sent to
-  merchants or analytics
-- No refund processing in-app
-
-## Nostr Event Handling
-
-### Event Kinds Reference
-
-```typescript
-// packages/core/src/protocol/kinds.ts
-export const EVENT_KINDS = {
-  PROFILE: 0, // User metadata (NIP-01)
-  DM_LEGACY: 4, // Encrypted DM legacy (NIP-04)
-  DELETION: 5, // Event deletion (NIP-09)
-  ZAP_REQUEST: 9734, // Zap request (NIP-57)
-  ZAP_RECEIPT: 9735, // Zap receipt (NIP-57)
-  RELAY_LIST: 10002, // Relay list (NIP-65)
-  DM_GIFT_WRAP: 1059, // NIP-17 gift wrap
-  PRODUCT: 30402, // Product listing (NIP-99 + Open Markets working specification)
-} as const
-```
-
-### Nostr Client Usage
-
-NDK remains a compatibility edge inside shared protocol helpers for event construction, signing, encryption, and explicitly planned publishes. The shared NDK context is deliberately offline: it must not connect a global pool, discover relays, or choose destinations. Apps should use shared `@conduit/core` hooks/helpers instead of importing NDK or `getNdk` directly.
-
-New relay reads should use the source-aware planner and bounded reader boundaries in `packages/core`. Keep reducing NDK-dependent network behavior when touching established paths; do not add new ambient NDK connections or bare event publishes.
-
-Product listings are NIP-99 plus the Open Markets working specification for `kind:30402` commerce events, derived from the earlier GammaMarkets `market-spec` work. Do not introduce alternate product-listing protocol terminology, schemas, or assumptions. NIP-17 private-message work uses NIP-59 seals/gift wraps and NIP-44 v2 as the current public encryption version. Any newer encryption-version implementation must be source-gated by public draft/client references and explicit capability discovery.
-
-New `giftWrap`, publish, unwrap/decrypt, relay planning, event parsing, and source-resolution behavior should live behind `@conduit/core` unless the PR documents why route-local code is unavoidable.
-
-## Shared Packages
-
-### @conduit/core
-
-- `types/` - TypeScript interfaces (Product, Order, Profile, etc)
-- `protocol/` - Nostr client helpers, event builders, relay utilities
-- `schemas/` - Zod validators for Nostr events
-- `utils/` - formatPrice, formatPubkey, cn()
-
-### @conduit/ui
-
-- `components/` - Button, Card, Dialog, Form, etc
-- `styles/` - Tailwind config, theme tokens
-
-## Tech Stack
-
-| Layer        | Choice                                               |
-| ------------ | ---------------------------------------------------- |
-| Runtime      | Bun                                                  |
-| Build        | Vite 6 + SWC                                         |
-| Framework    | React 19                                             |
-| Routing      | TanStack Router                                      |
-| Server State | TanStack Query over shared Nostr protocol helpers    |
-| Client State | React Context (auth only)                            |
-| Persistence  | localStorage (cart, preferences)                     |
-| Database     | Dexie (IndexedDB) - orders, messages, cache, wallets |
-| Forms        | react-hook-form + Zod                                |
-| Validation   | Zod schemas in `@conduit/core`                       |
-| UI           | shadcn/ui + Tailwind                                 |
-| Analytics    | Privacy-constrained optional telemetry only          |
-
-**No state management library.** TanStack Query handles all relay data. Dexie handles local persistence.
-
-## Current Operational Notes
-
-### Cloudflare Pages projects
-
-- Mainnet projects:
-  - `conduit-market` (branch domain suffix: `conduit-market-coo.pages.dev`)
-  - `conduit-merchant` (branch domain suffix: `conduit-merchant-33n.pages.dev`)
-- Signet projects:
-  - `conduit-market-signet`
-  - `conduit-merchant-signet`
-
-### Cloudflare preview/deploy gotchas
-
-- Signet projects must be Git-connected Pages projects (`source.type = "github"`), not Direct Upload projects.
-- Direct Upload projects cannot be converted to Git source (`8000069` API error). Recreate if needed.
-- Keep `BUN_VERSION=1.3.5` and `NODE_VERSION=20` in both preview + production deployment configs.
-- If those env vars are missing, Cloudflare may run `npm install` and fail on Bun workspaces (`workspace:*`).
-- Cloudflare PR comments are authored by `cloudflare-workers-and-pages[bot]` (note `[bot]` suffix).
-
-### GitHub CI / merge checks
-
-Use `CONTRIBUTING.md` and `.github/workflows/ci.yml` as the canonical merge-check sources. Current GitHub-owned gates include changed-file format, PR title, lint, typecheck, test, color policy, telemetry policy, E2E smoke, the mainnet build, and preview-link automation. Direct Cloudflare Pages checks are useful signals, but they are not branch-protection gates because fork PRs cannot reliably produce them.
-
-### Orders auth gate behavior
-
-- Market and Merchant orders pages should only fetch/show conversations when:
-  - `status === "connected"` and `pubkey` is present.
-- Do not rely on persisted pubkey alone for gated views.
-- Orders polling interval is tuned to `30_000` ms with manual refresh available.
-
-### Refresh button behavior
-
-- Orders refresh uses Lucide `RefreshCw` on the left.
-- During refresh: icon spins and pulses.
-- State text transitions: `Refresh` -> `Refreshing...` -> `Updated`.
-
-## Code Patterns
-
-### Query Hook Pattern
-
-```typescript
-// packages/core/src/hooks/useProducts.ts
-import { useQuery } from "@tanstack/react-query"
-import { getMarketplaceProducts } from "../protocol/commerce"
-
-export function useProducts(limit = 60) {
-  return useQuery({
-    queryKey: ["products", { limit }],
-    queryFn: async () => (await getMarketplaceProducts({ limit })).data,
-    staleTime: 1000 * 60,
-  })
-}
-```
-
-### Auth Context Pattern
-
-```typescript
-// packages/core/src/context/AuthContext.tsx
-export function AuthProvider({ children }) {
-  const [pubkey, setPubkey] = useState<string | null>(null)
-  const connect = async () => {
-    const pk = await window.nostr.getPublicKey()
-    setPubkey(pk)
-  }
-  return (
-    <AuthContext.Provider value={{ pubkey, connect, disconnect: () => setPubkey(null) }}>
-      {children}
-    </AuthContext.Provider>
-  )
-}
-```
-
-### Component Pattern
-
-```typescript
-// Prefer composition over configuration
-import { cn } from "@conduit/core/utils"
-import { Button } from "@conduit/ui"
-
-export function ProductCard({ product, className }: ProductCardProps) {
-  return (
-    <div className={cn("rounded-lg border p-4", className)}>
-      {/* ... */}
-    </div>
-  )
-}
-```
-
-## Safety Rules
-
-### Git
-
-- Never force push to main
-- Use `git restore --staged` not `git reset`
-- Confirm before any destructive action
-- Use Conventional Commits for commit messages and PR titles: `type(scope): description`
-- Use `.github/pull_request_template.md` for PRs
-
-### Packages
-
-- Build order matters: core → ui → apps
-- Never create circular dependencies
-- Run `bun run typecheck` before committing
-
-### Context Files
-
-- `context/` is gitignored - ephemeral only
-- Permanent source-of-truth docs live in `docs/`
-- `docs/specs/` is authoritative for feature and protocol requirements
-- `docs/knowledge/` is for supporting notes and references, not final implementation contracts
-- Meeting notes stay in context/
-
-## Public Repo Posture
-
-Treat `conduit-mono` as a public client/shared-code repository.
-
-When writing commit messages, PR descriptions, or tracked public-facing docs:
-
-- treat this repo as a public-facing client/shared-code repo
-- keep repo-scope language aligned with the actual monorepo contents
-- avoid internal company-planning framing
-
-Prefer language centered on:
-
-- Market
-- Merchant
-- Store Builder
-- shared packages
-- protocol/spec implementation
-- trust/provenance and contributor-safe engineering context
-
-If discussing separate repositories, keep them distinct from the current `conduit-mono` scope unless the repo structure has actually changed.
-
-Private company context belongs in private planning or `context/`, not in tracked public history, unless explicitly requested.
-
-## References
-
-- Existing repos (for patterns only, not merging):
-  - `/Users/dylangolow/workspace/CONDUIT/conduit-market-client`
-  - `/Users/dylangolow/workspace/CONDUIT/merchant-portal`
-- GitHub: https://github.com/Conduit-BTC
+Read [AGENTS.md](AGENTS.md) for repository authority, task-specific references,
+implementation discipline, trust boundaries, validation, and PR requirements.
+Follow its task routing; read additional documents only when the task touches
+that boundary. These rules apply without personal or machine-level instructions.
+
+## Sources of truth
+
+- Versions, dependencies, and commands: relevant `package.json` and `bun.lock`.
+- Existing implementations and types: affected app and shared-package code.
+- Documentation discovery: [docs/README.md](docs/README.md) when the applicable
+  document is unknown. Existing contracts apply; ordinary implementation does
+  not require a new spec or a separate docs PR.
+- UI and theming: [docs/DESIGN.md](docs/DESIGN.md). Compose `@conduit/ui`
+  primitives; keep interaction behavior and reusable styling in the shared owner.
+- Protocol and wallet authority: applicable contracts under
+  [docs/specs/](docs/specs/), plus the public sources required by `AGENTS.md`.
+  Preserve the distinct account, separate-origin signer, guest-order, NIP-46
+  client-key, and Portable Wallet boundaries; do not replace them with a blanket
+  signer or custody rule.
+- CI, previews, and release checks: [CONTRIBUTING.md](CONTRIBUTING.md), affected
+  workflows/configuration, and relevant operator guidance. Never infer deployment
+  or production approval from a local check or passing CI.
+
+## Reviews and public context
+
+Use [.github/instructions/pr-review.instructions.md](.github/instructions/pr-review.instructions.md)
+for automated reviews, including trusted-source handling, scope, and delivery.
+Use [.github/pull_request_template.md](.github/pull_request_template.md) for PRs.
+Reviewers decide whether public context needs updating; a new spec is not a
+routine merge gate. Keep private planning, credentials, operations, customer data,
+and machine-specific paths out of public history.
