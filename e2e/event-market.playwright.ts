@@ -20,6 +20,7 @@ import {
   buildEventMarketAssignmentDraft,
   parseEventMarketAssignmentEvent,
 } from "@conduit/core/protocol/event-market-assignment"
+import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
@@ -1948,7 +1949,7 @@ test("organizer grants, revokes, and reapproves one merchant without republishin
   await expect(page.getByText(/Merchant booth: Booth 14/)).toBeVisible()
 })
 
-test("Event Market variable products select a purchasable variation before checkout @market", async ({
+test("Event Market variable products select a purchasable variation before checkout @market @occurrence-orders", async ({
   page,
 }) => {
   test.setTimeout(300_000)
@@ -2024,6 +2025,56 @@ test("Event Market variable products select a purchasable variation before check
     })
   const soap = product("Future handoff soap", "future-handoff-soap")
   const candle = product("Future handoff candle", "future-handoff-candle")
+  const originalCandleAssignment = signedAssignment(market, calendar, candle)
+  const candleStockGrant = createEventMarketStockAuthorityRumor({
+    createdAt,
+    payload: {
+      version: 1,
+      type: "grant",
+      merchantPubkey: MERCHANT_PUBKEY,
+      organizerPubkey: ORGANIZER_PUBKEY,
+      writerId: crypto.randomUUID(),
+      nonce: crypto.randomUUID(),
+      productCoordinate: eventCoordinate(candle),
+      assignmentCoordinate: eventCoordinate(originalCandleAssignment),
+      marketCoordinate: eventCoordinate(market),
+      occurrenceCoordinate: eventCoordinate(calendar),
+      productEventId: candle.id,
+      assignmentEventId: originalCandleAssignment.id,
+      marketEventId: market.id,
+      occurrenceEventId: calendar.id,
+      grantEventId: grant.id,
+      quantity: 5,
+      expiresAtMs: (createdAt + 10_800) * 1_000,
+    },
+  })
+  const committedCandleAssignment = signEvent(MERCHANT_SECRET, {
+    ...buildEventMarketAssignmentDraft({
+      marketCoordinate: eventCoordinate(market),
+      occurrenceCoordinate: eventCoordinate(calendar),
+      productCoordinate: eventCoordinate(candle),
+      merchantPubkey: MERCHANT_PUBKEY,
+      state: "active",
+      inventory: { mode: "tracked", quantity: 5 },
+      fulfillmentMethods: ["pickup"],
+      previousEventId: originalCandleAssignment.id,
+      organizerStockPool: {
+        state: "active",
+        poolId: candleStockGrant.id,
+        organizerPubkey: ORGANIZER_PUBKEY,
+        quantity: 5,
+        importedQuantity: 0,
+      },
+    }),
+    created_at: createdAt + 1,
+  })
+  const committedPool = parseEventMarketAssignmentEvent(
+    committedCandleAssignment
+  )?.stockPool
+  expect(
+    committedPool?.state === "valid" &&
+      committedPool.pool.poolId === candleStockGrant.id
+  ).toBe(true)
   relay.seed(
     calendar,
     market,
@@ -2031,7 +2082,8 @@ test("Event Market variable products select a purchasable variation before check
     soap,
     candle,
     signedAssignment(market, calendar, soap),
-    signedAssignment(market, calendar, candle),
+    originalCandleAssignment,
+    committedCandleAssignment,
     createInboxDeclaration("organizer", createdAt),
     createInboxDeclaration("merchant", createdAt),
     createInboxDeclaration("buyer", createdAt)
