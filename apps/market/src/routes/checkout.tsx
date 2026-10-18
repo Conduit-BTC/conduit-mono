@@ -216,7 +216,10 @@ import {
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
 import { getCheckoutCoordinationPriceEstimate } from "../lib/checkout-coordination-pricing"
-import { getCheckoutEventFeePreview } from "../lib/checkout-event-fee-preview"
+import {
+  assertCheckoutEventDirectCheckoutAllowed,
+  getCheckoutEventFeePreview,
+} from "../lib/checkout-event-fee-preview"
 import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   findCheckoutOrderRecovery,
@@ -1985,7 +1988,9 @@ function CheckoutPage() {
     routerAdmission.mode === "router" && !routerAdmission.ready
       ? eventFeePreview.status === "unavailable"
         ? "The signed event fee terms are unavailable. Refresh the event before paying."
-        : "This checkout’s fulfillment is not supported by the router yet."
+        : !isQuantumRouterEnabled()
+          ? "Event fee payments are not available here yet."
+          : "This checkout’s fulfillment is not supported by the router yet."
       : null
   const nativeTreasuryConfigured = (() => {
     if (!routerBranchTargetCheckout) return false
@@ -3419,6 +3424,11 @@ function CheckoutPage() {
       if (checkoutPricing.status !== "ok") {
         throw new Error(checkoutPricing.reason)
       }
+      assertCheckoutEventDirectCheckoutAllowed(
+        authoritativeCheckoutItems,
+        checkoutPricing.totalSats,
+        Date.now()
+      )
       if (!signedBuyerPubkey && checkoutPricing.paymentRequired) {
         throw new Error(
           "Connect a signer or use Lightning for an order that requires payment."
@@ -4126,6 +4136,11 @@ function CheckoutPage() {
       if (pricingIntent.status !== "ok") {
         throw new Error(pricingIntent.reason)
       }
+      assertCheckoutEventDirectCheckoutAllowed(
+        authoritativeCheckoutItems,
+        pricingIntent.totalSats,
+        Date.now()
+      )
       if (!pricingIntent.paymentRequired) {
         throw new Error(
           "This free pickup order must be sent without starting payment."

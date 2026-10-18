@@ -60,3 +60,20 @@ export function getCheckoutEventFeePreview(
     return { status: "unavailable" }
   }
 }
+
+/** Recheck fresh authorized terms before a direct order can be retained or sent. */
+export function assertCheckoutEventDirectCheckoutAllowed(
+  items: readonly Pick<CartItem, "merchantPubkey" | "fulfillment">[],
+  commerceTotalSats: number,
+  nowMs: number
+): void {
+  const fee = getCheckoutEventFeePreview(items, commerceTotalSats, nowMs)
+  if (fee.status === "unavailable") {
+    throw new Error(
+      "The signed event fee terms are unavailable. Refresh the event before paying."
+    )
+  }
+  if (fee.status === "ready" && fee.organizerFeeSats > 0) {
+    throw new Error("This event requires coordinated payment.")
+  }
+}

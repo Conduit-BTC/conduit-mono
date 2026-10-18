@@ -4736,6 +4736,133 @@ test("organizer reviews a refreshed date revision before saving local edits @mer
   )
 })
 
+for (const fee of [
+  {
+    name: "active organizer fee",
+    tag: [
+      "conduit_event_fee",
+      "1",
+      "active",
+      "250",
+      "50",
+      "organizer@example.test",
+    ],
+    notice: "Event fee payments are not available here yet.",
+  },
+  {
+    name: "unusable organizer fee",
+    tag: [
+      "conduit_event_fee",
+      "1",
+      "active",
+      "invalid",
+      "50",
+      "organizer@example.test",
+    ],
+    notice:
+      "The signed event fee terms are unavailable. Refresh the event before paying.",
+  },
+  {
+    name: "no organizer fee",
+    tag: null,
+    notice: null,
+  },
+]) {
+  test(`disabled router ${fee.tag ? "blocks" : "preserves"} ${fee.name} before direct event checkout @market @occurrence-orders`, async ({
+    page,
+  }) => {
+    test.setTimeout(60_000)
+    const relay = createRelayHarness()
+    await installSyntheticEnvironment(page, relay)
+    const createdAt = Math.floor(Date.now() / 1_000) - 10
+    const calendar = signEvent(ORGANIZER_SECRET, {
+      ...buildEventMarketCalendarDraft({
+        kind: 31923,
+        dTag: "disabled-fee-fair",
+        title: "Fee admission fair",
+        start: createdAt + 3_600,
+        end: createdAt + 7_200,
+      }),
+      created_at: createdAt,
+    })
+    const market = signEvent(ORGANIZER_SECRET, {
+      kind: 30409,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", "disabled-fee-fair"],
+        ["a", eventCoordinate(calendar)],
+        ["event_market", "2", "open"],
+        ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+        ...(fee.tag ? [fee.tag] : []),
+      ],
+    })
+    const grant = signEvent(ORGANIZER_SECRET, {
+      kind: 3841,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["openmarkets", "event-market-auth", "1"],
+        ["a", eventCoordinate(market)],
+        ["p", MERCHANT_PUBKEY],
+        ["state", "active"],
+        ["seq", "0"],
+        ["alt", "Open Markets event merchant authorization"],
+      ],
+    })
+    const template = createMerchantTemplateProductEvent(createdAt)
+    const product = signEvent(MERCHANT_SECRET, {
+      ...template,
+      tags: template.tags
+        .map((tag) => (tag[0] === "stock" ? ["stock", "5"] : tag))
+        .concat([["a", eventCoordinate(market)]]),
+    })
+    relay.seed(
+      calendar,
+      market,
+      grant,
+      product,
+      signedAssignment(market, calendar, product),
+      createInboxDeclaration("merchant", createdAt)
+    )
+    const marketRef = nip19.naddrEncode({
+      kind: 30409,
+      pubkey: ORGANIZER_PUBKEY,
+      identifier: "disabled-fee-fair",
+    })
+    await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
+    await expect(
+      page.getByRole("heading", { name: MERCHANT_TEMPLATE_TITLE })
+    ).toBeVisible({ timeout: 25_000 })
+    await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
+    await expect(
+      page.getByRole("button", { name: "Cart, 1 item" })
+    ).toBeVisible()
+    await page.goto(`${marketUrl}/checkout`)
+    await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible()
+    if (!fee.notice) {
+      await expect(
+        page.getByRole("button", { name: "Send order", exact: true })
+      ).toBeEnabled()
+      return
+    }
+    await expect(page.getByText(fee.notice, { exact: true })).toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Continue to payment", exact: true })
+    ).toBeDisabled()
+    const directActions = page.getByRole("button", {
+      name: /(?:pay for order|pay now|zap out|send order)/i,
+    })
+    for (const action of await directActions.all())
+      await expect(action).toBeDisabled()
+    expect(
+      uniquePrivatePublications(
+        decryptPrivatePublications(relay.publications, MERCHANT_SECRET)
+      ).filter((message) => rumorType(message.rumor) === "order").length
+    ).toBe(0)
+  })
+}
+
 test("event product chooses ordinary shipping and changes fulfillment in checkout @market @commerce", async ({
   page,
 }) => {
