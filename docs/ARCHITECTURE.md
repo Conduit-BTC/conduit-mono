@@ -80,29 +80,30 @@ anchors so navigation re-enters that boot boundary.
 
 ### Nostr Event Kinds
 
-| Kind    | Purpose                      | Notes                             |
-| ------- | ---------------------------- | --------------------------------- |
-| `0`     | Profile metadata             | NIP-01                            |
-| `3`     | Contact list / follow graph  | NIP-02                            |
-| `5`     | Event deletion               | NIP-09                            |
-| `13`    | Seal                         | NIP-59 / NIP-17 message wrapping  |
-| `14`    | Private direct message       | NIP-17                            |
-| `16`    | Order message payload        | Conduit payload wrapped in NIP-17 |
-| `1059`  | Gift wrap                    | NIP-17                            |
-| `3841`  | Event merchant authorization | Experimental Open Markets profile |
-| `9734`  | Zap request                  | NIP-57                            |
-| `9735`  | Zap receipt                  | NIP-57                            |
-| `10002` | Relay list                   | NIP-65                            |
-| `10050` | Private message relays       | NIP-17 recipient relay hints      |
-| `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
-| `30405` | Product collection           | Open Markets / Gamma market-spec  |
-| `30406` | Shipping or pickup option    | Open Markets / Gamma market-spec  |
-| `30409` | Event Market                 | Experimental Open Markets profile |
-| `31922` | Date-based calendar event    | NIP-52                            |
-| `31923` | Time-based calendar event    | NIP-52                            |
-| `31924` | Calendar                     | NIP-52; finite market schedule    |
-| `31989` | Application recommendation   | NIP-89                            |
-| `31990` | Application handler metadata | NIP-89                            |
+| Kind    | Purpose                       | Notes                             |
+| ------- | ----------------------------- | --------------------------------- |
+| `0`     | Profile metadata              | NIP-01                            |
+| `3`     | Contact list / follow graph   | NIP-02                            |
+| `5`     | Event deletion                | NIP-09                            |
+| `13`    | Seal                          | NIP-59 / NIP-17 message wrapping  |
+| `14`    | Private direct message        | NIP-17                            |
+| `16`    | Order message payload         | Conduit payload wrapped in NIP-17 |
+| `1059`  | Gift wrap                     | NIP-17                            |
+| `3841`  | Event merchant authorization  | Experimental Open Markets profile |
+| `9734`  | Zap request                   | NIP-57                            |
+| `9735`  | Zap receipt                   | NIP-57                            |
+| `10002` | Relay list                    | NIP-65                            |
+| `10050` | Private message relays        | NIP-17 recipient relay hints      |
+| `30402` | Product listing               | NIP-99 + GammaMarkets market-spec |
+| `30405` | Product collection            | Open Markets / Gamma market-spec  |
+| `30406` | Shipping or pickup option     | Open Markets / Gamma market-spec  |
+| `30409` | Event Market                  | Experimental Open Markets profile |
+| `30410` | Occurrence product assignment | Experimental Open Markets profile |
+| `31922` | Date-based calendar event     | NIP-52                            |
+| `31923` | Time-based calendar event     | NIP-52                            |
+| `31924` | Calendar                      | NIP-52; finite market schedule    |
+| `31989` | Application recommendation    | NIP-89                            |
+| `31990` | Application handler metadata  | NIP-89                            |
 
 Market and Merchant currently use external NIP-07 and NIP-46 account signers.
 An optional installed-PWA local signer has an approved bounded policy exception:
@@ -187,8 +188,10 @@ scoped organizer-to-merchant handoff acknowledgement. Core owns their strict
 schemas, authority checks, kind-10050 routing, and immutable delivery retry;
 routes never fan out or redact full orders themselves. New organizer acceptance
 for occurrence assignments remains gated on the separate advance-delegation,
-writer-handover and reconciliation contract. Rollover and full Reschedule/Relocate
-remain unfinished; fees and offline checkout-wallet recovery are separate work.
+writer-handover and reconciliation contract. Same-event calendar edits update
+unused allocation deadlines while existing orders retain their original terms.
+Atomic rollover remains unfinished; fees and offline checkout-wallet recovery
+are separate work.
 
 ### Orders And Messages
 
