@@ -2025,7 +2025,7 @@ export async function retryPrivateMessageWraps(
   input = {
     ...input,
     shouldContinue: () => {
-      assertPrivateMessageSignerSessionCurrent(originalShouldContinue)
+      if (originalShouldContinue?.() === false) return false
       assertForegroundAuthority()
       return true
     },

@@ -54,7 +54,7 @@ Measured About and legal source scopes run unsharded. Scopes above 150 project
 cases fall back to full-area partitions as the inventory grows. This count is a
 size guard, not a runtime bound. General test-file edits always keep full-area
 partitions in all areas, regardless of case count. Full areas retain the existing
-three Market, three Merchant, one Commerce and one Event-router jobs. Build runs independently of
+four Market, three Merchant, one Commerce and one Event-router jobs. Build runs independently of
 quality checks;
 preview verification still requires the validated build and configuration digest.
 Every required check must pass independently.

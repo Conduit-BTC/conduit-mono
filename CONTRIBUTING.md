@@ -281,7 +281,7 @@ cross-app commerce Playwright shards. App-local changes keep their owning app
 shard and add commerce when they affect the shared checkout, order, product,
 messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
 `main` run every critical shard; docs-only changes skip browser installation.
-Full Market and Merchant areas each run in three single-worker jobs. Their
+Full Market runs in four single-worker jobs; Merchant runs in three. Their
 project-aware discovery manifests must combine to each complete area selection
 with no missing or repeated tests.
 Market browser fixtures use synthetic mainnet invoices so Spark wallet setup and
@@ -317,8 +317,8 @@ all test artifacts were uploaded successfully.
 
 A retry-dependent pass still fails the smoke gate. Required CI runs use zero
 automatic retries; a separate diagnostic rerun cannot turn a failed first
-attempt into readiness evidence. Concurrent shards and selected coverage are
-unchanged.
+attempt into readiness evidence. Selected coverage and first-attempt requirements
+remain unchanged.
 
 Every progress and failure entry includes an opaque case ID derived from
 Playwright's test identity. Parameterized cases at the same source line retain
