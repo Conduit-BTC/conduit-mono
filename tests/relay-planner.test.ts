@@ -457,7 +457,7 @@ describe("planRelayReads", () => {
   })
 
   it("tracks remote signed hints independently when relay URLs overlap local sources", () => {
-    const appOverlap = "wss://conduit-congee.fly.dev"
+    const appOverlap = config.appReadRelayUrls[0]!
     const personalOverlap = "wss://relay.nostr.band"
     const lists = new Map<string, RelayList>([
       [
@@ -486,7 +486,7 @@ describe("planRelayReads", () => {
   })
 
   it("tracks remote recipient hints independently across write-layer overlaps", () => {
-    const appOverlap = "wss://conduit-congee.fly.dev"
+    const appOverlap = config.appWriteRelayUrls[0]!
     const personalOverlap = "wss://relay.nostr.band"
     const lists = new Map<string, RelayList>([
       [

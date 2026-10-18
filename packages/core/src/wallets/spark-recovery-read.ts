@@ -12,6 +12,7 @@ import {
   SPARK_RECOVERY_KIND,
 } from "./spark-recovery-contract"
 import { type SparkRecoveryTransport } from "./spark-recovery-service"
+import { accountStorageRelayTargets } from "../protocol/account-storage-relay-policy"
 
 /** Uses the existing bounded reader. Relay auth failures stay unavailable, never absence. */
 export function createSparkRecoveryReader(
@@ -20,12 +21,9 @@ export function createSparkRecoveryReader(
 ): SparkRecoveryTransport["read"] {
   return async (url, owner, eventId, shouldContinue, dTag) => {
     if (!shouldContinue()) throw new SparkRecoveryError("transport_unavailable")
-    const targets = [
-      {
-        url,
-        grants: [{ kind: "public_hint" as const, operation: "read" as const }],
-      },
-    ]
+    const targets = accountStorageRelayTargets("read").filter(
+      (target) => target.url === url
+    )
     const admit = async () =>
       shouldContinue() &&
       (

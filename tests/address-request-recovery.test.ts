@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
+import { ACCOUNT_STORAGE_RELAYS } from "../packages/core/src/config"
 import { readFileSync } from "node:fs"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { z } from "../packages/core/node_modules/zod/index.js"
@@ -112,11 +113,7 @@ test("signed name request completes after approval and restores on another stora
       hasAuthority: () => true,
     }
   )
-  const relayUrls = [
-    "wss://relay.conduit.market",
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-  ]
+  const relayUrls = ACCOUNT_STORAGE_RELAYS.map((relay) => relay.url)
   const relays = new Map(
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
@@ -505,7 +502,7 @@ test("signed name request completes after approval and restores on another stora
       reason: "request_read_unavailable",
       eventSource: "new",
       confirmedTargets: 0,
-      targetCount: 3,
+      targetCount: ACCOUNT_STORAGE_RELAYS.length,
     })
     expect(publishedProfile && verifyEvent(publishedProfile)).toBe(true)
     expect(JSON.parse(publishedProfile!.content)).toEqual({

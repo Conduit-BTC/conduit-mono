@@ -5,6 +5,7 @@ import type {
 } from "../protocol/nostr-event-signer"
 import { getAccountSigner } from "../protocol/session-signer"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
+import { planAccountStorageRelays } from "../protocol/account-storage-relay-policy"
 import {
   mergeAddressRequestRecord,
   requestEvidence,
@@ -27,7 +28,6 @@ import {
   SparkRecoveryError,
 } from "./spark-recovery-contract"
 import {
-  planSparkRecoveryRelays,
   type SparkRecoveryDiscovery,
   type SparkRecoveryTransport,
   type SparkRecoveryWriteStatus,
@@ -87,6 +87,7 @@ export class AddressRequestService {
       transport: SparkRecoveryTransport
       currentSigner?: () => AccountSigner | undefined
       userRelayUrls?: readonly string[]
+      relayTargets?: readonly import("../protocol/account-storage-relay-policy").AccountStorageRelay[]
     }
   ) {
     this.scope = bindSparkRecoveryAccount(
@@ -96,7 +97,9 @@ export class AddressRequestService {
     const isolated = getConfiguredIsolatedE2eRelayUrl()
     this.targets = isolated
       ? [isolated]
-      : planSparkRecoveryRelays(input.userRelayUrls).map((target) => target.url)
+      : (
+          input.relayTargets ?? planAccountStorageRelays(input.userRelayUrls)
+        ).map((target) => target.url)
   }
   private continues = () => {
     try {

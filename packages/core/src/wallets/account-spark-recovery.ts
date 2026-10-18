@@ -3,6 +3,10 @@ import { WalletNameService } from "./wallet-name-service"
 import { AddressRequestService } from "./address-request-service"
 import { DexieAddressRequestStore } from "./address-request-store"
 import type { WalletNameNetwork } from "./wallet-name-contract"
+import {
+  accountStorageRelayTargets,
+  getAccountStorageRelays,
+} from "../protocol/account-storage-relay-policy"
 import { getAccountSigner } from "../protocol/session-signer"
 import {
   type AccountSigner,
@@ -54,6 +58,7 @@ export function getAccountAddressRequestService(
     service = new AddressRequestService({
       signer,
       store: new DexieAddressRequestStore(),
+      relayTargets: getAccountStorageRelays(),
       transport: createAccountWalletTransport(signer),
     })
     requestServices.set(signer, service)
@@ -68,6 +73,7 @@ export function getAccountSparkRecovery(
   service = new SparkRecoveryService({
     signer,
     store: new DexieSparkRecoveryStore(),
+    relayTargets: getAccountStorageRelays(),
     deriveIdentity: deriveSparkRecoveryIdentity,
     transport: createAccountWalletTransport(signer),
     migrateLegacyRequests: (network, discovery, options) =>
@@ -100,12 +106,9 @@ function createAccountWalletTransport(
           authenticatedPubkey: signer.pubkey,
           accountPubkey: signer.pubkey,
           exclusiveRelayUrls: [url],
-          relayTargets: [
-            {
-              url,
-              grants: [{ kind: "source_delivery", operation: "write" }],
-            },
-          ],
+          relayTargets: accountStorageRelayTargets("write").filter(
+            (target) => target.url === url
+          ),
           deliveryMode: "critical",
           shouldContinue,
           relayAuthentication: {
@@ -487,6 +490,7 @@ export async function synchronizeAccountWalletNames(
     new WalletNameService({
       signer,
       store: names,
+      relayTargets: getAccountStorageRelays(),
       transport: createAccountWalletTransport(signer),
     })
   try {

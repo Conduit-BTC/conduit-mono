@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { getPublicKey, finalizeEvent, verifyEvent } from "nostr-tools"
-import { applyE2eRelayIsolation, config } from "@conduit/core"
+import {
+  applyE2eRelayIsolation,
+  config,
+  setAccountNetworkRoutingSourceEnabled,
+} from "@conduit/core"
 import {
   __resetProtectedReadSigner,
   clearProtectedReadAuthenticationSuppression,
@@ -2250,7 +2254,8 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         finalizeEvent({ ...event, tags: [["d", coordinate]] }, PRIVATE_KEY_A),
       ])
     )
-    const harness = new FakeRelayHarness().at("wss://protected.example", {
+    const storageRelay = config.appReadRelayUrls[0]!
+    const harness = new FakeRelayHarness().at(storageRelay, {
       onOpen: (socket) => socket.relay(["AUTH", "recovery"]),
       onSend: (socket, frame) => {
         if (frame[0] === "AUTH") respondToAuth(socket, frame)
@@ -2268,7 +2273,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const executor = createExecutor(harness)
     const { authorization } = authorize()
     const request = {
-      relayUrls: ["wss://protected.example"],
+      relayUrls: [storageRelay],
       operation: "account_recovery_read" as const,
       filters: [{ kinds: [30078], authors: [PUBKEY_A], limit: 128 }],
     }
@@ -2288,11 +2293,10 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
         events.get(coordinate)!.id,
       ])
     }
-    const requestRead = await createSparkRecoveryReader(
-      executor,
-      createInMemoryAccountNetworkLocalStateRepository()
-    )(
-      "wss://protected.example",
+    const repository = createInMemoryAccountNetworkLocalStateRepository()
+    const reader = createSparkRecoveryReader(executor, repository)
+    const requestRead = await reader(
+      storageRelay,
       PUBKEY_A,
       undefined,
       () => true,
@@ -2302,6 +2306,38 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     expect(requestRead.events.map((item) => item.id)).toEqual([
       events.get(addressRequestsDTag("mainnet"))!.id,
     ])
+    const socketsBefore = harness.sockets.length
+    expect(
+      (
+        await reader(
+          "wss://unconfigured.example",
+          PUBKEY_A,
+          undefined,
+          () => true
+        )
+      ).status
+    ).toBe("unavailable")
+    await repository.updateRoutingPolicy(PUBKEY_A, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "app", false)
+    )
+    expect(
+      (await reader(storageRelay, PUBKEY_A, undefined, () => true)).status
+    ).toBe("unavailable")
+    await repository.updateRoutingPolicy(PUBKEY_A, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "app", true)
+    )
+    await repository.update(PUBKEY_A, (state) =>
+      applyAccountNetworkRelayExclusion(state, {
+        relayUrl: storageRelay,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: Date.now(),
+      })
+    )
+    expect(
+      (await reader(storageRelay, PUBKEY_A, undefined, () => true)).status
+    ).toBe("unavailable")
+    expect(harness.sockets.length).toBe(socketsBefore)
     for (const coordinate of [
       "conduit:spark:primary:v1:unknown",
       "conduit:spark:main:v1:mainnet:extra",

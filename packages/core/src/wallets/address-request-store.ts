@@ -25,12 +25,27 @@ export class DexieAddressRequestStore implements AddressRequestStore {
     owner: string,
     network: AddressRequestNetwork
   ): Promise<AddressRequestState> {
-    const row = await this.database.sparkRecoveryEvidence.get(owner)
     try {
-      return (
-        validateAddressRequestStates(row?.addressRequestSync, owner)?.[
-          network
-        ] ?? {}
+      return await this.database.transaction(
+        "rw",
+        this.database.sparkRecoveryEvidence,
+        async () => {
+          const row = await this.database.sparkRecoveryEvidence.get(owner)
+          const states = validateAddressRequestStates(
+            row?.addressRequestSync,
+            owner
+          )
+          if (
+            row &&
+            JSON.stringify(states) !== JSON.stringify(row.addressRequestSync)
+          ) {
+            await this.database.sparkRecoveryEvidence.put({
+              ...row,
+              addressRequestSync: states,
+            })
+          }
+          return states?.[network] ?? {}
+        }
       )
     } catch {
       throw new SparkRecoveryError("invalid_record")

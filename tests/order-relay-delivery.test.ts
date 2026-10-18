@@ -675,7 +675,7 @@ describe("order relay delivery retry", () => {
   })
 
   it("recovers a pre-cutover plan through Ditto without retrying the retired relay", async () => {
-    const formerConduit = "wss://relay.conduit.market"
+    const formerConduit = "wss://conduit-congee.fly.dev"
     const ditto = "wss://relay.ditto.pub"
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
     candidate.orderRelayDelivery = {
@@ -740,7 +740,7 @@ describe("order relay delivery retry", () => {
   })
 
   it("rejects widened or invalid pre-cutover compatibility records", async () => {
-    const formerConduit = "wss://relay.conduit.market"
+    const formerConduit = "wss://conduit-congee.fly.dev"
     const ditto = "wss://relay.ditto.pub"
     const candidate = lifecycle({ orderDeliveryRoute: "compatibility_order" })
     candidate.orderRelayDelivery = {

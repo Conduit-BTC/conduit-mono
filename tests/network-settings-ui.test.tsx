@@ -728,7 +728,7 @@ describe("RelaySettingsPanel account Network review", () => {
         relayIconUrl: "https://nostr.build/personal-relay.png",
       },
     })
-    const app = relayRow("wss://conduit-congee.fly.dev", {
+    const app = relayRow("wss://relay.conduit.market", {
       capability: {
         configuredUses: ["app_publishing"],
         observedCommerce: false,
@@ -789,7 +789,7 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("Match Conduit defaults")
     expect(markup.match(/\(Secondary relay\)/g)).toHaveLength(1)
     expect(markup).not.toContain("relay.dreamith.to")
-    expect(markup).not.toContain("relay.conduit.market")
+    expect(markup).not.toContain("conduit-congee.fly.dev")
     expect(markup).not.toContain("relay.damus.io")
     expect(markup).toContain(
       'class="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"'

@@ -26,6 +26,7 @@ import {
 } from "lucide-react"
 import {
   areAccountNetworkRelayRowsReorderEquivalent,
+  CANONICAL_APP_RELAY_DEFINITIONS,
   isAccountNetworkRelayCommerceRelevant,
   isAccountNetworkRelayRowOrderEligible,
   orderAccountNetworkRelayRows,
@@ -2210,7 +2211,9 @@ function NetworkReviewSection({
   )
 }
 
-const SECONDARY_APP_RELAY_URL = "wss://relay.ditto.pub"
+const SECONDARY_APP_RELAY_URL = CANONICAL_APP_RELAY_DEFINITIONS.find(
+  (relay) => relay.operator === "ditto"
+)?.url
 
 function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
   const uses = [

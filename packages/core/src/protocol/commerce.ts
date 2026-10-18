@@ -20,6 +20,7 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
+import { configuredRelayTargets } from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -1029,25 +1030,21 @@ async function planCommerceReadRelayPlan(input: {
   const candidateRelayUrlSet = new Set(candidateRelayUrls)
   const candidateRelayTargets = mergeRelayTargets(
     plan.relayTargets,
-    relayTargetsFromUrls(
-      fallbackRelayUrls.filter((url) =>
-        config.commerceDiscoveryRelayUrls.includes(url)
-      ),
+    configuredRelayTargets(
       {
         kind: "public_fallback",
         operation: "read",
         bucket: "commerce_discovery",
-      }
+      },
+      fallbackRelayUrls
     ),
-    relayTargetsFromUrls(
-      fallbackRelayUrls.filter((url) =>
-        config.corePublicFallbackRelayUrls.includes(url)
-      ),
-      { kind: "public_fallback", operation: "read", bucket: "core_public" }
+    configuredRelayTargets(
+      { kind: "public_fallback", operation: "read", bucket: "core_public" },
+      fallbackRelayUrls
     ),
-    relayTargetsFromUrls(
-      fallbackRelayUrls.filter((url) => config.defaultRelays.includes(url)),
-      { kind: "public_fallback", operation: "read", bucket: "default" }
+    configuredRelayTargets(
+      { kind: "public_fallback", operation: "read", bucket: "default" },
+      fallbackRelayUrls
     ),
     relayTargetsFromUrls(publicExternalRelayHints, {
       kind: "public_hint",
@@ -1123,11 +1120,14 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
-        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
-          kind: "public_fallback",
-          operation: "read",
-          bucket: "commerce_discovery",
-        }),
+        relayTargets: configuredRelayTargets(
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "commerce_discovery",
+          },
+          candidateRelayUrls
+        ),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1151,11 +1151,14 @@ async function planCommerceReadRelayPlan(input: {
       const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
-        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
-          kind: "public_fallback",
-          operation: "read",
-          bucket: "default",
-        }),
+        relayTargets: configuredRelayTargets(
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "default",
+          },
+          candidateRelayUrls
+        ),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -4260,21 +4263,17 @@ async function fetchProductDeletionTimestamps(
           kind: "public_hint",
           operation: "read",
         }),
-        relayTargetsFromUrls(
-          config.commerceDiscoveryRelayUrls.filter((url) =>
-            preferredDeletionRelayUrls.includes(url)
-          ),
+        configuredRelayTargets(
           {
             kind: "public_fallback",
             operation: "read",
             bucket: "commerce_discovery",
-          }
+          },
+          preferredDeletionRelayUrls
         ),
-        relayTargetsFromUrls(
-          config.corePublicFallbackRelayUrls.filter((url) =>
-            preferredDeletionRelayUrls.includes(url)
-          ),
-          { kind: "public_fallback", operation: "read", bucket: "core_public" }
+        configuredRelayTargets(
+          { kind: "public_fallback", operation: "read", bucket: "core_public" },
+          preferredDeletionRelayUrls
         )
       )
       options.onSkippedRelayUrls?.(
@@ -4633,11 +4632,14 @@ async function fetchPublicProductRecords(query: {
   const relayPlan = query.searchText
     ? {
         candidateRelayUrls: productSearchRelayUrls,
-        relayTargets: relayTargetsFromUrls(productSearchRelayUrls, {
-          kind: "app",
-          operation: "read",
-          bucket: "search_index",
-        }),
+        relayTargets: configuredRelayTargets(
+          {
+            kind: "app",
+            operation: "read",
+            bucket: "search_index",
+          },
+          productSearchRelayUrls
+        ),
         maxRelayAttempts: productSearchRelayUrls.length,
         ownerSelectedRelayUrls: [],
         appRelayUrls: productSearchRelayUrls,

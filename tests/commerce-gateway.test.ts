@@ -3568,7 +3568,7 @@ describe("commerce gateway", () => {
         kinds: [EVENT_KINDS.PRODUCT],
         authors: undefined,
         limit: 100,
-        relayUrls: ["wss://conduit-congee.fly.dev"],
+        relayUrls: ["wss://relay.conduit.market"],
       },
     ])
     expect(result.data.map((record) => record.product.title)).toEqual([

@@ -1,4 +1,3 @@
-import { relayTargetsFromUrls } from "../protocol/relay-authority"
 import { inboxDeclarationEvidenceFacts } from "../protocol/account-network-evidence"
 import {
   useCallback,
@@ -18,6 +17,7 @@ import {
 } from "../context/AuthContext"
 import { useConduitSession } from "../context/ConduitSessionContext"
 import {
+  configuredRelayTargets,
   dexieAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
   filterEligibleAccountRelayTargets,
@@ -542,11 +542,14 @@ export function useAccountNetworkSettings(
             accountPubkey,
             authenticatedPubkey: accountPubkey,
             operation: "read",
-            targets: relayTargetsFromUrls([relayUrl], {
-              kind: "app",
-              operation: "read",
-              bucket: "diagnostic_read",
-            }),
+            targets: configuredRelayTargets(
+              {
+                kind: "app",
+                operation: "read",
+                bucket: "diagnostic_read",
+              },
+              [relayUrl]
+            ),
           })
         ).some((target) => target.url === relayUrl),
     })
