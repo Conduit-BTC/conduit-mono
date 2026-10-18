@@ -6,7 +6,10 @@ import { wrapEvent } from "nostr-tools/nip59"
 import { ConduitDB } from "../packages/core/src/db"
 import { projectCommerceInbox } from "../packages/core/src/protocol/commerce"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
-import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import {
+  CommerceInboxStore,
+  INBOX_DECODE_RULES_VERSION,
+} from "../packages/core/src/protocol/commerce-inbox-store"
 import {
   getProtectedReadAuthorization,
   installProtectedReadSigner,
@@ -263,6 +266,158 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
         })
       ).toThrow()
     }
+  })
+
+  it.each([false, true])(
+    "accepts a sole Lightning option alongside other payment methods (extension=%s)",
+    async (extension) => {
+      const f = fixture()
+      await receive(f, f.order)
+      const invoice = makeBolt11Fixture({
+        hrp: "lnbc2000n",
+        fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+      })
+      const request = reply(f, "payment_request", {
+        invoice,
+        amount: 200,
+        currency: "SATS",
+      })
+      const common = request.tags.filter(
+        (tag) => tag[0] !== "payment" && (extension || tag[0] !== "conduit")
+      )
+      const lightning = ["payment", "lightning", invoice]
+      const bitcoin = ["payment", "bitcoin", "synthetic-bitcoin-address"]
+      const ecash = ["payment", "ecash", "synthetic-ecash-request"]
+      for (const options of [
+        [lightning, bitcoin, ecash],
+        [bitcoin, lightning, ecash],
+        [bitcoin, ecash, lightning],
+      ]) {
+        const mixed = createPrivateMessageRumor({
+          ...request,
+          tags: [...common, ...options],
+        })
+        const parsed = parseOrderMessageRumorEvent(mixed)
+        expect(parsed.type).toBe("payment_request")
+        if (parsed.type !== "payment_request")
+          throw new Error("Missing request")
+        expect(parsed.payload.invoice).toBe(invoice)
+        expect(parsed.payload.amount).toBe(200)
+        await receive(f, mixed, f.merchant)
+      }
+      expect(
+        f.owner
+          .getSnapshot()
+          .orderMessages.filter((message) => message.type === "payment_request")
+      ).toHaveLength(3)
+      expect(
+        extractOrderSummary(f.owner.getSnapshot().orderMessages)
+          .paymentConfirmed
+      ).toBe(false)
+    }
+  )
+
+  it("rejects ambiguous or invalid Lightning options without adopting another rail", () => {
+    const f = fixture()
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc2000n",
+      fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+    })
+    const request = reply(f, "payment_request", {
+      invoice,
+      amount: 200,
+      currency: "SATS",
+    })
+    const common = request.tags.filter(
+      (tag) => !["payment", "conduit"].includes(tag[0]!)
+    )
+    const lightning = ["payment", "lightning", invoice]
+    const bitcoin = ["payment", "bitcoin", "synthetic-bitcoin-address"]
+    for (const options of [
+      [bitcoin],
+      [lightning, lightning, bitcoin],
+      [lightning, ["payment", "lightning", "different-invoice"], bitcoin],
+      [["payment", "lightning"], bitcoin],
+      [["payment", "lightning", invoice, "unexpected-proof"], bitcoin],
+      [["payment", "lightning", "invalid-invoice"], bitcoin],
+    ]) {
+      expect(() =>
+        parseOrderMessageRumorEvent({
+          ...request,
+          tags: [...common, ...options],
+        })
+      ).toThrow()
+    }
+    for (const [field, value] of [
+      ["amount", "201"],
+      ["expiration", "1"],
+    ]) {
+      expect(() =>
+        parseOrderMessageRumorEvent({
+          ...request,
+          tags: [
+            ...common.filter((tag) => tag[0] !== field),
+            [field!, value!],
+            bitcoin,
+            lightning,
+          ],
+        })
+      ).toThrow()
+    }
+  })
+
+  it("recovers a retained multi-option invoice after the decoder upgrade without rewriting wraps", async () => {
+    const f = fixture()
+    await receive(f, f.order)
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc2000n",
+      fields: [bolt11PaymentHashField(), bolt11PlainDescriptionField()],
+    })
+    const request = reply(f, "payment_request", {
+      invoice,
+      amount: 200,
+      currency: "SATS",
+    })
+    await receive(
+      f,
+      createPrivateMessageRumor({
+        ...request,
+        tags: [
+          ...request.tags.filter((tag) => tag[0] !== "conduit"),
+          ["payment", "bitcoin", "synthetic-bitcoin-address"],
+        ],
+      }),
+      f.merchant
+    )
+    f.owner.stop()
+    await f.database.commerceInboxRecords.clear()
+    await f.database.commerceInboxWrappers
+      .toCollection()
+      .modify({ state: "unsupported", rulesVersion: 6 })
+    const originals = (await f.database.commerceInboxWrappers.toArray()).map(
+      (row) => row.event
+    )
+    const authorization = getProtectedReadAuthorization(f.pubkey)!
+    const recovered = new CommerceInbox(
+      authorization,
+      f.signer,
+      new CommerceInboxStore(authorization, f.database)
+    )
+    owners.push(recovered)
+    await recovered.initialize()
+    await recovered.waitForDecode()
+    const requests = recovered
+      .getSnapshot()
+      .orderMessages.filter((message) => message.type === "payment_request")
+    expect(requests).toHaveLength(1)
+    expect(requests[0]?.payload.invoice).toBe(invoice)
+    expect(
+      JSON.stringify(
+        (await f.database.commerceInboxWrappers.toArray()).map(
+          (row) => row.event
+        )
+      )
+    ).toBe(JSON.stringify(originals))
   })
 
   it.each([false, true])(
@@ -645,6 +800,7 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
         tag[0] === "payment" ? ["payment", "bitcoin", "unsupported"] : tag
       ),
       [...receiptTags, ["payment", "lightning", invoice, bytesToHex(preimage)]],
+      [...receiptTags, ["payment", "bitcoin", "synthetic-bitcoin-address"]],
     ])
       await receive(f, { ...f.order, kind: 17, tags })
     for (const status of ["processing", "delivered", "exception"]) {
@@ -660,7 +816,7 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
       })
     }
     expect(f.owner.getSnapshot().orderMessages.length).toBe(4)
-    expect(f.owner.getSnapshot().externalRecords.length).toBe(4)
+    expect(f.owner.getSnapshot().externalRecords.length).toBe(5)
     expect(
       f.owner
         .getSnapshot()
@@ -909,7 +1065,9 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
     expect(recovered.getSnapshot().orderMessages.length).toBe(1)
     expect(recovered.getSnapshot().externalRecords.length).toBe(1)
     const retained = await f.database.commerceInboxWrappers.toArray()
-    expect(retained.every((row) => row.rulesVersion === 6)).toBe(true)
+    expect(
+      retained.every((row) => row.rulesVersion === INBOX_DECODE_RULES_VERSION)
+    ).toBe(true)
     expect(
       JSON.stringify(retained.map((row) => row.event)) ===
         JSON.stringify(originals)

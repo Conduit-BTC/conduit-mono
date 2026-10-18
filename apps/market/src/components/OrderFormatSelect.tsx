@@ -34,16 +34,16 @@ export function OrderFormatSelect({
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="conduit">Conduit</SelectItem>
           <SelectItem value="open_markets">Open Markets</SelectItem>
+          <SelectItem value="conduit">Conduit</SelectItem>
         </SelectContent>
       </Select>
       <p
         id="checkout-order-format-help"
         className="text-pretty text-sm text-[var(--text-muted)]"
       >
-        Choose Open Markets for a seller using another marketplace that requests
-        this format. This choice is saved for this order and its replies.
+        This choice is saved for this order and its replies. Choose Conduit if
+        the seller requests it.
       </p>
     </div>
   )

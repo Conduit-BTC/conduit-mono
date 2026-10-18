@@ -1594,8 +1594,8 @@ function CheckoutPage() {
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
   const requestedOrderWireFormat = selectedMerchant
-    ? (orderFormats[selectedMerchant] ?? "conduit")
-    : "conduit"
+    ? (orderFormats[selectedMerchant] ?? "open_markets")
+    : "open_markets"
   // Async work must keep its originating buyer frame, not adopt a newer session.
   const getCheckoutReferralScope = useCallback(
     () => checkoutReferralSessionFence.getScope(accountPubkey, authGeneration),

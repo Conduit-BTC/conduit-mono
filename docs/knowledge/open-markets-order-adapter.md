@@ -32,14 +32,15 @@ experimental proposal, not an enabled writer.
 
 ### New Market orders
 
-Standard checkout exposes **Order compatibility**: **Conduit** (the existing
-named kind-16 JSON contract, the default) or **Open Markets** (numeric type 1).
-The buyer selects Open Markets when the merchant requests that contract.
+New ordinary checkout defaults to **Open Markets** (numeric type 1) and exposes
+an explicit **Conduit** override for the existing named kind-16 JSON contract.
+This default is a new-order policy, not inferred merchant capability.
 Neither a `client` tag, kind-10050 inbox declaration, relay response nor empty
 lookup establishes commerce-format support. There is no probe order or second
-representation. Private router checkout requires its existing Conduit contract;
-the selector explains that requirement and submission checks it before wallet
-preparation. This adapter does not change payment routing policy.
+representation. Private router checkout and event pickup require their existing
+Conduit contract; the locked selector explains that requirement and submission
+checks it before wallet preparation. Manual invoice/payment behavior remains
+unchanged; no automatic payment preference is advertised by this adapter.
 
 Before wrapping or staging a new order, save its order ID, buyer, merchant and
 selected format in the device-local `orderWireFormats` table. The staged
@@ -139,7 +140,7 @@ joins those replies only for the exact buyer and merchant pair, and only when no
 distinct named initial order conflicts. Existing invoice records and paid
 confirmation operations keep their original keys, grammar, and encrypted bytes.
 A new numeric order without positive historical named operation evidence keeps
-numeric replies. Decode-rule version 6 rebuilds that view from retained wraps.
+numeric replies. Decode-rule version 7 rebuilds that view from retained wraps.
 
 A singleton recipient `p` tag may have an optional bounded WebSocket relay hint.
 The hint does not grant delivery authority or select the commerce format.
@@ -156,7 +157,7 @@ SHA-256 must match the payment hash. A three-entry `payment` tag without a
 preimage is an unverified payment report, not a malformed message or settlement.
 Kind 17 never falls back to the kind-16 Conduit extension parser. A disguised
 order/status extension remains external evidence, including under an unknown
-version. Decode-rule version 6 reprocesses retained unsupported reports while
+version. Decode-rule version 7 reprocesses retained unsupported reports while
 preserving the earlier kind-17 authority restriction and genuine deletions or
 message-expiration decisions.
 The supported receipt remains an unverified claim. Automation additionally requires the exact
@@ -164,6 +165,15 @@ authenticated merchant-issued invoice and the existing receiving-wallet
 settlement verifier. Wrong-party, wrong-invoice, unsupported or conflicting
 claims cannot confirm payment. Existing manual verification stays explicit.
 Repeated claims cannot credit settlement or stock twice.
+
+A numeric type-2 payment request may advertise multiple payment options. The
+adapter selects exactly one Lightning BOLT11 option regardless of tag order;
+Bitcoin/eCash and other alternatives remain retained evidence without payment
+authority. Duplicate or conflicting Lightning entries, malformed selected
+Lightning fields, missing supported options and invalid amount/expiry remain
+non-actionable. Kind-17 receipts still require one payment report; this does
+not enable other settlement rails. Decode-rule version 7 reprocesses retained
+multi-option invoices rejected by the earlier decoder without rewriting wraps.
 
 Numeric invoice replies include the BOLT11 `expiration` deadline. If a peer
 supplies this common tag, it must match the invoice's decoded validity deadline.
@@ -174,9 +184,9 @@ Invoice totals may differ after merchant review; the buyer sees the existing
 amount-change warning, and the merchant's note explains adjustments.
 
 Reply format selection comes from the retained authenticated order; new Market
-selection comes from the buyer's explicit checkout choice, never a client
-brand or relay-declaration tag. Select one representation before staging. Retry exact rumor and
-encrypted delivery bytes under existing authority. Missing history cannot
+selection comes from the ordinary numeric default or explicit checkout choice,
+never a client brand or relay-declaration tag. Select one representation before
+staging. Retry exact rumor and encrypted delivery bytes under existing authority. Missing history cannot
 silently select an incompatible writer. The decode-rule upgrade reprocesses
 previously retained external wrappers.
 

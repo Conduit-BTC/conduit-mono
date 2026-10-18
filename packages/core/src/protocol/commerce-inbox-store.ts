@@ -216,7 +216,7 @@ function freezeProjection<T>(value: T): T {
 }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-export const INBOX_DECODE_RULES_VERSION = 6
+export const INBOX_DECODE_RULES_VERSION = 7
 const LEASE_MS = 60_000
 const KEY_ID = "commerce-inbox-aes-gcm-v1"
 

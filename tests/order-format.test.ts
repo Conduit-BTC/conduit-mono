@@ -348,7 +348,7 @@ describe("explicit order-format selection and the numeric peer contract", () => 
       (await f.database.orderWireFormats.get(f.orderId))?.orderWireFormat
     ).toBe("open_markets")
   })
-  it("defaults only to the named contract and pins one party-scoped choice before staging", async () => {
+  it("keeps the historical named fallback and pins one party-scoped choice before staging", async () => {
     const f = fixture()
     expect(getOrderWireFormat({})).toBe("conduit")
     expect(

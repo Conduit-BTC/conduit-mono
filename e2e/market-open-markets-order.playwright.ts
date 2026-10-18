@@ -22,7 +22,7 @@ test.use({ trace: "off", screenshot: "off", video: "off" })
 
 // Source-derived peer packets: nostrichOS/nostrich-marketplace@668198e, docs/orders.md
 // and src/orders/orders.ts. The peer here is a runner-owned simulation, not Nostrich.
-test("Market selects one numeric order and completes the external merchant lifecycle after reload @commerce", async ({
+test("Market defaults to one numeric order and completes the external merchant lifecycle after reload @commerce", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -128,11 +128,6 @@ test("Market selects one numeric order and completes the external merchant lifec
       .getByRole("link", { name: "Continue to checkout" })
       .click()
     const format = page.getByRole("combobox", { name: "Order compatibility" })
-    await expect(format).toHaveText("Conduit")
-    await format.click()
-    await page
-      .getByRole("option", { name: "Open Markets", exact: true })
-      .click()
     await expect(format).toHaveText("Open Markets")
     await page.getByRole("button", { name: "Send order", exact: true }).click()
     await expect(page).toHaveURL(/\/orders\?order=/)
@@ -202,7 +197,9 @@ test("Market selects one numeric order and completes the external merchant lifec
         ["subject", "order-payment"],
         ["type", "2"],
         ["amount", "21"],
+        ["payment", "bitcoin", "synthetic-bitcoin-address"],
         ["payment", "lightning", invoice],
+        ["payment", "ecash", "synthetic-ecash-request"],
         ["expiration", String(now + 3600)],
       ],
       "Synthetic payment instructions"

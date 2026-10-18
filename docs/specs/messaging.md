@@ -52,9 +52,9 @@ incoming message are retained metadata; they do not authorize group fanout.
 
 ### Commerce payloads and authority
 
-Conduit remains the default named kind-16 JSON contract. Standard Market
-checkout offers an explicit Open Markets numeric choice for merchants requesting
-that contract; private router checkout retains its required named contract. The shared
+New ordinary Market checkout defaults to Open Markets numeric orders with an
+explicit named Conduit override. Private router checkout and event pickup retain
+their required named kind-16 JSON contract. The shared
 [numeric order adapter](../knowledge/open-markets-order-adapter.md) also admits
 validated Open Markets orders to Merchant review and selects numeric replies for
 those retained orders. New numeric orders freeze their party-scoped format before
@@ -63,7 +63,10 @@ conversation. Reload and retries preserve the exact staged encrypted bytes;
 no order emits both representations. Old orders without format metadata remain
 named. Neither `client` nor kind-10050 relay declarations imply format support.
 Kind-17 Lightning receipts with optional preimages enter the existing verifier as
-unverified claims. Numeric invoice expiration describes BOLT11 payment validity,
+unverified claims. Type-2 requests can carry other payment options alongside
+exactly one supported Lightning BOLT11 option; ambiguous Lightning options remain
+non-actionable, and kind-17 receipts still require one report. Manual payment
+behavior is unchanged. Numeric invoice expiration describes BOLT11 payment validity,
 not disappearance of authenticated invoice history. Ordinary message/wrapper
 expiration still applies. Other rails, unknown versions and incomplete terms remain explicit
 evidence. No kind-1327 writer or complete cross-client conformance is claimed.

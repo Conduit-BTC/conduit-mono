@@ -270,13 +270,19 @@ export function parseOpenMarketsOrderMessage(
     }
   }
   const payments = rumor.tags.filter((tag) => tag[0] === "payment")
+  // Requests may advertise other rails; receipts still identify one report.
+  const supported =
+    rumor.kind === 16
+      ? payments.filter((tag) => tag[1] === "lightning")
+      : payments
+  const payment = supported[0]
   if (
-    payments.length !== 1 ||
-    payments[0]?.[1] !== "lightning" ||
-    !(rumor.kind === 17 ? [3, 4] : [3]).includes(payments[0].length)
+    supported.length !== 1 ||
+    payment?.[1] !== "lightning" ||
+    !(rumor.kind === 17 ? [3, 4] : [3]).includes(payment.length)
   )
     throw new Error("Unsupported commerce payment")
-  const invoice = payments[0][2]!
+  const invoice = payment[2]!
   const amount = integer(single(rumor, "amount"), true)
   const decoded = decodeLightningInvoiceAmount(invoice)
   const paymentHash = decodeLightningInvoicePaymentHash(invoice)
@@ -305,7 +311,7 @@ export function parseOpenMarketsOrderMessage(
       },
     }
   }
-  const preimage = payments[0][3]
+  const preimage = payment[3]
   if (
     preimage !== undefined &&
     (!HEX.test(preimage) ||

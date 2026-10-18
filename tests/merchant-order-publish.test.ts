@@ -21,7 +21,10 @@ import { wrapEvent } from "nostr-tools/nip59"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { ConduitDB } from "../packages/core/src/db"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
-import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import {
+  CommerceInboxStore,
+  INBOX_DECODE_RULES_VERSION,
+} from "../packages/core/src/protocol/commerce-inbox-store"
 import {
   __resetProtectedReadSigner,
   getProtectedReadAuthorization,
@@ -331,7 +334,7 @@ describe("merchant order publish", () => {
         ).toBe(originals)
         expect(
           (await account.database.commerceInboxWrappers.toArray()).every(
-            (row) => row.rulesVersion === 6
+            (row) => row.rulesVersion === INBOX_DECODE_RULES_VERSION
           )
         ).toBe(true)
         getOwner.mockReturnValue(reloaded)

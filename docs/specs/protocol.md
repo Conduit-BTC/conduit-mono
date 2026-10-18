@@ -787,22 +787,26 @@ content-free.
 
 ## Legacy Conduit Order Message Payload (CND-128)
 
-The default Conduit order contract uses kind `16` with JSON `content` and
-explicit `p`, named `type`, and `order` tags. Standard Market checkout also
-offers explicit Open Markets numeric format selection; client tags and
-kind-10050 declarations never select commerce format. Private router checkout
-retains its required named contract. No proposed OMF kind-`1327` writer is enabled.
+The named Conduit order contract uses kind `16` with JSON `content` and explicit
+`p`, named `type`, and `order` tags. New ordinary Market checkout defaults to
+Open Markets numeric orders with an explicit named Conduit override; client tags
+and kind-10050 declarations never select commerce format. Private router checkout
+and event pickup retain their required named contract. No proposed OMF
+kind-`1327` writer is enabled.
 
 The shared [numeric order adapter](../knowledge/open-markets-order-adapter.md)
 also reads validated Open Markets numeric orders into Merchant review, sends
 compatible numeric replies for those orders, and writes numeric orders, kind-17
-Lightning reports and kind-14 conversation for explicitly selected Market
-orders. A device-local party-scoped format choice must commit before encrypted
-staging, remains immutable in lifecycle/recovery, and never creates a second
+Lightning reports and kind-14 conversation for numeric Market orders. A
+device-local party-scoped format choice must commit before encrypted staging, remains immutable in lifecycle/recovery, and never creates a second
 representation. Existing orders without format metadata remain named.
 Supported kind-17 receipts, with or without a preimage, remain claims for the
-existing settlement verifier. Numeric invoice `expiration` must agree with the
-BOLT11 deadline and does not erase invoice history after payment validity ends;
+existing settlement verifier. Type-2 requests may advertise multiple payment
+methods; the adapter selects exactly one Lightning BOLT11 option and retains
+other rails without payment authority. Ambiguous selected options remain
+non-actionable; kind-17 receipts retain their single-report rules. Manual payment
+behavior and profile payment preferences are unchanged. Numeric invoice
+`expiration` must agree with the BOLT11 deadline and does not erase invoice history after payment validity ends;
 ordinary message and wrapper TTLs remain in force. Original
 wire IDs and encrypted originals are preserved; missing historical prices,
 listing revisions and destination terms remain unknown.

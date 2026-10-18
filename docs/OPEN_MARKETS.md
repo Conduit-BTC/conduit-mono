@@ -76,8 +76,11 @@ numeric invoice/status/shipping replies and kind-17 Lightning claims through the
 existing verifier. Missing historical line prices, listing revisions and
 structured destination details remain unknown. Other receipt rails remain
 inspectable without payment authority. This is client capability, not deployment
-or independent-client certification. New Shop orders and their payment proofs
-retain Conduit's named kind-16 grammar; no new default writer is enabled.
+or independent-client certification. New ordinary Shop orders default to numeric
+Open Markets, with a named Conduit override. Router/event pickup and existing
+orders retain their named or saved format. Type-2 requests accept a sole
+Lightning invoice alongside other payment options; only that Lightning option
+is actionable. Manual payment behavior remains unchanged.
 
 Organizer handoff receipts, revocations, and acknowledgements are also Conduit
 private-commerce messages. They do not grant an organizer merchant authority

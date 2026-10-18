@@ -1056,6 +1056,15 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       buyerPage.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible({ timeout: 30_000 })
+    const compatibility = buyerPage.getByRole("combobox", {
+      name: "Order compatibility",
+    })
+    await expect(compatibility).toHaveText("Open Markets")
+    await compatibility.click()
+    await buyerPage
+      .getByRole("option", { name: "Conduit", exact: true })
+      .click()
+    await expect(compatibility).toHaveText("Conduit")
     const sendOrder = buyerPage.getByRole("button", {
       name: "Send order",
       exact: true,
