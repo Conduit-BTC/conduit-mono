@@ -460,6 +460,149 @@ describe("merchant order publish", () => {
     }
   })
 
+  it.each(["current", "revoked", "same_principal", "replaced"] as const)(
+    "retains accepted numeric Merchant notes in both views with a %s session",
+    async (change) => {
+      const account = await createMerchantOwner()
+      const buyer = generateSecretKey()
+      const buyerPubkey = getPublicKey(buyer)
+      await account.owner.ingest(
+        wrapEvent(
+          {
+            kind: 16,
+            pubkey: buyerPubkey,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              ["p", account.pubkey],
+              ["subject", "Order"],
+              ["type", "1"],
+              ["order", "merchant-note-order"],
+              ["amount", "200"],
+              ["item", `30402:${account.pubkey}:book`, "1"],
+            ],
+            content: "Synthetic retained order",
+          },
+          buyer,
+          account.pubkey
+        )
+      )
+      const snapshot = await account.owner.waitForDecode()
+      const orderId = snapshot.orderMessages[0]!.orderId
+      const note = "Synthetic accepted numeric Merchant note"
+      const getOwner = spyOn(commerceInbox, "getCommerceInbox").mockReturnValue(
+        account.owner
+      )
+      let replacement: Awaited<ReturnType<typeof createMerchantOwner>> | null =
+        null
+      let sends = 0
+      const publish = spyOn(
+        messaging,
+        "publishPrivateMessage"
+      ).mockImplementation(async (input) => {
+        sends++
+        expect(input.rumor.kind).toBe(14)
+        expect(input.recipientPubkey).toBe(buyerPubkey)
+        expect(input.rumor.tags).toContainEqual([
+          "subject",
+          "merchant-note-order",
+        ])
+        if (change === "revoked") __resetProtectedReadSigner()
+        else if (change !== "current")
+          replacement = await createMerchantOwner(
+            change === "same_principal"
+              ? account.signer
+              : NDKPrivateKeySigner.generate()
+          )
+        await input.onRecipientAccepted?.({
+          successfulRelayUrls: ["wss://fixture.example"],
+        } as never)
+        return {
+          deliveryRoute: "declared_inbox",
+          selfDeliveryStatus: "failed",
+          selfCopyError: "Synthetic self-copy refusal",
+        } as never
+      })
+      const warning = spyOn(console, "warn").mockImplementation(() => {})
+      try {
+        const result = await publishMerchantOrderMessage({
+          ...statusInput(account.pubkey),
+          buyerPubkey,
+          orderId,
+          type: "message",
+          tags: [],
+          payload: { note },
+          authenticatedPubkey: account.pubkey,
+        })
+        expect(sends).toBe(1)
+        expect(getOwner).toHaveBeenCalledTimes(1)
+        expect(result).toMatchObject({
+          recipient: "accepted",
+          selfCopy: "pending",
+          localHistory: change === "current" ? "saved" : "unavailable",
+        })
+        if (change !== "current") {
+          expect(result.checkpointFailure).toBe(true)
+          expect(account.owner.getSnapshot().directMessages).toHaveLength(0)
+          if (replacement)
+            expect(
+              await replacement.database.commerceInboxRecords.count()
+            ).toBe(0)
+          return
+        }
+        const assertViews = (owner: CommerceInbox) => {
+          expect(
+            owner
+              .getSnapshot()
+              .directMessages.filter(
+                (message) =>
+                  message.senderPubkey === account.pubkey &&
+                  message.content === note
+              )
+          ).toHaveLength(1)
+          expect(
+            owner
+              .getSnapshot()
+              .orderMessages.filter(
+                (message) =>
+                  message.type === "message" &&
+                  message.orderId === orderId &&
+                  message.payload.note === note
+              )
+          ).toHaveLength(1)
+        }
+        assertViews(account.owner)
+        const projections = await account.owner.store.projections()
+        expect(
+          projections.filter(({ projection }) => projection.kind === "direct")
+        ).toHaveLength(1)
+        expect(
+          projections.filter(
+            ({ projection }) =>
+              projection.kind === "order" &&
+              projection.message.type === "message"
+          )
+        ).toHaveLength(0)
+        expect(
+          JSON.stringify(await account.database.commerceInboxRecords.toArray())
+        ).not.toContain(note)
+        account.owner.stop()
+        const reloaded = new CommerceInbox(
+          account.authorization,
+          account.lease,
+          new CommerceInboxStore(account.authorization, account.database)
+        )
+        owners.push(reloaded)
+        await reloaded.initialize()
+        assertViews(reloaded)
+        expect(sends).toBe(1)
+      } finally {
+        warning.mockRestore()
+        publish.mockRestore()
+        getOwner.mockRestore()
+      }
+    }
+  )
+
   it("targets the merchant for a guest-only operational record", () => {
     const rumor = new NDKEvent()
     rumor.id = "guest-status-rumor"

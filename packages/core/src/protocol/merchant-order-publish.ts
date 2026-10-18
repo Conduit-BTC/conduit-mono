@@ -7,6 +7,7 @@ import { cacheParsedOrderMessage } from "./commerce"
 import { getCommerceInbox, type CommerceInbox } from "./commerce-inbox"
 import { EVENT_KINDS } from "./kinds"
 import {
+  cacheAcceptedDirectMessageRumor,
   createAcceptedInboxSendCheckpoint,
   type AccountInboxSendResult,
 } from "./inbox-send"
@@ -413,25 +414,15 @@ export async function publishMerchantOrderMessage(
       assertConfirmationAuthority
     )
   } else rumor = buildMerchantOrderRumor(prepared)
-  const parsed: ParsedOrderMessage =
-    rumor.kind === 14
-      ? {
-          id: rumor.id,
-          orderId: input.orderId,
-          type: "message",
-          createdAt: rumor.created_at! * 1000,
-          senderPubkey: input.merchantPubkey,
-          recipientPubkey: input.buyerPubkey,
-          rawContent: rumor.content,
-          wireFormat: "open_markets",
-          wireOrderId: prepared.wireOrderId,
-          payload: { note: rumor.content },
-        }
-      : parseOrderMessageRumorEvent(rumor)
+  const parsed = rumor.kind === 14 ? null : parseOrderMessageRumorEvent(rumor)
   const checkpoint = createAcceptedInboxSendCheckpoint(async () => {
     if (!accountOwner) throw new Error("Local order history unavailable")
-    if (!(await cachePublishedMerchantOrderMessage(parsed, accountOwner)))
-      throw new Error("Local order history unavailable")
+    if (parsed) {
+      if (!(await cachePublishedMerchantOrderMessage(parsed, accountOwner)))
+        throw new Error("Local order history unavailable")
+    } else {
+      await cacheAcceptedDirectMessageRumor(rumor, accountOwner)
+    }
   })
 
   const target = getMerchantOrderPublishTarget(prepared, rumor)

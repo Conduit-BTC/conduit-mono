@@ -145,9 +145,11 @@ numeric replies. Decode-rule version 7 rebuilds that view from retained wraps.
 A singleton recipient `p` tag may have an optional bounded WebSocket relay hint.
 The hint does not grant delivery authority or select the commerce format.
 
-Kind-14 notes remain in the direct inbox. Accepted outgoing Market notes are
+Kind-14 notes remain in the direct inbox. Accepted outgoing Market and Merchant notes are
 saved as encrypted direct-message projections before the optional self-copy;
-a refused self-copy cannot erase the sender's accepted conversation on reload.
+a refused self-copy cannot erase the sender's accepted conversation from Messages
+or its derived order preview on reload. Named order messages retain their
+existing order projections.
 Orders may additionally preview a note only for an existing external order with the exact subject and two-party
 identity. The preview cannot grant financial or fulfillment authority.
 

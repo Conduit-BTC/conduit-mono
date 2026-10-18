@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test"
-import { createHash, randomBytes } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import { getEventHash } from "nostr-tools/pure"
 import { createWrap } from "nostr-tools/nip59"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
@@ -20,7 +20,7 @@ import {
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
-test("independent numeric order receives an invoice, confirmation and shipping reply after reload @commerce", async ({
+test("independent numeric order retains invoice, shipping and accepted conversation after reload @commerce", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -30,15 +30,11 @@ test("independent numeric order receives an invoice, confirmation and shipping r
   const now = Math.floor(Date.now() / 1000)
   const wireOrderId = `external-${crypto.randomUUID()}`
   const product = `30402:${merchant.pubkey}:adapter-book`
-  const preimage = randomBytes(32)
-  const paymentHash = new Uint8Array(
-    createHash("sha256").update(preimage).digest()
-  )
   const invoice = makeBolt11Fixture({
     hrp: "lntb2000n",
     createdAt: now,
     fields: [
-      bolt11PaymentHashField(paymentHash),
+      bolt11PaymentHashField(randomBytes(32)),
       bolt11PlainDescriptionField("Synthetic adapter browser invoice"),
     ],
   })
@@ -304,9 +300,112 @@ test("independent numeric order receives an invoice, confirmation and shipping r
     )
     expect(overflow).toBe(false)
     console.info("Adapter shipping reload and layout verified")
+    const note = "Synthetic accepted Merchant conversation"
+    await page.evaluate((principal) => {
+      const provider = (
+        window as unknown as {
+          nostr: {
+            nip44: { encrypt: (peer: string, text: string) => Promise<string> }
+          }
+        }
+      ).nostr.nip44
+      const encrypt = provider.encrypt.bind(provider)
+      provider.encrypt = async (peer, text) => {
+        if (peer === principal) throw new Error("Synthetic self-copy refusal")
+        return encrypt(peer, text)
+      }
+    }, merchant.pubkey)
+    await page
+      .getByRole("button", { name: "Open messages", exact: true })
+      .click()
+    const messages = page.getByRole("dialog", { name: "Messages" })
+    await messages
+      .getByRole("textbox", { name: "Message", exact: true })
+      .fill(note)
+    await messages
+      .getByRole("button", { name: "Send message", exact: true })
+      .click()
+    await expect(
+      messages.getByRole("status").filter({
+        hasText:
+          "Message was accepted and saved on this device. Sync to your other devices is incomplete.",
+      })
+    ).toBeVisible()
+    await expect
+      .poll(async () => {
+        const wraps = await readAuthenticatedGiftWraps(buyer, TEST_RELAY_URL)
+        return new Set(
+          wraps.flatMap((wrap) => {
+            const rumor = parseCanonicalRuntimePrivateRumor({
+              inboxOwner: buyer,
+              recipient: buyer,
+              sender: merchant,
+              rumorKind: 14,
+              wrap,
+            })
+            return rumor?.content === note &&
+              rumor.tags.some(
+                (tag) => tag[0] === "order" && tag[1] === wireOrderId
+              )
+              ? [rumor.id]
+              : []
+          })
+        ).size
+      })
+      .toBe(1)
+    await page.reload()
+    await expect(page.getByLabel("Open merchant account menu")).toBeVisible()
+    await expect
+      .poll(() =>
+        page.evaluate(
+          async ({ root, principal, note }) => {
+            const { getCommerceInbox } = await import(
+              `${root}/protocol/commerce-inbox.ts`
+            )
+            const { db } = await import(`${root}/db/index.ts`)
+            try {
+              const snapshot = getCommerceInbox(principal).getSnapshot()
+              return {
+                direct: snapshot.directMessages.filter(
+                  (message: { content: string; senderPubkey: string }) =>
+                    message.content === note &&
+                    message.senderPubkey === principal
+                ).length,
+                preview: snapshot.orderMessages.filter(
+                  (message: { type: string; payload: { note?: string } }) =>
+                    message.type === "message" && message.payload.note === note
+                ).length,
+                encrypted: !JSON.stringify(
+                  await db.commerceInboxRecords.toArray()
+                ).includes(note),
+              }
+            } catch {
+              return { direct: 0, preview: 0, encrypted: false }
+            }
+          },
+          {
+            root: `/@fs${process.cwd()}/packages/core/src`,
+            principal: merchant.pubkey,
+            note,
+          }
+        )
+      )
+      .toEqual({ direct: 1, preview: 1, encrypted: true })
+    await page.goto(
+      `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/messages`
+    )
+    await expect(
+      page.getByText(note, { exact: true }).filter({ visible: true }).first()
+    ).toBeVisible()
+    await page.reload()
+    await expect(
+      page.getByText(note, { exact: true }).filter({ visible: true }).first()
+    ).toBeVisible()
+    console.info(
+      "Adapter conversation survives refused self-copy in Messages and Orders"
+    )
   } finally {
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)
-    preimage.fill(0)
   }
 })
