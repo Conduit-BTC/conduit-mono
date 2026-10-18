@@ -133,12 +133,14 @@ Assignment operations do not rewrite ordinary shipping or product content.
 New purchase evidence retains the exact signed assignment in encrypted kind-16
 orders. Historical orders retain their original terms.
 
-The integrated writer is merchant-owned pickup. New-profile pseudonymous
-purchasing has no product opt-in; shipping contact remains separate. Approved
-organizer authority permits entrusted-goods acceptance, settlement verification
-and handout without a live merchant. Its exact advance delegation, writer
-handover and order-ID reconciliation contract remains an integration dependency;
-this slice does not invent that wire format or alter the payment executor.
+The base occurrence writer handles merchant-owned pickup. New-profile
+pseudonymous purchasing has no product opt-in; shipping contact remains
+separate. The optional Conduit organizer extension adds explicit finite-stock
+delegation, a complete-journal writer handover and once-only order reconciliation
+without requiring a live merchant for each handout. It reuses the same
+publication owners and payment executor; it is not upstream PR #15 behavior.
+See the [Event Market contract](../specs/event-markets.md#conduit-organizer-stock-handover-extension)
+and [router acceptance checklist](event-market-router-acceptance.md).
 
 A same-event calendar edit updates the deadline for unused allocations without
 changing an accepted order or consuming stock again. Merchant acceptance and

@@ -62,14 +62,20 @@ govern unused allocations; merchants may explicitly accept or confirm payment
 for the original order without rewriting it. Merchants coordinate fulfillment
 changes and any refunds with buyers.
 
-Merchant-present assignment pickup is supported. New organizer acceptance is
-gated on advance delegation, writer handover and order-ID reconciliation.
-Historical authenticated organizer handoff remains inspectable. Organizer
-release requires an authenticated, order-specific merchant message and exact
-merchandise evidence. An organizer acknowledgement grants no merchant payment
-or general lifecycle authority. Private ready/revoke/acknowledgement operations
-retain exact encrypted bytes and delivery evidence for retry across reload.
-Known revocations and conflicts dominate retained positive evidence.
+Merchant-present assignment pickup is supported. Current organizer handout uses
+the separate Conduit finite-stock delegation, exclusive writer and once-only
+reconciliation extension. Required commerce settlement and the bound unique
+claim authorize handout; checkout recovery reuses the shared router without a
+new live merchant signature for each order. See the
+[Event Market contract](../specs/event-markets.md#conduit-organizer-stock-handover-extension)
+and [router acceptance checklist](event-market-router-acceptance.md).
+
+Historical authenticated organizer handoff remains inspectable with its original
+order-specific merchant release message and exact merchandise evidence. Its
+acknowledgement grants no merchant payment or general lifecycle authority.
+Private ready/revoke/acknowledgement operations retain exact encrypted bytes and
+delivery evidence for retry across reload. Known revocations and conflicts
+dominate retained positive evidence.
 
 Event and merchant QR signs remain available with preview, batch selection,
 and Print / Save as PDF. Merchant signs open that merchant's event catalog;
