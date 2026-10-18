@@ -11,6 +11,7 @@ import {
 import { createWrap } from "nostr-tools/nip59"
 
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+import { buildEventMarketOrderRumorTags } from "@conduit/core/protocol/orders"
 import { resolveFutureMarketReceiptMerchandiseEvidence } from "@conduit/core/protocol/future-market-merchandise"
 import {
   orderSchema,
@@ -6867,7 +6868,8 @@ test("retention before a failed creation pointer save exposes exact retry withou
 
 function signedBuyerOrder(
   order: Record<string, unknown> & { id: string },
-  createdAt: number
+  createdAt: number,
+  extraTags: readonly string[][] = []
 ): SignedEvent[] {
   const draft = {
     kind: 16,
@@ -6877,6 +6879,7 @@ function signedBuyerOrder(
       ["p", MERCHANT_PUBKEY],
       ["type", "order"],
       ["order", order.id],
+      ...extraTags,
     ],
     content: JSON.stringify(order),
   }
@@ -7092,6 +7095,192 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await expect(page.getByTestId("future-market-order-pickup")).toBeVisible()
 })
 
+test("saved prepaid acceptance publication resumes after reload @merchant @occurrence-orders", async ({
+  page,
+}, info) => {
+  test.setTimeout(180_000)
+  page.setDefaultTimeout(25_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  const start = createdAt + 7_200
+  const end = createdAt + 10_800
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    ...buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: "prepaid-restore-fair",
+      title: "Prepaid restore fair",
+      start,
+      end,
+      locations: ["100 Public Square"],
+    }),
+    created_at: createdAt,
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "prepaid-restore-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 7"],
+    ],
+  })
+  const grant = signEvent(ORGANIZER_SECRET, {
+    kind: 3841,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["openmarkets", "event-market-auth", "1"],
+      ["a", eventCoordinate(market)],
+      ["p", MERCHANT_PUBKEY],
+      ["state", "active"],
+      ["seq", "0"],
+      ["alt", "Open Markets event merchant authorization"],
+    ],
+  })
+  const product = createMerchantTemplateProductEvent(createdAt)
+  const assignment = signedAssignment(market, calendar, product, 2)
+  const snapshot = (event: SignedEvent) => ({
+    coordinate: eventCoordinate(event),
+    eventId: event.id,
+    createdAt: event.created_at * 1_000,
+    signedEvent: event,
+  })
+  const order = orderSchema.parse({
+    id: crypto.randomUUID(),
+    buyerPubkey: BUYER_PUBKEY,
+    merchantPubkey: MERCHANT_PUBKEY,
+    items: [
+      {
+        productId: eventCoordinate(product),
+        title: MERCHANT_TEMPLATE_TITLE,
+        format: "physical",
+        quantity: 1,
+        priceAtPurchase: 2_500,
+        currency: "SATS",
+        sourcePrice: {
+          amount: 2_500,
+          currency: "SATS",
+          normalizedCurrency: "SATS",
+        },
+        shippingCostSats: 0,
+        fulfillment: {
+          type: "event_market_pickup",
+          organizerPubkey: ORGANIZER_PUBKEY,
+          merchantPubkey: MERCHANT_PUBKEY,
+          payeePubkey: MERCHANT_PUBKEY,
+          market: snapshot(market),
+          calendar: {
+            ...snapshot(calendar),
+            start: start * 1_000,
+            end: end * 1_000,
+          },
+          grant: {
+            kind: 3841,
+            pubkey: ORGANIZER_PUBKEY,
+            eventId: grant.id,
+            createdAt: grant.created_at * 1_000,
+            ancestryEventIds: [grant.id],
+            observedDeletionEventIds: [],
+            signedEvidence: { tip: grant, ancestry: [grant], deletions: [] },
+          },
+          product: snapshot(product),
+          occurrenceAssignment: snapshot(assignment),
+          mode: "merchant_present",
+          assignment: "Booth 7",
+        },
+      },
+    ],
+    subtotal: 2_500,
+    currency: "SATS",
+    shippingCostSats: 0,
+    createdAt: (createdAt + 1) * 1_000,
+  })
+  // A genuine inbound Buyer order isolates Merchant acceptance from catalog UI.
+  // Neither inventory acceptance nor Merchant payment confirmation is seeded.
+  relay.seed(
+    calendar,
+    market,
+    grant,
+    product,
+    assignment,
+    createInboxDeclaration("merchant", createdAt),
+    createInboxDeclaration("buyer", createdAt),
+    ...signedBuyerOrder(
+      order,
+      createdAt + 1,
+      buildEventMarketOrderRumorTags(order)
+    ),
+    ...signedBuyerPaymentReport(order.id)
+  )
+  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
+  await page
+    .getByRole("button", { name: "Confirm payment", exact: true })
+    .click()
+  const dialog = page.getByRole("alertdialog", {
+    name: "Confirm payment received?",
+  })
+  await expect(dialog).toBeVisible()
+  const from = relay.publications.length
+  const confirmationAck = relay.holdNextPublicationAck(
+    (event) =>
+      event.kind === 1059 &&
+      event.tags.some((tag) => tag[0] === "p" && tag[1] === BUYER_PUBKEY)
+  )
+  try {
+    await dialog
+      .getByRole("button", { name: "Confirm payment", exact: true })
+      .click()
+    await confirmationAck.captured
+    await expect
+      .poll(
+        () =>
+          uniquePrivatePublications(
+            decryptPrivatePublications(relay.publications, BUYER_SECRET, from)
+          ).filter(
+            (message) =>
+              rumorType(message.rumor) === "status_update" &&
+              JSON.parse(message.rumor.content).status === "paid"
+          ).length
+      )
+      .toBe(1)
+    await expect(
+      page.getByText("Payment confirmed.", { exact: true })
+    ).toHaveCount(0)
+  } finally {
+    confirmationAck.release()
+  }
+  await expect(
+    page.getByText("Payment confirmed.", { exact: true })
+  ).toBeVisible()
+  expect(
+    await occurrenceInventory(page, eventCoordinate(product), order.id)
+  ).toMatchObject({
+    stock: 8,
+    allocation: 1,
+    acceptedOrders: 1,
+    savedOrder: true,
+  })
+  const retryPublication = page.getByRole("button", {
+    name: "Retry acceptance publication",
+    exact: true,
+  })
+  await page.reload()
+  await retryPublication.evaluate((element) =>
+    element.scrollIntoView({ behavior: "instant", block: "center" })
+  )
+  if (info.project.use.hasTouch) await retryPublication.tap()
+  else await retryPublication.click()
+  await expect(
+    page.getByText("Accepted inventory updates published.", { exact: true })
+  ).toBeVisible()
+  expect(
+    await occurrenceInventory(page, eventCoordinate(product), order.id)
+  ).toMatchObject({ stock: 8, allocation: 1, acceptedOrders: 1 })
+})
+
 for (const scenario of [
   { rescheduled: false, repriced: false, label: "without a date change" },
   {
@@ -7103,7 +7292,7 @@ for (const scenario of [
 ])
   test(`prepaid first confirmation ${scenario.label} @market @merchant @occurrence-orders`, async ({
     page,
-  }) => {
+  }, info) => {
     test.setTimeout(180_000)
     const { relay, createdAt, product, order, marketNaddr } =
       await createAssignedPickupOrder(page)
@@ -7233,12 +7422,16 @@ for (const scenario of [
       )
     ).toBe(true)
     await page.reload()
-    await page
-      .getByRole("button", {
-        name: "Retry acceptance publication",
-        exact: true,
-      })
-      .click()
+    const retryPublication = page.getByRole("button", {
+      name: "Retry acceptance publication",
+      exact: true,
+    })
+    // Use a stationary control and the device's real input after restoration.
+    await retryPublication.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
+    )
+    if (info.project.use.hasTouch) await retryPublication.tap()
+    else await retryPublication.click()
     await expect(
       page.getByText("Accepted inventory updates published.", { exact: true })
     ).toBeVisible()
