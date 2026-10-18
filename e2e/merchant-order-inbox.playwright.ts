@@ -143,6 +143,15 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       .getByRole("region", { name: "Cart inventory" })
       .getByRole("link", { name: "Continue to checkout" })
       .click()
+    const compatibility = buyerPage.getByRole("combobox", {
+      name: "Order compatibility",
+    })
+    await expect(compatibility).toHaveText("Open Markets")
+    await compatibility.click()
+    await buyerPage
+      .getByRole("option", { name: "Conduit", exact: true })
+      .click()
+    await expect(compatibility).toHaveText("Conduit")
     phase("send_order")
     await expect(
       buyerPage.getByRole("button", { name: "Send order" })

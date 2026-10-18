@@ -244,6 +244,9 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
     await expect(page.getByText("Zap visibility", { exact: true })).toHaveCount(
       0
     )
+    await expect(
+      page.getByRole("combobox", { name: "Order compatibility" })
+    ).toHaveText("Open Markets")
     const send = page.getByRole("button", { name: "Send order", exact: true })
     await expect(send).toBeEnabled({ timeout: 30000 })
     await send.click()
@@ -279,17 +282,24 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
       )
       .find(
         (event) =>
-          event?.kind === 16 && JSON.parse(event.content).id === saved!.orderId
+          event?.kind === 16 &&
+          event.tags.some(
+            ([name, value]) => name === "order" && value === saved!.orderId
+          )
       )!
     expect(rumor).toBeTruthy()
+    expect(rumor.tags).toContainEqual(["type", "1"])
+    expect(rumor.tags).toContainEqual(["amount", "44375"])
     const delivered = await page.evaluate(
-      async ({ content, modulePath }) => {
-        const { parseOrderRumorEvent } = await import(
+      async ({ rumor, modulePath }) => {
+        const { parseOrderMessageRumorEvent } = await import(
           /* @vite-ignore */ modulePath
         )
-        return parseOrderRumorEvent({ content })
+        const parsed = parseOrderMessageRumorEvent(rumor)
+        if (parsed.type !== "order") throw new Error("Expected decoded order")
+        return parsed.payload
       },
-      { content: rumor.content, modulePath: coreOrderModuleUrl }
+      { rumor, modulePath: coreOrderModuleUrl }
     )
     expect(delivered.shippingCostSats).toBe(6875)
     expect(delivered.items[0].shippingPolicyQuote).toEqual(saved!.quotes[0])
