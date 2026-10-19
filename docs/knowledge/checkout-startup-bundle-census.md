@@ -56,13 +56,13 @@ and guards while loading route components on demand. No route behavior, SDK
 initialization policy, dependency or wallet authority changes are intended.
 
 Production-profile builds compared against main at
-`725080d129a340fda6480f4852fda5d83adb7815` produced these cold, anonymous
-`/privacy-policy` observations in desktop Chromium:
+`66c80f4a2cf5a2e076469ad9dfc0831fdbc8ea1b` produced these cold, anonymous
+`/privacy-policy` observations in Linux desktop Chromium:
 
 | App      | Before raw JS | After raw JS | Before computed gzip-9 | After computed gzip-9 | Before/after JS requests |
 | -------- | ------------: | -----------: | ---------------------: | --------------------: | -----------------------: |
-| Market   |     5,119,916 |    3,910,579 |              1,418,316 |             1,165,571 |                   8 / 28 |
-| Merchant |     4,853,047 |    3,835,102 |              1,320,135 |             1,120,359 |                   9 / 21 |
+| Market   |     5,125,400 |    3,914,959 |              1,419,772 |             1,166,745 |                   8 / 28 |
+| Merchant |     4,858,696 |    3,839,607 |              1,321,625 |             1,121,509 |                   9 / 21 |
 
 The browser fulfilled all application requests from local build output under the
 canonical application hostnames and blocked external HTTP and WebSocket access.
