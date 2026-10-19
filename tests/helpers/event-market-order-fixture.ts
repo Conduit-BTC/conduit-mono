@@ -26,6 +26,8 @@ export function createEventMarketOrderFixture(
     productDTag?: string
     productCreatedAt?: number
     price?: number
+    calendarEnd?: number
+    calendarCreatedAt?: number
     newAssignment?: boolean
     authorizationDepth?: number
     organizerFee?: EventMarketOrganizerFeeAuthoring
@@ -66,12 +68,12 @@ export function createEventMarketOrderFixture(
         ["d", calendarDTag],
         ["title", "Market day"],
         ["start", String(start)],
-        ["end", String(start + 3_600)],
+        ["end", String(options.calendarEnd ?? start + 3_600)],
         ["location", "100 Public Square"],
         ["D", String(Math.floor(start / 86_400))],
       ],
       content: "",
-      created_at: 100,
+      created_at: options.calendarCreatedAt ?? 100,
     },
     organizerSecret
   )
@@ -157,9 +159,9 @@ export function createEventMarketOrderFixture(
     calendar: {
       coordinate: calendarCoordinate,
       eventId: calendar.id,
-      createdAt: 100_000,
+      createdAt: (options.calendarCreatedAt ?? 100) * 1_000,
       start: start * 1_000,
-      end: (start + 3_600) * 1_000,
+      end: (options.calendarEnd ?? start + 3_600) * 1_000,
       signedEvent: calendar,
     },
     grant: {
