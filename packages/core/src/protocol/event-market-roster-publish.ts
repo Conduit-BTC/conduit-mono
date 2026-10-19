@@ -20,6 +20,10 @@ import {
 } from "./event-market-roster"
 import { readEventMarketRoster } from "./event-market-roster-read"
 import {
+  isEventMarketAuthorizationWriteReady,
+  isEventMarketRosterWriteReady,
+} from "./event-market-write-readiness"
+import {
   EVENT_MARKET_ORGANIZER_FEE_TAG,
   type EventMarketOrganizerFeeAuthoring,
 } from "./event-market-organizer-fee"
@@ -206,8 +210,12 @@ export async function publishEventMarketRoster(
     authenticatedPubkey: organizerPubkey,
     shouldContinue: input.shouldContinue,
   })
+  if (input.shouldContinue?.() === false)
+    throw new Error("Organizer session changed.")
   if (
     !current.retained ||
+    (current.resolution.state === "current" &&
+      !isEventMarketRosterWriteReady(current)) ||
     current.resolution.state === "conflicting" ||
     current.resolution.state === "malformed" ||
     current.resolution.state === "deleted"
@@ -957,15 +965,15 @@ export async function publishEventMarketMerchantDecision(
       shouldContinue: input.shouldContinue,
     }),
   ])
+  if (input.shouldContinue?.() === false)
+    throw new Error("Organizer session changed.")
   if (
-    !marketRead.retained ||
-    marketRead.coverage !== "complete" ||
+    !isEventMarketRosterWriteReady(marketRead) ||
     marketRead.resolution.state !== "current" ||
     marketRead.resolution.market.eventId !== input.expectedPreviousEventId ||
     marketRead.resolution.market.calendarCoordinate !==
       input.calendarCoordinate ||
-    !authorizationRead.retained ||
-    authorizationRead.coverage !== "complete"
+    !isEventMarketAuthorizationWriteReady(authorizationRead)
   ) {
     throw new Error(
       "Current signed Event Market authority needs organizer review."

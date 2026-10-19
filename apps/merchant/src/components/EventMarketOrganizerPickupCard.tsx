@@ -490,6 +490,37 @@ export function EventMarketOrganizerPickupCard(props: {
   )
 }
 
+export function EventMarketOrganizerRecoveryDiscoveryNotice(props: {
+  missingInitialCheckouts: number
+  selectionCount: number
+  conflictingCheckouts: number
+  capped: boolean
+}) {
+  const missingInitialNotice =
+    props.missingInitialCheckouts > 0
+      ? "Payment updates are saved, but the original recovery message is not available in this inbox view. Refresh or load older saved event orders before continuing. Do not pay again."
+      : null
+  if (props.conflictingCheckouts > 0 || props.capped)
+    return (
+      <p role="status" className="text-sm text-[var(--warning-text)]">
+        Some event checkout history needs reconciliation before another action.
+        {missingInitialNotice ? ` ${missingInitialNotice}` : null}
+      </p>
+    )
+  if (missingInitialNotice)
+    return (
+      <p role="status" className="text-sm text-[var(--warning-text)]">
+        {missingInitialNotice}
+      </p>
+    )
+  return props.selectionCount === 0 ? (
+    <p className="text-sm text-[var(--text-secondary)]">
+      No event pickup or checkout recovery is saved in the current inbox view.
+      This does not prove no older order exists.
+    </p>
+  ) : null
+}
+
 export function EventMarketOrganizerRecoveryQueue(props: {
   authenticatedPubkey: string
   marketCoordinate: string
@@ -642,18 +673,13 @@ export function EventMarketOrganizerRecoveryQueue(props: {
             ) : null}
           </div>
         ))}
-        {query.data && choices.length === 0 ? (
-          <p className="text-sm text-[var(--text-secondary)]">
-            No event pickup or checkout recovery is saved in the current inbox
-            view. This does not prove no older order exists.
-          </p>
-        ) : null}
-        {query.data &&
-        (query.data.conflictingCheckouts > 0 || query.data.capped) ? (
-          <p role="status" className="text-sm text-[var(--warning-text)]">
-            Some event checkout history needs reconciliation before another
-            action.
-          </p>
+        {query.data ? (
+          <EventMarketOrganizerRecoveryDiscoveryNotice
+            missingInitialCheckouts={query.data.missingInitialCheckouts}
+            selectionCount={choices.length}
+            conflictingCheckouts={query.data.conflictingCheckouts}
+            capped={query.data.capped}
+          />
         ) : null}
         {error || query.isError ? (
           <p role="alert" className="text-sm text-[var(--error-text)]">

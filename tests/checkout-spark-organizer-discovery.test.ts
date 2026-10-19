@@ -15,6 +15,11 @@ import {
   assertEventMarketOrganizerPurchaseAuthority,
 } from "@conduit/core/protocol/event-market-organizer-purchase"
 import { wrapPrivateMessage } from "@conduit/core/protocol/private-message-primitives"
+import {
+  buildCheckoutSparkOrganizerRecoveryRumor,
+  createCheckoutSparkOrganizerRecoveryProgressPayload,
+} from "@conduit/core/protocol/checkout-spark-organizer-recovery"
+import { createCheckoutSparkSettledRecoveryProgressPayload } from "@conduit/core/protocol/checkout-spark-recovery"
 
 const owners: CommerceInbox[] = [],
   databases: ConduitDB[] = []
@@ -83,6 +88,49 @@ it("does not fabricate a selection from absence and fences a revoked session", a
       shouldContinue: () => false,
     })
   ).rejects.toThrow()
+})
+
+it("distinguishes authenticated progress without the initial packet from an empty market and clears it when the initial arrives", async () => {
+  const f = await fixture()
+  const progress = createCheckoutSparkOrganizerRecoveryProgressPayload({
+    merchantProgress: createCheckoutSparkSettledRecoveryProgressPayload({
+      initialHandoffId: f.merchantRecovery.handoffId,
+      state: f.initial.state,
+      senderPubkey: f.buyerSigner.pubkey,
+      preparedAt: f.initial.preparedAt + 1,
+    }),
+    initialOrganizerHandoffId: f.initial.handoffId,
+  })
+  const rumor = buildCheckoutSparkOrganizerRecoveryRumor(progress)
+  for (let copy = 0; copy < 2; copy++)
+    await f.inbox.ingest(
+      await wrapPrivateMessage(
+        rumor,
+        { pubkey: f.organizerPubkey },
+        f.buyerSigner,
+        { rumorKind: 16 }
+      ),
+      ["wss://relay.conduit.market"]
+    )
+  const read = (marketCoordinate = f.plan.eventMarket!.marketCoordinate) =>
+    readRetainedCheckoutSparkOrganizerRecoveries({
+      inbox: f.inbox,
+      marketCoordinate,
+      shouldContinue: () => f.clock.active,
+    })
+  const incomplete = await read()
+  expect(incomplete.missingInitialCheckouts).toBe(1)
+  expect(incomplete.selections.length).toBe(0)
+  expect(incomplete.freeSelections.length).toBe(0)
+  expect(incomplete.conflictingCheckouts).toBe(0)
+  const unrelated = await read(`30409:${f.organizerPubkey}:other`)
+  expect(unrelated.missingInitialCheckouts).toBe(0)
+  expect(unrelated.selections.length).toBe(0)
+  await f.inbox.ingest(f.initialWrap, ["wss://relay.conduit.market"])
+  const ready = await read()
+  expect(ready.missingInitialCheckouts).toBe(0)
+  expect(ready.selections.length).toBe(1)
+  expect(ready.selections[0]!.buyerProgressWraps.length).toBe(1)
 })
 
 it("discovers a real free purchase as machine-only ciphertext without inventing a financial plan or generic order", async () => {

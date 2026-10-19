@@ -37,6 +37,8 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
   selections: CheckoutSparkOrganizerRecoverySelection[]
   freeSelections: EventMarketFreePurchaseSelection[]
   conflictingCheckouts: number
+  /** Authenticated progress is retained, but its initial recovery is not. */
+  missingInitialCheckouts: number
   capped: boolean
 }> {
   const check = () => {
@@ -107,12 +109,16 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     groups.set(key, group)
   }
   let conflictingCheckouts = 0
+  let missingInitialCheckouts = 0
   const selections: CheckoutSparkOrganizerRecoverySelection[] = []
   const freeSelections: EventMarketFreePurchaseSelection[] = []
   let bytes = 0
   for (const group of groups.values()) {
     const initial = group.filter((row) => row.organizerMessage === "initial")
-    if (!initial.length) continue
+    if (!initial.length) {
+      missingInitialCheckouts++
+      continue
+    }
     if (
       new Set(initial.map((row) => row.payloadDigest)).size !== 1 ||
       new Set(
@@ -200,5 +206,11 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     freeSelections.push(structuredClone(selection))
   }
   check()
-  return { selections, freeSelections, conflictingCheckouts, capped }
+  return {
+    selections,
+    freeSelections,
+    conflictingCheckouts,
+    missingInitialCheckouts,
+    capped,
+  }
 }

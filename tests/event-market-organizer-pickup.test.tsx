@@ -8,6 +8,7 @@ import {
 import type { EventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   EventMarketOrganizerPickupForm,
+  EventMarketOrganizerRecoveryDiscoveryNotice,
   continueEventMarketOrganizerPickup,
 } from "../apps/merchant/src/components/EventMarketOrganizerPickupCard"
 import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purchase-fixture"
@@ -33,6 +34,43 @@ const controls = {
   onHandout: () => {},
   onRetryHandout: () => {},
 }
+
+it("shows one actionable incomplete-history notice rather than claiming the inbox is empty", () => {
+  for (const selectionCount of [0, 1]) {
+    const markup = renderToStaticMarkup(
+      <EventMarketOrganizerRecoveryDiscoveryNotice
+        missingInitialCheckouts={1}
+        selectionCount={selectionCount}
+        conflictingCheckouts={1}
+        capped
+      />
+    )
+    expect(markup).toContain("Payment updates are saved")
+    expect(markup).toContain("needs reconciliation before another action")
+    expect(markup).toContain("original recovery message is not available")
+    expect(markup).toContain("Refresh or load older saved event orders")
+    expect(markup).toContain("Do not pay again")
+    expect(markup).not.toContain("No event pickup or checkout recovery")
+    expect(markup.match(/role="status"/g)?.length).toBe(1)
+    expect(markup).not.toContain("<button")
+  }
+})
+
+it("clears the missing-initial notice once ready and preserves bounded empty/conflicting states", () => {
+  const render = (selectionCount: number, conflictingCheckouts = 0) =>
+    renderToStaticMarkup(
+      <EventMarketOrganizerRecoveryDiscoveryNotice
+        missingInitialCheckouts={0}
+        selectionCount={selectionCount}
+        conflictingCheckouts={conflictingCheckouts}
+        capped={false}
+      />
+    )
+  expect(render(1)).toBe("")
+  expect(render(0)).toContain("This does not prove no older order exists")
+  expect(render(0, 1)).toContain("needs reconciliation")
+  expect(render(0, 1)).not.toContain("No event pickup or checkout recovery")
+})
 
 it("shows each exact pickup product, selected variation and quantity before handout", () => {
   const merchandise = {

@@ -18,6 +18,9 @@ import {
   publishFutureEventMarketSeries,
   readEventMarketAuthorization,
   readEventMarketRoster,
+  isEventMarketAuthorizationWriteReady,
+  isEventMarketCalendarWriteReady,
+  isEventMarketRosterWriteReady,
   retainSignedEventMarketEvidence,
   retryEventMarketAuthorizationDelivery,
   retryEventMarketCalendarDelivery,
@@ -1270,8 +1273,7 @@ function MerchantAuthorityRow({
     !pending &&
     !decisionPending &&
     !auth.isFetching &&
-    auth.data?.retained === true &&
-    auth.data.coverage === "complete" &&
+    isEventMarketAuthorizationWriteReady(auth.data) &&
     ["active", "revoked", "missing"].includes(authState)
   const expectedTipIds =
     resolution &&
@@ -1716,9 +1718,8 @@ export function FutureEventMarketManager({
   const canManage =
     !!market &&
     market.organizerPubkey === authenticatedPubkey &&
-    result?.retained &&
-    result.coverage === "complete" &&
-    result.calendarCoverage === "complete"
+    isEventMarketRosterWriteReady(result) &&
+    isEventMarketCalendarWriteReady(result)
 
   async function retryRoster(): Promise<void> {
     if (!market || !authenticatedPubkey) return
