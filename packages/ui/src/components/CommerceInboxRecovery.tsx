@@ -58,7 +58,8 @@ export function CommerceInboxRecovery({
   const retryable =
     (states.permission_declined ?? 0) +
     (states.retryable_failure ?? 0) +
-    (states.provider_unavailable ?? 0)
+    (states.provider_unavailable ?? 0) +
+    (states.malformed ?? 0)
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true)
     setError(false)
@@ -89,11 +90,15 @@ export function CommerceInboxRecovery({
           return (
             <p key={transport}>
               {transport === "nip17" ? "Encrypted" : "Legacy"}:{" "}
-              {counts.opened ?? 0} opened · {counts.invalid_envelope ?? 0}{" "}
+              {counts.opened ?? 0} opened · {counts.machine ?? 0} machine
+              records · {counts.malformed ?? 0} malformed · {counts.queued ?? 0}{" "}
+              queued · {counts.waiting_for_signer ?? 0} waiting for signer ·{" "}
+              {counts.opening ?? 0} opening · {counts.invalid_envelope ?? 0}{" "}
               invalid envelopes · {counts.unsupported ?? 0} unsupported ·{" "}
               {(counts.permission_declined ?? 0) +
                 (counts.provider_unavailable ?? 0) +
-                (counts.retryable_failure ?? 0)}{" "}
+                (counts.retryable_failure ?? 0) +
+                (counts.malformed ?? 0)}{" "}
               awaiting recovery
             </p>
           )
