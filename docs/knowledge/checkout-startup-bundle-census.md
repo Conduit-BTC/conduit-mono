@@ -48,22 +48,50 @@ rendering, SDK initialization and physical-phone startup are not sampled.
 The script makes zero network requests. A repeat census of identical artifacts
 is not warm-browser or repeat-device timing evidence.
 
+## Route-component splitting comparison
+
+Market and Merchant enable the installed TanStack router plugin's
+`autoCodeSplitting` option. The router retains route matching, search validation
+and guards while loading route components on demand. No route behavior, SDK
+initialization policy, dependency or wallet authority changes are intended.
+
+Production-profile builds compared against main at
+`725080d129a340fda6480f4852fda5d83adb7815` produced these cold, anonymous
+`/privacy-policy` observations in desktop Chromium:
+
+| App      | Before raw JS | After raw JS | Before computed gzip-9 | After computed gzip-9 | Before/after JS requests |
+| -------- | ------------: | -----------: | ---------------------: | --------------------: | -----------------------: |
+| Market   |     5,119,916 |    3,910,579 |              1,418,316 |             1,165,571 |                   8 / 28 |
+| Merchant |     4,853,047 |    3,835,102 |              1,320,135 |             1,120,359 |                   9 / 21 |
+
+The browser fulfilled all application requests from local build output under the
+canonical application hostnames and blocked external HTTP and WebSocket access.
+Both privacy pages rendered without page errors. Checkout, orders and wallet
+route-component chunks were absent from the initial requests. Shared wallet
+and pricing helpers still load with the shell. The smaller initial payload uses
+more requests; this is not a measured latency or physical-device improvement.
+Computed compressed sizes are per-file gzip level 9, not CDN transfer evidence.
+
+Both apps displayed their existing error page when the emitted About component
+chunk was deliberately unavailable, then recovered through the reload control.
+The About browser suite covers this failure/recovery behavior in development;
+the emitted-chunk check qualifies the optimized production build separately.
+Existing signed-in surface tests cover direct product, order, checkout (Market)
+and wallet navigation on desktop Chromium and mobile WebKit.
+
 ## Disposition and next measurement
 
 Keep startup/import changes separate from payment preparation and scheduling
-changes. There is now a measured emitted-byte basis for a follow-up: the initial
-static closure is roughly 4.8–5.1 million raw JavaScript bytes. That does not
-establish which code dominates runtime cost, which deferred SDK is loaded by a
-particular user flow, or whether changing wallet initialization would improve
-startup safely.
+changes. Route components now defer, while a substantial shared shell remains.
+The census does not establish which code dominates runtime cost, which deferred
+SDK is loaded by a particular user flow, or whether changing wallet initialization
+would improve startup safely.
 
 Owner role: frontend performance maintainer, coordinating with the wallet
 lifecycle maintainer for any SDK-initialization boundary.
 
-Next measure a managed-profile build's actual anonymous startup with all
-external networking blocked: record cold-cache and same-context repeat resource
-transfer, module evaluation/long tasks and first usable UI. Repeat on a physical
-phone with cache/device conditions recorded before moving imports or changing
-wallet initialization. Keep those results separate from provider operations,
-external funding/user wait and this emitted-byte census. No device or deployed
-startup latency improvement is claimed here.
+Next capture same-context repeat resource loading, module evaluation/long tasks
+and first usable UI on a physical phone with cache/device conditions recorded.
+Keep those results separate from provider operations, external funding/user wait
+and this emitted-byte census. No device or deployed startup latency improvement
+is claimed here.
