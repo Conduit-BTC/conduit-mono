@@ -1333,8 +1333,11 @@ export interface MerchantInventoryAcceptedOrder {
   merchantPubkey: string
   identityBinding: string
   termsBinding: string
-  /** Exact validated order evidence snapshot, private to the local DB. */
+  /** Exact validated order snapshot encrypted by the account-owned device store. */
   evidence: string
+  /** Absent only on legacy preview records awaiting account-owned repair. */
+  evidenceFormat?: "device-encrypted-v1"
+  evidenceBinding?: string
   items: Array<{
     productCoordinate: string
     assignmentCoordinate?: string

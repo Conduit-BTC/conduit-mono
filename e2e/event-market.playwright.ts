@@ -6497,9 +6497,12 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
     async ({ root, orderId, calendarId }) => {
       const { db } = await import(`${root}/db/index.ts`)
       const saved = await db.merchantInventoryAcceptedOrders.get(orderId)
+      const { openMerchantAcceptanceEvidence } = await import(
+        `${root}/protocol/merchant-acceptance-privacy.ts`
+      )
       return (
-        JSON.parse(saved.evidence).items[0].fulfillment.calendar.eventId ===
-        calendarId
+        JSON.parse(await openMerchantAcceptanceEvidence(saved)).items[0]
+          .fulfillment.calendar.eventId === calendarId
       )
     },
     {
@@ -6662,11 +6665,15 @@ for (const scenario of [
         async ({ root, original }) => {
           const { db } = await import(`${root}/db/index.ts`)
           const { orderSchema } = await import(`${root}/schemas/index.ts`)
+          const { openMerchantAcceptanceEvidence } = await import(
+            `${root}/protocol/merchant-acceptance-privacy.ts`
+          )
           const saved = await db.merchantInventoryAcceptedOrders.get(
             original.id
           )
           return (
-            saved?.termsBinding === JSON.stringify(orderSchema.parse(original))
+            (await openMerchantAcceptanceEvidence(saved)) ===
+            JSON.stringify(orderSchema.parse(original))
           )
         },
         { root: `/@fs${process.cwd()}/packages/core/src`, original: order }

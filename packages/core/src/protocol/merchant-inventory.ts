@@ -485,6 +485,10 @@ export async function acceptMerchantInventoryOrder(input: {
   identityBinding: string
   termsBinding: string
   evidence: string
+  evidenceFormat?: MerchantInventoryAcceptedOrder["evidenceFormat"]
+  evidenceBinding?: string
+  /** Live account fence for private acceptance commits. */
+  assertCurrent?: () => void
   items: MerchantInventoryOrderItem[]
   priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
   acceptedAt?: number
@@ -498,6 +502,7 @@ export async function acceptMerchantInventoryOrder(input: {
     evidence,
     items,
   } = input
+  input.assertCurrent?.()
   const acceptedAt = input.acceptedAt ?? Date.now()
   if (
     !orderId ||
@@ -505,6 +510,11 @@ export async function acceptMerchantInventoryOrder(input: {
     !identityBinding ||
     !termsBinding ||
     !evidence ||
+    (input.evidenceFormat !== undefined &&
+      (input.evidenceFormat !== "device-encrypted-v1" ||
+        ![identityBinding, termsBinding, input.evidenceBinding].every(
+          (binding) => binding && /^sha256:[0-9a-f]{64}$/.test(binding)
+        ))) ||
     !Number.isSafeInteger(acceptedAt) ||
     !items.length
   )
@@ -557,7 +567,9 @@ export async function acceptMerchantInventoryOrder(input: {
           prior.merchantPubkey !== merchantPubkey ||
           prior.identityBinding !== identityBinding ||
           prior.termsBinding !== termsBinding ||
-          prior.evidence !== evidence ||
+          prior.evidenceFormat !== input.evidenceFormat ||
+          (prior.evidenceBinding ?? prior.evidence) !==
+            (input.evidenceBinding ?? evidence) ||
           JSON.stringify(
             prior.items.map(
               ({
@@ -590,6 +602,7 @@ export async function acceptMerchantInventoryOrder(input: {
             )
         )
           throw new Error("Order ID is bound to different identity or terms")
+        input.assertCurrent?.()
         return { replayed: true, order: prior }
       }
       const products = new Map<string, MerchantInventoryProduct>()
@@ -799,16 +812,24 @@ export async function acceptMerchantInventoryOrder(input: {
           await db.merchantInventoryAssignments.put(assignment)
         }
       }
+      input.assertCurrent?.()
       const order: MerchantInventoryAcceptedOrder = {
         orderId,
         merchantPubkey,
         identityBinding,
         termsBinding,
         evidence,
+        ...(input.evidenceFormat
+          ? {
+              evidenceFormat: input.evidenceFormat,
+              evidenceBinding: input.evidenceBinding,
+            }
+          : {}),
         items: output,
         acceptedAt,
       }
       await db.merchantInventoryAcceptedOrders.add(order)
+      input.assertCurrent?.()
       return { replayed: false, order }
     }
   )

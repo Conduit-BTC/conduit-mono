@@ -1,3 +1,9 @@
+import {
+  merchantAcceptanceBinding,
+  merchantAcceptanceStore,
+  protectMerchantAcceptanceHistory,
+  sealMerchantAcceptanceEvidence,
+} from "./merchant-acceptance-privacy"
 import { verifySignedEventBatches } from "./relay-reader"
 import { db, type MerchantInventoryAcceptedOrder } from "../db"
 import { normalizeCurrencyIdentity } from "../pricing"
@@ -421,12 +427,11 @@ export async function resumeMerchantOccurrencePublication(
 
 function acceptanceBindings(order: OrderSchema) {
   return {
-    identityBinding: JSON.stringify([
-      order.id,
-      order.buyerPubkey,
-      order.merchantPubkey,
-    ]),
-    termsBinding: JSON.stringify(order),
+    identityBinding: merchantAcceptanceBinding(
+      "identity",
+      JSON.stringify([order.id, order.buyerPubkey, order.merchantPubkey])
+    ),
+    termsBinding: merchantAcceptanceBinding("terms", JSON.stringify(order)),
   }
 }
 
@@ -451,7 +456,10 @@ export async function readMerchantOccurrenceAcceptedOrder(input: {
   orderId: string
   order: OrderSchema | null
 }): Promise<MerchantInventoryAcceptedOrder | undefined> {
+  const store = merchantAcceptanceStore(input.merchantPubkey)
+  await protectMerchantAcceptanceHistory(store)
   const saved = await db.merchantInventoryAcceptedOrders.get(input.orderId)
+  store.assertCurrent()
   if (!saved) return undefined
   if (
     !input.order ||
@@ -461,6 +469,34 @@ export async function readMerchantOccurrenceAcceptedOrder(input: {
   )
     throw new Error("Order ID has conflicting accepted terms.")
   return saved
+}
+
+/** Input order is not evidence precedence; validate the signed coordinate itself. */
+function strongestObservedProduct(
+  products: readonly ProductSchema[],
+  coordinate: string
+): SignedPublicNostrEvent | undefined {
+  let strongest: SignedPublicNostrEvent | undefined
+  for (const product of products) {
+    const event = product.signedProductEvent
+    if (
+      !event ||
+      event.kind !== 30402 ||
+      `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}` !==
+        coordinate ||
+      !isValidSignedPublicNostrEvent(event)
+    )
+      continue
+    if (
+      !strongest ||
+      compareReplaceableEventFrontiers(
+        { createdAt: event.created_at, eventId: event.id },
+        { createdAt: strongest.created_at, eventId: strongest.id }
+      ) > 0
+    )
+      strongest = event
+  }
+  return strongest
 }
 
 /** Local acceptance uses committed inventory and known evidence, without a mandatory relay read. */
@@ -477,9 +513,14 @@ export async function acceptMerchantOccurrenceOrder(
   const order = orderSchema.parse(input.order)
   if (order.merchantPubkey !== input.merchantPubkey)
     throw new Error("Order belongs to another merchant.")
+  const store = merchantAcceptanceStore(input.merchantPubkey)
+  await protectMerchantAcceptanceHistory(store)
+  assertSession(input)
   const { identityBinding, termsBinding } = acceptanceBindings(order)
   const previous = await db.merchantInventoryAcceptedOrders.get(order.id)
   if (previous) {
+    assertSession(input)
+    store.assertCurrent()
     if (!matchesMerchantOccurrenceAcceptance(previous, order))
       throw new Error("Order ID has conflicting accepted terms.")
     return { replayed: true, order: previous }
@@ -502,9 +543,7 @@ export async function acceptMerchantOccurrenceOrder(
   for (const item of order.items) {
     const fulfillment = item.fulfillment
     const committed = await db.merchantInventoryProducts.get(item.productId)
-    const observed = input.products.find(
-      (product) => product.id === item.productId
-    )?.signedProductEvent
+    const observed = strongestObservedProduct(input.products, item.productId)
     if (
       committed &&
       observed &&
@@ -527,10 +566,7 @@ export async function acceptMerchantOccurrenceOrder(
       .where("pubkey")
       .equals(input.merchantPubkey)
       .toArray()
-    const source =
-      committed?.signedProductEvent ??
-      input.products.find((product) => product.id === item.productId)
-        ?.signedProductEvent
+    const source = committed?.signedProductEvent ?? observed
     if (!source || !isValidSignedPublicNostrEvent(source))
       throw new Error("Load the signed product before accepting this order.")
     if (
@@ -725,6 +761,11 @@ export async function acceptMerchantOccurrenceOrder(
         },
       })
   }
+  const sealed = await sealMerchantAcceptanceEvidence(
+    store,
+    order.id,
+    JSON.stringify(order)
+  )
   assertSession(input)
   return acceptMerchantInventoryOrder({
     db,
@@ -732,7 +773,11 @@ export async function acceptMerchantOccurrenceOrder(
     merchantPubkey: input.merchantPubkey,
     identityBinding,
     termsBinding,
-    evidence: termsBinding,
+    ...sealed,
+    assertCurrent: () => {
+      assertSession(input)
+      store.assertCurrent()
+    },
     items,
     priorStockAdjustments: input.priorStockAdjustments,
   })
