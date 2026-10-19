@@ -39,21 +39,21 @@ import type { ProtectedInboxReadResult } from "@conduit/core/protocol/protected-
 import type { ConduitDB } from "@conduit/core/db"
 import { selectMerchantCheckoutSparkSignedNextPayout } from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
 import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
-import { eventMarketFixtureInvoice } from "./support/checkout-spark-event-market-fixture"
 import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
-import { __resetInboxDeclarationCache } from "@conduit/core/protocol/private-message-routing"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import { eventMarketFixtureInvoice } from "./support/checkout-spark-event-market-fixture"
 import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
-} from "@conduit/core/protocol/account-network-local-state"
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const databases: ConduitDB[] = []
 const INBOX = "wss://event-actor-recovery.example"
 afterEach(async () => {
   __resetCommerceTestOverrides()
-  __resetProtectedReadSigner()
   __resetInboxDeclarationCache()
+  __resetProtectedReadSigner()
   for (const database of databases.splice(0)) await database.delete()
 })
 
@@ -223,35 +223,6 @@ function protectedRead(
 
 it("reopens real Organizer ciphertext before Merchant continuation and retains the actual Buyer witness", async () => {
   const f = await fixture()
-  const declaration = f.signMerchant({
-    kind: 10_050,
-    created_at: Math.floor(f.plan.createdAt / 1_000),
-    tags: [["relay", INBOX]],
-    content: "",
-  })
-  await createInboxDeclarationFixtureEvidence(declaration, { prime: true })
-  // The actor proof models one declared source; do not rely on an unavailable
-  // ambient IndexedDB policy store or URL-only owner authority in the test.
-  let networkState = emptyAccountNetworkLocalState(
-    f.merchantPubkey,
-    () => f.plan.createdAt
-  )
-  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
-    if (relayUrl === INBOX) continue
-    networkState = applyAccountNetworkRelayExclusion(networkState, {
-      relayUrl,
-      relayListFrontier: { eventId: null, createdAt: null },
-      inboxDeclarationFrontier: {
-        eventId: declaration.id,
-        createdAt: declaration.created_at,
-      },
-      committedAt: f.plan.createdAt,
-    })
-  }
-  __setCommerceTestOverrides({
-    accountNetworkLocalStateRepository:
-      createInMemoryAccountNetworkLocalStateRepository([networkState]),
-  })
   const order = f.order
   const draft = {
     kind: 16,
@@ -327,8 +298,35 @@ it("reopens real Organizer ciphertext before Merchant continuation and retains t
         })),
     },
   } as unknown as CommerceInbox
+  const declaration = await f.merchantSigner.signEvent({
+    kind: 10_050,
+    pubkey: f.merchantPubkey,
+    created_at: Math.floor(f.order.createdAt / 1_000),
+    content: "",
+    tags: [["relay", INBOX]],
+  })
+  await createInboxDeclarationFixtureEvidence(declaration, { prime: true })
+  // This actor fixture models one signed inbox, not compatibility transport.
+  let networkState = emptyAccountNetworkLocalState(
+    f.merchantPubkey,
+    () => f.order.createdAt
+  )
+  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+    if (relayUrl === INBOX) continue
+    networkState = applyAccountNetworkRelayExclusion(networkState, {
+      relayUrl,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: {
+        eventId: declaration.id,
+        createdAt: declaration.created_at,
+      },
+      committedAt: f.order.createdAt,
+    })
+  }
   installProtectedReadSigner(f.merchantSigner, f.merchantPubkey, () => true)
   __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository([networkState]),
     getCommerceInbox: () => owner,
     getAccountSigner: () => f.merchantSigner,
     resolveInboxRelayUrls: async () => [INBOX],

@@ -76,8 +76,7 @@ async function admitMerchantInbox(signer: NDKPrivateKeySigner) {
   await createInboxDeclarationFixtureEvidence(declaration, { prime: true })
   // This degradation matrix models exactly two declared sources. Supply the
   // real local-policy boundary and exclude unmodelled compatibility siblings.
-  const merchant = (await signer.user()).pubkey
-  let state = emptyAccountNetworkLocalState(merchant, () => NOW)
+  let state = emptyAccountNetworkLocalState(declaration.pubkey, () => NOW)
   for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
     if (INBOXES.includes(relayUrl)) continue
     state = applyAccountNetworkRelayExclusion(state, {
