@@ -1,3 +1,4 @@
+import { groupOrderConversationMessages } from "./order-conversation"
 import {
   cachedDirectMessageRow,
   parseCachedDirectMessage,
@@ -493,11 +494,13 @@ export interface ConversationListQuery {
 
 export interface ConversationDetailQuery {
   principalPubkey: string
+  counterpartyPubkey?: string
   orderId: string
   role: "buyer" | "merchant"
 }
 
 interface ConversationSummaryBase {
+  /** Opaque local participant-bound identity; never use as the wire order ID. */
   id: string
   orderId: string
   latestAt: number
@@ -8527,89 +8530,17 @@ async function fetchParsedDirectMessages(
   }
 }
 
-const BUYER_AUTHORED_TYPES = new Set(["order", "payment_proof"])
-const MERCHANT_AUTHORED_TYPES = new Set([
-  "payment_request",
-  "status_update",
-  "shipping_update",
-  "receipt",
-])
-
-interface PrincipalResolution {
-  role: "buyer" | "merchant"
-  counterpartyPubkey: string
-}
-
-function resolvePrincipal(
-  bucket: ParsedOrderMessage[],
-  principalPubkey: string
-): PrincipalResolution | null {
-  const order = bucket.find((message) => message.type === "order")
-  if (order) {
-    if (order.senderPubkey === principalPubkey) {
-      return { role: "buyer", counterpartyPubkey: order.recipientPubkey }
-    }
-    if (order.recipientPubkey === principalPubkey) {
-      return { role: "merchant", counterpartyPubkey: order.senderPubkey }
-    }
-    return null
-  }
-
-  const roles = new Set<"buyer" | "merchant">()
-  const counterparties = new Set<string>()
-  for (const message of bucket) {
-    let role: "buyer" | "merchant" | null = null
-    let counterpartyPubkey: string | null = null
-    if (BUYER_AUTHORED_TYPES.has(message.type)) {
-      if (message.senderPubkey === principalPubkey) {
-        role = "buyer"
-        counterpartyPubkey = message.recipientPubkey
-      } else if (message.recipientPubkey === principalPubkey) {
-        role = "merchant"
-        counterpartyPubkey = message.senderPubkey
-      }
-    } else if (MERCHANT_AUTHORED_TYPES.has(message.type)) {
-      if (message.senderPubkey === principalPubkey) {
-        role = "merchant"
-        counterpartyPubkey = message.recipientPubkey
-      } else if (message.recipientPubkey === principalPubkey) {
-        role = "buyer"
-        counterpartyPubkey = message.senderPubkey
-      }
-    }
-    if (!role || !counterpartyPubkey || counterpartyPubkey === principalPubkey)
-      continue
-    roles.add(role)
-    counterparties.add(counterpartyPubkey)
-    if (roles.size > 1 || counterparties.size > 1) return null
-  }
-
-  const role = [...roles][0]
-  const counterpartyPubkey = [...counterparties][0]
-  return role && counterpartyPubkey ? { role, counterpartyPubkey } : null
-}
-
 function buildBuyerConversationSummaries(
   messages: ParsedOrderMessage[],
   buyerPubkey: string
 ): BuyerConversationSummary[] {
-  const grouped = new Map<string, ParsedOrderMessage[]>()
-
-  for (const message of messages) {
-    const bucket = grouped.get(message.orderId) ?? []
-    bucket.push(message)
-    grouped.set(message.orderId, bucket)
-  }
-
   const conversations: BuyerConversationSummary[] = []
-  for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
+  for (const group of groupOrderConversationMessages(messages, buyerPubkey)) {
+    if (group.buyerPubkey !== buyerPubkey) continue
+    const { id, orderId, merchantPubkey, messages: bucket } = group
+    bucket.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
-
-    const principal = resolvePrincipal(bucket, buyerPubkey)
-    if (!principal || principal.role !== "buyer") continue
-    const merchantPubkey = principal.counterpartyPubkey
 
     const effectiveStatus = getEffectiveMerchantOrderStatus(bucket, {
       buyerPubkey,
@@ -8621,7 +8552,7 @@ function buildBuyerConversationSummaries(
     })
 
     conversations.push({
-      id: orderId,
+      id,
       orderId,
       merchantPubkey,
       latestAt: latest.createdAt,
@@ -8648,23 +8579,16 @@ function buildMerchantConversationSummaries(
   messages: ParsedOrderMessage[],
   merchantPubkey: string
 ): MerchantConversationSummary[] {
-  const grouped = new Map<string, ParsedOrderMessage[]>()
-
-  for (const message of messages) {
-    const bucket = grouped.get(message.orderId) ?? []
-    bucket.push(message)
-    grouped.set(message.orderId, bucket)
-  }
-
   const conversations: MerchantConversationSummary[] = []
-  for (const [orderId, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
+  for (const group of groupOrderConversationMessages(
+    messages,
+    merchantPubkey
+  )) {
+    if (group.merchantPubkey !== merchantPubkey) continue
+    const { id, orderId, buyerPubkey, messages: bucket } = group
+    bucket.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     const latest = bucket[bucket.length - 1]
     if (!latest) continue
-
-    const principal = resolvePrincipal(bucket, merchantPubkey)
-    if (!principal || principal.role !== "merchant") continue
-    const buyerPubkey = principal.counterpartyPubkey
 
     const effectiveStatus = getEffectiveMerchantOrderStatus(bucket, {
       buyerPubkey,
@@ -8676,7 +8600,7 @@ function buildMerchantConversationSummaries(
     })
 
     conversations.push({
-      id: orderId,
+      id,
       orderId,
       buyerPubkey,
       merchantPubkey,
@@ -8830,9 +8754,44 @@ export async function getConversationDetail(
   query: ConversationDetailQuery
 ): Promise<CommerceResult<ConversationDetail | null>> {
   const result = await fetchParsedOrderMessages(query.principalPubkey)
-  const messages = result.messages.filter(
-    (message) => message.orderId === query.orderId
+  const orderGroups = groupOrderConversationMessages(
+    result.messages,
+    query.principalPubkey
+  ).filter((group) => group.orderId === query.orderId)
+  const groups = orderGroups.filter(
+    (group) =>
+      (query.role === "buyer" ? group.buyerPubkey : group.merchantPubkey) ===
+        query.principalPubkey &&
+      (!query.counterpartyPubkey ||
+        (query.role === "buyer" ? group.merchantPubkey : group.buyerPubkey) ===
+          query.counterpartyPubkey)
   )
+  // An explicit participant can inspect plain replies before the original
+  // order arrives. A role-conflicting order never falls back to these notes.
+  const messages =
+    groups.length === 1
+      ? groups[0]!.messages
+      : orderGroups.length === 0 &&
+          query.counterpartyPubkey &&
+          !result.messages.some(
+            (message) =>
+              message.orderId === query.orderId &&
+              message.type !== "message" &&
+              ((message.senderPubkey === query.principalPubkey &&
+                message.recipientPubkey === query.counterpartyPubkey) ||
+                (message.recipientPubkey === query.principalPubkey &&
+                  message.senderPubkey === query.counterpartyPubkey))
+          )
+        ? result.messages.filter(
+            (message) =>
+              message.orderId === query.orderId &&
+              message.type === "message" &&
+              ((message.senderPubkey === query.principalPubkey &&
+                message.recipientPubkey === query.counterpartyPubkey) ||
+                (message.recipientPubkey === query.principalPubkey &&
+                  message.senderPubkey === query.counterpartyPubkey))
+          )
+        : []
   return {
     data: messages.length > 0 ? { orderId: query.orderId, messages } : null,
     meta: createMeta(

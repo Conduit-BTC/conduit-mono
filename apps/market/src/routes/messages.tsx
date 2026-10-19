@@ -1629,7 +1629,10 @@ function MessagesWorkspace() {
                         </div>
                         <Link
                           to="/orders"
-                          search={{ order: selectedConversation.orderId }}
+                          search={{
+                            order: selectedConversation.orderId,
+                            counterparty: selectedConversation.merchantPubkey,
+                          }}
                           className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-elevated)]"
                         >
                           View order

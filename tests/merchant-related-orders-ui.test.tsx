@@ -16,7 +16,9 @@ describe("Merchant related orders UI", () => {
     expect(source).toContain("<BuyerAvatar")
     expect(source).toContain("truncate text-lg font-semibold")
     expect(source).toContain('to: "/orders"')
-    expect(source).toContain("search: { order: order.orderId }")
+    expect(source).toMatch(
+      /search: \{\s*order: order.orderId,\s*counterparty: order.buyerPubkey,?\s*\}/
+    )
   })
 
   it("shows the buyer, order preview, total, and status", () => {

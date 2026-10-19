@@ -25,6 +25,8 @@ import {
   formatPubkey,
   getAccountSigner,
   getOrderLifecycle,
+  getOrderConversationId,
+  findOrderConversation,
   getProductImageCandidates,
   getOrderPublicZapSigner,
   getWalletDisplayLabels,
@@ -119,7 +121,10 @@ import {
   SparkFeeApprovalDialog,
   useSparkFeeApproval,
 } from "../components/SparkFeeApprovalDialog"
-import { type BuyerConversation } from "../lib/orderConversations"
+import {
+  mergeBuyerOrderConversations,
+  type BuyerConversation,
+} from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets } from "../hooks/useWallets"
@@ -236,6 +241,7 @@ import {
 
 type OrdersSearch = {
   order?: string
+  counterparty?: string
   focus?: "payment"
 }
 
@@ -272,7 +278,14 @@ export const Route = createFileRoute("/orders")({
     if (typeof order !== "string" || order.length === 0) {
       return ORDERS_SEARCH_DEFAULT
     }
-    return search.focus === "payment" ? { order, focus: "payment" } : { order }
+    return {
+      order,
+      ...(typeof search.counterparty === "string" &&
+      /^[0-9a-f]{64}$/.test(search.counterparty)
+        ? { counterparty: search.counterparty }
+        : {}),
+      ...(search.focus === "payment" ? { focus: "payment" as const } : {}),
+    }
   },
   component: OrdersPage,
 })
@@ -290,6 +303,7 @@ const TONE_VARIANT: Record<
 
 /** A merged order: durable local lifecycle and/or relay conversation. */
 interface OrderRow {
+  id: string
   orderId: string
   merchantPubkey: string
   lifecycle?: OrderLifecycle
@@ -543,17 +557,17 @@ function MobileOrdersScroller({
         >
           <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
             {rows.map((row) => {
-              const active = row.orderId === selectedOrderId
+              const active = row.id === selectedOrderId
               return (
                 // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                 <button
-                  key={row.orderId}
+                  key={row.id}
                   type="button"
                   ref={(el) => {
-                    if (el) cardRefs.current.set(row.orderId, el)
-                    else cardRefs.current.delete(row.orderId)
+                    if (el) cardRefs.current.set(row.id, el)
+                    else cardRefs.current.delete(row.id)
                   }}
-                  onClick={() => onSelect(row.orderId)}
+                  onClick={() => onSelect(row.id)}
                   className={[
                     "w-[16.5rem] shrink-0 snap-start rounded-[var(--radius-md)] border p-4 text-left transition-[border-color,background-color,transform]",
                     active
@@ -3171,7 +3185,10 @@ function OrderDetail({
             formatSats={formatSats}
           />
           <Button asChild variant="outline" className="h-10 w-full text-sm">
-            <Link to="/orders" search={{ order: vm.orderId }}>
+            <Link
+              to="/orders"
+              search={{ order: vm.orderId, counterparty: row.merchantPubkey }}
+            >
               View full order details
             </Link>
           </Button>
@@ -3496,7 +3513,11 @@ function OrdersPage() {
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
-  const { order: selectedFromUrl, focus } = Route.useSearch()
+  const {
+    order: selectedFromUrl,
+    counterparty: counterpartyFromUrl,
+    focus,
+  } = Route.useSearch()
   const paymentFocused = focus === "payment" && !!selectedFromUrl
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
@@ -3731,41 +3752,35 @@ function OrdersPage() {
     signerConnected,
   ])
 
-  // Merge lifecycle records and relay conversations by orderId.
+  // Join local recovery and inbox evidence only for the same participants.
   const orders = useMemo<OrderRow[]>(() => {
-    const byId = new Map<
-      string,
-      { lifecycle?: OrderLifecycle; conversation?: BuyerConversation }
-    >()
-    for (const lc of lifecycles) {
-      byId.set(lc.orderId, { lifecycle: lc })
-    }
-    for (const conversation of conversations) {
-      const entry = byId.get(conversation.orderId) ?? {}
-      entry.conversation = conversation
-      byId.set(conversation.orderId, entry)
-    }
     const rows: OrderRow[] = []
-    for (const [orderId, entry] of byId) {
-      const merchantPubkey =
-        entry.lifecycle?.merchantPubkey ??
-        entry.conversation?.merchantPubkey ??
-        ""
+    const entries = mergeBuyerOrderConversations(
+      activeBuyerPubkey ?? "",
+      lifecycles,
+      conversations
+    )
+    for (const entry of entries) {
+      const { id, orderId, merchantPubkey } = entry
+      const settlement = entry.lifecycle
+        ? buyerSettlements.get(orderId)
+        : undefined
       const vm = buildOrderViewModel({
         orderId,
         merchantPubkey,
         lifecycle: entry.lifecycle,
         conversation: entry.conversation,
         messages: entry.conversation?.messages,
-        checkoutSparkSettlement: buyerSettlements.get(orderId),
+        checkoutSparkSettlement: settlement,
       })
       rows.push({
+        id,
         orderId,
         merchantPubkey,
         lifecycle: entry.lifecycle,
         conversation: entry.conversation,
         vm,
-        receipt: buyerSettlements.get(orderId)?.receipt,
+        receipt: settlement?.receipt,
         headerStatus: presentSettledRouterHeaderStatus(
           deriveOrderHeaderStatus(vm),
           vm.checkoutSparkRouted === true
@@ -3774,7 +3789,7 @@ function OrdersPage() {
       })
     }
     return rows.sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [buyerSettlements, conversations, lifecycles])
+  }, [activeBuyerPubkey, buyerSettlements, conversations, lifecycles])
 
   useEffect(() => {
     for (const row of orders) {
@@ -3838,45 +3853,74 @@ function OrdersPage() {
   }, [tab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
-    if (paymentFocused && selectedFromUrl) {
-      return orders.some((order) => order.orderId === selectedFromUrl)
-        ? selectedFromUrl
-        : null
+    if (selectedFromUrl) {
+      const requestedId =
+        counterpartyFromUrl && activeBuyerPubkey
+          ? getOrderConversationId({
+              orderId: selectedFromUrl,
+              buyerPubkey: activeBuyerPubkey,
+              merchantPubkey: counterpartyFromUrl,
+            })
+          : undefined
+      const requested = findOrderConversation(
+        orders,
+        selectedFromUrl,
+        requestedId
+      )
+      if (!requested) return null
+      if (
+        paymentFocused ||
+        filteredOrders.some((row) => row.id === requested.id)
+      )
+        return requested.id
     }
-    if (
-      selectedFromUrl &&
-      filteredOrders.some((o) => o.orderId === selectedFromUrl)
-    ) {
-      return selectedFromUrl
-    }
-    return filteredOrders[0]?.orderId ?? null
-  }, [filteredOrders, orders, paymentFocused, selectedFromUrl])
+    return filteredOrders[0]?.id ?? null
+  }, [
+    activeBuyerPubkey,
+    counterpartyFromUrl,
+    filteredOrders,
+    orders,
+    paymentFocused,
+    selectedFromUrl,
+  ])
 
   const selected = useMemo(
-    () => orders.find((o) => o.orderId === selectedOrderId) ?? null,
+    () => orders.find((row) => row.id === selectedOrderId) ?? null,
     [orders, selectedOrderId]
   )
   const selectOrder = useCallback(
-    (orderId: string) => {
+    (id: string) => {
+      const row = orders.find((candidate) => candidate.id === id)
+      if (!row) return
       setChangeOrderOpen(false)
       void navigate({
         to: "/orders",
-        search: { order: orderId },
+        search: { order: row.orderId, counterparty: row.merchantPubkey },
         replace: true,
       })
     },
-    [navigate]
+    [navigate, orders]
   )
 
   // Attach the stored payment attempt to the selected order's view-model and
   // subscribe to the live payment service so progress refreshes without reload.
   const paymentAttemptQuery = useQuery({
-    queryKey: ["buyer-payment-attempt", selected?.orderId ?? "none"],
+    queryKey: [
+      "buyer-payment-attempt",
+      selected?.orderId ?? "none",
+      activeBuyerPubkey,
+      selected?.merchantPubkey,
+    ],
     enabled:
       !!selected?.orderId &&
       (!paymentFocused || selected.orderId === selectedFromUrl),
-    queryFn: async () =>
-      (await db.paymentAttempts.get(selected!.orderId)) ?? null,
+    queryFn: async () => {
+      const attempt = await db.paymentAttempts.get(selected!.orderId)
+      return attempt?.buyerPubkey === activeBuyerPubkey &&
+        attempt?.merchantPubkey === selected!.merchantPubkey
+        ? attempt
+        : null
+    },
   })
   useEffect(() => {
     if (!selected?.orderId) return
@@ -3901,7 +3945,9 @@ function OrdersPage() {
       conversation: selected.conversation,
       messages: selected.conversation?.messages,
       paymentAttempt: paymentAttemptQuery.data,
-      checkoutSparkSettlement: buyerSettlements.get(selected.orderId),
+      checkoutSparkSettlement: selected.lifecycle
+        ? buyerSettlements.get(selected.orderId)
+        : undefined,
     })
     return {
       ...selected,
@@ -3948,7 +3994,10 @@ function OrdersPage() {
     }
     void navigate({
       to: "/orders",
-      search: { order: selectedRow.orderId },
+      search: {
+        order: selectedRow.orderId,
+        counterparty: selectedRow.merchantPubkey,
+      },
       replace: true,
     })
   }, [navigate, paymentFocused, selectedFromUrl, selectedRow])
@@ -4237,13 +4286,13 @@ function OrderList({
     <div className="mt-4 space-y-2">
       {rows.map((row) => (
         <OrderListCard
-          key={row.orderId}
+          key={row.id}
           row={row}
           merchantName={merchantName(row.merchantPubkey)}
           merchantPicture={merchantPicture(row.merchantPubkey)}
-          active={row.orderId === selectedOrderId}
+          active={row.id === selectedOrderId}
           formatSats={formatSats}
-          onClick={() => onSelect(row.orderId)}
+          onClick={() => onSelect(row.id)}
         />
       ))}
     </div>

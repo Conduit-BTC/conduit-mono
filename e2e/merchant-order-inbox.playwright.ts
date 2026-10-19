@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
-import { nip19 } from "nostr-tools"
+import { getEventHash, nip19 } from "nostr-tools"
+import { createWrap } from "nostr-tools/nip59"
 import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-store"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
@@ -11,6 +12,7 @@ import {
 import {
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
+  encryptRuntimeTestPayload,
   installRealTestSigner,
   parseCanonicalRuntimePrivateRumor,
   readAuthenticatedGiftWraps,
@@ -477,5 +479,281 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     await Promise.allSettled([buyerContext.close(), merchantContext.close()])
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)
+  }
+})
+
+test("Same-ID orders keep selection and encrypted replies bound to their participants after reload @commerce", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(180_000)
+  const identities = Array.from({ length: 4 }, () =>
+    createRuntimeSignerIdentity()
+  )
+  const [buyer, merchant, otherMerchant, otherBuyer] = identities as [
+    (typeof identities)[number],
+    (typeof identities)[number],
+    (typeof identities)[number],
+    (typeof identities)[number],
+  ]
+  const labels = [
+    "Collision Buyer A",
+    "Collision Merchant A",
+    "Collision Merchant B",
+    "Collision Buyer B",
+  ]
+  const contexts = await Promise.all(
+    [0, 1].map(() =>
+      browser.newContext({
+        viewport: testInfo.project.use.viewport,
+        isMobile: testInfo.project.use.isMobile,
+        hasTouch: testInfo.project.use.hasTouch,
+        userAgent: testInfo.project.use.userAgent,
+      })
+    )
+  )
+  const orderId = `shared-${Date.now().toString(36)}`
+  const assignments = new Map<string, string>()
+  try {
+    const createdAt = Math.floor(Date.now() / 1000)
+    await publishTestRelayEvents(
+      identities.flatMap((identity, index) => [
+        signRuntimeTestEvent(identity, {
+          kind: 0,
+          created_at: createdAt,
+          tags: [],
+          content: JSON.stringify({
+            name: labels[index],
+            display_name: labels[index],
+          }),
+        }),
+        signRuntimeTestEvent(identity, {
+          kind: 10050,
+          created_at: createdAt,
+          tags: [["relay", TEST_RELAY_URL]],
+          content: "",
+        }),
+        signRuntimeTestEvent(identity, {
+          kind: 10002,
+          created_at: createdAt,
+          tags: [["r", TEST_RELAY_URL]],
+          content: "",
+        }),
+      ])
+    )
+    const wraps = []
+    for (const [sender, receiver] of [
+      [buyer, merchant],
+      [buyer, otherMerchant],
+      [otherBuyer, merchant],
+    ] as const) {
+      const draft = {
+        kind: 16,
+        pubkey: sender.pubkey,
+        created_at: createdAt,
+        tags: [
+          ["p", receiver.pubkey],
+          ["type", "order"],
+          ["order", orderId],
+        ],
+        content: JSON.stringify({
+          id: orderId,
+          buyerPubkey: sender.pubkey,
+          merchantPubkey: receiver.pubkey,
+          items: [
+            {
+              productId: `30402:${receiver.pubkey}:collision`,
+              quantity: 1,
+              priceAtPurchase: 21,
+              currency: "SATS",
+              format: "digital",
+              fulfillment: { type: "digital" },
+            },
+          ],
+          subtotal: 21,
+          currency: "SATS",
+          shippingCostSats: 0,
+          shippingCostStatus: "not_required",
+          createdAt: createdAt * 1000,
+        }),
+      }
+      const rumor = { ...draft, id: getEventHash(draft) }
+      for (const recipient of [sender, receiver]) {
+        const seal = signRuntimeTestEvent(sender, {
+          kind: 13,
+          created_at: createdAt,
+          tags: [],
+          content: encryptRuntimeTestPayload(
+            sender,
+            recipient.pubkey,
+            JSON.stringify(rumor)
+          ),
+        })
+        wraps.push(createWrap(seal, recipient.pubkey))
+      }
+    }
+    await publishTestRelayEvents(wraps)
+    const scenarios = [
+      {
+        app: "market",
+        url: marketUrl,
+        owner: buyer,
+        first: merchant,
+        target: otherMerchant,
+        targetLabel: labels[2]!,
+        context: contexts[0]!,
+      },
+      {
+        app: "merchant",
+        url: merchantUrl,
+        owner: merchant,
+        first: buyer,
+        target: otherBuyer,
+        targetLabel: labels[3]!,
+        context: contexts[1]!,
+      },
+    ]
+    for (const scenario of scenarios) {
+      const page = await scenario.context.newPage()
+      await installRealTestSigner(page, scenario.owner, TEST_RELAY_URL)
+      await page.goto(
+        `${scenario.url}/orders?order=${orderId}&counterparty=${scenario.first.pubkey}`
+      )
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: scenario.app === "market" ? "buyer_checkout" : "merchant_order",
+      })
+      await expect(
+        page.getByLabel(
+          scenario.app === "market"
+            ? "Open account menu"
+            : "Open merchant account menu"
+        )
+      ).toBeVisible()
+      const count = () =>
+        page.evaluate(
+          async ({ root, principal, role }) => {
+            const { getCommerceInbox } = await import(
+              `${root}/commerce-inbox.ts`
+            )
+            const { projectCommerceInbox } = await import(`${root}/commerce.ts`)
+            const owner = getCommerceInbox(principal)
+            const projection = projectCommerceInbox(
+              owner.getSnapshot(),
+              principal
+            )
+            return (role === "market" ? projection.buyer : projection.merchant)
+              .data.length
+          },
+          {
+            root: protocolRoot,
+            principal: scenario.owner.pubkey,
+            role: scenario.app,
+          }
+        )
+      try {
+        await expect.poll(count, { timeout: 30_000 }).toBe(2)
+      } catch (error) {
+        const observation = await page.evaluate(
+          async ({ root, principal }) => {
+            const { getCommerceInbox } = await import(
+              `${root}/commerce-inbox.ts`
+            )
+            const snapshot = getCommerceInbox(principal).getSnapshot()
+            return {
+              orderMessages: snapshot.orderMessages.length,
+              distinctSenders: new Set(
+                snapshot.orderMessages.map(
+                  (message: { senderPubkey: string }) => message.senderPubkey
+                )
+              ).size,
+              distinctRecipients: new Set(
+                snapshot.orderMessages.map(
+                  (message: { recipientPubkey: string }) =>
+                    message.recipientPubkey
+                )
+              ).size,
+              decryptFailures: snapshot.decryptFailures.length,
+              pending: snapshot.pending,
+              storageUnavailable: snapshot.diagnostics.storageUnavailable,
+              queued: snapshot.diagnostics.states.queued ?? 0,
+              opened: snapshot.diagnostics.states.opened ?? 0,
+            }
+          },
+          { root: protocolRoot, principal: scenario.owner.pubkey }
+        )
+        recordSmokeDiagnostic(testInfo, "order-reply", {
+          phase:
+            scenario.app === "market" ? "buyer_delivery" : "merchant_order",
+          ...observation,
+        })
+        throw error
+      }
+      const target = page
+        .getByRole("button")
+        .filter({ hasText: scenario.targetLabel, visible: true })
+        .first()
+      await expect(target).toBeVisible()
+      await target.click()
+      await expect
+        .poll(() => new URL(page.url()).searchParams.get("counterparty"))
+        .toBe(scenario.target.pubkey)
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: scenario.app === "market" ? "buyer_restore" : "merchant_restore",
+      })
+      await page.reload()
+      await expect(
+        page.getByLabel(
+          scenario.app === "market"
+            ? "Open account menu"
+            : "Open merchant account menu"
+        )
+      ).toBeVisible()
+      await expect.poll(count, { timeout: 30_000 }).toBe(2)
+      await expect(
+        page.getByRole("button", { name: "Open messages", exact: true })
+      ).toBeVisible()
+      expect(new URL(page.url()).searchParams.get("counterparty")).toBe(
+        scenario.target.pubkey
+      )
+      await page
+        .getByRole("button", { name: "Open messages", exact: true })
+        .click()
+      const dialog = page.getByRole("dialog", { name: "Messages" })
+      await expect(dialog).toBeVisible()
+      const reply = `participant collision reply ${scenario.app}`
+      await dialog.getByRole("textbox", { name: "Message" }).fill(reply)
+      await dialog.getByRole("button", { name: "Send message" }).click()
+      const deliveredReplies = async (recipient: typeof buyer) => {
+        const received = await readAuthenticatedGiftWraps(
+          recipient,
+          TEST_RELAY_URL
+        )
+        return received.filter((wrap) => {
+          const rumor = parseCanonicalRuntimePrivateRumor({
+            inboxOwner: recipient,
+            recipient,
+            sender: scenario.owner,
+            wrapperKeyAssignments: assignments,
+            wrap,
+          })
+          return (
+            rumor?.kind === 16 &&
+            rumor.content.includes(reply) &&
+            rumor.tags.some(
+              ([tag, value]) => tag === "order" && value === orderId
+            )
+          )
+        }).length
+      }
+      await expect
+        .poll(() => deliveredReplies(scenario.target), { timeout: 30_000 })
+        .toBe(1)
+      expect(await deliveredReplies(scenario.first)).toBe(0)
+      recordSmokeDiagnostic(testInfo, "order-reply", {
+        phase: "complete",
+      })
+    }
+  } finally {
+    await Promise.all(contexts.map((context) => context.close()))
+    identities.forEach(disposeRuntimeSignerIdentity)
   }
 })
