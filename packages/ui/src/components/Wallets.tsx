@@ -1824,18 +1824,42 @@ function PortableWalletDialog({
     setError(null)
     onOpenChange(false)
   }
+  const acknowledgeAndClose = async (duringSetup: boolean) => {
+    if (!completedWallet) return
+    const scope = runScope.current
+    try {
+      if (mode === "create" && !recoveredFromRelay && saved)
+        await wallets.completeSparkCreation(completedWallet.id)
+      if (
+        scope !== runScope.current ||
+        !isAuthGenerationCurrent(authGeneration)
+      )
+        return
+      if (duringSetup) dismissDuringSetup()
+      else close()
+    } catch (caught) {
+      if (scope === runScope.current && isAuthGenerationCurrent(authGeneration))
+        setError(
+          getErrorMessage(
+            caught,
+            "Recovery acknowledgement could not be saved. Retry to finish."
+          )
+        )
+    }
+  }
   const finish = async () => {
     if (!completedWallet) return
     if (pending && recovery && saved && !makeMain) {
-      // Local recovery is durable at this point; relay sync continues in the
-      // wallet hook and the user has not opted into changing the main wallet.
-      dismissDuringSetup()
+      // Recovery is retained; an explicit acknowledgement can finish while sync continues.
+      await acknowledgeAndClose(true)
       return
     }
     const scope = runScope.current
     setPending(true)
     setError(null)
     try {
+      if (mode === "create" && !recoveredFromRelay && saved)
+        await wallets.completeSparkCreation(completedWallet.id)
       if (makeMain) await wallets.setMainWallet(completedWallet.id)
       if (
         scope !== runScope.current ||
@@ -1945,7 +1969,9 @@ function PortableWalletDialog({
       if (!dismissedDuringSetupRef.current) {
         setFirstWallet(first && publicDefaultAllowed)
         setCompletedWallet(wallet)
-        setMakeMain(mode === "restore" || (first && !imported))
+        setMakeMain(
+          mode === "restore" || (first && !imported && publicDefaultAllowed)
+        )
         setSaved((acknowledged) => acknowledged || imported)
         setMnemonic("")
         setRecovery(bundle)
@@ -2011,10 +2037,15 @@ function PortableWalletDialog({
           return
         }
         if (!next && pending && recovery && saved && !makeMain) {
-          dismissDuringSetup()
+          void finish()
           return
         }
-        if (!next && !pending && (!recovery || saved)) close()
+        if (!next && !pending && recovery && saved) {
+          // Dismissing setup acknowledges recovery only; it never changes defaults.
+          void acknowledgeAndClose(false)
+          return
+        }
+        if (!next && !pending && !recovery) close()
       }}
     >
       <DialogContent

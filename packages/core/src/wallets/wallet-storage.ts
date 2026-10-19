@@ -28,7 +28,10 @@ import { DexieSparkRecoveryStore } from "./spark-recovery-store"
 
 export type StoredSparkWalletRecovery =
   | PasswordSparkWalletRecovery
-  | (SignerSparkRecovery & { legacyRecovery?: PasswordSparkWalletRecovery })
+  | (SignerSparkRecovery & {
+      legacyRecovery?: PasswordSparkWalletRecovery
+      creationPending?: true
+    })
 
 export interface PasswordSparkWalletRecovery {
   type: "password"
@@ -511,6 +514,9 @@ export function parseStoredSparkWalletRecovery(
         ownerPubkey: parsed.ownerPubkey,
         identityKey: parsed.identityKey,
         ciphertext: parsed.ciphertext,
+        ...(parsed.creationPending === true
+          ? { creationPending: true as const }
+          : {}),
         ...(legacyRecovery?.type === "password" ? { legacyRecovery } : {}),
       }
     }

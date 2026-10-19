@@ -153,6 +153,65 @@ export async function runAccountWalletSetup<T>(
   )
 }
 
+/** Explicit creation resumes a committed identity until recovery export is acknowledged. */
+export async function pendingSparkCreation(input: {
+  signer: AccountSigner
+  network: SparkRecoveryBundle["network"]
+  store: MarketWalletStore
+  journal: DexieSparkRecoveryStore
+}) {
+  assertWalletSignerCurrent(input.signer)
+  const journal = await input.journal.load(input.signer.pubkey)
+  const removed = new Set([
+    ...(journal.removedWalletIds ?? []),
+    ...(journal.registryExcludedWalletIds ?? []),
+  ])
+  const candidates = (await input.store.list()).filter(
+    (wallet) =>
+      wallet.providerId === "spark" &&
+      wallet.network === input.network &&
+      !removed.has(wallet.id)
+  )
+  const found = await Promise.all(
+    candidates.map(async (wallet) => {
+      const recovery = await input.store.getSparkRecovery(wallet.id)
+      return recovery?.type === "signer" &&
+        recovery.ownerPubkey === input.signer.pubkey &&
+        recovery.creationPending
+        ? { wallet, recovery }
+        : undefined
+    })
+  )
+  const pending = found.filter((candidate) => candidate !== undefined)
+  assertWalletSignerCurrent(input.signer)
+  if (pending.length > 1)
+    throw new Error(
+      "Several unfinished wallets need recovery review. Open the retained wallet before creating another."
+    )
+  return pending[0]
+}
+
+/** Called only after explicit recovery export acknowledgement in the setup surface. */
+export async function completeSparkCreation(input: {
+  signer: AccountSigner
+  walletId: string
+  store: MarketWalletStore
+}) {
+  await input.store.transaction(async () => {
+    assertWalletSignerCurrent(input.signer)
+    const recovery = await input.store.getSparkRecovery(input.walletId)
+    if (
+      recovery?.type !== "signer" ||
+      recovery.ownerPubkey !== input.signer.pubkey
+    )
+      throw new Error("Wallet creation owner changed.")
+    if (!recovery.creationPending) return
+    const { creationPending: _pending, ...complete } = recovery
+    await input.store.putSparkRecovery(input.walletId, complete)
+    assertWalletSignerCurrent(input.signer)
+  })
+}
+
 export function assertWalletCreationDiscovery(
   discovery: SparkRecoveryDiscovery,
   resolvedAddyEventIds: readonly string[] = []

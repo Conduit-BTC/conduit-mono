@@ -323,3 +323,129 @@ test("opening a signer wallet uses the signer directly even when an encrypted pa
     disposeRuntimeSignerIdentity(other)
   }
 })
+
+test("explicit creation resumes one identity after native failure and reload under unavailable discovery @market", async ({
+  page,
+}) => {
+  const identity = await begin(page)
+  try {
+    const degrade = async (failOpen: boolean) =>
+      page.evaluate(
+        async ({ core, recovery, failOpen }) => {
+          const signer = (await import(core)).getAccountSigner()
+          const service = (await import(recovery)).getAccountSparkRecovery(
+            signer
+          )
+          Reflect.get(service, "input").transport.read = async () => ({
+            status: "unavailable",
+            events: [],
+          })
+          Reflect.get(service, "input").transport.publish = async () =>
+            "timed_out"
+          Reflect.get(window, "__walletProbe").failOpen = failOpen
+        },
+        {
+          core,
+          recovery: moduleUrl("wallets/account-spark-recovery.ts"),
+          failOpen,
+        }
+      )
+    await degrade(true)
+    await openWalletSetup(page, "Create wallet")
+    await expect(
+      page.getByRole("status").filter({ hasText: "Injected SDK open failure" })
+    ).toBeVisible()
+    const snapshot = async () =>
+      page.evaluate(
+        async ({ core, storage }) => {
+          const { db, getAccountSigner } = await import(core)
+          const { getMarketWalletStore } = await import(storage)
+          const wallets = await getMarketWalletStore().listVisible(
+            getAccountSigner().pubkey
+          )
+          const credentials = await db.walletCredentials.toArray()
+          // Only aggregate evidence and a random registration id leave the browser.
+          return {
+            count: wallets.length,
+            id: wallets[0]?.id,
+            encrypted: credentials.every((row: any) => {
+              const value = JSON.parse(row.credential)
+              return (
+                value.type === "signer" && !!value.ciphertext && !value.mnemonic
+              )
+            }),
+            pending: credentials.filter(
+              (row: any) => JSON.parse(row.credential).creationPending
+            ).length,
+            defaults: wallets.flatMap((wallet: any) =>
+              wallet.defaultIntents.map((intent: string) => ({
+                id: wallet.id,
+                intent,
+              }))
+            ),
+          }
+        },
+        { core, storage: moduleUrl("wallets/wallet-storage.ts") }
+      )
+    const first = await snapshot()
+    expect(first).toMatchObject({
+      count: 1,
+      encrypted: true,
+      pending: 1,
+      defaults: [],
+    })
+    await page.reload()
+    await installControlledWallet(page)
+    await expect(page.getByLabel("Open account menu")).toBeVisible()
+    await degrade(false)
+    await openWalletSetup(page, "Create wallet")
+    await saveWalletRecovery(page, false)
+    expect(await snapshot()).toEqual({ ...first, pending: 0 })
+    await page.evaluate(async (walletId) => {
+      await Reflect.get(
+        window,
+        "__controlledWalletController"
+      ).setDefaultPaymentWallet(walletId)
+    }, first.id)
+    const selected = [{ id: first.id, intent: "pay_invoice" }]
+    expect((await snapshot()).defaults).toEqual(selected)
+    // Interrupt optional backup after the second identity is usable and retained.
+    await page.evaluate(
+      async ({ core, recovery }) => {
+        const service = (await import(recovery)).getAccountSparkRecovery(
+          (await import(core)).getAccountSigner()
+        )
+        Reflect.get(service, "input").transport.publish = () =>
+          new Promise(() => {})
+      },
+      { core, recovery: moduleUrl("wallets/account-spark-recovery.ts") }
+    )
+    await openWalletSetup(page, "Create wallet")
+    await expect(
+      page.getByRole("heading", {
+        name: "Save your recovery details",
+        exact: true,
+      })
+    ).toBeVisible()
+    expect(await snapshot()).toMatchObject({
+      count: 2,
+      pending: 1,
+      encrypted: true,
+      defaults: selected,
+    })
+    await page.reload()
+    await installControlledWallet(page)
+    await expect(page.getByLabel("Open account menu")).toBeVisible()
+    await degrade(false)
+    await openWalletSetup(page, "Create wallet")
+    await saveWalletRecovery(page, false)
+    expect(await snapshot()).toMatchObject({
+      count: 2,
+      encrypted: true,
+      pending: 0,
+      defaults: selected,
+    })
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
