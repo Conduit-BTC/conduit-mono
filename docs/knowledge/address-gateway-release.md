@@ -47,10 +47,18 @@ Request progress uses a separate encrypted kind-30078 record at
 existing wallet ID. It does not add fields to the wallet-membership registry.
 Each entry retains exact canonical request bytes, the original account proof,
 the wallet proof inside those bytes, and a monotonic phase. The account journal
-retains the signed event before relay publication, and the workflow requires
-readback at every planned target before submitting the request or registering
-an address. Local retention is shown separately from confirmed publication;
-another device cannot restore a local-only checkpoint.
+retains exact signed local intent before HTTP submission or activation. The
+selected wallet must have current signer ownership, verified local encrypted
+recovery, matching native Spark identity, and no retained removal or conflicting
+backup. Account-wide discovery completeness is not that wallet's authority.
+
+Optional relay publication runs independently through the existing request
+service. Its immutable staged event and destinations remain separate from the
+latest encrypted local progress; new progress cannot rewrite an in-flight event.
+Incomplete membership or optional readback leaves synchronization pending without
+vetoing gateway submission, status or approved activation. Local retention is
+shown separately from confirmed publication; another device cannot restore a
+local-only checkpoint. Reload or another wallet action resumes bounded repair.
 
 Normal wallet loading reads this optional record independently of membership.
 Automatic checks are bounded to three
@@ -69,6 +77,12 @@ update`; the retry verifies the existing registration without registering again.
 Completion includes the profile event ID and requires fresh profile observation.
 A failure to sync completion offers a separate sync retry. A generic routing
 error or unavailable relay never erases request evidence.
+
+Before retrying a retained request, query authenticated status. An unknown or
+lost response stays uncertain; only explicit authenticated `not_received` permits
+resubmission of the same identity and bytes. A failed local receipt write cannot
+cause a new request. Gateway receipt/approval and optional relay sync render as
+independent states.
 
 Durable HTTP submissions retain the original body and send its original NIP-98
 proof in `X-Address-Request-Proof`, together with a fresh NIP-98 Authorization

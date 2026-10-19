@@ -28,6 +28,7 @@ export interface AddressRequestView {
 export interface AddressRequestWorkflowDependencies {
   owner: string
   assertCurrent(): void
+  authorize?(walletId: string, record?: AddressRequestRecord): Promise<void>
   load(walletId: string): Promise<AddressRequestView | undefined>
   /** Must retain encrypted exact bytes locally before attempting relay publication. */
   save(
@@ -79,12 +80,15 @@ export function createAddressRequestWorkflow(
     return event
   }
   const send = async (
+    walletId: string,
     record: AddressRequestRecord,
     check: boolean,
     token?: string
   ): Promise<AddressNameRequestStatus> => {
     const path = ADDRESS_REQUEST_PATH + (check ? "/status" : "")
     const event = await authorization(record.payload, path)
+    await d.authorize?.(walletId, record)
+    d.assertCurrent()
     try {
       const result = await d.fetch(ADDRESS_REQUEST_ORIGIN + path, {
         method: "POST",
@@ -140,6 +144,7 @@ export function createAddressRequestWorkflow(
     load,
     async submit(walletId, input) {
       let view = await load(walletId)
+      const retained = !!view
       if (!view) {
         const proof = await d.signWallet(walletId, {
           requestId: input.requestId ?? crypto.randomUUID(),
@@ -156,21 +161,20 @@ export function createAddressRequestWorkflow(
         view = await save(walletId, { payload, accountProof, phase: "pending" })
       }
       if (!["pending", "received"].includes(view.record.phase)) return view
-      // Retrying an unsynced intent repairs the exact registry event first.
-      if (view.publication !== "confirmed")
-        view = await save(walletId, view.record)
-      if (view.publication !== "confirmed")
-        throw new Error(
-          "Request saved on this device. Finish wallet sync before submitting."
-        )
-      const status = await send(view.record, false, input.token)
+      // A retained intent may have reached the gateway even if its HTTP reply
+      // or local receipt write was lost. Only authenticated absence permits retry.
+      if (retained) {
+        const status = await send(walletId, view.record, true)
+        if (status !== "not_received") return observe(walletId, view, status)
+      }
+      const status = await send(walletId, view.record, false, input.token)
       return observe(walletId, view, status)
     },
     async check(walletId) {
       const view = await load(walletId)
       if (!view || !["pending", "received"].includes(view.record.phase))
         return view
-      return observe(walletId, view, await send(view.record, true))
+      return observe(walletId, view, await send(walletId, view.record, true))
     },
     async activate(walletId) {
       let view = await load(walletId)
@@ -183,7 +187,7 @@ export function createAddressRequestWorkflow(
       if (view.record.phase === "declined")
         throw new Error("This request was declined.")
       // A user-authored phase is only a resume hint, including registered progress.
-      if ((await send(view.record, true)) !== "approved")
+      if ((await send(walletId, view.record, true)) !== "approved")
         throw new Error("Gateway approval could not be confirmed.")
       // Verify current provider state before deciding whether registration is needed.
       let address = await d.address(walletId, false, request.desiredName)
@@ -198,10 +202,7 @@ export function createAddressRequestWorkflow(
             "Address lookup is unavailable. Your existing address is preserved."
           )
         view = await save(walletId, { ...view.record, phase: "activating" })
-        if (view.publication !== "confirmed")
-          throw new Error(
-            "Activation intent is saved on this device. Finish wallet sync to continue."
-          )
+        await d.authorize?.(walletId, view.record)
         address = await d.address(walletId, true, request.desiredName)
         d.assertCurrent()
       }

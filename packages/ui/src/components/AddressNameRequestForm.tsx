@@ -301,27 +301,25 @@ export function AddressNameRequestForm({
     (view?.status === "not_received" || view?.publication === "local")
   const message = !loaded
     ? "Restoring your saved request…"
-    : view?.publication === "local"
-      ? "Progress saved on this device. Relay sync is not confirmed."
-      : phase === "complete"
-        ? "Your address is activated and your public profile is updated."
-        : phase === "registered"
-          ? "Address activated. Finish updating your public profile."
-          : phase === "activating"
-            ? "Activation needs confirmation. Resume to check and finish."
-            : phase === "approved"
-              ? "Name approved. Activate it when you are ready."
-              : phase === "declined"
-                ? "Request declined. Your existing receiving address still works."
-                : phase === "received"
-                  ? "Pending approval. Your existing receiving address still works."
-                  : phase === "pending"
-                    ? view?.status === "not_received"
-                      ? "No submission found. Retry the same saved request."
-                      : "Submission is uncertain. Your saved request will be checked again."
-                    : !siteKey || !writesEnabled
-                      ? "Name requests are temporarily unavailable."
-                      : "Requests do not reserve or approve names."
+    : phase === "complete"
+      ? "Your address is activated and your public profile is updated."
+      : phase === "registered"
+        ? "Address activated. Finish updating your public profile."
+        : phase === "activating"
+          ? "Activation needs confirmation. Resume to check and finish."
+          : phase === "approved"
+            ? "Name approved. Activate it when you are ready."
+            : phase === "declined"
+              ? "Request declined. Your existing receiving address still works."
+              : phase === "received"
+                ? "Pending approval. Your existing receiving address still works."
+                : phase === "pending"
+                  ? view?.status === "not_received"
+                    ? "No submission found. Retry the same saved request."
+                    : "Submission is uncertain. Your saved request will be checked again."
+                  : !siteKey || !writesEnabled
+                    ? "Name requests are temporarily unavailable."
+                    : "Requests do not reserve or approve names."
   return (
     <form
       className="grid min-w-0 gap-2"
@@ -367,7 +365,8 @@ export function AddressNameRequestForm({
       </p>
       {!pending && view?.publication === "local" && view.sync && (
         <p className="text-pretty text-xs text-[var(--text-secondary)]">
-          Sync detail: {syncReasonText[view.sync.reason]}{" "}
+          Progress saved on this device. Optional relay sync is pending.{" "}
+          {syncReasonText[view.sync.reason]}{" "}
           {view.sync.eventSource && syncSourceText[view.sync.eventSource]}{" "}
           {view.sync.writeStatus &&
             `Relay write ${writeStatusText[view.sync.writeStatus]}. `}

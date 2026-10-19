@@ -364,6 +364,7 @@ for (const size of [
                 record: { payload: string; accountProof: string; phase: string }
                 publication: string
                 status?: string
+                sync?: { reason: string }
               }
             | undefined,
           checks = 0,
@@ -403,7 +404,8 @@ for (const size of [
                 accountProof: "controlled",
                 phase: "pending",
               },
-              publication: "confirmed",
+              publication: "local",
+              sync: { reason: "local_event_pending" },
             }
             return saved
           },
@@ -515,6 +517,7 @@ for (const size of [
     await page.getByRole("button", { name: "Retry same request" }).click()
     await page.getByRole("button", { name: "Check request status" }).click()
     await expect(page.getByRole("status")).toContainText("Pending approval")
+    await expect(page.getByText(/Optional relay sync is pending/)).toBeVisible()
     await expect(
       page.getByRole("button", { name: "Activate and use address" })
     ).toHaveCount(0)
