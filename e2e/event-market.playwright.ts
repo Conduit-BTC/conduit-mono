@@ -7289,6 +7289,18 @@ for (const scenario of [
     label: "after same-event rescheduling",
   },
   { rescheduled: false, repriced: true, label: "after a listing price edit" },
+  {
+    rescheduled: false,
+    repriced: false,
+    expired: true,
+    label: "after the original occurrence end",
+  },
+  {
+    rescheduled: true,
+    repriced: false,
+    expired: true,
+    label: "after the rescheduled occurrence end",
+  },
 ])
   test(`prepaid first confirmation ${scenario.label} @market @merchant @occurrence-orders`, async ({
     page,
@@ -7361,6 +7373,13 @@ for (const scenario of [
         }
       )
       expect(published).toBe(true)
+    }
+    if (scenario.expired) {
+      // Change only wall time; timers and relay ACK handling keep running normally.
+      const expiry = scenario.rescheduled
+        ? (createdAt + 100_000) * 1000
+        : order.items[0]!.fulfillment!.calendar.end
+      await page.clock.setFixedTime(expiry + 1)
     }
     await page
       .getByRole("button", { name: "Confirm payment", exact: true })

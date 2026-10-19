@@ -513,6 +513,8 @@ export type ValidatedOrderAdmission = {
   | { kind: "validated-ordinary-product"; productEventId: string }
   | {
       kind: "validated-event-market-order"
+      /** Exact pre-expiry order; expiry cannot grant stock reserved elsewhere. */
+      settlement?: boolean
       productEventId: string
       assignmentCoordinate: string
       assignmentEventId?: string
@@ -907,17 +909,25 @@ export async function acceptMerchantInventoryOrder(input: {
           item.productCoordinate
         )
         let assignment: MerchantInventoryAssignment | undefined
+        let expiredSettlement = false
         if (item.assignmentCoordinate) {
           assignment =
             assignments.get(item.assignmentCoordinate) ??
             siblings.find((a) => a.coordinate === item.assignmentCoordinate)
+          expiredSettlement =
+            !delegated &&
+            item.admission.kind === "validated-event-market-order" &&
+            item.admission.settlement === true &&
+            !!assignment &&
+            acceptedAt >= assignment.occurrenceEndMs
           if (
             !assignment ||
             assignment.productCoordinate !== item.productCoordinate ||
             (!delegated &&
               (assignment.state !== "active" ||
                 assignment.terminal ||
-                acceptedAt >= assignment.occurrenceEndMs ||
+                (!expiredSettlement &&
+                  acceptedAt >= assignment.occurrenceEndMs) ||
                 !assignment.fulfillmentMethods.includes(
                   item.method as "pickup" | "shipping" | "digital"
                 ))) ||
@@ -948,7 +958,10 @@ export async function acceptMerchantInventoryOrder(input: {
               (a) => a.state === "active" && a.inventory.mode !== "tracked"
             ) ||
               effective >
-                product.stock + (item.method === "pickup" ? credited : 0))
+                product.stock +
+                  (item.method === "pickup" && !expiredSettlement
+                    ? credited
+                    : 0))
           )
             throw new Error("Committed inventory requires reconciliation")
           if (delegated) {
@@ -990,9 +1003,16 @@ export async function acceptMerchantInventoryOrder(input: {
             )
               throw new Error("Organizer inventory requires reconciliation")
           } else if (item.method === "pickup") {
-            if (
-              !assignment ||
-              assignment.inventory.mode !== "tracked" ||
+            if (!assignment || assignment.inventory.mode !== "tracked")
+              throw new Error("Insufficient pickup allocation")
+            if (expiredSettlement) {
+              // Effective allocations include unreconciled organizer holds even
+              // after expiry. Only the unallocated remainder may be consumed.
+              if (product.stock - effective < debit)
+                throw new Error(
+                  "Insufficient unallocated stock for settled pickup"
+                )
+            } else if (
               effectiveAllocation(assignment, acceptedAt) -
                 outstandingOrganizerStockHold(assignment) <
                 item.quantity ||
@@ -1010,9 +1030,10 @@ export async function acceptMerchantInventoryOrder(input: {
           ) {
             assignment.inventory = {
               mode: "tracked",
-              quantity: delegated
-                ? Math.max(0, assignment.inventory.quantity - item.quantity)
-                : assignment.inventory.quantity - item.quantity,
+              quantity:
+                delegated || expiredSettlement
+                  ? Math.max(0, assignment.inventory.quantity - item.quantity)
+                  : assignment.inventory.quantity - item.quantity,
             }
           }
         } else if (
