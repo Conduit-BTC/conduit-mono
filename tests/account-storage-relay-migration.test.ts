@@ -9,12 +9,15 @@ import { v2 } from "nostr-tools/nip44"
 import { ConduitDB } from "../packages/core/src/db"
 import {
   ACCOUNT_STORAGE_RELAYS,
+  ACCOUNT_STORAGE_V1_RELAYS,
   LEGACY_ACCOUNT_STORAGE_RELAYS,
 } from "../packages/core/src/config"
+import { planAccountStorageRelays } from "../packages/core/src/protocol/account-storage-relay-policy"
 import { migrateAccountStorageRelayState } from "../packages/core/src/wallets/account-storage-relay-migration"
 import { DexieSparkRecoveryStore } from "../packages/core/src/wallets/spark-recovery-store"
 import {
   accountRegistryReadiness,
+  validateSparkRecoveryState,
   mergeSparkRecoveryRecords,
   type SparkRecoveryState,
 } from "../packages/core/src/wallets/spark-recovery-service"
@@ -245,4 +248,42 @@ test("optional journal owners migrate pending targets without changing events, t
   expect(await new DexieWalletNameStore(db).load(owner, "mainnet")).toEqual(
     names
   )
+})
+
+test("previous Conduit + Ditto migration remains valid if current destinations change", () => {
+  const { state, owner } = fixture()
+  const migrated = migrateAccountStorageRelayState(state)
+  const original = [...ACCOUNT_STORAGE_RELAYS]
+  try {
+    // Simulate a future configured destination; historical validation must use
+    // the versioned definition, never reinterpret its existing receipts.
+    ACCOUNT_STORAGE_RELAYS.splice(0, ACCOUNT_STORAGE_RELAYS.length, {
+      url: "wss://future-storage.conduit.market",
+      operator: "future",
+    })
+    const checked = validateSparkRecoveryState(migrated, owner)
+    expect(checked.records[0].activeRelayPolicy?.targets).toEqual(
+      ACCOUNT_STORAGE_V1_RELAYS
+    )
+    expect(checked.records[0].activeRelayPolicy?.delivery).toEqual(
+      migrated.records[0].activeRelayPolicy?.delivery
+    )
+    expect(migrateAccountStorageRelayState(migrated)).toEqual(migrated)
+  } finally {
+    ACCOUNT_STORAGE_RELAYS.splice(0, ACCOUNT_STORAGE_RELAYS.length, ...original)
+  }
+})
+
+test("new storage plans deduplicate app URL aliases without losing personal destinations", () => {
+  expect(
+    planAccountStorageRelays([
+      " WSS://RELAY.CONDUIT.MARKET/ ",
+      "wss://relay.ditto.pub/",
+      "wss://personal-storage.conduit.market",
+      "wss://personal-storage.conduit.market/",
+    ])
+  ).toEqual([
+    ...ACCOUNT_STORAGE_RELAYS,
+    { url: "wss://personal-storage.conduit.market", operator: null },
+  ])
 })

@@ -220,21 +220,23 @@ describe("relay settings protocol helpers", () => {
         url: "wss://relay.conduit.market",
       },
       {
+        fallbackName: "Brainstorm Search",
+        url: "wss://search.brainstorm.world",
+      },
+      {
         fallbackName: "Ditto Relay",
         url: "wss://relay.ditto.pub",
       },
-      {
-        fallbackName: "Primal Public Relay",
-        url: "wss://relay.primal.net",
-      },
-      { fallbackName: "nos.lol", url: "wss://nos.lol" },
-      {
-        fallbackName: "Plebeian Market Relay",
-        url: "wss://relay.plebeian.market",
-      },
     ])
-    expect(CANONICAL_APP_RELAY_DEFINITIONS).toHaveLength(5)
+    expect(CANONICAL_APP_RELAY_DEFINITIONS).toHaveLength(3)
     expect(CANONICAL_APP_RELAY_DEFINITIONS[1]).toMatchObject({
+      operator: "brainstorm",
+      read: false,
+      write: false,
+      privateInbox: false,
+      accountStorage: false,
+    })
+    expect(CANONICAL_APP_RELAY_DEFINITIONS[2]).toMatchObject({
       url: "wss://relay.ditto.pub",
       read: true,
       write: true,
@@ -253,7 +255,6 @@ describe("relay settings protocol helpers", () => {
     expect(CANONICAL_COMMERCE_DISCOVERY_RELAYS).toEqual([
       "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://relay.plebeian.market",
     ])
     expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual([
       "wss://relay.conduit.market",

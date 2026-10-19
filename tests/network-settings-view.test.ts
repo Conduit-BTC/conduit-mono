@@ -357,10 +357,8 @@ describe("network settings view", () => {
       view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
     ).toEqual([
       ["Conduit Marketplace Relay", "wss://relay.conduit.market"],
+      ["Brainstorm Search", "wss://search.brainstorm.world"],
       ["Ditto Relay", "wss://relay.ditto.pub"],
-      ["Primal Public Relay", "wss://relay.primal.net"],
-      ["nos.lol", "wss://nos.lol"],
-      ["Plebeian Market Relay", "wss://relay.plebeian.market"],
     ])
     expect(view.appRelays?.rows[0]).toMatchObject({
       url: "wss://relay.conduit.market",

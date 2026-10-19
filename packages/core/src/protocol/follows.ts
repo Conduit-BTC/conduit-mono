@@ -939,8 +939,8 @@ export async function readLatestFollowLists(
             pubkey,
             eventSourceRelayUrls: [],
             hintRelayUrls: selectedHints,
-            plannedRelayUrls: candidateRelayUrls.slice(0, maxRelays),
-            relays: candidateRelayUrls.slice(0, maxRelays).map((relayUrl) => ({
+            plannedRelayUrls: candidateRelayUrls,
+            relays: candidateRelayUrls.map((relayUrl) => ({
               relayUrl,
               status: "failed",
               eventCount: 0,

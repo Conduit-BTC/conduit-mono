@@ -782,7 +782,7 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain("App Relays")
     expect(markup).toContain("Your Relays")
     expect(markup).toContain(
-      "5 managed routes for reliable commerce, discovery, and messaging."
+      "5 app relays. Qualified routes stay active alongside Your Relays."
     )
     expect(markup).toContain('aria-expanded="false"')
     expect(markup).toContain('hidden=""')
@@ -798,7 +798,11 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain('src="https://nostr.build/personal-relay.png"')
     expect(markup).toContain('loading="lazy"')
     expect(markup).toContain('referrerPolicy="no-referrer"')
-    expect(markup).toContain('aria-label="Disable App Relays"')
+    expect(markup).toContain("Advanced / Danger zone")
+    expect(markup.lastIndexOf("Advanced / Danger zone")).toBeGreaterThan(
+      markup.indexOf("Your Relays")
+    )
+    expect(markup).not.toContain('aria-label="Disable App Relays"')
     expect(markup).toContain('aria-label="Enable Your Relays"')
     expect(markup).toContain('aria-label="Dismiss relay setup recommendation"')
     expect(markup.indexOf("Personal Relay")).toBeLessThan(
@@ -999,7 +1003,7 @@ describe("RelaySettingsPanel account Network review", () => {
       "packages/ui/src/components/RelaySettingsPanel.tsx"
     ).text()
 
-    expect(panelSource).toContain("if (!enabled && disableWarning)")
+    expect(panelSource).toContain("if (!enabled)")
     expect(panelSource).toContain("Turn off App Relays?")
     expect(panelSource).toContain("{disableWarning}")
     expect(panelSource).toContain("controller.setAppRelaysEnabled(enabled)")

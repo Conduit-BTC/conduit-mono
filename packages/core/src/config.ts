@@ -18,7 +18,7 @@ export interface RelayBucketConfig {
 }
 
 export type AppRelayNip65Mode = "read_write" | "write" | null
-export const APP_RELAY_REGISTRY_VERSION = 6
+export const APP_RELAY_REGISTRY_VERSION = 7
 
 /**
  * One transparent, code-owned Conduit app relay. These records are product
@@ -36,6 +36,8 @@ export interface AppRelayDefinition {
   accountStorage?: boolean
   /** Curated operator identity, independent of advertised relay capabilities. */
   operator?: string
+  /** A membership decision can precede qualification of an executable role. */
+  qualificationNote?: string
   nip65Preset: AppRelayNip65Mode
   nip17Preset: boolean
 }
@@ -55,6 +57,20 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     nip17Preset: true,
   },
   {
+    url: "wss://search.brainstorm.world",
+    fallbackName: "Brainstorm Search",
+    operator: "brainstorm",
+    read: false,
+    write: false,
+    commerce: false,
+    privateInbox: false,
+    accountStorage: false,
+    nip65Preset: null,
+    nip17Preset: false,
+    qualificationNote:
+      "Search requires an observer or authentication. Automatic routing is pending qualification.",
+  },
+  {
     url: "wss://relay.ditto.pub",
     fallbackName: "Ditto Relay",
     accountStorage: true,
@@ -66,36 +82,6 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     nip65Preset: "read_write",
     nip17Preset: true,
   },
-  {
-    url: "wss://relay.primal.net",
-    fallbackName: "Primal Public Relay",
-    read: false,
-    write: false,
-    commerce: false,
-    privateInbox: false,
-    nip65Preset: null,
-    nip17Preset: false,
-  },
-  {
-    url: "wss://nos.lol",
-    fallbackName: "nos.lol",
-    read: false,
-    write: false,
-    commerce: false,
-    privateInbox: false,
-    nip65Preset: null,
-    nip17Preset: false,
-  },
-  {
-    url: "wss://relay.plebeian.market",
-    fallbackName: "Plebeian Market Relay",
-    read: false,
-    write: false,
-    commerce: true,
-    privateInbox: false,
-    nip65Preset: null,
-    nip17Preset: false,
-  },
 ]
 
 export const CANONICAL_APP_READ_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
@@ -105,6 +91,11 @@ export const ACCOUNT_STORAGE_RELAY_POLICY_VERSION = 1
 export const ACCOUNT_STORAGE_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
   (relay) => relay.accountStorage
 ).map((relay) => ({ url: relay.url, operator: relay.operator ?? null }))
+/** Immutable version-1 migration destination history, independent of future defaults. */
+export const ACCOUNT_STORAGE_V1_RELAYS = Object.freeze([
+  { url: "wss://relay.conduit.market", operator: "conduit" },
+  { url: "wss://relay.ditto.pub", operator: "ditto" },
+])
 
 /** Historical evidence only: never selected for a new storage operation. */
 export const LEGACY_ACCOUNT_STORAGE_RELAYS = Object.freeze([

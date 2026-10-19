@@ -1,8 +1,12 @@
 import {
   ACCOUNT_STORAGE_RELAYS,
+  ACCOUNT_STORAGE_V1_RELAYS,
   LEGACY_ACCOUNT_STORAGE_RELAYS,
 } from "../config"
-import { getConfiguredIsolatedE2eRelayUrl } from "./relay-settings"
+import {
+  getConfiguredIsolatedE2eRelayUrl,
+  tryNormalizeRelayUrl,
+} from "./relay-settings"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { relayTargetsFromUrls, type RelayOperation } from "./relay-authority"
 
@@ -27,7 +31,9 @@ export function planAccountStorageRelays(
   if (getConfiguredIsolatedE2eRelayUrl()) return result
   for (const candidate of extraRelayUrls) {
     if (result.length >= 8) break
-    const url = normalizePublicWebSocketUrl(candidate)
+    const publicUrl = normalizePublicWebSocketUrl(candidate)
+    const normalized = publicUrl ? tryNormalizeRelayUrl(publicUrl) : undefined
+    const url = normalized?.ok ? normalized.url : undefined
     if (url && !result.some((relay) => relay.url === url))
       result.push({ url, operator: null })
   }
@@ -38,6 +44,7 @@ export function planAccountStorageRelays(
 export function accountStorageRelayOperator(url: string): string | null {
   return (
     ACCOUNT_STORAGE_RELAYS.find((relay) => relay.url === url)?.operator ??
+    ACCOUNT_STORAGE_V1_RELAYS.find((relay) => relay.url === url)?.operator ??
     LEGACY_ACCOUNT_STORAGE_RELAYS.find((relay) => relay.url === url)
       ?.operator ??
     null
@@ -56,7 +63,7 @@ export function transitionAccountStorageRelayUrls(
     return undefined
   return [
     ...new Set([
-      ...getAccountStorageRelays().map((relay) => relay.url),
+      ...ACCOUNT_STORAGE_V1_RELAYS.map((relay) => relay.url),
       ...urls.slice(LEGACY_ACCOUNT_STORAGE_RELAYS.length),
     ]),
   ]

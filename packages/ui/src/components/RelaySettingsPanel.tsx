@@ -2216,6 +2216,9 @@ const SECONDARY_APP_RELAY_URL = CANONICAL_APP_RELAY_DEFINITIONS.find(
 )?.url
 
 function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
+  const qualificationNote = CANONICAL_APP_RELAY_DEFINITIONS.find(
+    (relay) => relay.url === row.url
+  )?.qualificationNote
   const uses = [
     row.readEnabled ? "Read" : null,
     !row.readEnabled &&
@@ -2251,17 +2254,87 @@ function AppRelayRow({ row }: { row: AccountNetworkRelayRowView }) {
             </span>
           ))}
         </div>
+      ) : qualificationNote ? (
+        <p className="max-w-sm pl-10 text-sm text-[var(--warning-text)] sm:pl-0">
+          {qualificationNote}
+        </p>
       ) : null}
     </li>
+  )
+}
+
+function AppRelaysHeader({
+  appRelays,
+  advanced,
+  busy,
+  onEnable,
+}: {
+  appRelays: NonNullable<AccountNetworkSettingsController["view"]["appRelays"]>
+  advanced: boolean
+  busy: boolean
+  onEnable: () => void
+}) {
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] sm:grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
+      <CollapsibleTrigger
+        aria-labelledby={
+          advanced
+            ? "advanced-relays-heading"
+            : "app-relays-heading app-relays-summary"
+        }
+        className="group flex size-11 items-center justify-center rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+      >
+        <ChevronRight
+          className="size-5 group-data-[state=open]:rotate-90"
+          aria-hidden="true"
+        />
+      </CollapsibleTrigger>
+      <div className="min-w-0 pt-1">
+        <h3
+          id={advanced ? "advanced-relays-heading" : "app-relays-heading"}
+          className="text-balance text-base font-semibold text-[var(--text-primary)]"
+        >
+          {advanced ? "Advanced / Danger zone" : "App Relays"}
+        </h3>
+        <p
+          id={advanced ? undefined : "app-relays-summary"}
+          className="mt-0.5 text-pretty text-sm leading-5 text-[var(--text-secondary)]"
+        >
+          {advanced
+            ? "Change app relay participation."
+            : `${appRelays.rows.length} app relays. Qualified routes stay active alongside Your Relays.`}
+        </p>
+      </div>
+      {!advanced ? (
+        <div className="col-start-2 flex min-h-11 flex-wrap items-center gap-3 sm:col-start-3 sm:row-start-1">
+          <span className="text-sm font-medium text-[var(--text-secondary)]">
+            {appRelays.enabled ? "Enabled" : "App Relays are off"}
+          </span>
+          {!appRelays.enabled ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy}
+              onClick={onEnable}
+              className="min-h-11"
+            >
+              Enable App Relays
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
 function AppRelaysSection({
   controller,
   busy,
+  advanced = false,
 }: {
   controller: AccountNetworkSettingsController
   busy: boolean
+  advanced?: boolean
 }) {
   const appRelays = controller.view.appRelays
   const [disableReviewOpen, setDisableReviewOpen] = useState(false)
@@ -2288,7 +2361,7 @@ function AppRelaysSection({
   }
 
   function requestEnabledChange(enabled: boolean): void {
-    if (!enabled && disableWarning) {
+    if (!enabled) {
       setDisableReviewOpen(true)
       return
     }
@@ -2297,48 +2370,38 @@ function AppRelaysSection({
 
   return (
     <Collapsible defaultOpen={false}>
-      <section aria-labelledby="app-relays-heading">
-        <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2">
-          <CollapsibleTrigger
-            aria-labelledby="app-relays-heading app-relays-summary"
-            className="group flex size-11 items-center justify-center rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-elevated)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
-          >
-            <ChevronRight
-              className="size-5 group-data-[state=open]:rotate-90"
-              aria-hidden="true"
-            />
-          </CollapsibleTrigger>
-          <div className="min-w-0 pt-1">
-            <h3
-              id="app-relays-heading"
-              className="text-balance text-base font-semibold text-[var(--text-primary)]"
-            >
-              App Relays
-            </h3>
-            <p
-              id="app-relays-summary"
-              className="mt-0.5 text-pretty text-sm leading-5 text-[var(--text-secondary)]"
-            >
-              {appRelays.rows.length} managed{" "}
-              {appRelays.rows.length === 1 ? "route" : "routes"} for reliable
-              commerce, discovery, and messaging.
-            </p>
-          </div>
-          <div className="flex min-h-11 shrink-0 items-center gap-3">
-            <span className="text-sm font-medium text-[var(--text-secondary)]">
-              {appRelays.enabled ? "Enabled" : "Disabled"}
-            </span>
-            <Switch
-              checked={appRelays.enabled}
-              disabled={busy || policyBusy}
-              onCheckedChange={requestEnabledChange}
-              aria-label={`${appRelays.enabled ? "Disable" : "Enable"} App Relays`}
-            />
-          </div>
-        </div>
+      <section
+        aria-labelledby={
+          advanced ? "advanced-relays-heading" : "app-relays-heading"
+        }
+      >
+        <AppRelaysHeader
+          appRelays={appRelays}
+          advanced={advanced}
+          busy={busy || policyBusy}
+          onEnable={() => requestEnabledChange(true)}
+        />
 
         <CollapsibleContent>
-          {appRelays.rows.length > 0 ? (
+          {advanced ? (
+            <div className="mt-3 space-y-3">
+              <p className="text-sm text-[var(--text-secondary)]">
+                Turning off App Relays removes app-provided discovery,
+                publishing, and qualified recovery routes. Your separately
+                enabled personal relays and signed private inbox routes keep
+                their own permissions.
+              </p>
+              <Button
+                type="button"
+                variant={appRelays.enabled ? "destructive" : "outline"}
+                className="min-h-11"
+                disabled={busy || policyBusy}
+                onClick={() => requestEnabledChange(!appRelays.enabled)}
+              >
+                {appRelays.enabled ? "Disable App Relays" : "Enable App Relays"}
+              </Button>
+            </div>
+          ) : appRelays.rows.length > 0 ? (
             <ul
               className="mt-3 divide-y divide-[var(--border)] border-t border-[var(--border)]"
               aria-label="App Relays"
@@ -2374,7 +2437,11 @@ function AppRelaysSection({
                 Turn off App Relays?
               </AlertDialogTitle>
               <AlertDialogDescription className="text-pretty leading-6">
-                {disableWarning}
+                App-provided discovery, publishing, and qualified wallet
+                recovery routes will stop. Personal relays may not provide
+                equivalent coverage. Separately signed private inbox routes
+                remain independent. You can re-enable App Relays here at any
+                time. {disableWarning}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -2462,7 +2529,8 @@ function PersonalRelaysHeader({
           <p className="mt-1 max-w-2xl text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Your signed relay preferences stay synchronized with Nostr. This
             switch adds only your NIP-65 Read and Publish relays to Conduit
-            routing. Current Private inbox routes remain active.
+            routing alongside enabled App Relays. Current Private inbox routes
+            remain active.
           </p>
         </div>
         <div className="flex min-h-11 shrink-0 items-center gap-3">
@@ -2675,6 +2743,12 @@ export function RelaySettingsPanel({
             signerReviewKey={signerReviewKey}
           />
         ) : null}
+        <AppRelaysSection
+          key={`advanced:${accountPubkey ?? "no-account"}`}
+          controller={controller}
+          busy={operationIsBusy(controller.operation.phase)}
+          advanced
+        />
       </div>
     </section>
   )
