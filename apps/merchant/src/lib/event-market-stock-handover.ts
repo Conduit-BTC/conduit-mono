@@ -1,13 +1,21 @@
 import {
+  admitPublicEvent,
   createEventMarketStockAuthorityRumor,
+  loadRetainedSignedEventMarketEvidence,
   parseEventMarketStockAuthorityRumor,
+  parseProductEvent,
+  readEventMarketAuthorization,
+  readEventMarketProduct,
+  startMerchantOrganizerStockGrant,
   validateOrganizerStockJournalPool,
   type EventMarketOrganizerStockPool,
+  type EventMarketRosterReadResult,
   type MerchantInventoryAssignment,
   type MerchantInventoryProduct,
   type ParsedEventMarketCalendar,
   type ParsedEventMarketRoster,
   type PrivateMessageRumor,
+  type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type { ConduitDB } from "@conduit/core/db"
 
@@ -402,6 +410,116 @@ export function buildMerchantOrganizerStockGrant(input: {
       quantity,
       expiresAtMs: occurrence.end,
     },
+  })
+}
+
+/** The stock-panel action composes admission before any reservation or signing. */
+export async function reserveMerchantOrganizerStockForAssignment(
+  input: Omit<
+    Parameters<typeof startMerchantOrganizerStockGrant>[0],
+    "grantRumor" | "admissionEvidence" | "expectedAssignmentRevision"
+  > & {
+    market: ParsedEventMarketRoster
+    occurrence: ParsedEventMarketCalendar
+    marketRead: EventMarketRosterReadResult
+    assignment: MerchantInventoryAssignment
+    writerId: string
+    quantityText: string
+  },
+  dependencies = {
+    readAuthorization: readEventMarketAuthorization,
+    readProduct: readEventMarketProduct,
+    loadEvidence: loadRetainedSignedEventMarketEvidence,
+    start: startMerchantOrganizerStockGrant,
+  }
+) {
+  const { market, occurrence, assignment, authenticatedPubkey } = input
+  const authorization = await dependencies.readAuthorization({
+    marketCoordinate: market.coordinate,
+    merchantPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+  })
+  if (authorization.resolution.state !== "active" || !authorization.actionable)
+    throw new Error("Current signed organizer approval is required.")
+  const product = await input.db.merchantInventoryProducts.get(
+    assignment.productCoordinate
+  )
+  if (!product)
+    throw new Error("Open this product's event stock settings first.")
+  const admittedProduct = await admitPublicEvent(product.signedProductEvent)
+  if (admittedProduct.status !== "verified")
+    throw new Error("Current signed Merchant product is required.")
+  let parentProductEvent: SignedPublicNostrEvent | undefined
+  if (parseProductEvent(admittedProduct.event).type === "variation") {
+    const current = await dependencies.readProduct({
+      marketRead: input.marketRead,
+      productCoordinate: assignment.productCoordinate,
+      selectedOccurrenceCoordinate: occurrence.coordinate,
+      authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
+    })
+    // Before the first grant, delegated purchase suitability is intentionally
+    // false because the assignment has no stock-pool commitment yet. Reuse this
+    // reader for its live child/parent graph, not as purchase authority. The
+    // shared grant workflow independently checks exact signed sources before
+    // creating a hold or asking for any signature.
+    if (
+      !current.retained ||
+      !["complete", "partial"].includes(current.coverage) ||
+      !["eligible", "malformed"].includes(current.resolution.state) ||
+      (current.resolution.state === "eligible" &&
+        current.resolution.revision.id !== product.signedProductEvent.id) ||
+      current.assignment?.eventId !== assignment.signedAssignmentEvent?.id ||
+      current.authorization?.resolution.state !== "active" ||
+      !current.authorization.actionable ||
+      current.authorization.resolution.tip.eventId !==
+        authorization.resolution.tip.eventId ||
+      !current.parentProductEvent
+    )
+      throw new Error(
+        "Current signed variation, parent and pickup assignment are required. Refresh event stock before reserving."
+      )
+    parentProductEvent = current.parentProductEvent
+  }
+  const grantRumor = buildMerchantOrganizerStockGrant({
+    market,
+    occurrence,
+    assignment,
+    product,
+    authenticatedPubkey,
+    grantEventId: authorization.resolution.tip.eventId,
+    ...(input.marketRead.schedule?.kind === "series"
+      ? { scheduleEventId: input.marketRead.schedule.series.eventId }
+      : {}),
+    writerId: input.writerId,
+    quantityText: input.quantityText,
+    nowMs: input.nowMs ?? Date.now(),
+  })
+  return dependencies.start({
+    db: input.db,
+    signer: input.signer,
+    authenticatedPubkey,
+    shouldContinue: input.shouldContinue,
+    nowMs: input.nowMs,
+    publishPublic: input.publishPublic,
+    delivery: input.delivery,
+    grantRumor,
+    expectedAssignmentRevision: assignment.revision,
+    admissionEvidence: [
+      ...(await dependencies.loadEvidence(market.coordinate)),
+      market.signedEvent,
+      occurrence.signedEvent!,
+      product.signedProductEvent,
+      ...(parentProductEvent ? [parentProductEvent] : []),
+      ...(assignment.signedAssignmentEvent
+        ? [assignment.signedAssignmentEvent]
+        : []),
+      ...authorization.observedEvidence,
+      ...(input.marketRead.schedule?.kind === "series"
+        ? [input.marketRead.schedule.series.signedEvent]
+        : []),
+    ],
   })
 }
 

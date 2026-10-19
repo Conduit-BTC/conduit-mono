@@ -6,6 +6,7 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import { v2 as nip44 } from "nostr-tools/nip44"
+import { matchFilter } from "nostr-tools"
 import { ConduitDB } from "@conduit/core/db"
 import { config } from "@conduit/core/config"
 import {
@@ -95,6 +96,8 @@ import {
   type ProductListingOutboxRepository,
 } from "@conduit/core/protocol/product-listing-delivery"
 import { deliverQueuedProductListings } from "../apps/merchant/src/lib/product-listing-delivery"
+import { createEventMarketEvidenceStore } from "@conduit/core/protocol/event-market-evidence-store"
+import { reserveMerchantOrganizerStockForAssignment } from "../apps/merchant/src/lib/event-market-stock-handover"
 
 const databases: ConduitDB[] = []
 const originalCommerceRelayUrls = [...config.commerceRelayUrls]
@@ -2207,6 +2210,274 @@ async function resetToPublishedPreGrant(f: Fixture) {
     expectedAssignmentRevision: assignment.revision,
   }
 }
+
+async function variationGrantCallerFixture() {
+  const f = await fixture()
+  const prepared = await resetToPublishedPreGrant(f)
+  const parentCoordinate = `30402:${f.merchant}:variable-parent`
+  const parent = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 100,
+      content: "",
+      tags: [
+        ["d", "variable-parent"],
+        ["title", "Variable stock item"],
+        ["type", "variable", "physical"],
+        ["price", "1", "SATS"],
+      ],
+    },
+    f.merchantSecret
+  )
+  const child = finalizeEvent(
+    {
+      ...prepared.product.product,
+      created_at: 101,
+      tags: [
+        ...prepared.product.product.tags.map((tag) =>
+          tag[0] === "type" ? ["type", "variation", "physical"] : tag
+        ),
+        ["a", parentCoordinate],
+        ["spec", "Size", "Small"],
+      ],
+    },
+    f.merchantSecret
+  )
+  const product = (await f.db.merchantInventoryProducts.get(
+    prepared.product.coordinate
+  ))!
+  product.signedProductEvent = child
+  product.sourceProductEvent = child
+  await f.db.merchantInventoryProducts.put(product)
+  const assignment = (await f.db.merchantInventoryAssignments.get(
+    prepared.product.assignmentCoordinate
+  ))!
+  const fulfillment = prepared.product.fulfillment
+  const live = [
+    fulfillment.market.signedEvent,
+    fulfillment.calendar.signedEvent,
+    ...fulfillment.grant.signedEvidence.ancestry,
+    child,
+    assignment.signedAssignmentEvent!,
+    parent,
+  ]
+  const evidence = createEventMarketEvidenceStore(f.db)
+  await evidence.retain(
+    f.marketCoordinate,
+    live.filter((event) => event.id !== parent.id)
+  )
+  const relay = "wss://relay.conduit.market"
+  const reads: NonNullable<
+    Parameters<typeof rosterReads.readEventMarketProduct>[1]
+  > = {
+    plan: async () => ({
+      relayUrls: [relay],
+      candidateRelayUrls: [relay],
+      relayTargets: [],
+      ownerSelectedRelayUrls: [],
+      appRelayUrls: [relay],
+      personalRelayUrls: [],
+      independentRelayUrls: [],
+      relayListState: "missing",
+      relayHintTruncated: false,
+    }),
+    fetch: async (filter) => ({
+      events: live.filter((event) => matchFilter(filter, event)),
+      relays: [{ relayUrl: relay, status: "success" }],
+    }),
+    load: evidence.load,
+    retain: evidence.retain,
+  }
+  const marketRead = await rosterReads.readEventMarketRoster(
+    { reference: f.marketCoordinate, authenticatedPubkey: f.merchant },
+    reads
+  )
+  if (marketRead.resolution.state !== "current" || !marketRead.calendar)
+    throw new Error("Expected current caller fixture")
+  const auth = protectedStore(f, "merchant")
+  const effects = { public: 0, private: 0 }
+  const input: Parameters<
+    typeof reserveMerchantOrganizerStockForAssignment
+  >[0] = {
+    db: f.db,
+    signer: f.merchantSigner,
+    authenticatedPubkey: f.merchant,
+    shouldContinue: () => true,
+    market: marketRead.resolution.market,
+    occurrence: marketRead.calendar,
+    marketRead,
+    assignment,
+    writerId: f.writerId,
+    quantityText: "4",
+    nowMs: 102_000,
+    publishPublic: async () => {
+      effects.public++
+      return true
+    },
+    delivery: {
+      deliveryStore: auth.store,
+      resolveInboxRelays: async () => [relay],
+      publishFn: async () => {
+        effects.private++
+        return ack(relay)
+      },
+    },
+  }
+  const dependencies = {
+    readAuthorization: (
+      query: Parameters<
+        typeof authorizationReads.readEventMarketAuthorization
+      >[0]
+    ) => authorizationReads.readEventMarketAuthorization(query, reads),
+    readProduct: async (
+      query: Parameters<typeof rosterReads.readEventMarketProduct>[0]
+    ) => {
+      const clock = spyOn(Date, "now").mockReturnValue(102_000)
+      try {
+        return await rosterReads.readEventMarketProduct(query, reads)
+      } finally {
+        clock.mockRestore()
+      }
+    },
+    loadEvidence: evidence.load,
+    start: startMerchantOrganizerStockGrant,
+  }
+  return { f, parent, child, live, input, dependencies, effects, evidence }
+}
+
+it("the stock-panel grant workflow reads the live variation parent before reserving and publishing", async () => {
+  const state = await variationGrantCallerFixture()
+  expect(
+    (await state.evidence.load(state.f.marketCoordinate)).some(
+      (event) => event.id === state.parent.id
+    )
+  ).toBe(false)
+  const result = await reserveMerchantOrganizerStockForAssignment(
+    state.input,
+    state.dependencies
+  )
+  expect(result.pool.quantity).toBe(4)
+  expect(state.effects.public).toBeGreaterThan(0)
+  expect(state.effects.private).toBeGreaterThan(0)
+  expect(
+    outstandingOrganizerStockHold(
+      (await state.f.db.merchantInventoryAssignments.get(
+        state.input.assignment.coordinate
+      ))!
+    )
+  ).toBe(4)
+  expect(
+    (await state.evidence.load(state.f.marketCoordinate)).some(
+      (event) => event.id === state.parent.id
+    )
+  ).toBe(true)
+})
+
+it.each([
+  "missing parent",
+  "wrong-author parent",
+  "wrong-type parent",
+  "hidden parent",
+  "deleted parent",
+  "retained parent deletion",
+  "stale parent",
+  "deleted child",
+  "changed child",
+  "changed assignment",
+] as const)(
+  "the stock-panel variation grant rejects %s before any reservation or publication",
+  async (defect) => {
+    const state = await variationGrantCallerFixture()
+    const { f, parent, child, live, input } = state
+    const parentCoordinate = `30402:${f.merchant}:variable-parent`
+    if (defect === "missing parent") live.splice(live.indexOf(parent), 1)
+    if (defect === "wrong-author parent") {
+      live.splice(
+        live.indexOf(parent),
+        1,
+        finalizeEvent(parent, generateSecretKey())
+      )
+    }
+    if (defect === "wrong-type parent" || defect === "hidden parent") {
+      live.push(
+        finalizeEvent(
+          {
+            ...parent,
+            created_at: 102,
+            tags:
+              defect === "wrong-type parent"
+                ? parent.tags.map((tag) =>
+                    tag[0] === "type" ? ["type", "simple", "physical"] : tag
+                  )
+                : [...parent.tags, ["visibility", "hidden"]],
+          },
+          f.merchantSecret
+        )
+      )
+    }
+    if (
+      defect === "deleted parent" ||
+      defect === "retained parent deletion" ||
+      defect === "deleted child"
+    ) {
+      const deletion = finalizeEvent(
+        {
+          kind: 5,
+          created_at: 102,
+          content: "",
+          tags: [
+            [
+              "a",
+              defect === "deleted child"
+                ? input.assignment.productCoordinate
+                : parentCoordinate,
+            ],
+          ],
+        },
+        f.merchantSecret
+      )
+      if (defect === "retained parent deletion")
+        await state.evidence.retain(f.marketCoordinate, [deletion])
+      else live.push(deletion)
+    }
+    if (defect === "stale parent") {
+      await state.evidence.retain(f.marketCoordinate, [parent])
+      live.splice(live.indexOf(parent), 1)
+    }
+    if (defect === "changed child")
+      live.push(finalizeEvent({ ...child, created_at: 102 }, f.merchantSecret))
+    if (defect === "changed assignment") {
+      const previous = input.assignment.signedAssignmentEvent!
+      live.push(
+        finalizeEvent(
+          {
+            ...previous,
+            created_at: 102,
+            tags: [
+              ...previous.tags
+                .filter((tag) => tag[0] !== "prev")
+                .map((tag) =>
+                  tag[0] === "inventory" ? ["inventory", "tracked", "5"] : tag
+                ),
+              ["prev", previous.id],
+            ],
+          },
+          f.merchantSecret
+        )
+      )
+    }
+    await fails(
+      reserveMerchantOrganizerStockForAssignment(input, state.dependencies)
+    )
+    expect(
+      (await f.db.merchantInventoryAssignments.get(
+        input.assignment.coordinate
+      ))!.organizerStockHold
+    ).toBeUndefined()
+    expect(await f.db.eventMarketOrganizerStockPools.count()).toBe(0)
+    expect(state.effects).toEqual({ public: 0, private: 0 })
+  }
+)
 
 it("retains a prepared handover when signing is interrupted and resumes the same grant before delivery", async () => {
   const f = await fixture(),

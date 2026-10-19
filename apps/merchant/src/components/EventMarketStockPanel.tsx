@@ -22,7 +22,6 @@ import {
   parseEventMarketStockAuthorityRumor,
   publishEventMarketStockWork,
   readEventMarketAssignment,
-  readEventMarketAuthorization,
   readRetainedMerchantOrganizerStockImports,
   receiveOrganizerStockGrant,
   reconcileMerchantOrganizerStockClose,
@@ -58,13 +57,13 @@ import {
   SelectValue,
 } from "@conduit/ui"
 import {
-  buildMerchantOrganizerStockGrant,
   confirmOrganizerStockDeviceRegistration,
   createOrganizerStockDevice,
   readOrganizerStockDevice,
   organizerStockDeviceId,
   prepareOrganizerStockTargetDevice,
   reserveOrganizerStockInstallation,
+  reserveMerchantOrganizerStockForAssignment,
   stockPoolBelongsToOccurrence,
   type OrganizerStockDevice,
 } from "../lib/event-market-stock-handover"
@@ -510,53 +509,14 @@ export function EventMarketStockPanel(props: {
     if (!occurrence)
       throw new Error("Choose a current event date before reserving new stock.")
     const current = session()
-    const authorization = await readEventMarketAuthorization({
-      marketCoordinate: market.coordinate,
-      merchantPubkey: account,
-      authenticatedPubkey: account,
-      shouldContinue,
-    })
-    if (
-      authorization.resolution.state !== "active" ||
-      !authorization.actionable
-    )
-      throw new Error("Current signed organizer approval is required.")
-    const product = await db.merchantInventoryProducts.get(
-      assignment.productCoordinate
-    )
-    if (!product)
-      throw new Error("Open this product's event stock settings first.")
-    const grantRumor = buildMerchantOrganizerStockGrant({
+    await reserveMerchantOrganizerStockForAssignment({
+      ...current,
       market,
       occurrence,
       assignment,
-      product,
-      authenticatedPubkey: account,
-      grantEventId: authorization.resolution.tip.eventId,
-      ...(props.marketRead.schedule?.kind === "series"
-        ? { scheduleEventId: props.marketRead.schedule.series.eventId }
-        : {}),
+      marketRead: props.marketRead,
       writerId,
       quantityText: quantity,
-      nowMs: Date.now(),
-    })
-    await startMerchantOrganizerStockGrant({
-      ...current,
-      grantRumor,
-      expectedAssignmentRevision: assignment.revision,
-      admissionEvidence: [
-        ...(await loadRetainedSignedEventMarketEvidence(market.coordinate)),
-        market.signedEvent,
-        occurrence.signedEvent!,
-        product.signedProductEvent,
-        ...(assignment.signedAssignmentEvent
-          ? [assignment.signedAssignmentEvent]
-          : []),
-        ...authorization.observedEvidence,
-        ...(props.marketRead.schedule?.kind === "series"
-          ? [props.marketRead.schedule.series.signedEvent]
-          : []),
-      ],
     })
     if (shouldContinue())
       setNotice(

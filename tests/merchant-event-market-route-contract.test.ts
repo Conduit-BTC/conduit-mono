@@ -123,6 +123,10 @@ describe("current Merchant Event Market routes", () => {
     expect(products).not.toContain("Offer this product at this event")
     expect(assignments).toContain("saveMerchantOccurrenceAssignment")
     expect(assignments).toContain("resumeMerchantOccurrencePublication")
+    expect(assignments.replaceAll(/\s+/g, " ")).toContain(
+      "For organizer pickup, reserve the organizer's stock separately"
+    )
+    expect(assignments).not.toContain("Organizer handout integration is not")
     expect(products).toContain("existing?.product.eventMarketRefs")
     expect(products).toMatch(
       /buildShippingMetadata\(\s*signerPubkey,\s*dTag,\s*form,\s*presetShippingConfig\s*\)/
