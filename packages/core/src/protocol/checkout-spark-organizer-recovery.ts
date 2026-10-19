@@ -31,6 +31,7 @@ import type { ResolveInboxDeclarationOptions } from "./private-message-routing"
 import type { publishWithPlanner } from "./relay-publish"
 import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
 import { matchesCheckoutSparkOrderEventMarketSnapshot } from "./checkout-spark-event-market"
+import { hasExactMachineRumorBindings } from "./machine-rumor-binding"
 
 const DOMAIN = "conduit:checkout-spark-organizer-recovery:v1"
 const HEX_64 = /^[0-9a-f]{64}$/
@@ -365,16 +366,7 @@ export function parseCheckoutSparkOrganizerRecoveryRumor(
       JSON.parse(rumor.content)
     )
     const expected = buildCheckoutSparkOrganizerRecoveryRumor(payload)
-    if (
-      rumor.sig !== undefined ||
-      rumor.kind !== expected.kind ||
-      rumor.pubkey !== expected.pubkey ||
-      rumor.created_at !== expected.created_at ||
-      rumor.id !== expected.id ||
-      JSON.stringify(rumor.tags) !== JSON.stringify(expected.tags) ||
-      rumor.content !== expected.content
-    )
-      invalid()
+    if (!hasExactMachineRumorBindings(rumor, expected)) invalid()
     return payload
   } catch {
     return invalid()
@@ -389,16 +381,7 @@ export function parseCheckoutSparkOrganizerRecoveryProgressRumor(
       JSON.parse(rumor.content)
     )
     const expected = buildCheckoutSparkOrganizerRecoveryRumor(payload)
-    if (
-      rumor.sig !== undefined ||
-      rumor.kind !== expected.kind ||
-      rumor.pubkey !== expected.pubkey ||
-      rumor.created_at !== expected.created_at ||
-      rumor.id !== expected.id ||
-      JSON.stringify(rumor.tags) !== JSON.stringify(expected.tags) ||
-      rumor.content !== expected.content
-    )
-      invalid()
+    if (!hasExactMachineRumorBindings(rumor, expected)) invalid()
     return payload
   } catch {
     return invalid()

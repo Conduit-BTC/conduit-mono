@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { getEventHash } from "nostr-tools"
+import { hasExactMachineRumorBindings } from "./machine-rumor-binding"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -159,16 +160,7 @@ export function parseCheckoutSparkMerchantEventProgressRumor(
     JSON.parse(rumor.content)
   )
   const expected = buildCheckoutSparkMerchantEventProgressRumor(payload)
-  if (
-    rumor.sig !== undefined ||
-    rumor.id !== expected.id ||
-    rumor.kind !== expected.kind ||
-    rumor.pubkey !== expected.pubkey ||
-    rumor.created_at !== expected.created_at ||
-    JSON.stringify(rumor.tags) !== JSON.stringify(expected.tags) ||
-    rumor.content !== expected.content
-  )
-    invalid()
+  if (!hasExactMachineRumorBindings(rumor, expected)) invalid()
   return payload
 }
 
