@@ -82,6 +82,24 @@ function allowedOrigins(raw: string | undefined): ReadonlySet<string> | null {
   return origins.size ? origins : null
 }
 
+function isPagesPreviewOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin)
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.port &&
+      url.origin === origin &&
+      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:conduit-market-coo|conduit-merchant-33n)\.pages\.dev$/.test(
+        url.hostname
+      )
+    )
+  } catch {
+    return false
+  }
+}
+
 function response(
   body: unknown,
   status: number,
@@ -171,7 +189,9 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
   request: Request,
   env: CheckoutSparkPricingAuthorityEnv,
   overrides: Partial<CheckoutSparkPricingAuthorityDependencies> = {},
-  execution?: { waitUntil(promise: Promise<unknown>): void }
+  execution?: { waitUntil(promise: Promise<unknown>): void },
+  // Selected by the preview entry point, never by a request or runtime variable.
+  policy: { allowPagesPreviewOrigins?: boolean } = {}
 ): Promise<Response> {
   const url = new URL(request.url)
   if (
@@ -185,7 +205,10 @@ export async function handleCheckoutSparkPricingAuthorityRequest(
   if (!origins)
     return response({ error: "Checkout pricing is unavailable." }, 503)
   const origin = request.headers.get("origin") ?? ""
-  if (!origins.has(origin))
+  if (
+    !origins.has(origin) &&
+    !(policy.allowPagesPreviewOrigins && isPagesPreviewOrigin(origin))
+  )
     return response({ error: "Origin is not allowed." }, 403)
   if (request.method === "OPTIONS") return response(null, 204, origin)
   if (request.method !== "POST")

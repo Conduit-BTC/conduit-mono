@@ -25,6 +25,7 @@
   "env": {
     "preview": {
       "name": "conduit-checkout-pricing-preview",
+      "main": "src/checkout-pricing-preview.ts",
       "workers_dev": false,
       "preview_urls": false,
       "routes": [],
