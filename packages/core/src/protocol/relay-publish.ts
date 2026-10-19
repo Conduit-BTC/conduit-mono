@@ -609,7 +609,7 @@ export async function publishSignedEventPlan(input: {
   authorPubkey?: string
   relayUrls: readonly string[]
   relayTargets?: readonly RelayTarget[]
-  /** Bound attempts after live account source-policy filtering. */
+  /** Concurrent attempts; the exact selected plan is fully drained. */
   maxRelayAttempts?: number
   requiredRelayCount: number
   timeoutMs: number
@@ -678,8 +678,8 @@ export async function publishSignedEventPlan(input: {
     authorPubkey: input.relayAuthentication?.expectedPubkey,
     ...input,
   })
-  // Keep eligible reserves until each actual attempt passes its live check.
-  // A policy change between planning and admission must not spend the cap.
+  // Keep the immutable selected plan until every queued attempt passes its
+  // live check. Concurrency never truncates the target set.
   const targets = await resolveRelayPublishTargets({
     ...input,
     maxRelayAttempts: undefined,
@@ -767,11 +767,10 @@ export async function publishSignedEventPlan(input: {
     requestedLimit !== undefined &&
     Number.isSafeInteger(requestedLimit) &&
     requestedLimit > 0
-      ? requestedLimit
-      : targets.relayUrls.length
+      ? Math.min(requestedLimit, 8)
+      : 4
   if (input.relayAuthentication) {
     for (const url of targets.relayUrls) {
-      if (attemptedRelayUrls.length >= limit) break
       await attempt(url)
     }
   } else {
@@ -782,7 +781,7 @@ export async function publishSignedEventPlan(input: {
         async () => {
           while (nextIndex < targets.relayUrls.length) {
             const url = targets.relayUrls[nextIndex++]!
-            if (await attempt(url)) break
+            await attempt(url)
           }
         }
       )
@@ -920,10 +919,7 @@ async function resolveRelayPublishTargets(input: {
                 testOverrides.inboxDeclarationEvidenceRepository,
             })
           ).map((target) => target.url)
-  const relayUrls =
-    input.maxRelayAttempts && input.maxRelayAttempts > 0
-      ? eligibleRelayUrls.slice(0, input.maxRelayAttempts)
-      : eligibleRelayUrls
+  const relayUrls = eligibleRelayUrls
   const eligibleSet = new Set(eligibleRelayUrls)
   return {
     candidateRelayUrls,

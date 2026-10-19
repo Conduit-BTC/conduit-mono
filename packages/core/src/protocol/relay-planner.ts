@@ -100,7 +100,7 @@ export interface RelayReadPlanInput {
    * selection. Remote NIP-65 lists and relay hints must never populate this.
    */
   ownerSelectedRelayUrls?: readonly string[]
-  /** Maximum number of relays to query (bounded fanout). */
+  /** Concurrent read attempts; does not truncate selected coverage. */
   maxRelays?: number
   /** Skip per-relay health filtering (test seam / last-resort retries). */
   skipHealthFilter?: boolean
@@ -121,16 +121,14 @@ export interface RelayReadPlan {
   intent: RelayReadIntent
   /** Ordered candidates with every independent authority retained. */
   relayTargets: RelayTarget[]
-  /** Ordered relay URLs to query under the legacy planner-time fanout cap. */
+  /** Complete ordered relay selection, independent of concurrency. */
   relayUrls: string[]
   /**
-   * Full ordered, health-eligible candidate set. Final I/O applies
-   * `maxRelayAttempts` after re-reading live account source policy so a
-   * disabled source cannot consume the bounded fanout ahead of an enabled
-   * source.
+   * Full ordered, health-eligible selection. Final I/O rechecks live authority
+   * for each candidate as a concurrency slot becomes available.
    */
   candidateRelayUrls: string[]
-  /** Maximum admitted relay attempts. Omitted when fanout is unbounded. */
+  /** Concurrent relay attempts. Omitted uses the reader's bounded default. */
   maxRelayAttempts?: number
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
@@ -158,9 +156,9 @@ export interface RelayWritePlanInput {
   authenticatedPubkey?: string | null
   /** Exact relay subset backed by that authenticated owner's Network choice. */
   ownerSelectedRelayUrls?: readonly string[]
-  /** Cap the primary relay count. */
+  /** Primary write concurrency, independent of selected target count. */
   maxPrimaryRelays?: number
-  /** Cap the broadcast relay count (best-effort, beyond primary). */
+  /** Best-effort broadcast concurrency, independent of target count. */
   maxBroadcastRelays?: number
   /** Skip health filtering. */
   skipHealthFilter?: boolean
@@ -199,7 +197,7 @@ export interface RelayWritePlan {
   primaryRelayUrls: string[]
   /** Full ordered candidates retained until final live-policy admission. */
   primaryCandidateRelayUrls?: string[]
-  /** Maximum admitted primary relay attempts; omitted when unbounded. */
+  /** Primary concurrency; omission uses the writer's bounded default. */
   maxPrimaryRelayAttempts?: number
   /**
    * Best-effort broadcast targets. Failures here do not fail the publish.
@@ -209,7 +207,7 @@ export interface RelayWritePlan {
   broadcastRelayUrls: string[]
   /** Full ordered broadcast candidates retained until final admission. */
   broadcastCandidateRelayUrls?: string[]
-  /** Maximum admitted broadcast attempts; omitted when unbounded. */
+  /** Broadcast concurrency; omission uses the writer's bounded default. */
   maxBroadcastRelayAttempts?: number
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
@@ -521,9 +519,24 @@ function applyHealthFilter(
   return { kept: dedupeOrdered(healthy), parked: dedupeOrdered(parked) }
 }
 
-function clampFanout(urls: string[], limit: number | undefined): string[] {
-  if (limit === undefined || limit <= 0) return urls
-  return urls.slice(0, limit)
+/** Alternate app and additive sources; neither can starve behind a large set. */
+function interleaveAppRelays(
+  urls: readonly string[],
+  appUrls: readonly string[]
+): string[] {
+  const appSet = new Set(appUrls)
+  const app = urls.filter((url) => appSet.has(url))
+  const personal = urls.filter((url) => !appSet.has(url))
+  const ordered: string[] = []
+  for (
+    let index = 0;
+    index < Math.max(app.length, personal.length);
+    index += 1
+  ) {
+    if (personal[index]) ordered.push(personal[index])
+    if (app[index]) ordered.push(app[index])
+  }
+  return ordered
 }
 
 function targetsForCandidateUrls(
@@ -585,7 +598,7 @@ function appReadGrantSources(intent: RelayReadIntent, urls: readonly string[]) {
  * 2. User's commerce relays (for commerce intents) or general read relays.
  * 3. Public fallback relays.
  *
- * The result is deduplicated and capped at `maxRelays`.
+ * The complete selection is deduplicated. `maxRelays` bounds concurrency only.
  */
 export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
@@ -767,7 +780,14 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   )
 
   const ordered = applyReadTransportAuthority(
-    dedupeOrdered([...hintRelayUrls, ...personalBaseRelays, ...appBaseRelays]),
+    interleaveAppRelays(
+      dedupeOrdered([
+        ...hintRelayUrls,
+        ...personalBaseRelays,
+        ...appBaseRelays,
+      ]),
+      appBaseRelays
+    ),
     ownerSelectedRelayUrls
   )
   const { kept, parked } = applyHealthFilter(
@@ -779,7 +799,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   const requestedMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
   const maxRelayAttempts =
     requestedMaxRelays > 0 ? requestedMaxRelays : undefined
-  const relayUrls = clampFanout(kept, requestedMaxRelays)
+  const relayUrls = kept
   const candidateRelayUrlSet = new Set(kept)
   const appRelaySet = new Set(appBaseRelays)
   const personalRelaySet = new Set([
@@ -961,10 +981,13 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
             input.authenticatedPubkey,
             input.ownerSelectedRelayUrls
           )
-    const ordered = dedupeOrdered(
-      hasReconciledOwnerProjection
-        ? userWriteRelays
-        : [...authorWriteHints, ...userWriteRelays]
+    const ordered = interleaveAppRelays(
+      dedupeOrdered(
+        hasReconciledOwnerProjection
+          ? userWriteRelays
+          : [...authorWriteHints, ...userWriteRelays]
+      ),
+      appWriteRelays
     )
     const { kept, parked } = applyHealthFilter(
       ordered,
@@ -973,7 +996,7 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     )
     const requestedMaxPrimaryRelays =
       input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
-    const primaryRelayUrls = clampFanout(kept, requestedMaxPrimaryRelays)
+    const primaryRelayUrls = kept
     const authorWriteHintSet = new Set(authorWriteHints)
     const primaryRelayTargets = targetsForCandidateUrls(
       kept,
@@ -1104,8 +1127,9 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   )
 
   const primaryKeptSet = new Set(primaryKept)
-  const broadcastOrdered = dedupeOrdered(
-    userWriteRelays.filter((url) => !primaryKeptSet.has(url))
+  const broadcastOrdered = interleaveAppRelays(
+    dedupeOrdered(userWriteRelays.filter((url) => !primaryKeptSet.has(url))),
+    appWriteRelays
   )
   const { kept: broadcastKept, parked: broadcastParked } = applyHealthFilter(
     broadcastOrdered,
@@ -1117,11 +1141,8 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
   const requestedMaxBroadcastRelays =
     input.maxBroadcastRelays ?? DEFAULT_BROADCAST_FANOUT
-  const primaryRelayUrls = clampFanout(primaryKept, requestedMaxPrimaryRelays)
-  const broadcastRelayUrls = clampFanout(
-    broadcastKept,
-    requestedMaxBroadcastRelays
-  )
+  const primaryRelayUrls = primaryKept
+  const broadcastRelayUrls = broadcastKept
   const executableRelayUrls = dedupeOrdered([...primaryKept, ...broadcastKept])
   const missingRecipientFallbackSet = new Set(missingRecipientFallback)
   const authenticatedRecipientHintSet = new Set(authenticatedRecipientHints)

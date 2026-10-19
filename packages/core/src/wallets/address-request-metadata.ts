@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { validateAccountStorageRelayTransition } from "../protocol/account-storage-relay-policy"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
 import type { SignedNostrEvent } from "../protocol/nostr-event-signer"
@@ -44,7 +45,11 @@ export type AddressRequestSnapshot = z.infer<typeof snapshotSchema>
 export type AddressRequestNetwork = AddressRequestSnapshot["network"]
 export interface AddressRequestState {
   observed?: SignedNostrEvent
-  operation?: { event: SignedNostrEvent; targets: string[] }
+  operation?: {
+    event: SignedNostrEvent
+    targets: string[]
+    relayPolicyTargets?: string[]
+  }
 }
 export type AddressRequestStates = Partial<
   Record<AddressRequestNetwork, AddressRequestState>
@@ -129,6 +134,12 @@ export function validateAddressRequestStates(
           .refine((urls) => new Set(urls).size === urls.length)
           .parse(state.operation.targets),
       }
+      const relayPolicyTargets = validateAccountStorageRelayTransition(
+        state.operation.targets,
+        state.operation.relayPolicyTargets
+      )
+      if (relayPolicyTargets)
+        checked.operation.relayPolicyTargets = relayPolicyTargets
     }
     result[network] = checked
   }

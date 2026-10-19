@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { validateAccountStorageRelayTransition } from "../protocol/account-storage-relay-policy"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
 import type { SignedNostrEvent } from "../protocol/nostr-event-signer"
@@ -36,6 +37,7 @@ export interface WalletNameState {
   operation?: {
     event: SignedNostrEvent
     targets: string[]
+    relayPolicyTargets?: string[]
     intents: Record<string, string>
   }
 }
@@ -119,6 +121,12 @@ export function validateWalletNameStates(
           .refine((value) => Object.keys(value).length <= 128)
           .parse(intents),
       }
+      const relayPolicyTargets = validateAccountStorageRelayTransition(
+        targets,
+        state.operation.relayPolicyTargets
+      )
+      if (relayPolicyTargets)
+        result[network]!.operation!.relayPolicyTargets = relayPolicyTargets
     }
   }
   return result

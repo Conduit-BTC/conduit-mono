@@ -30,6 +30,7 @@ import {
 } from "./relay-settings"
 import { config } from "../config"
 import {
+  configuredRelayTargets,
   filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
@@ -270,25 +271,34 @@ function persistedTargetRelaySources(
     mergeRelayTargets(
       ...(target.appRelay === true || authorWrite
         ? [
-            relayTargetsFromUrls([relayUrl], {
-              kind: "app",
-              operation: "write",
-              bucket: "commerce_write",
-            }),
-            relayTargetsFromUrls([relayUrl], {
-              kind: "app",
-              operation: "write",
-              bucket: "general_write",
-            }),
+            configuredRelayTargets(
+              {
+                kind: "app",
+                operation: "write",
+                bucket: "commerce_write",
+              },
+              [relayUrl]
+            ),
+            configuredRelayTargets(
+              {
+                kind: "app",
+                operation: "write",
+                bucket: "general_write",
+              },
+              [relayUrl]
+            ),
           ]
         : []),
       ...(target.roles.includes("conduit")
         ? [
-            relayTargetsFromUrls([relayUrl], {
-              kind: "app",
-              operation: "write",
-              bucket: "general_write",
-            }),
+            configuredRelayTargets(
+              {
+                kind: "app",
+                operation: "write",
+                bucket: "general_write",
+              },
+              [relayUrl]
+            ),
           ]
         : []),
       ...(authorWrite

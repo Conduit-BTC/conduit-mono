@@ -132,7 +132,7 @@ it("keeps author write-relay scans within the shared request and continuation bu
   const first = await scanEventMarketCandidates(input)
   expect(lookups).toBe(1)
   expect(requests).toBe(128)
-  expect([...contacted].sort()).toEqual([...sources].sort())
+  expect([...contacted]).toEqual(expect.arrayContaining(sources))
   expect(first.pages.length).toBeGreaterThan(0)
   const continuation = JSON.parse(
     JSON.stringify({ ...first, pendingCoordinates: [] })
@@ -140,7 +140,7 @@ it("keeps author write-relay scans within the shared request and continuation bu
   requests = 0
   const next = await scanEventMarketCandidates({ ...input, continuation })
   expect(requests).toBeLessThanOrEqual(128)
-  expect(contacted.size).toBe(8)
+  expect([...contacted].sort()).toEqual([...plan.relayUrls].sort())
   expect(next.pages).toEqual([])
 })
 

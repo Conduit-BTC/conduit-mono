@@ -27,7 +27,7 @@ const OWNER = getPublicKey(OWNER_SECRET)
 const PERSONAL_RELAY = "wss://personal.example"
 const PERSONAL_ONLY_RELAY = "wss://personal-only.example"
 const REMOTE_PERSONAL_OVERLAP_RELAY = "wss://relay.nostr.band"
-const OVERLAP_RELAY = "wss://conduit-congee.fly.dev"
+const OVERLAP_RELAY = config.appReadRelayUrls[0]!
 const DECLARED_INBOX = "wss://inbox.example"
 const REMOVED_APP_RELAY = "wss://relay.damus.io"
 

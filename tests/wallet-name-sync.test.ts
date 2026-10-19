@@ -1,4 +1,8 @@
 import { afterEach, expect, test } from "bun:test"
+import {
+  ACCOUNT_STORAGE_RELAYS,
+  LEGACY_ACCOUNT_STORAGE_RELAYS,
+} from "../packages/core/src/config"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import {
   finalizeEvent,
@@ -34,11 +38,26 @@ import {
 import {
   synchronizeAccountWalletNames,
   synchronizeAccountWalletNamesAfterRecovery,
+  getAccountSparkRecovery,
+  getAccountAddressRequestService,
 } from "../packages/core/src/wallets/account-spark-recovery"
 import type {
   SignedNostrEvent,
   NostrKeySigner,
 } from "../packages/core/src/protocol/nostr-event-signer"
+import {
+  createInMemoryAccountNetworkLocalStateRepository,
+  applyAccountNetworkRelayExclusion,
+} from "../packages/core/src/protocol/account-network-local-state"
+import { setAccountNetworkRoutingSourceEnabled } from "../packages/core/src/protocol/account-network-routing-policy"
+import {
+  installProtectedReadSigner,
+  removeProtectedReadSigner,
+} from "../packages/core/src/protocol/protected-read-authorization"
+import {
+  __setRelayPublishTestOverrides,
+  __resetRelayPublishTestOverrides,
+} from "../packages/core/src/protocol/relay-publish"
 
 const databases: ConduitDB[] = []
 afterEach(async () => {
@@ -65,9 +84,10 @@ async function fixture() {
     failPublish = false
   const unavailable = new Set<string>()
   const relays = new Map(
-    ["wss://relay.conduit.market", "wss://relay.damus.io", "wss://nos.lol"].map(
-      (url) => [url, new Map<string, SignedNostrEvent>()]
-    )
+    ACCOUNT_STORAGE_RELAYS.map(({ url }) => [
+      url,
+      new Map<string, SignedNostrEvent>(),
+    ])
   )
   const provider: NostrKeySigner = {
     pubkey: owner,
@@ -381,6 +401,121 @@ for (const pendingRename of [false, true]) {
     }
   })
 }
+
+test("production account factories select the central policy without caller-provided relay defaults", async () => {
+  const f = await fixture()
+  activateAccountSigner(f.signer)
+  try {
+    const observed: string[] = []
+    const transport: SparkRecoveryTransport = {
+      read: async (url) => {
+        observed.push(url)
+        return { status: "complete", events: [] }
+      },
+      publish: async () => {
+        throw new Error("Read-only factory test must not publish")
+      },
+    }
+    const recovery = getAccountSparkRecovery(f.signer)
+    // Substitute I/O only; keep the actual factory, planner, account scope and discovery.
+    const input = Reflect.get(recovery, "input")
+    input.store = device().journal
+    input.transport = transport
+    expect((await recovery.discover(false, "mainnet")).coverage).toBe(
+      "complete"
+    )
+    const expected = ACCOUNT_STORAGE_RELAYS.map(({ url }) => url)
+    expect([...new Set(observed)]).toEqual(expected)
+    observed.splice(0)
+    const requests = getAccountAddressRequestService(f.signer)
+    Reflect.get(requests, "input").store = new (
+      await import("../packages/core/src/wallets/address-request-store")
+    ).DexieAddressRequestStore(f.local.database)
+    Reflect.get(requests, "input").transport = transport
+    await requests.load("mainnet", f.discovery)
+    expect([...new Set(observed)]).toEqual(expected)
+  } finally {
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("production wallet publisher rechecks central app authority and whole-relay removal before sending", async () => {
+  const f = await fixture()
+  activateAccountSigner(f.signer)
+  const lease = installProtectedReadSigner(f.signer, f.owner, () => true)
+  const repository = createInMemoryAccountNetworkLocalStateRepository()
+  const sent: string[] = []
+  __setRelayPublishTestOverrides({
+    accountNetworkLocalStateRepository: repository,
+    publishSignedEventFrameToRelay: async (input) => {
+      if (!(await input.beforeSend?.())) return "policy_blocked"
+      sent.push(input.relayUrl)
+      return "acked"
+    },
+  })
+  try {
+    const service = getAccountSparkRecovery(f.signer)
+    const transport = Reflect.get(service, "input")
+      .transport as SparkRecoveryTransport
+    const event = (await f.local.journal.load(f.owner)).records[0].event
+    const relay = ACCOUNT_STORAGE_RELAYS[0].url
+    expect(await transport.publish(relay, event, () => true)).toBe("acked")
+    expect(sent).toEqual([relay])
+    await repository.updateRoutingPolicy(f.owner, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "app", false)
+    )
+    expect(await transport.publish(relay, event, () => true)).toBe(
+      "policy_blocked"
+    )
+    await repository.updateRoutingPolicy(f.owner, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "app", true)
+    )
+    await repository.update(f.owner, (state) =>
+      applyAccountNetworkRelayExclusion(state, {
+        relayUrl: relay,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: Date.now(),
+      })
+    )
+    expect(await transport.publish(relay, event, () => true)).toBe(
+      "policy_blocked"
+    )
+    expect(sent).toEqual([relay])
+  } finally {
+    __resetRelayPublishTestOverrides()
+    removeProtectedReadSigner(lease)
+    retireAccountSigner(f.signer)
+  }
+})
+
+test("installed legacy pending rename resumes on central targets after reload without signing again", async () => {
+  const f = await fixture()
+  await f.local.names.queue(f.owner, "mainnet", f.walletId, "Pending upgrade")
+  f.failPublish(true)
+  expect((await f.namesService().sync("mainnet", f.discovery)).ready).toBe(
+    false
+  )
+  const row = (await f.local.database.sparkRecoveryEvidence.get(f.owner))!
+  const operation = row.walletNameSync!.mainnet!.operation!
+  operation.targets = LEGACY_ACCOUNT_STORAGE_RELAYS.map(({ url }) => url)
+  await f.local.database.sparkRecoveryEvidence.put(row)
+  const before = f.signing()
+  f.failPublish(false)
+  const reopened = new DexieWalletNameStore(f.local.database)
+  expect(
+    (await f.namesService(reopened).sync("mainnet", f.discovery)).ready
+  ).toBe(true)
+  expect(f.signing()).toBe(before)
+  expect(
+    f.sent.every(
+      (event) =>
+        event.id === operation.event.id &&
+        event.content === operation.event.content
+    )
+  ).toBe(true)
+  expect((await reopened.load(f.owner, "mainnet")).pending).toEqual({})
+})
 
 test("delivery retries immutable signed bytes and retains a newer rename queued during delivery", async () => {
   const f = await fixture()

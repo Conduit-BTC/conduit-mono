@@ -18,7 +18,7 @@ export interface RelayBucketConfig {
 }
 
 export type AppRelayNip65Mode = "read_write" | "write" | null
-export const APP_RELAY_REGISTRY_VERSION = 5
+export const APP_RELAY_REGISTRY_VERSION = 7
 
 /**
  * One transparent, code-owned Conduit app relay. These records are product
@@ -32,25 +32,49 @@ export interface AppRelayDefinition {
   write: boolean
   commerce: boolean
   privateInbox: boolean
+  /** Configured NIP-78 candidate; durable delivery still requires exact readback. */
+  accountStorage?: boolean
+  /** Curated operator identity, independent of advertised relay capabilities. */
+  operator?: string
+  /** A membership decision can precede qualification of an executable role. */
+  qualificationNote?: string
   nip65Preset: AppRelayNip65Mode
   nip17Preset: boolean
 }
 
 export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
   {
-    url: "wss://conduit-congee.fly.dev",
+    url: "wss://relay.conduit.market",
     fallbackName: "Conduit Marketplace Relay",
     fallbackIconUrl: "/images/logo/logo-icon.svg",
     read: true,
     write: true,
     commerce: true,
     privateInbox: true,
+    accountStorage: true,
+    operator: "conduit",
     nip65Preset: "read_write",
     nip17Preset: true,
   },
   {
+    url: "wss://search.brainstorm.world",
+    fallbackName: "Brainstorm Search",
+    operator: "brainstorm",
+    read: false,
+    write: false,
+    commerce: false,
+    privateInbox: false,
+    accountStorage: false,
+    nip65Preset: null,
+    nip17Preset: false,
+    qualificationNote:
+      "Search requires an observer or authentication. Automatic routing is pending qualification.",
+  },
+  {
     url: "wss://relay.ditto.pub",
     fallbackName: "Ditto Relay",
+    accountStorage: true,
+    operator: "ditto",
     read: true,
     write: true,
     commerce: true,
@@ -58,97 +82,70 @@ export const CANONICAL_APP_RELAY_DEFINITIONS: readonly AppRelayDefinition[] = [
     nip65Preset: "read_write",
     nip17Preset: true,
   },
-  {
-    url: "wss://relay.primal.net",
-    fallbackName: "Primal Public Relay",
-    read: false,
-    write: true,
-    commerce: false,
-    privateInbox: false,
-    nip65Preset: "write",
-    nip17Preset: false,
-  },
-  {
-    url: "wss://nos.lol",
-    fallbackName: "nos.lol",
-    read: true,
-    write: false,
-    commerce: false,
-    privateInbox: false,
-    nip65Preset: null,
-    nip17Preset: false,
-  },
-  {
-    url: "wss://relay.plebeian.market",
-    fallbackName: "Plebeian Market Relay",
-    read: false,
-    write: false,
-    commerce: true,
-    privateInbox: false,
-    nip65Preset: null,
-    nip17Preset: false,
-  },
 ]
 
 export const CANONICAL_APP_READ_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
   (relay) => relay.read
 ).map((relay) => relay.url)
-export const CANONICAL_APP_BACKPLANE_RELAYS = ["wss://conduit-congee.fly.dev"]
+export const ACCOUNT_STORAGE_RELAY_POLICY_VERSION = 1
+export const ACCOUNT_STORAGE_RELAYS = CANONICAL_APP_RELAY_DEFINITIONS.filter(
+  (relay) => relay.accountStorage
+).map((relay) => ({ url: relay.url, operator: relay.operator ?? null }))
+/** Immutable version-1 migration destination history, independent of future defaults. */
+export const ACCOUNT_STORAGE_V1_RELAYS = Object.freeze([
+  { url: "wss://relay.conduit.market", operator: "conduit" },
+  { url: "wss://relay.ditto.pub", operator: "ditto" },
+])
+
+/** Historical evidence only: never selected for a new storage operation. */
+export const LEGACY_ACCOUNT_STORAGE_RELAYS = Object.freeze([
+  { url: "wss://relay.conduit.market", operator: "conduit" },
+  { url: "wss://relay.damus.io", operator: "damus" },
+  { url: "wss://nos.lol", operator: "nos.lol" },
+])
+export const CANONICAL_APP_BACKPLANE_RELAYS =
+  CANONICAL_APP_RELAY_DEFINITIONS.filter(
+    (relay) => relay.operator === "conduit"
+  ).map((relay) => relay.url)
 export const CANONICAL_APP_WRITE_RELAYS =
   CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.write).map(
     (relay) => relay.url
   )
-export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = [
-  "wss://relay.ditto.pub",
-  "wss://nos.lol",
-  "wss://relay.primal.net",
-]
+export const CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS = CANONICAL_APP_READ_RELAYS
 /**
  * Clave's push-wake proxy only watches this relay. Keep it in the Nostr
  * Connect pairing set so a backgrounded Clave (iOS) is woken for later sign
  * requests; it is not a general read or write relay for Conduit.
  */
 export const CLAVE_PUSH_RELAY = "wss://relay.powr.build"
-export const CANONICAL_COMMERCE_DISCOVERY_RELAYS = [
-  "wss://conduit-congee.fly.dev",
-  "wss://relay.ditto.pub",
-  "wss://relay.plebeian.market",
-]
+export const CANONICAL_COMMERCE_DISCOVERY_RELAYS =
+  CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.commerce).map(
+    (relay) => relay.url
+  )
 // Market product NIP-50 uses the primary entry. Ditto remains a secondary
 // search index for other discovery paths.
-export const CANONICAL_SEARCH_INDEX_RELAYS = [
-  "wss://conduit-congee.fly.dev",
-  "wss://relay.ditto.pub",
-]
-export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS = [
-  "wss://conduit-congee.fly.dev",
-  "wss://relay.ditto.pub",
-  "wss://nos.lol",
-  "wss://relay.primal.net",
-]
+export const CANONICAL_SEARCH_INDEX_RELAYS = CANONICAL_APP_READ_RELAYS
+export const CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS =
+  CANONICAL_APP_READ_RELAYS
 /**
  * Bounded compatibility reads for encrypted commerce messages, limited to the
  * protected default inboxes and aligned with the validated-order registry.
  * Do not use this set when creating a kind-10050 inbox declaration.
  */
-export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS = [
-  "wss://conduit-congee.fly.dev",
-  "wss://relay.ditto.pub",
-]
-export const CANONICAL_DM_INBOX_DEFAULT_RELAYS = [
-  "wss://conduit-congee.fly.dev",
-  "wss://relay.ditto.pub",
-]
+export const CANONICAL_COMMERCE_DM_FALLBACK_RELAYS =
+  CANONICAL_APP_RELAY_DEFINITIONS.filter((relay) => relay.privateInbox).map(
+    (relay) => relay.url
+  )
+export const CANONICAL_DM_INBOX_DEFAULT_RELAYS =
+  CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
 /**
  * Validated-order compatibility routing (CND-208): explicit operator-approved
  * registry for temporary compatibility writes of validated kind-16 order
  * messages when a recipient has no usable kind-10050 declaration. Never
  * extend this with arbitrary NIP-65, local OUT, or public relays.
  */
-export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS = [
-  "wss://conduit-congee.fly.dev",
-  "wss://relay.ditto.pub",
-]
+export const CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS =
+  CANONICAL_COMMERCE_DM_FALLBACK_RELAYS
 export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://nos.lol",
   "wss://relay.ditto.pub",
@@ -156,11 +153,20 @@ export const CANONICAL_ZAP_PUBLIC_RELAYS = [
   "wss://relay.plebeian.market",
 ]
 export const CANONICAL_DEFAULT_RELAYS = [
-  ...CANONICAL_APP_BACKPLANE_RELAYS,
-  ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
+  ...new Set([
+    ...CANONICAL_APP_BACKPLANE_RELAYS,
+    ...CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS,
+  ]),
 ]
-const RETIRED_DEFAULT_RELAYS = new Set<string>()
-const FALLBACK_RELAY_URL = "wss://conduit-congee.fly.dev"
+/** Validation only for already-staged exact compatibility wraps. */
+export const HISTORICAL_COMPATIBILITY_ORDER_RELAYS = [
+  "wss://relay.conduit.market",
+  "wss://relay.ditto.pub",
+  "wss://conduit-congee.fly.dev",
+]
+export const RETIRED_CONDUIT_RELAY_URL = "wss://conduit-congee.fly.dev"
+const RETIRED_DEFAULT_RELAYS = new Set([RETIRED_CONDUIT_RELAY_URL])
+const FALLBACK_RELAY_URL = CANONICAL_APP_BACKPLANE_RELAYS[0]!
 const OFFICIAL_PRODUCTION_APP_HOSTNAMES = new Set([
   "shop.conduit.market",
   "sell.conduit.market",

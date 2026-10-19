@@ -480,10 +480,10 @@ for (const app of ["market", "merchant"] as const) {
       await openNetwork(page, app)
 
       const disclosure = page.getByRole("button", {
-        name: /^App Relays \d+ managed routes? for reliable commerce, discovery, and messaging\.$/,
+        name: /^App Relays \d+ app relays\. Qualified routes stay active alongside Your Relays\.$/,
       })
       const summary = page.getByText(
-        /^\d+ managed routes? for reliable commerce, discovery, and messaging\.$/
+        /^\d+ app relays\. Qualified routes stay active alongside Your Relays\.$/
       )
       const appRelayList = page.locator('ul[aria-label="App Relays"]')
       const personalHeading = page.getByRole("heading", {
@@ -550,6 +550,78 @@ for (const app of ["market", "merchant"] as const) {
       await disclosure.press("Space")
       await expect(disclosure).toHaveAttribute("aria-expanded", "false")
       await expect(appRelayList).toBeHidden()
+    })
+
+    test(`${app} ${layout.name} confirms disabling in Advanced and preserves off across reload @${app}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize(layout.viewport)
+      await openNetwork(page, app)
+      const advanced = page.getByRole("button", {
+        name: "Advanced / Danger zone",
+        exact: true,
+      })
+      const disable = page.getByRole("button", {
+        name: "Disable App Relays",
+        exact: true,
+      })
+      await expect(advanced).toHaveAttribute("aria-expanded", "false")
+      await expect(disable).toBeHidden()
+      await advanced.click()
+      await disable.click()
+      const dialog = page.getByRole("alertdialog", {
+        name: "Turn off App Relays?",
+      })
+      await expect(dialog).toBeVisible()
+      await expect(dialog).toContainText("qualified wallet recovery")
+      await dialog.getByRole("button", { name: "Keep enabled" }).click()
+      await expect(dialog).toBeHidden()
+      await expect(
+        page.getByText("App Relays are off", { exact: true })
+      ).toHaveCount(0)
+      await disable.click()
+      await dialog
+        .getByRole("button", { name: "Turn off App Relays", exact: true })
+        .click()
+      await expect(
+        page.getByText("App Relays are off", { exact: true })
+      ).toBeVisible()
+      await page.reload()
+      await expect(
+        page.getByText("App Relays are off", { exact: true })
+      ).toBeVisible()
+      await expect(advanced).toHaveAttribute("aria-expanded", "false")
+      const appHeading = page.getByRole("heading", {
+        name: "App Relays",
+        exact: true,
+      })
+      const headingBox = await appHeading.boundingBox()
+      expect(headingBox?.height).toBeLessThan(60)
+      const summaryBox = await page.locator("#app-relays-summary").boundingBox()
+      expect(summaryBox?.height).toBeLessThan(120)
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth + 1
+        )
+      ).toBe(true)
+      if (screenshotDirectory) {
+        mkdirSync(screenshotDirectory, { recursive: true })
+        await page.screenshot({
+          path: join(
+            screenshotDirectory,
+            `${app}-${layout.name}-network-app-relays-off.png`
+          ),
+          fullPage: true,
+          animations: "disabled",
+        })
+      }
+      await page
+        .getByRole("button", { name: "Enable App Relays", exact: true })
+        .first()
+        .click()
+      await expect(
+        page.getByText("App Relays are off", { exact: true })
+      ).toHaveCount(0)
     })
 
     test(`${app} ${layout.name} reconstructs signed Network preferences despite obsolete local settings @${app}`, async ({

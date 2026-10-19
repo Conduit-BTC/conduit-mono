@@ -8,12 +8,12 @@ import {
 } from "nostr-tools/pure"
 import { v2 } from "nostr-tools/nip44"
 import { ConduitDB } from "../packages/core/src/db"
+import { ACCOUNT_STORAGE_RELAYS as SPARK_RECOVERY_RENDEZVOUS } from "../packages/core/src/config"
 import {
   SPARK_RECOVERY_KIND,
   SPARK_RECOVERY_PREFIX,
 } from "../packages/core/src/wallets/spark-recovery-contract"
 import {
-  SPARK_RECOVERY_RENDEZVOUS,
   type SparkRecoveryRecord,
   type SparkRecoveryState,
 } from "../packages/core/src/wallets/spark-recovery-service"
