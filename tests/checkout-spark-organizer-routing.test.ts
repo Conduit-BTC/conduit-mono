@@ -8,6 +8,8 @@ import {
 } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.browser.js"
 import {
   CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+  assertCheckoutSparkOrganizerCommerceProof,
+  assertCheckoutSparkOrganizerRecoveryAuthority,
   DexieCheckoutSparkSettledRepository,
   checkoutSparkConduitFeeRecipient,
   createCheckoutSparkNativeTreasurySdkAdapter,
@@ -21,7 +23,11 @@ import {
   recordCheckoutSparkSettledLegStatus,
   resolveCheckoutSparkLnurlInvoice,
 } from "@conduit/core"
-import { acceptCheckoutSparkOrganizerStockOrder } from "@conduit/core/protocol/event-market-stock-handout"
+import {
+  acceptCheckoutSparkOrganizerStockOrder,
+  confirmOrganizerStockOrderHandout,
+} from "@conduit/core/protocol/event-market-stock-handout"
+import { formatEventMarketPickupClaimCode } from "@conduit/core/protocol/event-market-handoff"
 import { routeCheckoutSparkOrganizerOrder } from "../apps/merchant/src/lib/checkout-spark-organizer-routing"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
@@ -451,6 +457,210 @@ async function importBuyerPreparedOrganizerIntent(
 }
 
 describe("designated organizer automatic routing", () => {
+  it("retains an actual completed goods proof after the processing deadline while the original authority is current", async () => {
+    const f = await fixture()
+    try {
+      const startedAt = f.clock.now
+      const result = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(result.status).toBe("complete")
+      expect(result.commerceProof).not.toBeNull()
+      f.clock.now = startedAt + 2 * 60_000 + 1
+      expect(() =>
+        assertCheckoutSparkOrganizerCommerceProof(result.commerceProof!, {
+          organizerPubkey: f.organizerPubkey,
+          initialHandoffId: f.initial.handoffId,
+          order: f.order,
+        })
+      ).not.toThrow()
+      expect(f.observations).toEqual({ lightning: 3, native: 1 })
+      const purchase = assertCheckoutSparkOrganizerRecoveryAuthority(
+        f.authority
+      )
+      const confirmation = {
+        ...f.session,
+        commerceProof: result.commerceProof!,
+        enteredClaimCode: formatEventMarketPickupClaimCode(purchase.claimRef),
+        physicalReleaseConfirmed: true as const,
+        delivery: f.dependencies.progressTransport,
+        nowMs: f.clock.now,
+      }
+      await f.database.eventMarketOrganizerStockPools
+        .toCollection()
+        .modify((pool) => {
+          pool.readOnlyRecovery = true
+        })
+      await expect(
+        confirmOrganizerStockOrderHandout(confirmation)
+      ).rejects.toThrow()
+      expect(
+        (await f.database.eventMarketOrganizerStockEntries.toArray()).every(
+          (entry) => entry.handout === undefined
+        )
+      ).toBe(true)
+      await f.database.eventMarketOrganizerStockPools
+        .toCollection()
+        .modify((pool) => {
+          pool.readOnlyRecovery = undefined
+        })
+      await confirmOrganizerStockOrderHandout(confirmation)
+      expect(
+        (await f.database.eventMarketOrganizerStockEntries.toArray()).every(
+          (entry) => entry.handout !== undefined
+        )
+      ).toBe(true)
+      expect(f.observations).toEqual({ lightning: 3, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("retains pause, signer and original-open expiry fences on a completed proof", async () => {
+    const f = await fixture(0)
+    try {
+      const openedAt = f.clock.now
+      let paused = false
+      let changed: "identity" | "revision" | "method" | "capability" | null =
+        null
+      const signer = new Proxy(f.organizerSigner, {
+        get(target, property) {
+          if (property === "pubkey" && changed === "identity")
+            return f.merchantPubkey
+          if (property === "revision" && changed === "revision")
+            return "changed-session"
+          if (property === "authMethod" && changed === "method") return "nip46"
+          if (property === "capabilities" && changed === "capability")
+            return { ...target.capabilities, nip44: false }
+          const value = Reflect.get(target, property, target)
+          return typeof value === "function" ? value.bind(target) : value
+        },
+      })
+      const result = await routeCheckoutSparkOrganizerOrder(
+        {
+          ...f.session,
+          signer,
+          shouldContinue: () => !paused && f.clock.active,
+        },
+        f.dependencies
+      )
+      expect(result.status).toBe("complete")
+      expect(result.commerceProof).not.toBeNull()
+      const assertProof = () =>
+        assertCheckoutSparkOrganizerCommerceProof(result.commerceProof!, {
+          organizerPubkey: f.organizerPubkey,
+          initialHandoffId: f.initial.handoffId,
+          order: f.order,
+        })
+      f.clock.now = openedAt + 2 * 60_000 + 1
+      expect(assertProof).not.toThrow()
+      paused = true
+      expect(assertProof).toThrow()
+      paused = false
+      for (const boundary of [
+        "identity",
+        "revision",
+        "method",
+        "capability",
+      ] as const) {
+        changed = boundary
+        expect(assertProof).toThrow()
+        changed = null
+        expect(assertProof).not.toThrow()
+      }
+      f.clock.now = openedAt - 1
+      expect(assertProof).toThrow()
+      f.clock.now = openedAt + 5 * 60_000
+      expect(assertProof).toThrow()
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("revokes a completed proof when its original account session is retired", async () => {
+    const f = await fixture(0)
+    try {
+      const startedAt = f.clock.now
+      const result = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(result.status).toBe("complete")
+      expect(result.commerceProof).not.toBeNull()
+      f.clock.now = startedAt + 2 * 60_000 + 1
+      f.organizerSigner.invalidateLocal()
+      expect(() =>
+        assertCheckoutSparkOrganizerCommerceProof(result.commerceProof!, {
+          organizerPubkey: f.organizerPubkey,
+          initialHandoffId: f.initial.handoffId,
+          order: f.order,
+        })
+      ).toThrow()
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("retains the commerce proof's own expiry even with an independently current authority clock", async () => {
+    const f = await fixture(0)
+    try {
+      let verificationClockOffset = 0
+      const result = await routeCheckoutSparkOrganizerOrder(f.session, {
+        ...f.dependencies,
+        now: () => f.dependencies.now() + verificationClockOffset,
+      })
+      expect(result.status).toBe("complete")
+      expect(result.commerceProof).not.toBeNull()
+      verificationClockOffset = 5 * 60_000
+      expect(() =>
+        assertCheckoutSparkOrganizerRecoveryAuthority(f.authority)
+      ).not.toThrow()
+      expect(() =>
+        assertCheckoutSparkOrganizerCommerceProof(result.commerceProof!, {
+          organizerPubkey: f.organizerPubkey,
+          initialHandoffId: f.initial.handoffId,
+          order: f.order,
+        })
+      ).toThrow("Exact event commerce payment verification is unavailable.")
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("still rejects new preparation and sends at the exact processing deadline", async () => {
+    const f = await fixture(0)
+    try {
+      const startedAt = f.clock.now
+      const openWallet = f.dependencies.openWallet
+      let invoiceRequests = 0
+      const resolveInvoice = f.dependencies.resolveInvoice
+      f.dependencies.resolveInvoice = async (input) => {
+        invoiceRequests++
+        return resolveInvoice(input)
+      }
+      f.dependencies.openWallet = async (input) => {
+        const wallet = await openWallet(input)
+        return {
+          ...wallet,
+          ensurePrivateReady: async () => {
+            f.clock.now = startedAt + 2 * 60_000
+          },
+        }
+      }
+      await expect(
+        routeCheckoutSparkOrganizerOrder(f.session, f.dependencies)
+      ).rejects.toThrow("Organizer payment processing is no longer active.")
+      expect(invoiceRequests).toBe(0)
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
   it("adopts a pre-cutoff Buyer intent without bypassing unavailable fresh-device recipient proof or changing retry bytes", async () => {
     const f = await fixture(0)
     try {

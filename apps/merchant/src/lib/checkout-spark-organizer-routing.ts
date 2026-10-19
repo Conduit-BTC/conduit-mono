@@ -128,17 +128,21 @@ export async function routeCheckoutSparkOrganizerOrder(
       !signerMethod ||
       !input.signer.capabilities.nip44 ||
       !Number.isSafeInteger(now()) ||
-      now() < startedAt ||
-      now() >= deadline
+      now() < startedAt
     )
       throw new Error("Organizer payment processing is no longer active.")
   }
-  const assertWriter = async () => {
+  const assertProcessing = () => {
     assertSession()
-    await assertCheckoutSparkOrganizerRecoveryWriterCurrent(input.authority)
-    assertSession()
+    if (now() >= deadline)
+      throw new Error("Organizer payment processing is no longer active.")
   }
-  assertSession()
+  const assertWriter = async () => {
+    assertProcessing()
+    await assertCheckoutSparkOrganizerRecoveryWriterCurrent(input.authority)
+    assertProcessing()
+  }
+  assertProcessing()
   if ((await input.signer.getPublicKey()) !== input.authenticatedPubkey)
     throw new Error("Organizer signer changed.")
   await assertWriter()
@@ -148,9 +152,13 @@ export async function routeCheckoutSparkOrganizerOrder(
       withCheckoutSparkOrganizerRecovery(input.authority, async (context) => {
         const { initial } = context
         const plan = initial.plan
-        const assertCurrent = () => {
+        const assertProofCurrent = () => {
           context.assertCurrent()
           assertSession()
+        }
+        const assertCurrent = () => {
+          context.assertCurrent()
+          assertProcessing()
         }
         const check = async () => {
           assertCurrent()
@@ -560,11 +568,18 @@ export async function routeCheckoutSparkOrganizerOrder(
           }
           const proveGoods = async () => {
             try {
-              commerceProof = await proveCheckoutSparkOrganizerCommerce({
+              let issued = false
+              const proof = await proveCheckoutSparkOrganizerCommerce({
                 initial,
                 state: expected,
                 now,
-                assertCurrent,
+                // A completed goods proof retains its original authority and
+                // session lifetime, not this attempt's dispatch deadline. Its
+                // wallet reads and issuance still remain processing-bounded.
+                assertCurrent: () => {
+                  assertProofCurrent()
+                  if (!issued) assertProcessing()
+                },
                 receiverDependencies: dependencies.receiverDependencies,
                 inspectPayout: inspect,
                 readFunding: async () => {
@@ -574,6 +589,9 @@ export async function routeCheckoutSparkOrganizerOrder(
                   return evidence
                 },
               })
+              await check()
+              issued = true
+              commerceProof = proof
             } catch {
               await check()
               commerceProof = null
