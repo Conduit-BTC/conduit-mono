@@ -2902,7 +2902,7 @@ function OrdersWorkspace() {
           !getMerchantConversationState(selected, getOrderSettlement(selected))
             .accepted
         ) {
-          await commitSelectedInventory(input.order)
+          await commitSelectedInventory(input.order, "payment-confirmation")
         }
         await readMerchantOccurrenceAcceptedOrder({
           merchantPubkey: input.merchantPubkey,
@@ -2950,7 +2950,10 @@ function OrdersWorkspace() {
     },
   })
 
-  async function commitSelectedInventory(order = selectedOrder) {
+  async function commitSelectedInventory(
+    order = selectedOrder,
+    purpose?: "payment-confirmation"
+  ) {
     if (!pubkey || !order) throw new Error("No order selected.")
     const authority = captureFreshOrderAuthority()
     const productIds = [...new Set(order.items.map((item) => item.productId))]
@@ -2988,6 +2991,7 @@ function OrdersWorkspace() {
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
         order,
+        purpose,
         products: [
           ...(orderProductsQuery.data?.data ?? []),
           ...(resolved?.data ?? []),

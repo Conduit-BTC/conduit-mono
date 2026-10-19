@@ -469,6 +469,8 @@ export async function acceptMerchantOccurrenceOrder(
     order: OrderSchema
     products: readonly ProductSchema[]
     priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
+    /** Recording received payment may outlive the original occurrence. */
+    purpose?: "payment-confirmation"
   }
 ) {
   assertSession(input)
@@ -600,6 +602,11 @@ export async function acceptMerchantOccurrenceOrder(
       }
       if (fulfillment.mode !== "merchant_present")
         throw new Error("This order needs its delegated fulfillment workflow.")
+      const settlement = input.purpose === "payment-confirmation"
+      if (settlement && order.createdAt >= fulfillment.calendar.end)
+        throw new Error(
+          "Payment confirmation requires an order created before its signed occurrence end."
+        )
       const retained = await loadRetainedSignedEventMarketEvidence(
         fulfillment.market.coordinate
       )
@@ -646,7 +653,7 @@ export async function acceptMerchantOccurrenceOrder(
         auth.state !== "active" ||
         !calendar ||
         !calendarEvent ||
-        calendar.end <= Date.now() ||
+        (!settlement && calendar.end <= Date.now()) ||
         cancelled(calendarEvent) ||
         evidence.some(
           (event) =>
@@ -695,6 +702,7 @@ export async function acceptMerchantOccurrenceOrder(
         quantity: item.quantity,
         admission: {
           kind: "validated-event-market-order",
+          settlement,
           productEventId: source.id,
           productTermsEventId,
           assignmentCoordinate: fulfillment.occurrenceAssignment.coordinate,

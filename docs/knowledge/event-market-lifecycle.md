@@ -62,6 +62,19 @@ govern unused allocations; merchants may explicitly accept or confirm payment
 for the original order without rewriting it. Merchants coordinate fulfillment
 changes and any refunds with buyers.
 
+Explicit payment confirmation of a merchant-present assignment order may occur
+past the original or rescheduled end. The order must predate its original
+signed end and retain its exact identity and complete terms. Ordinary new
+acceptance still requires an unended occurrence. Expired allocations do not
+reserve goods: confirmation uses the currently unallocated stock in the same
+atomic acceptance transaction, preserving other active allocations and credit
+for that order's earlier stock decision. It reduces any remaining allocation
+without making it negative. Retry after signing/delivery failure or reload uses
+the saved acceptance and does not consume stock again. Stock shortages,
+conflicting terms, known withdrawal/cancellation/deletion and delegated-writer
+restrictions still require reconciliation; expiry alone is not a rejection.
+This is manual settlement recording, not a new payment execution path.
+
 Merchant-present assignment pickup is supported. New organizer acceptance is
 gated on advance delegation, writer handover and order-ID reconciliation.
 Historical authenticated organizer handoff remains inspectable. Organizer
