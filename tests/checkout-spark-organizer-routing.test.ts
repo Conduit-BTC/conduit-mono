@@ -14,6 +14,11 @@ import {
   deriveCheckoutSparkNativeTreasuryInvoiceId,
   freezeCheckoutSparkSettledEventPlan,
   createInMemoryInboxDeclarationEvidenceRepository,
+  deriveCheckoutSparkSettledTransferId,
+  prepareCheckoutSparkSettledLeg,
+  proveSparkCheckoutReceiveCredit,
+  recordCheckoutSparkSettledCredit,
+  recordCheckoutSparkSettledLegStatus,
   resolveCheckoutSparkLnurlInvoice,
 } from "@conduit/core"
 import { acceptCheckoutSparkOrganizerStockOrder } from "@conduit/core/protocol/event-market-stock-handout"
@@ -357,7 +362,375 @@ async function fixture(commerceTotalSats = 1_000) {
   }
 }
 
+/** A real resolved Buyer intent, imported without its device-local origin by default. */
+async function importBuyerPreparedOrganizerIntent(
+  f: Awaited<ReturnType<typeof fixture>>,
+  options: { localOrigin?: boolean; possibleSend?: boolean } = {}
+) {
+  const recoveredAt = f.clock.now
+  const wallet = await f.dependencies.openWallet({
+    ...f.initial.wallet,
+    outgoing: true,
+  })
+  try {
+    const receive = await wallet.getLightningReceiveRequest(
+      f.plan.funding.requestId
+    )
+    if (!receive?.transfer?.sparkId)
+      throw new Error("Controlled receive is unavailable")
+    const transfer = await wallet.getTransfer(receive.transfer.sparkId)
+    if (!transfer) throw new Error("Controlled transfer is unavailable")
+    const credit = proveSparkCheckoutReceiveCredit({
+      expectedRequest: {
+        id: f.plan.funding.requestId,
+        network: f.plan.network,
+        paymentRequest: f.plan.funding.paymentRequest,
+        paymentHash: f.plan.funding.paymentHash,
+        grossFundingSats: f.plan.funding.grossFundingSats,
+      },
+      expectedReceive: { mode: "ordinary_v3" },
+      walletIdentityPublicKey: f.plan.funding.receiverIdentityPublicKey,
+      receive,
+      transfer,
+    })
+    f.clock.now = f.plan.createdAt + 1_000
+    const credited = recordCheckoutSparkSettledCredit(f.initial.state, {
+      ...credit,
+      paymentHash: f.plan.funding.paymentHash,
+      observedAt: f.clock.now,
+    })
+    const recipient = f.plan.recipients.find((row) => row.kind === "organizer")!
+    const leg = credited.legs.find((row) => row.legId === recipient.legId)!
+    const invoice = await f.dependencies.resolveInvoice({
+      lud16: recipient.destination.value,
+      amountSats: leg.allocationSats! - 1,
+      network: f.plan.network,
+      nowSeconds: Math.floor(f.clock.now / 1_000),
+      shouldContinue: () => true,
+      receiverMode: "private",
+    })
+    let prepared = prepareCheckoutSparkSettledLeg(credited, {
+      legId: recipient.legId,
+      transferId: deriveCheckoutSparkSettledTransferId(f.plan, recipient.legId),
+      paymentRequest: invoice.paymentRequest,
+      paymentHash: invoice.paymentHash,
+      invoiceAmountSats: leg.allocationSats! - 1,
+      maxFeeSats: 1,
+      receiverBinding: invoice.receiverBinding,
+      preparedAt: ++f.clock.now,
+    })
+    if (options.localOrigin) {
+      const imported = await f.repository.importRecoveryState(
+        credited,
+        () => {}
+      )
+      if (imported.status !== "active")
+        throw new Error("Expected active recovery")
+      await f.repository.savePreparedWithInvoiceOrigin(
+        prepared,
+        imported.revision,
+        { legId: recipient.legId, origin: invoice.origin! },
+        () => {}
+      )
+    }
+    if (options.possibleSend) {
+      prepared = recordCheckoutSparkSettledLegStatus(prepared, {
+        legId: recipient.legId,
+        transferId: prepared.legs[0]!.intent!.transferId,
+        paymentHash: invoice.paymentHash,
+        status: "ambiguous",
+        observedAt: ++f.clock.now,
+      })
+    }
+    await f.repository.importRecoveryState(prepared, () => {})
+    return { state: prepared, legId: recipient.legId }
+  } finally {
+    f.clock.now = recoveredAt
+    await wallet.cleanup()
+  }
+}
+
 describe("designated organizer automatic routing", () => {
+  it("adopts a pre-cutoff Buyer intent without bypassing unavailable fresh-device recipient proof or changing retry bytes", async () => {
+    const f = await fixture(0)
+    try {
+      const buyer = await importBuyerPreparedOrganizerIntent(f)
+      f.dependencies.receiverDependencies.fetchVerify = async () => {
+        throw new Error("Controlled recipient verification is unavailable")
+      }
+      expect(buyer.state.updatedAt < f.plan.takeoverAt).toBe(true)
+      expect(f.clock.now > f.plan.takeoverAt).toBe(true)
+      const result = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(result.status).toBe("waiting")
+      expect(result.reason).toBe("recipient_unverified")
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (saved.status !== "active")
+        throw new Error("Expected retained recovery")
+      expect(saved.state.updatedAt >= f.plan.takeoverAt).toBe(true)
+      expect(
+        JSON.stringify({ ...saved.state, updatedAt: buyer.state.updatedAt }) ===
+          JSON.stringify(buyer.state)
+      ).toBe(true)
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+      const first = await f.database.checkoutSparkPlanBindings.get(
+        f.plan.checkoutId
+      )
+      const firstSnapshots = JSON.stringify(first?.organizerProgressOutbox)
+      const again = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(again.reason).toBe("recipient_unverified")
+      const retained = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (retained.status !== "active")
+        throw new Error("Expected retained recovery")
+      expect(
+        JSON.stringify(retained.state) === JSON.stringify(saved.state)
+      ).toBe(true)
+      const second = await f.database.checkoutSparkPlanBindings.get(
+        f.plan.checkoutId
+      )
+      expect(
+        JSON.stringify(second?.organizerProgressOutbox) === firstSnapshots
+      ).toBe(true)
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("automatically continues a cold Buyer-prepared unpaid invoice using its qualified portable receiver binding", async () => {
+    const f = await fixture(0)
+    try {
+      const buyer = await importBuyerPreparedOrganizerIntent(f)
+      let invoiceRequests = 0
+      let recipientReads = 0
+      const resolveInvoice = f.dependencies.resolveInvoice
+      const fetchVerify = f.dependencies.receiverDependencies.fetchVerify
+      f.dependencies.resolveInvoice = async (input) => {
+        invoiceRequests++
+        return resolveInvoice(input)
+      }
+      f.dependencies.receiverDependencies.fetchVerify = async (url) => {
+        recipientReads++
+        return fetchVerify(url)
+      }
+      const result = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(result.status).toBe("complete")
+      expect(recipientReads).toBeGreaterThan(0)
+      expect(invoiceRequests).toBe(0)
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (saved.status !== "active")
+        throw new Error("Expected retained recovery")
+      expect(
+        JSON.stringify(saved.state.legs[0]!.intent) ===
+          JSON.stringify(buyer.state.legs[0]!.intent)
+      ).toBe(true)
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+      expect(
+        (await routeCheckoutSparkOrganizerOrder(f.session, f.dependencies))
+          .status
+      ).toBe("complete")
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("automatically completes a pre-cutoff Buyer intent with its actual same-device invoice origin and never pays it twice", async () => {
+    const f = await fixture(0)
+    try {
+      const buyer = await importBuyerPreparedOrganizerIntent(f, {
+        localOrigin: true,
+      })
+      const result = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(result.status).toBe("complete")
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (saved.status !== "active")
+        throw new Error("Expected retained recovery")
+      expect(
+        JSON.stringify(saved.state.legs[0]!.intent) ===
+          JSON.stringify(buyer.state.legs[0]!.intent)
+      ).toBe(true)
+      expect(saved.state.legs.every((leg) => leg.status === "paid")).toBe(true)
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+      expect(
+        (await routeCheckoutSparkOrganizerOrder(f.session, f.dependencies))
+          .status
+      ).toBe("complete")
+      expect(f.observations).toEqual({ lightning: 1, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it.each(["unsupported", "conflicting"] as const)(
+    "does not dispatch a cold prepared invoice with %s recipient evidence",
+    async (kind) => {
+      const f = await fixture(0)
+      try {
+        const buyer = await importBuyerPreparedOrganizerIntent(f)
+        if (kind === "unsupported")
+          f.dependencies.receiverDependencies.contracts = []
+        else {
+          const fetchVerify = f.dependencies.receiverDependencies.fetchVerify
+          f.dependencies.receiverDependencies.fetchVerify = async (url) => ({
+            ...(await fetchVerify(url)),
+            pr: f.plan.funding.paymentRequest,
+          })
+        }
+        const result = await routeCheckoutSparkOrganizerOrder(
+          f.session,
+          f.dependencies
+        )
+        expect(result.status).toBe("waiting")
+        expect(result.reason).toBe("recipient_unverified")
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        if (saved.status !== "active")
+          throw new Error("Expected retained recovery")
+        expect(
+          JSON.stringify(saved.state.legs) === JSON.stringify(buyer.state.legs)
+        ).toBe(true)
+        expect(f.observations).toEqual({ lightning: 0, native: 0 })
+      } finally {
+        await f.cleanup()
+      }
+    },
+    60_000
+  )
+
+  it.each(["identity", "writer"] as const)(
+    "stops %s revocation during cold recipient verification before dispatch",
+    async (change) => {
+      const f = await fixture(0)
+      try {
+        const buyer = await importBuyerPreparedOrganizerIntent(f)
+        const fetchVerify = f.dependencies.receiverDependencies.fetchVerify
+        let reads = 0
+        f.dependencies.receiverDependencies.fetchVerify = async (url) => {
+          const result = await fetchVerify(url)
+          reads++
+          if (change === "identity") f.clock.active = false
+          else
+            await f.database.eventMarketOrganizerStockPools
+              .toCollection()
+              .modify((pool) => {
+                pool.readOnlyRecovery = true
+              })
+          return result
+        }
+        await expect(
+          routeCheckoutSparkOrganizerOrder(f.session, f.dependencies)
+        ).rejects.toThrow()
+        expect(reads).toBe(1)
+        const saved = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        if (saved.status !== "active")
+          throw new Error("Expected retained recovery")
+        expect(
+          JSON.stringify(saved.state.legs) === JSON.stringify(buyer.state.legs)
+        ).toBe(true)
+        expect(f.observations).toEqual({ lightning: 0, native: 0 })
+      } finally {
+        await f.cleanup()
+      }
+    },
+    60_000
+  )
+
+  it("does not turn a pre-cutoff possible send into a new dispatch after metadata adoption", async () => {
+    const f = await fixture(0)
+    try {
+      const buyer = await importBuyerPreparedOrganizerIntent(f, {
+        possibleSend: true,
+      })
+      const result = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      )
+      expect(result.status).toBe("waiting")
+      expect(result.reason).toBe("prior_possible_send")
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (saved.status !== "active")
+        throw new Error("Expected retained recovery")
+      expect(
+        JSON.stringify(saved.state.legs) === JSON.stringify(buyer.state.legs)
+      ).toBe(true)
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it.each(["session", "conflict"] as const)(
+    "stops %s changes while adopting a pre-cutoff snapshot",
+    async (change) => {
+      const f = await fixture(0)
+      try {
+        await importBuyerPreparedOrganizerIntent(f)
+        const save = f.repository.save.bind(f.repository)
+        let intercepted = false
+        f.repository.save = async (state, revision, assertCurrent) => {
+          if (!intercepted) {
+            intercepted = true
+            if (change === "session") f.clock.active = false
+            else {
+              const prior = await f.repository.load(
+                f.plan.checkoutId,
+                f.plan.planDigest
+              )
+              if (prior.status !== "active")
+                throw new Error("Expected retained recovery")
+              await save(
+                { ...prior.state, updatedAt: f.clock.now },
+                prior.revision,
+                () => {}
+              )
+            }
+          }
+          return save(state, revision, assertCurrent)
+        }
+        await expect(
+          routeCheckoutSparkOrganizerOrder(f.session, f.dependencies)
+        ).rejects.toThrow()
+        expect(intercepted).toBe(true)
+        expect(f.observations).toEqual({ lightning: 0, native: 0 })
+      } finally {
+        await f.cleanup()
+      }
+    },
+    60_000
+  )
+
   it.each([1_000, 0])(
     "uses the actual reserved writer and shared financial engine for %s-sat commerce",
     async (commerceTotalSats) => {

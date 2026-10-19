@@ -10,6 +10,8 @@ import {
   deriveCheckoutSparkNativeTreasuryBudget,
   isCheckoutSparkNativePreProviderRetry,
   proveSparkCheckoutReceiveCredit,
+  recordCheckoutSparkSettledCredit,
+  restoreCheckoutSparkSettledReconciliation,
   resolveCheckoutSparkLnurlInvoice,
   runCheckoutSparkFinancialWorkflow,
   runWithCheckoutSparkMerchantRecoveryLock,
@@ -47,6 +49,7 @@ import {
 } from "./checkout-spark-settled-recovery"
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 import { assertCheckoutSparkRecoveryDestination } from "./checkout-spark-recovery-policy"
+import { verifySavedMerchantCheckoutSparkRecipients } from "./checkout-spark-invoice-recipient"
 
 export interface CheckoutSparkOrganizerRoutingInput {
   db: ConduitDB
@@ -277,6 +280,52 @@ export async function routeCheckoutSparkOrganizerOrder(
             plan,
             fundingProof: credit,
           })
+          if (
+            expected.updatedAt < plan.takeoverAt &&
+            expected.legs.some((leg) => leg.intent !== null)
+          ) {
+            const current = await load()
+            // Re-adopting Buyer preparation changes only the checkpoint time,
+            // never its payment facts or frozen intent. Validate the retained
+            // credit against fresh native funding before this metadata CAS.
+            recordCheckoutSparkSettledCredit(current.state, {
+              ...credit,
+              paymentHash: plan.funding.paymentHash,
+              observedAt: now(),
+            })
+            const adopted = restoreCheckoutSparkSettledReconciliation({
+              ...current.state,
+              updatedAt: Math.max(now(), plan.takeoverAt),
+            })
+            const saved = await repository.save(
+              adopted,
+              current.revision,
+              assertCurrent
+            )
+            if (
+              saved.status !== "active" ||
+              JSON.stringify(saved.state) !== JSON.stringify(adopted)
+            )
+              throw new CheckoutSparkSettledRepositoryConflictError()
+            expected = saved.state
+            await check()
+          }
+          // A cold recovery has portable issuer bindings, not this device's
+          // original invoice-resolution capability. Reuse the existing exact
+          // receiver verifier; unavailable evidence never grants dispatch.
+          await load()
+          await verifySavedMerchantCheckoutSparkRecipients({
+            state: expected,
+            repository,
+            assertCurrent,
+            now,
+            verifyInvoice: (request) =>
+              verifyCheckoutSparkInvoiceRecipient(
+                request,
+                dependencies.receiverDependencies
+              ),
+          })
+          await load()
           const progressFailure: { failed: boolean; error?: unknown } = {
             failed: false,
           }
