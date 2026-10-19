@@ -20,6 +20,32 @@ const transportLabel = (
       ? "Legacy sent"
       : "Legacy received"
 
+const INBOX_READ_FAILURE_LABELS = {
+  transport_unavailable: "Connection unavailable",
+  authentication_required: "Authentication required",
+  missing_challenge: "Authentication challenge missing",
+  authentication_rejected: "Authentication rejected",
+  authentication_timed_out: "Authentication timed out",
+  signer_unavailable: "Signer unavailable",
+  signer_authorization_denied: "Signer permission declined",
+  authority_changed: "Read authority changed",
+  subscription_rejected: "Read request rejected",
+  challenge_invalid: "Authentication challenge invalid",
+  challenge_replayed: "Authentication challenge already used",
+  challenge_loop: "Authentication challenge limit reached",
+  challenge_superseded: "Authentication challenge replaced",
+  protocol_invalid: "Invalid relay response",
+  protocol_limit_exceeded: "Read response limit reached",
+  consumer_failed: "Local message intake failed",
+  query_timed_out: "Read timed out",
+  aborted: "Read stopped",
+} as const satisfies Record<
+  NonNullable<
+    CommerceInboxSnapshot["diagnostics"]["sources"][number]["failure"]
+  >,
+  string
+>
+
 export interface CommerceInboxRecoveryProps {
   snapshot: CommerceInboxSnapshot | null
   loadOlder?: () => Promise<unknown>
@@ -115,6 +141,13 @@ export function CommerceInboxRecovery({
               <time dateTime={new Date(source.observedAt).toISOString()}>
                 {new Date(source.observedAt).toLocaleString()}
               </time>
+              {typeof source.failure === "string" &&
+              Object.hasOwn(INBOX_READ_FAILURE_LABELS, source.failure) ? (
+                <>
+                  {" "}
+                  · Read failure: {INBOX_READ_FAILURE_LABELS[source.failure]}
+                </>
+              ) : null}
             </li>
           ))}
           {snapshot.diagnostics.historyRanges.map((range) => (

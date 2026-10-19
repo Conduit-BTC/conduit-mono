@@ -5,6 +5,7 @@ import { getEventHash } from "nostr-tools"
 import { CommerceInboxRecovery } from "../packages/ui/src/components/CommerceInboxRecovery"
 import {
   CommerceInbox,
+  exportCommerceInboxDiagnostics,
   type CommerceInboxSnapshot,
 } from "@conduit/core/protocol/commerce-inbox"
 import { CommerceInboxStore } from "@conduit/core/protocol/commerce-inbox-store"
@@ -55,6 +56,155 @@ function snapshot(
     },
   }
 }
+
+it("preserves the bounded cause of an unavailable encrypted source through the real inbox and collapsed recovery view", async () => {
+  const f = await checkoutSparkOrganizerFixture()
+  databases.push(f.database)
+  installProtectedReadSigner(
+    f.organizerSigner,
+    f.organizerPubkey,
+    () => f.clock.active
+  )
+  const authorization = getProtectedReadAuthorization(f.organizerPubkey)!
+  const inbox = new CommerceInbox(
+    authorization,
+    authorization.signer,
+    new CommerceInboxStore(authorization, f.database)
+  )
+  owners.push(inbox)
+  const view = await inbox.syncRecent({
+    includeLegacy: false,
+    declaration: {
+      pubkey: f.organizerPubkey,
+      state: "declared",
+      relayUrls: ["wss://encrypted-inbox.synthetic.example"],
+      stale: false,
+      fetchedAt: Date.now(),
+    },
+    read: async () => ({
+      events: [],
+      coverage: "unavailable",
+      auth: {
+        state: "unavailable",
+        challengedCount: 1,
+        succeededCount: 0,
+        failedCount: 1,
+        failure: "authentication_rejected",
+      },
+      relayResult: {
+        status: "unavailable",
+        observations: [],
+        relays: [
+          {
+            relayIndex: 0,
+            status: "failed",
+            auth: "authentication_rejected",
+            eventCount: 0,
+            duplicateCount: 0,
+            malformedCount: 0,
+            unusableCount: 0,
+            failure: "authentication_rejected",
+          },
+        ],
+        attemptedCount: 1,
+        completedCount: 0,
+        failedCount: 1,
+        authoritativeEmpty: false,
+      },
+    }),
+  })
+  expect(view.diagnostics.sources[0]?.failure).toBe("authentication_rejected")
+  const markup = renderToStaticMarkup(<CommerceInboxRecovery snapshot={view} />)
+  expect(markup).toContain("Read failure: Authentication rejected")
+  expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|\s|>)/)
+  expect(markup).not.toContain("Retry opening")
+})
+
+it("keeps final-admission failure categories but drops unexpected runtime errors before diagnostic export", async () => {
+  const f = await checkoutSparkOrganizerFixture()
+  databases.push(f.database)
+  installProtectedReadSigner(
+    f.organizerSigner,
+    f.organizerPubkey,
+    () => f.clock.active
+  )
+  const authorization = getProtectedReadAuthorization(f.organizerPubkey)!
+  const inbox = new CommerceInbox(
+    authorization,
+    authorization.signer,
+    new CommerceInboxStore(authorization, f.database)
+  )
+  owners.push(inbox)
+  for (const failure of ["authority_changed", "untrusted-diagnostic-marker"]) {
+    const view = await inbox.syncRecent({
+      includeLegacy: false,
+      declaration: {
+        pubkey: f.organizerPubkey,
+        state: "declared",
+        relayUrls: ["wss://encrypted-inbox.synthetic.example"],
+        stale: false,
+        fetchedAt: Date.now(),
+      },
+      read: async () => ({
+        events: [],
+        coverage: "unavailable",
+        auth: {
+          state: "unavailable",
+          challengedCount: 0,
+          succeededCount: 0,
+          failedCount: 1,
+          // Exercise an untrusted runtime adapter as well as the finite contract.
+          failure: failure as "authority_changed",
+        },
+        relayResult: {
+          status: "unavailable",
+          observations: [],
+          relays: [],
+          attemptedCount: 0,
+          completedCount: 0,
+          failedCount: 0,
+          authoritativeEmpty: false,
+        },
+      }),
+    })
+    expect(view.diagnostics.sources[0]?.failure).toBe(
+      failure === "authority_changed" ? failure : undefined
+    )
+    expect(JSON.stringify(exportCommerceInboxDiagnostics(view))).not.toContain(
+      "untrusted-diagnostic-marker"
+    )
+  }
+})
+
+it("never renders arbitrary or inherited-property failure labels from runtime snapshots", () => {
+  for (const failure of [
+    "untrusted-diagnostic-marker",
+    "constructor",
+    "__proto__",
+    "toString",
+  ]) {
+    const view = snapshot({})
+    view.diagnostics.sources = [
+      {
+        sourceIndex: 1,
+        transport: "nip17",
+        observedAt: Date.now(),
+        coverage: "unavailable",
+        authentication: "unavailable",
+        status: "unavailable",
+        received: 0,
+        malformed: 0,
+        unusable: 0,
+        failure: failure as "authority_changed",
+      },
+    ]
+    const markup = renderToStaticMarkup(
+      <CommerceInboxRecovery snapshot={view} />
+    )
+    expect(markup).not.toContain(failure)
+    expect(markup).not.toContain("Read failure:")
+  }
+})
 
 it("shows separate content-free machine, malformed and in-progress states instead of implying every retained record opened", () => {
   const markup = renderToStaticMarkup(

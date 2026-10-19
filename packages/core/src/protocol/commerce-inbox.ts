@@ -80,6 +80,42 @@ import {
   type InboxDeclarationResolution,
 } from "./private-message-routing"
 import { getAccountSigner, SessionSigner } from "./session-signer"
+import type { RelayFailureCode } from "./relay-executor"
+
+const INBOX_READ_FAILURE_CODES = new Set<RelayFailureCode>([
+  "transport_unavailable",
+  "authentication_required",
+  "missing_challenge",
+  "authentication_rejected",
+  "authentication_timed_out",
+  "signer_unavailable",
+  "signer_authorization_denied",
+  "authority_changed",
+  "subscription_rejected",
+  "challenge_invalid",
+  "challenge_replayed",
+  "challenge_loop",
+  "challenge_superseded",
+  "protocol_invalid",
+  "protocol_limit_exceeded",
+  "consumer_failed",
+  "query_timed_out",
+  "aborted",
+])
+
+/** Never project raw relay text or error objects into inbox diagnostics. */
+function protectedInboxReadFailure(
+  result: ProtectedInboxReadResult
+): RelayFailureCode | undefined {
+  return [
+    ...result.relayResult.relays.map((relay) => relay.failure),
+    result.auth.failure,
+  ].find(
+    (value): value is RelayFailureCode =>
+      typeof value === "string" &&
+      INBOX_READ_FAILURE_CODES.has(value as RelayFailureCode)
+  )
+}
 
 interface InboxReadRelayPlan {
   relayTargets: RelayTarget[]
@@ -137,6 +173,8 @@ export interface CommerceInboxReadEvidence {
   received: number
   malformed: number
   unusable: number
+  /** Optional bounded category; never a raw provider/relay error. */
+  failure?: RelayFailureCode
 }
 export interface CommerceInboxDiagnostic {
   states: Partial<Record<InboxDecodeState, number>>
@@ -965,6 +1003,7 @@ export class CommerceInbox {
               (n, r) => n + r.unusableCount,
               0
             ),
+            failure: protectedInboxReadFailure(result),
           })
           this.assertCurrent()
           this.snapshot = {
@@ -997,7 +1036,11 @@ export class CommerceInbox {
           : succeededCount
             ? "authenticated"
             : "not_challenged",
-        failure: results.find((r) => r.auth.failure)?.auth.failure,
+        failure: results.find(
+          (r) =>
+            typeof r.auth.failure === "string" &&
+            INBOX_READ_FAILURE_CODES.has(r.auth.failure as RelayFailureCode)
+        )?.auth.failure,
       }
       const coverage =
         results.length &&
