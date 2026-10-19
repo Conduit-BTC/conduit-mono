@@ -24,6 +24,15 @@ export interface EventMarketFreePurchaseSelection {
   signedRecipientWrap: SignedPublicNostrEvent
 }
 
+/** Aggregate retained-read diagnostics only; never payment or handout authority. */
+export interface CheckoutSparkOrganizerRecoveryReadDetails {
+  allOrganizerInitial: number
+  allOrganizerProgress: number
+  selectedMarketInitial: number
+  selectedMarketProgress: number
+  missingInitialWrapper: number
+}
+
 /**
  * Dedicated machine-only view over the existing shared inbox owner. No new
  * network reader, signer or plaintext credential cache is created. Callers may
@@ -40,6 +49,7 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
   /** Authenticated progress is retained, but its initial recovery is not. */
   missingInitialCheckouts: number
   capped: boolean
+  readDetails: CheckoutSparkOrganizerRecoveryReadDetails
 }> {
   const check = () => {
     input.inbox.assertCurrent()
@@ -58,6 +68,13 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
   const byWrap = new Map(wrappers.map((row) => [row.event.id, row.event]))
   const groups = new Map<string, CheckoutRecoveryDescriptor[]>()
   const freeGroups = new Map<string, EventMarketFreePurchaseDescriptor[]>()
+  const readDetails: CheckoutSparkOrganizerRecoveryReadDetails = {
+    allOrganizerInitial: 0,
+    allOrganizerProgress: 0,
+    selectedMarketInitial: 0,
+    selectedMarketProgress: 0,
+    missingInitialWrapper: 0,
+  }
   let capped = false
   for (const { projection } of projections) {
     if (projection.kind === "event_free_purchase") {
@@ -90,11 +107,19 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     if (
       descriptor.recipientRole !== "organizer" ||
       !descriptor.organizerMessage ||
-      !descriptor.marketCoordinate ||
-      (input.marketCoordinate !== undefined &&
-        descriptor.marketCoordinate !== input.marketCoordinate)
+      !descriptor.marketCoordinate
     )
       continue
+    const initial = descriptor.organizerMessage === "initial"
+    if (initial) readDetails.allOrganizerInitial++
+    else readDetails.allOrganizerProgress++
+    if (
+      input.marketCoordinate !== undefined &&
+      descriptor.marketCoordinate !== input.marketCoordinate
+    )
+      continue
+    if (initial) readDetails.selectedMarketInitial++
+    else readDetails.selectedMarketProgress++
     const key = JSON.stringify([descriptor.checkoutId, descriptor.planDigest])
     if (!groups.has(key) && groups.size + freeGroups.size >= 128) {
       capped = true
@@ -133,7 +158,10 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     initial.sort((a, b) => a.wrapId.localeCompare(b.wrapId))
     const first = initial[0]!
     const initialWrap = byWrap.get(first.wrapId)
-    if (!initialWrap) continue
+    if (!initialWrap) {
+      readDetails.missingInitialWrapper++
+      continue
+    }
     const collect = (
       kind: "buyer_progress" | "execution" | "merchant_progress"
     ) =>
@@ -212,5 +240,6 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     conflictingCheckouts,
     missingInitialCheckouts,
     capped,
+    readDetails,
   }
 }

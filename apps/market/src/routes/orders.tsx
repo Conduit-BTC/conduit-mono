@@ -212,6 +212,7 @@ import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-adm
 import {
   canReplayCheckoutSparkOrderRecovery,
   replayCheckoutSparkOrderRecovery,
+  type CheckoutSparkRecoveryReplayDeliveryEvidence,
 } from "../lib/checkout-spark-order-recovery-replay"
 import {
   acknowledgeOrRetryCheckoutSparkSettledSnapshot,
@@ -876,6 +877,7 @@ function OrderDetail({
     buyerPubkey: string
     authGeneration: number
     text: string
+    deliveries: CheckoutSparkRecoveryReplayDeliveryEvidence[]
   } | null>(null)
   const [paymentAddressUpdate, setPaymentAddressUpdate] =
     useState<OrderPaymentAddressUpdate | null>(null)
@@ -1614,6 +1616,7 @@ function OrderDetail({
           orderId: vm.orderId,
           buyerPubkey,
           authGeneration,
+          deliveries: result.deliveries,
           text:
             result.status === "relay_accepted"
               ? "Saved recovery copies were resent to the seller and organizer inbox relays. This does not confirm they were read. No payment was sent."
@@ -2788,9 +2791,26 @@ function OrderDetail({
               {recoveryReplayNotice?.orderId === vm.orderId &&
                 recoveryReplayNotice.buyerPubkey === buyerPubkey &&
                 recoveryReplayNotice.authGeneration === authGeneration && (
-                  <p className="mt-2" role="status">
-                    {recoveryReplayNotice.text}
-                  </p>
+                  <div className="mt-2" role="status">
+                    <p>{recoveryReplayNotice.text}</p>
+                    <ul className="mt-2 space-y-1">
+                      {recoveryReplayNotice.deliveries.map((delivery) => (
+                        <li key={delivery.recipient}>
+                          {delivery.recipient === "seller"
+                            ? "Seller"
+                            : "Organizer"}{" "}
+                          copy
+                          {" · "}encrypted envelope {delivery.outerEnvelopeSize}
+                          {" · "}attempted:{" "}
+                          {delivery.attemptedSources.join(", ") ||
+                            "none confirmed"}
+                          {" · "}accepted:{" "}
+                          {delivery.acceptedSources.join(", ") ||
+                            "none confirmed"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 )}
             </details>
           )}

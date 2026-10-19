@@ -9,6 +9,7 @@ import type { EventMarketOrganizerMerchandise } from "@conduit/core/protocol/eve
 import {
   EventMarketOrganizerPickupForm,
   EventMarketOrganizerRecoveryDiscoveryNotice,
+  EventMarketOrganizerRecoveryReadDetails,
   continueEventMarketOrganizerPickup,
 } from "../apps/merchant/src/components/EventMarketOrganizerPickupCard"
 import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purchase-fixture"
@@ -70,6 +71,50 @@ it("clears the missing-initial notice once ready and preserves bounded empty/con
   expect(render(0)).toContain("This does not prove no older order exists")
   expect(render(0, 1)).toContain("needs reconciliation")
   expect(render(0, 1)).not.toContain("No event pickup or checkout recovery")
+})
+
+it("keeps aggregate recovery read counts collapsed and separate from payment or handout actions", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerRecoveryReadDetails
+      readDetails={{
+        allOrganizerInitial: 3,
+        allOrganizerProgress: 8,
+        selectedMarketInitial: 1,
+        selectedMarketProgress: 5,
+        missingInitialWrapper: 1,
+      }}
+      missingInitialCheckouts={2}
+      conflictingCheckouts={4}
+      capped
+    />
+  )
+  expect(markup).toContain("Recovery read details")
+  expect(markup).toContain("All saved initial recovery messages</dt><dd>3")
+  expect(markup).toContain("All saved progress messages</dt><dd>8")
+  expect(markup).toContain(
+    "This event&#x27;s initial recovery messages</dt><dd>1"
+  )
+  expect(markup).toContain("This event&#x27;s progress messages</dt><dd>5")
+  expect(markup).toContain("Groups missing initial recovery</dt><dd>2")
+  expect(markup).toContain("Groups missing a saved initial envelope</dt><dd>1")
+  expect(markup).toContain("Conflicting groups</dt><dd>4")
+  expect(markup).toContain("Capped read</dt><dd>1")
+  expect(markup).toContain(
+    "not payment verification or permission to hand out goods"
+  )
+  expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|\s|>)/)
+  expect(markup).not.toContain("<button")
+  expect(markup).not.toContain("<form")
+})
+
+it("renders safe zero counts when older discovery fixtures omit read details", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerRecoveryReadDetails />
+  )
+  expect(markup.match(/<dd>0<\/dd>/g)?.length).toBe(8)
+  expect(markup).not.toContain("undefined")
+  expect(markup).not.toContain("NaN")
+  expect(markup).not.toContain("<button")
 })
 
 it("shows each exact pickup product, selected variation and quantity before handout", () => {

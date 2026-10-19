@@ -16,6 +16,7 @@ import {
   getCheckoutSparkRecoveryDelivery,
   retryStoredCheckoutSparkRecoveryHandoff,
 } from "./checkout-spark-recovery-handoff"
+import { normalizePublicRelayHints } from "@conduit/core/protocol/relay-settings"
 
 /** Existing initial ciphertext only: this boundary cannot sign, decrypt or pay. */
 export interface CheckoutSparkOrderRecoveryReplayRequest {
@@ -48,6 +49,51 @@ export interface CheckoutSparkOrderRecoveryReplayDependencies {
   publishFn?: typeof publishWithPlanner
   resolveInboxRelays?: (pubkey: string) => Promise<string[]>
   now?: () => number
+}
+
+export interface CheckoutSparkRecoveryReplayDeliveryEvidence {
+  recipient: "seller" | "organizer"
+  attemptedSources: string[]
+  acceptedSources: string[]
+  outerEnvelopeSize:
+    "under 16 KiB" | "16–32 KiB" | "32–48 KiB" | "48–64 KiB" | "64 KiB or more"
+}
+
+function envelopeSizeBucket(
+  event: unknown
+): CheckoutSparkRecoveryReplayDeliveryEvidence["outerEnvelopeSize"] {
+  const kib = new TextEncoder().encode(JSON.stringify(event)).byteLength / 1024
+  return kib < 16
+    ? "under 16 KiB"
+    : kib < 32
+      ? "16–32 KiB"
+      : kib < 48
+        ? "32–48 KiB"
+        : kib < 64
+          ? "48–64 KiB"
+          : "64 KiB or more"
+}
+
+/** Local evidence labels only; never return whole URLs or provider diagnostics. */
+function freshSourceLabels(
+  requested: readonly string[],
+  attempted: readonly string[],
+  accepted: readonly string[]
+) {
+  const allowed = new Set(normalizePublicRelayHints(requested))
+  const attemptedUrls = normalizePublicRelayHints(attempted).filter((url) =>
+    allowed.has(url)
+  )
+  const attemptedSet = new Set(attemptedUrls)
+  const acceptedUrls = normalizePublicRelayHints(accepted).filter((url) =>
+    attemptedSet.has(url)
+  )
+  const hosts = (urls: string[]) =>
+    [...new Set(urls.map((url) => new URL(url).hostname))].sort()
+  return {
+    attemptedSources: hosts(attemptedUrls),
+    acceptedSources: hosts(acceptedUrls),
+  }
 }
 
 function replayContext(
@@ -185,13 +231,17 @@ export async function canReplayCheckoutSparkOrderRecovery(
 export async function replayCheckoutSparkOrderRecovery(
   input: CheckoutSparkOrderRecoveryReplayRequest,
   dependencies: CheckoutSparkOrderRecoveryReplayDependencies = {}
-): Promise<{ status: "relay_accepted" | "waiting" }> {
+): Promise<{
+  status: "relay_accepted" | "waiting"
+  deliveries: CheckoutSparkRecoveryReplayDeliveryEvidence[]
+}> {
   const context = replayContext(input, dependencies)
   const original = await context.read()
   const allowedWraps = [
     original.saved.record.signedRecipientWrap,
     original.saved.organizerDelivery!.signedRecipientWrap,
   ]
+  const deliveries: CheckoutSparkRecoveryReplayDeliveryEvidence[] = []
   const publish: typeof publishWithPlanner = async (event, options) => {
     const current = await context.read()
     // ACK bookkeeping can change, but exact initial encrypted payloads cannot.
@@ -217,7 +267,22 @@ export async function replayCheckoutSparkOrderRecovery(
         "Saved recovery copies changed; reload this order before retrying."
       )
     context.assertCurrent()
-    return (dependencies.publishFn ?? publishWithPlanner)(event, options)
+    const requested = [...(options.exclusiveRelayUrls ?? [])]
+    const delivery = await (dependencies.publishFn ?? publishWithPlanner)(
+      event,
+      options
+    )
+    context.assertCurrent()
+    deliveries.push({
+      recipient: event.id === allowedWraps[0]!.id ? "seller" : "organizer",
+      ...freshSourceLabels(
+        requested,
+        delivery.attemptedRelayUrls,
+        delivery.successfulRelayUrls
+      ),
+      outerEnvelopeSize: envelopeSizeBucket(event),
+    })
+    return delivery
   }
   const result = await retryStoredCheckoutSparkRecoveryHandoff({
     handoffId: original.saved.record.handoffId,
@@ -239,5 +304,6 @@ export async function replayCheckoutSparkOrderRecovery(
   context.assertCurrent()
   return {
     status: result.canExposeFundingInvoice ? "relay_accepted" : "waiting",
+    deliveries,
   }
 }

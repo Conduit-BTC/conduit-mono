@@ -18,6 +18,7 @@ import {
   useAuth,
   type CheckoutSparkOrganizerCommerceProof,
   type CheckoutSparkOrganizerRecoveryAuthority,
+  type CheckoutSparkOrganizerRecoveryReadDetails,
   type CheckoutSparkOrganizerRecoverySelection,
   type EventMarketFreePurchaseSelection,
   type EventMarketFreePurchaseAuthority,
@@ -521,6 +522,58 @@ export function EventMarketOrganizerRecoveryDiscoveryNotice(props: {
   ) : null
 }
 
+/** Presentation only: retained read counts do not grant checkout authority. */
+export function EventMarketOrganizerRecoveryReadDetails(props: {
+  readDetails?: CheckoutSparkOrganizerRecoveryReadDetails
+  missingInitialCheckouts?: number
+  conflictingCheckouts?: number
+  capped?: boolean
+}) {
+  const count = (value: number | undefined) =>
+    value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : 0
+  const rows: [string, number | undefined][] = [
+    [
+      "All saved initial recovery messages",
+      props.readDetails?.allOrganizerInitial,
+    ],
+    ["All saved progress messages", props.readDetails?.allOrganizerProgress],
+    [
+      "This event's initial recovery messages",
+      props.readDetails?.selectedMarketInitial,
+    ],
+    [
+      "This event's progress messages",
+      props.readDetails?.selectedMarketProgress,
+    ],
+    ["Groups missing initial recovery", props.missingInitialCheckouts],
+    [
+      "Groups missing a saved initial envelope",
+      props.readDetails?.missingInitialWrapper,
+    ],
+    ["Conflicting groups", props.conflictingCheckouts],
+    ["Capped read", props.capped ? 1 : 0],
+  ]
+  return (
+    <details className="text-sm text-[var(--text-secondary)]">
+      <summary className="cursor-pointer rounded-sm py-2 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ring)]">
+        Recovery read details
+      </summary>
+      <dl className="mt-2 space-y-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex flex-wrap justify-between gap-x-4">
+            <dt>{label}</dt>
+            <dd>{count(value)}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-3">
+        These counts describe saved inbox evidence, not payment verification or
+        permission to hand out goods.
+      </p>
+    </details>
+  )
+}
+
 export function EventMarketOrganizerRecoveryQueue(props: {
   authenticatedPubkey: string
   marketCoordinate: string
@@ -674,12 +727,20 @@ export function EventMarketOrganizerRecoveryQueue(props: {
           </div>
         ))}
         {query.data ? (
-          <EventMarketOrganizerRecoveryDiscoveryNotice
-            missingInitialCheckouts={query.data.missingInitialCheckouts}
-            selectionCount={choices.length}
-            conflictingCheckouts={query.data.conflictingCheckouts}
-            capped={query.data.capped}
-          />
+          <>
+            <EventMarketOrganizerRecoveryDiscoveryNotice
+              missingInitialCheckouts={query.data.missingInitialCheckouts}
+              selectionCount={choices.length}
+              conflictingCheckouts={query.data.conflictingCheckouts}
+              capped={query.data.capped}
+            />
+            <EventMarketOrganizerRecoveryReadDetails
+              readDetails={query.data.readDetails}
+              missingInitialCheckouts={query.data.missingInitialCheckouts}
+              conflictingCheckouts={query.data.conflictingCheckouts}
+              capped={query.data.capped}
+            />
+          </>
         ) : null}
         {error || query.isError ? (
           <p role="alert" className="text-sm text-[var(--error-text)]">

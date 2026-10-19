@@ -238,7 +238,7 @@ describe("selected-order initial recovery delivery replay", () => {
     ).toBe(true)
     expect(
       await replayCheckoutSparkOrderRecovery(f.request, f.dependencies)
-    ).toEqual({ status: "relay_accepted" })
+    ).toMatchObject({ status: "relay_accepted" })
     expect(f.published.length).toBe(2)
     expect(f.published.map((event) => event.id)).toEqual([
       f.saved.record.signedRecipientWrap.id,
@@ -317,6 +317,105 @@ describe("selected-order initial recovery delivery replay", () => {
     ).rejects.toThrow()
     expect(f.published.length).toBe(1)
   })
+  it("returns only fresh requested public host labels and coarse size buckets for each exact recipient", async () => {
+    const f = await fixture()
+    f.dependencies.resolveInboxRelays = async (pubkey) =>
+      pubkey === f.graph.merchantPubkey
+        ? ["wss://relay.damus.io/private-inbox?private=not-displayed"]
+        : ["wss://relay.primal.net/organizer-inbox?private=not-displayed"]
+    f.dependencies.publishFn = async (event, options) => {
+      f.published.push(structuredClone(event))
+      const requested = [...(options.exclusiveRelayUrls ?? [])]
+      const credentialUrl = new URL("wss://credential.example.com/secret")
+      credentialUrl.username = crypto.randomUUID()
+      credentialUrl.password = crypto.randomUUID()
+      credentialUrl.searchParams.set("token", crypto.randomUUID())
+      const extra = [
+        "wss://unexpected.example.com/unrequested",
+        credentialUrl.toString(),
+        "ws://127.0.0.1/private",
+      ]
+      return {
+        attemptedRelayUrls: [...requested, ...extra],
+        successfulRelayUrls: [...requested, ...extra],
+        failedRelayUrls: [],
+        relayFailureMessages: {
+          "unexpected.example.com": "private provider detail",
+        },
+      }
+    }
+    const result = await replayCheckoutSparkOrderRecovery(
+      f.request,
+      f.dependencies
+    )
+    expect(Object.keys(result).sort()).toEqual(["deliveries", "status"])
+    expect(result.status).toBe("relay_accepted")
+    expect(
+      result.deliveries.map(
+        ({ recipient, attemptedSources, acceptedSources }) => ({
+          recipient,
+          attemptedSources,
+          acceptedSources,
+        })
+      )
+    ).toEqual([
+      {
+        recipient: "seller",
+        attemptedSources: ["relay.damus.io"],
+        acceptedSources: ["relay.damus.io"],
+      },
+      {
+        recipient: "organizer",
+        attemptedSources: ["relay.primal.net"],
+        acceptedSources: ["relay.primal.net"],
+      },
+    ])
+    for (const delivery of result.deliveries) {
+      expect(Object.keys(delivery).sort()).toEqual([
+        "acceptedSources",
+        "attemptedSources",
+        "outerEnvelopeSize",
+        "recipient",
+      ])
+      expect(
+        [
+          "under 16 KiB",
+          "16–32 KiB",
+          "32–48 KiB",
+          "48–64 KiB",
+          "64 KiB or more",
+        ].includes(delivery.outerEnvelopeSize)
+      ).toBe(true)
+    }
+    const output = JSON.stringify(result)
+    for (const excluded of [
+      "wss:",
+      "ws:",
+      "private-inbox",
+      "organizer-inbox",
+      "private=",
+      "user",
+      "password",
+      "credential",
+      "secret",
+      "token",
+      "unexpected",
+      "127.0.0.1",
+      "provider detail",
+      f.request.orderId,
+      f.request.buyerPubkey,
+      f.saved.record.rumorId,
+      f.saved.record.signedRecipientWrap.content,
+    ])
+      expect(output.includes(excluded)).toBe(false)
+    expect(f.published.length).toBe(2)
+    expect(f.published[0]!.id === f.saved.record.signedRecipientWrap.id).toBe(
+      true
+    )
+    expect(
+      f.published[1]!.id === f.saved.organizerDelivery!.signedRecipientWrap.id
+    ).toBe(true)
+  })
   it("does not report fresh relay acceptance using the earlier ACKs", async () => {
     const f = await fixture()
     f.dependencies.publishFn = async (_event, options) => ({
@@ -328,6 +427,28 @@ describe("selected-order initial recovery delivery replay", () => {
     await expect(
       replayCheckoutSparkOrderRecovery(f.request, f.dependencies)
     ).rejects.toThrow("Recipient delivery completed without a relay ACK")
+  })
+  it("does not label a requested but unattempted relay as freshly accepted", async () => {
+    const f = await fixture()
+    f.dependencies.resolveInboxRelays = async () => [
+      "wss://relay.damus.io",
+      "wss://relay.primal.net",
+    ]
+    f.dependencies.publishFn = async (_event, options) => ({
+      attemptedRelayUrls: [options.exclusiveRelayUrls![0]!],
+      successfulRelayUrls: [...options.exclusiveRelayUrls!],
+      failedRelayUrls: [],
+      relayFailureMessages: {},
+    })
+    const result = await replayCheckoutSparkOrderRecovery(
+      f.request,
+      f.dependencies
+    )
+    expect(result.deliveries.length).toBe(2)
+    for (const delivery of result.deliveries) {
+      expect(delivery.attemptedSources).toEqual(["relay.damus.io"])
+      expect(delivery.acceptedSources).toEqual(["relay.damus.io"])
+    }
   })
   it("does not widen the action to a guest lifecycle", async () => {
     const f = await fixture()
@@ -438,6 +559,10 @@ describe("selected-order initial recovery delivery replay", () => {
     ).toBe(true)
     expect(action.includes("runSettledRouterAction")).toBe(false)
     expect(action.includes("No payment was sent")).toBe(true)
+    expect(action.includes("deliveries: result.deliveries")).toBe(true)
+    expect(source.includes("recoveryReplayNotice.deliveries.map")).toBe(true)
+    expect(source.includes('delivery.attemptedSources.join(", ")')).toBe(true)
+    expect(source.includes('delivery.acceptedSources.join(", ")')).toBe(true)
     expect(
       action.indexOf("setRecoveryReplayNotice(null)") <
         action.indexOf("await replayCheckoutSparkOrderRecovery")

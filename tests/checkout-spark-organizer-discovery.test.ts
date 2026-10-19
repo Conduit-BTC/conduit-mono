@@ -55,6 +55,13 @@ it("discovers only ciphertext selections from the shared machine inbox, never th
   expect(read.selections[0]!.initialWrap.id).toBe(f.initialWrap.id)
   expect(read.selections[0]!.orderId).toBe(f.plan.orderId)
   expect(read.selections[0]!.buyerProgressWraps).toHaveLength(0)
+  expect(read.readDetails).toEqual({
+    allOrganizerInitial: 1,
+    allOrganizerProgress: 0,
+    selectedMarketInitial: 1,
+    selectedMarketProgress: 0,
+    missingInitialWrapper: 0,
+  })
   expect(JSON.stringify(read).includes(f.initial.wallet.mnemonic)).toBe(false)
   expect(await f.inbox.search("checkout_spark")).toHaveLength(0)
   expect(
@@ -69,6 +76,13 @@ it("discovers only ciphertext selections from the shared machine inbox, never th
     shouldContinue: () => f.clock.active,
   })
   expect(unrelated.selections).toHaveLength(0)
+  expect(unrelated.readDetails).toEqual({
+    allOrganizerInitial: 1,
+    allOrganizerProgress: 0,
+    selectedMarketInitial: 0,
+    selectedMarketProgress: 0,
+    missingInitialWrapper: 0,
+  })
 })
 
 it("does not fabricate a selection from absence and fences a revoked session", async () => {
@@ -123,14 +137,68 @@ it("distinguishes authenticated progress without the initial packet from an empt
   expect(incomplete.selections.length).toBe(0)
   expect(incomplete.freeSelections.length).toBe(0)
   expect(incomplete.conflictingCheckouts).toBe(0)
+  expect(incomplete.readDetails).toEqual({
+    allOrganizerInitial: 0,
+    allOrganizerProgress: 1,
+    selectedMarketInitial: 0,
+    selectedMarketProgress: 1,
+    missingInitialWrapper: 0,
+  })
   const unrelated = await read(`30409:${f.organizerPubkey}:other`)
   expect(unrelated.missingInitialCheckouts).toBe(0)
   expect(unrelated.selections.length).toBe(0)
+  expect(unrelated.readDetails).toEqual({
+    allOrganizerInitial: 0,
+    allOrganizerProgress: 1,
+    selectedMarketInitial: 0,
+    selectedMarketProgress: 0,
+    missingInitialWrapper: 0,
+  })
   await f.inbox.ingest(f.initialWrap, ["wss://relay.conduit.market"])
   const ready = await read()
   expect(ready.missingInitialCheckouts).toBe(0)
   expect(ready.selections.length).toBe(1)
   expect(ready.selections[0]!.buyerProgressWraps.length).toBe(1)
+  expect(ready.readDetails).toEqual({
+    allOrganizerInitial: 1,
+    allOrganizerProgress: 1,
+    selectedMarketInitial: 1,
+    selectedMarketProgress: 1,
+    missingInitialWrapper: 0,
+  })
+})
+
+it("counts a retained initial descriptor whose envelope is unavailable without creating a recovery selection", async () => {
+  const f = await fixture()
+  const read = () =>
+    readRetainedCheckoutSparkOrganizerRecoveries({
+      inbox: f.inbox,
+      marketCoordinate: f.plan.eventMarket!.marketCoordinate,
+      shouldContinue: () => f.clock.active,
+    })
+  await f.inbox.ingest(f.initialWrap)
+  expect((await read()).selections).toHaveLength(1)
+  // Controlled persistence loss retains the authenticated descriptor, not the
+  // ciphertext envelope required to reopen the actual recovery authority.
+  await f.database.commerceInboxWrappers.delete(
+    f.inbox.store.key(f.initialWrap.id)
+  )
+  const missing = await read()
+  expect(missing.readDetails).toEqual({
+    allOrganizerInitial: 1,
+    allOrganizerProgress: 0,
+    selectedMarketInitial: 1,
+    selectedMarketProgress: 0,
+    missingInitialWrapper: 1,
+  })
+  expect(missing.selections).toHaveLength(0)
+  expect(missing.missingInitialCheckouts).toBe(0)
+  expect(missing.conflictingCheckouts).toBe(0)
+  expect(missing.capped).toBe(false)
+  await f.inbox.ingest(f.initialWrap)
+  const restored = await read()
+  expect(restored.selections).toHaveLength(1)
+  expect(restored.readDetails.missingInitialWrapper).toBe(0)
 })
 
 it("discovers a real free purchase as machine-only ciphertext without inventing a financial plan or generic order", async () => {
