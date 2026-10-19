@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test"
+import { readFileSync } from "node:fs"
+import { parseConfigFileTextToJson } from "typescript"
 import { generateSecretKey } from "nostr-tools/pure"
 import type { BtcUsdRateQuote } from "@conduit/core/pricing"
 import { SIGNED_PRICING_FEED_CURRENCIES } from "@conduit/core/pricing/signed-rate-client"
@@ -8,11 +10,12 @@ import {
   type CheckoutSparkPricingRateAttestation,
 } from "@conduit/core/protocol/checkout-spark-pricing-authority"
 import { getCheckoutSparkPricingAuthorityPublicKey } from "@conduit/core/protocol/checkout-spark-pricing-authority-server"
-import {
+import productionWorker, {
   createCheckoutSparkPricingAuthorityCache,
   handleCheckoutSparkPricingAuthorityRequest,
   type CheckoutSparkPricingAuthorityEnv,
 } from "../apps/anon-zap-signer/src/checkout-pricing-authority"
+import previewWorker from "../apps/anon-zap-signer/src/checkout-pricing-preview"
 import type { PricingSnapshotStore } from "../apps/anon-zap-signer/src/checkout-pricing-cache"
 import { previewPricingQualification } from "../apps/anon-zap-signer/src/checkout-pricing-qualification"
 import { PRICING_PROVIDER_URLS } from "@conduit/core/pricing/common-rate-provider"
@@ -619,6 +622,317 @@ describe("checkout Spark pricing authority standalone Worker", () => {
     )
     expect(result.status).toBe(200)
     expect(result.headers.get("x-pricing-cache-store")).toBe("unavailable")
+  })
+})
+
+describe("pricing Worker project-scoped preview origins", () => {
+  const previewOrigins = [
+    "https://feat-cnd-317-event-router.conduit-market-coo.pages.dev",
+    "https://feat-cnd-317-event-router.conduit-merchant-33n.pages.dev",
+    "https://abc12345.conduit-market-coo.pages.dev",
+    "https://def67890.conduit-merchant-33n.pages.dev",
+  ]
+  const execution = { waitUntil: (_promise: Promise<unknown>) => {} }
+  const previewPolicy = { allowPagesPreviewOrigins: true }
+
+  function originRequest(origin: string | null, method = "POST") {
+    const headers = new Headers({ "content-type": "application/json" })
+    if (origin !== null) headers.set("origin", origin)
+    return new Request("https://pricing.example/api/checkout-spark-pricing", {
+      method,
+      headers,
+      ...(method === "POST" ? { body: '{"currencies":["USD"]}' } : {}),
+    })
+  }
+
+  it("selects the preview entry only in the preview deployment configuration", () => {
+    const path = "apps/anon-zap-signer/wrangler.checkout-pricing.jsonc"
+    const { config, error } = parseConfigFileTextToJson(
+      path,
+      readFileSync(path, "utf8")
+    )
+    expect(error).toBeUndefined()
+    expect(config.main).toBe("src/checkout-pricing-authority.ts")
+    expect(config.env.preview.main).toBe("src/checkout-pricing-preview.ts")
+  })
+
+  it.each(previewOrigins)(
+    "allows preview preflight but keeps production closed for %s",
+    async (origin) => {
+      const preview = await previewWorker.fetch(
+        originRequest(origin, "OPTIONS"),
+        env(),
+        execution
+      )
+      expect(preview.status).toBe(204)
+      expect(preview.headers.get("access-control-allow-origin")).toBe(origin)
+      expect(preview.headers.get("access-control-allow-methods")).toBe(
+        "POST, OPTIONS"
+      )
+      expect(preview.headers.get("access-control-allow-headers")).toBe(
+        "content-type"
+      )
+      expect(preview.headers.get("vary")).toBe("Origin")
+      for (const method of ["OPTIONS", "POST"]) {
+        const production = await productionWorker.fetch(
+          originRequest(origin, method),
+          env(),
+          execution
+        )
+        expect(production.status).toBe(403)
+        expect(production.headers.has("access-control-allow-origin")).toBe(
+          false
+        )
+      }
+    }
+  )
+
+  it("preserves every explicit origin in both entries, including an explicitly approved preview", async () => {
+    const configuration = env()
+    const origins = [ORIGIN, "https://merchant.example", previewOrigins[0]]
+    configuration.CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS = origins.join(", ")
+    for (const worker of [productionWorker, previewWorker]) {
+      for (const origin of origins) {
+        const result = await worker.fetch(
+          originRequest(origin, "OPTIONS"),
+          configuration,
+          execution
+        )
+        expect(result.status).toBe(204)
+        expect(result.headers.get("access-control-allow-origin")).toBe(origin)
+      }
+    }
+  })
+
+  it("shares one genuine signed snapshot across explicit and project preview origins", async () => {
+    const configuration = env()
+    let fetches = 0
+    let limits = 0
+    configuration.CHECKOUT_SPARK_PRICING_RATE_LIMITER = {
+      limit: async () => {
+        limits++
+        return { success: true }
+      },
+    }
+    const cache = createCheckoutSparkPricingAuthorityCache()
+    let first: unknown
+    for (const origin of [ORIGIN, ...previewOrigins]) {
+      const result = await handleCheckoutSparkPricingAuthorityRequest(
+        originRequest(origin),
+        configuration,
+        {
+          cache,
+          nowMs: () => NOW_MS,
+          fetchPricingRate: async () => {
+            fetches++
+            return { rate: 100_000, fetchedAt: NOW_MS, source: "mempool" }
+          },
+        },
+        undefined,
+        previewPolicy
+      )
+      expect(result.status).toBe(200)
+      expect(result.headers.get("access-control-allow-origin")).toBe(origin)
+      expect(result.headers.get("vary")).toBe("Origin")
+      expect(result.headers.get("cache-control")).toBe("no-store")
+      const body = (await result.json()) as {
+        pricing: {
+          version: 1
+          rate: CheckoutSparkPricingRateAttestation["rate"]
+        }
+        pricingAuthority: CheckoutSparkPricingRateAttestation
+      }
+      expect(
+        verifyCheckoutSparkPricingRateAttestation({
+          ...body,
+          attestation: body.pricingAuthority,
+          acceptedAtMs: NOW_MS,
+          nowMs: NOW_MS,
+          trustedPublicKeys: parseCheckoutSparkPricingAuthorityPublicKeys(
+            configuration.CHECKOUT_SPARK_PRICING_PUBLIC_KEYS
+          ),
+        })
+      ).toBe("verified")
+      if (first) expect(body).toEqual(first)
+      first = body
+    }
+    expect(fetches).toBe(1)
+    expect(limits).toBe(1)
+  })
+
+  it.each([
+    null,
+    "null",
+    "",
+    "not-an-origin",
+    "https://conduit-market-coo.pages.dev",
+    "https://conduit-merchant-33n.pages.dev",
+    "https://branch.unrelated.pages.dev",
+    "https://branch.conduit-market-coo.pages.dev.evil.example",
+    "https://branch.conduit-merchant-33n.pages.dev.evil.example",
+    "https://branch.evilconduit-market-coo.pages.dev",
+    "https://nested.branch.conduit-market-coo.pages.dev",
+    "https://branch.conduit-market-coo.pages.dev.",
+    "https://-branch.conduit-market-coo.pages.dev",
+    "https://branch-.conduit-market-coo.pages.dev",
+    `https://${"a".repeat(64)}.conduit-market-coo.pages.dev`,
+    "http://branch.conduit-market-coo.pages.dev",
+    "https://branch.conduit-market-coo.pages.dev:8443",
+    "https://branch.conduit-market-coo.pages.dev/path",
+    "https://branch.conduit-market-coo.pages.dev/",
+    "https://branch.conduit-market-coo.pages.dev?preview=true",
+    "https://branch.conduit-market-coo.pages.dev#fragment",
+    "https://branch.conduit-market-coo.pages.dev@evil.example",
+    "https://*.conduit-market-coo.pages.dev",
+  ])(
+    "rejects unapproved origin %s before provider or limiter work",
+    async (origin) => {
+      const configuration = env()
+      let work = 0
+      configuration.CHECKOUT_SPARK_PRICING_RATE_LIMITER = {
+        limit: async () => {
+          work++
+          return { success: true }
+        },
+      }
+      for (const method of ["OPTIONS", "POST"]) {
+        const result = await handleCheckoutSparkPricingAuthorityRequest(
+          originRequest(origin, method),
+          configuration,
+          {
+            fetchPricingRate: async () => {
+              work++
+              throw new Error("Must not fetch")
+            },
+          },
+          undefined,
+          previewPolicy
+        )
+        expect(result.status).toBe(403)
+        expect(result.headers.has("access-control-allow-origin")).toBe(false)
+      }
+      expect(work).toBe(0)
+    }
+  )
+
+  it("rejects URL userinfo before pricing work", async () => {
+    const url = new URL(previewOrigins[0])
+    url.username = crypto.randomUUID()
+    url.password = crypto.randomUUID()
+    const configuration = env()
+    let work = 0
+    configuration.CHECKOUT_SPARK_PRICING_RATE_LIMITER = {
+      limit: async () => {
+        work++
+        return { success: true }
+      },
+    }
+    for (const method of ["OPTIONS", "POST"]) {
+      const result = await handleCheckoutSparkPricingAuthorityRequest(
+        originRequest(url.href.slice(0, -1), method),
+        configuration,
+        {
+          fetchPricingRate: async () => {
+            work++
+            throw new Error("Must not fetch")
+          },
+        },
+        undefined,
+        previewPolicy
+      )
+      expect(result.status).toBe(403)
+      expect(result.headers.has("access-control-allow-origin")).toBe(false)
+    }
+    expect(work).toBe(0)
+  })
+
+  it.each([
+    undefined,
+    "",
+    `${ORIGIN},invalid`,
+    Array(33).fill(ORIGIN).join(","),
+  ])("keeps invalid explicit configuration closed: %s", async (origins) => {
+    const configuration = env()
+    configuration.CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS = origins
+    for (const worker of [productionWorker, previewWorker]) {
+      const result = await worker.fetch(
+        originRequest(previewOrigins[0], "OPTIONS"),
+        configuration,
+        execution
+      )
+      expect(result.status).toBe(503)
+      expect(result.headers.has("access-control-allow-origin")).toBe(false)
+    }
+  })
+
+  it("does not interpret wildcard-looking explicit entries as wildcard grants", async () => {
+    const configuration = env()
+    configuration.CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS = `${ORIGIN},https://*.pages.dev`
+    for (const worker of [productionWorker, previewWorker]) {
+      const result = await worker.fetch(
+        originRequest("https://branch.unrelated.pages.dev", "OPTIONS"),
+        configuration,
+        execution
+      )
+      expect(result.status).toBe(403)
+      expect(result.headers.has("access-control-allow-origin")).toBe(false)
+    }
+  })
+
+  it("keeps credential, payload, signer and limiter gates on preview POST requests", async () => {
+    for (const header of [
+      "authorization",
+      "proxy-authorization",
+      "cookie",
+      "referer",
+    ]) {
+      const req = originRequest(previewOrigins[0])
+      req.headers.set(header, "fixture")
+      expect((await previewWorker.fetch(req, env(), execution)).status).toBe(
+        400
+      )
+    }
+    const invalid = new Request(originRequest(previewOrigins[0]), {
+      body: '{"currencies":["USD"],"order":"forbidden"}',
+    })
+    expect((await previewWorker.fetch(invalid, env(), execution)).status).toBe(
+      400
+    )
+    for (const missing of [
+      "CHECKOUT_SPARK_PRICING_PRIVATE_KEY_HEX",
+      "CHECKOUT_SPARK_PRICING_RATE_LIMITER",
+    ] as const) {
+      const configuration = env()
+      delete configuration[missing]
+      expect(
+        (
+          await previewWorker.fetch(
+            originRequest(previewOrigins[0]),
+            configuration,
+            execution
+          )
+        ).status
+      ).toBe(503)
+    }
+    const configuration = env()
+    configuration.CHECKOUT_SPARK_PRICING_RATE_LIMITER = {
+      limit: async () => ({ success: false }),
+    }
+    let fetched = false
+    const limited = await handleCheckoutSparkPricingAuthorityRequest(
+      originRequest(previewOrigins[0]),
+      configuration,
+      {
+        fetchPricingRate: async () => {
+          fetched = true
+          throw new Error("Must not fetch")
+        },
+      },
+      undefined,
+      previewPolicy
+    )
+    expect(limited.status).toBe(429)
+    expect(fetched).toBe(false)
   })
 })
 
