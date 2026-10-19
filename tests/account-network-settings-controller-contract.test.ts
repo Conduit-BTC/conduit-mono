@@ -146,7 +146,8 @@ describe("account Network settings controller contract", () => {
     expect(automaticScan).toContain("isRelayEligible: async (relayUrl)")
     expect(automaticScan).toContain("filterEligibleAccountRelayTargets({")
     expect(automaticScan).toContain('bucket: "diagnostic_read"')
-    expect(automaticScan).toContain("relayTargetsFromUrls([relayUrl]")
+    expect(automaticScan).toContain("targets: configuredRelayTargets(")
+    expect(automaticScan).toContain("[relayUrl]")
 
     const eligibilityIndex = batch.indexOf(
       "await input.isRelayEligible(relayUrl)"

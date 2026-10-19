@@ -15,6 +15,12 @@ import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { generateId } from "../utils"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
 import {
+  planAccountStorageRelays,
+  accountStorageRelayOperator,
+} from "../protocol/account-storage-relay-policy"
+import { ACCOUNT_STORAGE_RELAY_POLICY_VERSION } from "../config"
+import { transitionAccountStorageRelayUrls } from "../protocol/account-storage-relay-policy"
+import {
   bindSparkRecoveryAccount,
   isSparkRecoveryAddress,
   parseAddySparkMnemonic,
@@ -50,11 +56,6 @@ import {
 
 // Operator identities are curated facts, never inferred from hostnames or NIP-11 claims.
 // Unknown user relays participate in discovery/delivery but cannot inflate redundancy.
-export const SPARK_RECOVERY_RENDEZVOUS = Object.freeze([
-  { url: "wss://relay.conduit.market", operator: "conduit" },
-  { url: "wss://relay.damus.io", operator: "damus" },
-  { url: "wss://nos.lol", operator: "nos.lol" },
-])
 export interface SparkRecoveryRelay {
   url: string
   operator: string | null
@@ -99,6 +100,16 @@ export interface SparkRecoveryRecord {
   targets: SparkRecoveryRelay[]
   delivery: SparkRecoveryDelivery[]
   exported: boolean
+  /** Original targets and receipts above remain immutable historical evidence. */
+  activeRelayPolicy?: {
+    version: typeof ACCOUNT_STORAGE_RELAY_POLICY_VERSION
+    targets: SparkRecoveryRelay[]
+    delivery: SparkRecoveryDelivery[]
+  }
+}
+
+export function currentRecoveryDelivery(record: SparkRecoveryRecord) {
+  return record.activeRelayPolicy ?? record
 }
 export interface SparkRecoveryState {
   unresolvedObserved: boolean
@@ -120,6 +131,10 @@ export interface SparkRecoveryState {
 /** Ciphertext-only account journal; backups survive replacement of scoped choices. */
 export interface SparkRecoveryStore {
   load(owner: string): Promise<SparkRecoveryState>
+  migrateRelayPolicy?(
+    owner: string,
+    shouldContinue: () => boolean
+  ): Promise<void>
   repairUnresolved?(
     owner: string,
     expected: SparkRecoveryState,
@@ -213,20 +228,6 @@ function compactSparkRecoveryChoices(
   return [...retained, ...choices.values()]
 }
 
-export function planSparkRecoveryRelays(
-  userRelayUrls: readonly string[] = []
-): SparkRecoveryRelay[] {
-  const result = SPARK_RECOVERY_RENDEZVOUS.map((r) => ({
-    ...r,
-  })) as SparkRecoveryRelay[]
-  for (const candidate of userRelayUrls) {
-    const url = normalizePublicWebSocketUrl(candidate)
-    if (url && !result.some((r) => r.url === url))
-      result.push({ url, operator: null })
-    if (result.length >= 8) break
-  }
-  return result
-}
 function clone<T>(value: T): T {
   return structuredClone(value)
 }
@@ -255,8 +256,7 @@ function validatePlan(
   // Caller-supplied labels cannot manufacture independently operated backups.
   return urls.map((url) => ({
     url,
-    operator:
-      SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === url)?.operator ?? null,
+    operator: accountStorageRelayOperator(url),
   }))
 }
 export function validateSparkRecoveryState(
@@ -410,6 +410,39 @@ export function validateSparkRecoveryState(
         delivery,
         exported,
       })
+      if (source.activeRelayPolicy !== undefined) {
+        const active = source.activeRelayPolicy
+        const transitioned = transitionAccountStorageRelayUrls(
+          targets.map((target) => target.url)
+        )
+        if (
+          active.version !== ACCOUNT_STORAGE_RELAY_POLICY_VERSION ||
+          !transitioned ||
+          JSON.stringify(active.targets.map((target) => target.url)) !==
+            JSON.stringify(transitioned)
+        )
+          throw new SparkRecoveryError("invalid_record")
+        const checked = validateSparkRecoveryState(
+          {
+            ownerPubkey: owner,
+            unresolvedObserved: false,
+            records: [
+              {
+                event,
+                targets: active.targets,
+                delivery: active.delivery,
+                exported,
+              },
+            ],
+          },
+          owner
+        ).records[0]
+        records[records.length - 1].activeRelayPolicy = {
+          version: ACCOUNT_STORAGE_RELAY_POLICY_VERSION,
+          targets: checked.targets,
+          delivery: checked.delivery,
+        }
+      }
     }
     if (new Set(records.map((r) => r.event.id)).size !== records.length)
       throw new SparkRecoveryError("invalid_record")
@@ -454,6 +487,30 @@ export function validateSparkRecoveryState(
     throw new SparkRecoveryError("invalid_record")
   }
 }
+function mergeActiveRelayPolicy(
+  old: SparkRecoveryRecord,
+  next: SparkRecoveryRecord
+) {
+  const left = old.activeRelayPolicy
+  const right = next.activeRelayPolicy
+  if (!left || !right) return clone(left ?? right)
+  if (JSON.stringify(left.targets) !== JSON.stringify(right.targets))
+    throw new SparkRecoveryError("conflict")
+  return {
+    ...left,
+    delivery: left.delivery.map((evidence) => {
+      const update = right.delivery.find(
+        (candidate) => candidate.url === evidence.url
+      )!
+      return {
+        ...(update.checkedAt >= evidence.checkedAt ? update : evidence),
+        accepted: evidence.accepted || update.accepted,
+        readBack: evidence.readBack || update.readBack,
+      }
+    }),
+  }
+}
+
 export function mergeSparkRecoveryRecords(
   current: SparkRecoveryState,
   incoming: SparkRecoveryRecord[],
@@ -484,6 +541,11 @@ export function mergeSparkRecoveryRecords(
       throw new SparkRecoveryError("conflict")
     records.set(record.event.id, {
       ...old,
+      ...(old.activeRelayPolicy || record.activeRelayPolicy
+        ? {
+            activeRelayPolicy: mergeActiveRelayPolicy(old, record),
+          }
+        : {}),
       exported: old.exported || record.exported,
       delivery: old.delivery.map((d) => {
         const update = record.delivery.find((u) => u.url === d.url)!
@@ -557,6 +619,7 @@ export class SparkRecoveryService {
       deriveIdentity: SparkIdentityDeriver
       currentSigner?: () => AccountSigner | undefined
       userRelayUrls?: readonly string[]
+      relayTargets?: readonly SparkRecoveryRelay[]
       migrateLegacyRequests?: (
         network: SparkRecoveryBundle["network"],
         discovery: SparkRecoveryDiscovery,
@@ -569,9 +632,17 @@ export class SparkRecoveryService {
     const isolated = getConfiguredIsolatedE2eRelayUrl()
     this.plan = isolated
       ? [{ url: isolated, operator: null }]
-      : planSparkRecoveryRelays(input.userRelayUrls)
+      : [
+          ...(input.relayTargets ??
+            planAccountStorageRelays(input.userRelayUrls)),
+        ]
   }
   private async load(): Promise<SparkRecoveryState> {
+    this.scope.assertCurrent()
+    await this.input.store.migrateRelayPolicy?.(
+      this.scope.owner,
+      this.continues
+    )
     this.scope.assertCurrent()
     const state = await this.input.store.load(this.scope.owner)
     this.scope.assertCurrent()
@@ -1586,6 +1657,7 @@ export class SparkRecoveryService {
     const saved = await this.load()
     const record = saved.records.find((r) => r.event.id === eventId)
     if (!record) throw new SparkRecoveryError("invalid_record")
+    const activeDelivery = currentRecoveryDelivery(record)
     const address = record.event.tags.find((tag) => tag[0] === "d")?.[1]
     if (address && isSparkWalletRegistryDTag(address)) {
       const snapshot = parseSparkWalletRegistrySnapshot(
@@ -1594,7 +1666,7 @@ export class SparkRecoveryService {
       )
       // Recheck all relay heads before a retry can replace another writer's
       // newer snapshot. The signed event itself remains byte-identical.
-      for (const target of record.targets) {
+      for (const target of activeDelivery.targets) {
         this.scope.assertCurrent()
         const read = await this.input.transport.read(
           target.url,
@@ -1616,9 +1688,9 @@ export class SparkRecoveryService {
       }
     }
     const deliveryByUrl = new Map(
-      record.delivery.map((evidence) => [evidence.url, evidence])
+      activeDelivery.delivery.map((evidence) => [evidence.url, evidence])
     )
-    for (const target of record.targets) {
+    for (const target of activeDelivery.targets) {
       this.scope.assertCurrent()
       const evidence = deliveryByUrl.get(target.url)
       if (!evidence) throw new SparkRecoveryError("invalid_record")
@@ -1696,11 +1768,12 @@ export function recoveryReadiness(record: SparkRecoveryRecord): {
   ready: boolean
   independentCopies: number
 } {
+  const active = currentRecoveryDelivery(record)
   const operators = new Set(
-    record.targets.flatMap((t) => {
-      const known = SPARK_RECOVERY_RENDEZVOUS.find((r) => r.url === t.url)
-      const evidence = record.delivery.find((d) => d.url === t.url)
-      return known && hasFreshReadback(evidence) ? [known.operator] : []
+    active.targets.flatMap((t) => {
+      const operator = accountStorageRelayOperator(t.url)
+      const evidence = active.delivery.find((d) => d.url === t.url)
+      return operator && hasFreshReadback(evidence) ? [operator] : []
     })
   )
   return {
@@ -1726,12 +1799,13 @@ export function accountRegistryReadiness(record: SparkRecoveryRecord): {
   ready: boolean
   independentCopies: number
 } {
+  const active = currentRecoveryDelivery(record)
   return {
     ready:
-      record.targets.length > 0 &&
-      record.targets.every((target) =>
+      active.targets.length > 0 &&
+      active.targets.every((target) =>
         hasFreshReadback(
-          record.delivery.find((evidence) => evidence.url === target.url)
+          active.delivery.find((evidence) => evidence.url === target.url)
         )
       ),
     independentCopies: recoveryReadiness(record).independentCopies,

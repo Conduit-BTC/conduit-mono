@@ -1,5 +1,6 @@
 import { liveQuery } from "dexie"
 import { config } from "../config"
+import { getAccountStorageRelays } from "./account-storage-relay-policy"
 import {
   db,
   type AccountNetworkFrontierReference,
@@ -26,6 +27,7 @@ import type { SignedPublicNostrEvent } from "./signed-event"
 import { isVerifiedNostrEvent } from "./verified-public-event"
 import {
   mergeRelayTargets,
+  relayTargetsFromUrls,
   type RelayGrant,
   type RelayOperation,
   type RelayTarget,
@@ -754,6 +756,9 @@ function configuredGrantRelayUrls(grant: RelayGrant): readonly string[] {
   }
   if (grant.kind === "app") {
     switch (grant.bucket) {
+      case "account_storage_read":
+      case "account_storage_write":
+        return getAccountStorageRelays().map((relay) => relay.url)
       case "general_read":
         return config.appReadRelayUrls
       case "commerce_read":
@@ -804,6 +809,25 @@ function configuredGrantRelayUrls(grant: RelayGrant): readonly string[] {
       : config.commerceDmFallbackRelayUrls
   }
   return []
+}
+
+/** Construct configured grants from the same registry used by final-I/O admission. */
+export function configuredRelayTargets(
+  grant: Extract<
+    RelayGrant,
+    { kind: "app" | "public_fallback" | "discovery" | "compatibility" }
+  >,
+  selectedUrls?: readonly string[]
+): RelayTarget[] {
+  const configured = relayTargetsFromUrls(
+    configuredGrantRelayUrls(grant),
+    grant
+  )
+  if (!selectedUrls) return configured
+  const configuredUrls = new Set(configured.map((target) => target.url))
+  return relayTargetsFromUrls(selectedUrls, grant).filter((target) =>
+    configuredUrls.has(target.url)
+  )
 }
 
 /**
@@ -974,7 +998,8 @@ export async function filterEligibleAccountRelayTargets(input: {
                   grant.bucket === "recipient_delivery" ||
                   grant.bucket === "recipient_fallback" ||
                   grant.bucket === "core_public_write" ||
-                  grant.bucket === "commerce_discovery_write"
+                  grant.bucket === "commerce_discovery_write" ||
+                  grant.bucket === "account_storage_write"
                 ? "write"
                 : "read"
           if (

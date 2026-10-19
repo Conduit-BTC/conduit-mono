@@ -1,4 +1,5 @@
 import { accountAddressRequests } from "../packages/core/src/wallets/account-address-request"
+import { ACCOUNT_STORAGE_RELAYS } from "../packages/core/src/config"
 import { AddressRequestService } from "../packages/core/src/wallets/address-request-service"
 import { DexieAddressRequestStore } from "../packages/core/src/wallets/address-request-store"
 import { secp256k1 } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
@@ -251,11 +252,7 @@ function fixture() {
     }),
     hasAuthority: () => true,
   })
-  const relayUrls = [
-    "wss://relay.conduit.market",
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-  ]
+  const relayUrls = ACCOUNT_STORAGE_RELAYS.map(({ url }) => url)
   const relays = new Map(
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
@@ -407,7 +404,7 @@ test("registry delivery needs every planned readback even with two operators or 
   })
   expect(await service.deliver(eventId)).toEqual({
     ready: true,
-    independentCopies: 3,
+    independentCopies: ACCOUNT_STORAGE_RELAYS.length,
   })
   const record = (await journal.load(f.owner)).records.find(
     (item) => item.event.id === eventId
@@ -431,7 +428,7 @@ test("registry delivery needs every planned readback even with two operators or 
   }
   expect(accountRegistryReadiness(missingUserRelay)).toEqual({
     ready: false,
-    independentCopies: 3,
+    independentCopies: ACCOUNT_STORAGE_RELAYS.length,
   })
   const deliveredUserRelay = {
     ...missingUserRelay,
@@ -450,7 +447,7 @@ test("registry delivery needs every planned readback even with two operators or 
   }
   expect(accountRegistryReadiness(deliveredUserRelay)).toEqual({
     ready: true,
-    independentCopies: 3,
+    independentCopies: ACCOUNT_STORAGE_RELAYS.length,
   })
   const localOnly = {
     ...record,

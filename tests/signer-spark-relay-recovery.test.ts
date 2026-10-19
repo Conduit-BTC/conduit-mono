@@ -3,6 +3,8 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { v2 } from "nostr-tools/nip44"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { ConduitDB } from "../packages/core/src/db"
+import { ACCOUNT_STORAGE_RELAYS as SPARK_RECOVERY_RENDEZVOUS } from "../packages/core/src/config"
+import { LEGACY_ACCOUNT_STORAGE_RELAYS } from "../packages/core/src/config"
 import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 import {
   NostrSignerError,
@@ -13,7 +15,6 @@ import { DexieSparkRecoveryStore } from "../packages/core/src/wallets/spark-reco
 import { diagnoseRecoveryDelivery } from "../packages/core/src/wallets/spark-recovery-diagnostics"
 import {
   SparkRecoveryService,
-  SPARK_RECOVERY_RENDEZVOUS,
   recoveryReadiness,
   type SparkRecoveryTransport,
   type SparkRecoveryRead,
@@ -193,6 +194,52 @@ function bundle() {
 }
 
 describe("signer-backed Spark recovery composed foundations", () => {
+  it("resumes installed legacy delivery after an outage and restart using unchanged signed bytes", async () => {
+    const f = fixture()
+    const candidate = await f.service().prepare(bundle())
+    const saved = await f.store.load(f.owner)
+    const record = saved.records[0]
+    record.targets = LEGACY_ACCOUNT_STORAGE_RELAYS.map((relay) => ({
+      ...relay,
+    }))
+    record.delivery = record.targets.map(({ url }) => ({
+      url,
+      status: "pending",
+      accepted: false,
+      readBack: false,
+      lastRead: "not_queried",
+      checkedAt: 0,
+    }))
+    const removed = crypto.randomUUID()
+    saved.removedWalletIds = [removed]
+    await f.db.sparkRecoveryEvidence.put(saved)
+    const before = f.counts()
+    const signedBytes = JSON.stringify(record.event)
+    const secondary = SPARK_RECOVERY_RENDEZVOUS[1].url
+    f.unavailable.add(secondary)
+    expect((await f.service().deliver(candidate.eventId)).ready).toBe(false)
+    const pending = (await f.store.load(f.owner)).records[0]
+    expect(pending.activeRelayPolicy?.delivery[1].readBack).toBe(false)
+    f.unavailable.delete(secondary)
+    expect(
+      (
+        await f
+          .service(new DexieSparkRecoveryStore(f.db))
+          .deliver(candidate.eventId)
+      ).ready
+    ).toBe(true)
+    const after = await f.store.load(f.owner)
+    expect(after.removedWalletIds).toEqual([removed])
+    expect(JSON.stringify(after.records[0].event)).toBe(signedBytes)
+    expect(after.records[0].targets).toEqual(record.targets)
+    expect(after.records[0].delivery).toEqual(record.delivery)
+    expect(f.counts().signCalls).toBe(before.signCalls)
+    expect(f.counts().encryptCalls).toBe(before.encryptCalls)
+    expect([...f.relays.keys()].sort()).toEqual(
+      SPARK_RECOVERY_RENDEZVOUS.map(({ url }) => url).sort()
+    )
+  })
+
   for (const method of ["nip07", "nip46"] as const) {
     it(`${method} foreground recovery retries after denial without poisoning the journal or resuming background work`, async () => {
       const f = fixture({ method })
@@ -535,7 +582,9 @@ describe("signer-backed Spark recovery composed foundations", () => {
       expect(discovered.primary?.eventId).toBe(candidate.eventId)
       expect(discovered.coverage).toBe("partial")
       expect(discovered.creationEligible).toBe(false)
-      expect(reads.filter((r) => r.id === candidate.eventId)).toHaveLength(3)
+      expect(reads.filter((r) => r.id === candidate.eventId)).toHaveLength(
+        SPARK_RECOVERY_RENDEZVOUS.length
+      )
       const restored = await target.restore(discovered.primary!)
       expect("walletId" in restored && restored.walletId).toBe(
         candidate.walletId
@@ -673,9 +722,8 @@ describe("signer-backed Spark recovery composed foundations", () => {
     const sourceIdentity = await deriveSparkRecoveryIdentity(recovery)
     const candidate = await f.service().prepare(recovery)
     const primaryId = await f.service().preparePrimary(candidate)
-    // First delivery is interrupted/unavailable at two operators; one ACK alone is insufficient.
+    // One operator is unavailable; one ACK alone is insufficient.
     f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[1].url)
-    f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[2].url)
     expect(await f.service().deliver(candidate.eventId)).toEqual({
       ready: false,
       independentCopies: 1,
@@ -690,6 +738,7 @@ describe("signer-backed Spark recovery composed foundations", () => {
     expect(f.counts()).toEqual(before)
     expect(new Set(f.frames).size).toBe(1)
     await f.service().deliver(primaryId)
+    f.unavailable.add(SPARK_RECOVERY_RENDEZVOUS[1].url)
     const fresh = storage()
     const discovered = await f.service(fresh.store).discover()
     expect(discovered.coverage).toBe("partial")
@@ -793,8 +842,10 @@ describe("signer-backed Spark recovery composed foundations", () => {
       lastRead: "unavailable",
       checkedAt: Date.now(),
     }
+    const unknownRelay = "wss://diagnostic-fixture.example"
+    record.targets.push({ url: unknownRelay, operator: null })
     record.delivery[2] = {
-      ...record.delivery[2],
+      url: unknownRelay,
       status: "acked",
       accepted: true,
       readBack: true,
@@ -922,7 +973,9 @@ describe("signer-backed Spark recovery composed foundations", () => {
     const count = f.counts()
     for (const events of f.relays.values()) events.clear()
     expect((await f.service().deliver(c.eventId)).ready).toBe(false)
-    expect((await f.service().deliver(c.eventId)).independentCopies).toBe(3)
+    expect((await f.service().deliver(c.eventId)).independentCopies).toBe(
+      SPARK_RECOVERY_RENDEZVOUS.length
+    )
     expect(f.counts()).toEqual(count)
     expect(new Set(f.frames).size).toBe(1)
   })

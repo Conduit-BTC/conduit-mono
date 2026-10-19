@@ -37,6 +37,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/knowledge/central-relay-policy.md`: central relay ownership, installed
+  delivery-plan migration, finite caller ledger and CI enforcement
+
 - `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
   frozen payment authority, isolated-wallet Merchant recovery and historical
   order compatibility

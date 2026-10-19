@@ -1035,7 +1035,8 @@ describe("planPublishRelays", () => {
       deliveryMode: "critical",
     })
 
-    expect(standard.primaryRelayUrls).toEqual(relays.slice(0, 4))
+    expect(standard.primaryRelayUrls).toEqual(relays)
+    expect(standard.maxPrimaryRelayAttempts).toBe(4)
     expect(critical.primaryRelayUrls).toEqual(relays)
   })
 

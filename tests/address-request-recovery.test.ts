@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
+import { ACCOUNT_STORAGE_RELAYS } from "../packages/core/src/config"
 import { readFileSync } from "node:fs"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { z } from "../packages/core/node_modules/zod/index.js"
@@ -112,14 +113,11 @@ test("signed name request completes after approval and restores on another stora
       hasAuthority: () => true,
     }
   )
-  const relayUrls = [
-    "wss://relay.conduit.market",
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-  ]
+  const relayUrls = ACCOUNT_STORAGE_RELAYS.map((relay) => relay.url)
   const relays = new Map(
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
+  const requestWrites: Array<{ url: string; event: SignedNostrEvent }> = []
   let optionalUnavailable = false
   let optionalWriteStatus: "timed_out" | undefined
   let failNextOptionalReadback = false
@@ -130,6 +128,7 @@ test("signed name request completes after approval and restores on another stora
       const events = relays.get(url)!
       const address = event.tags.find((tag) => tag[0] === "d")?.[1]
       if (address === addressRequestsDTag("mainnet")) {
+        requestWrites.push({ url, event: structuredClone(event) })
         if (optionalWriteStatus) return optionalWriteStatus
         if (armOptionalReadbackFailure) {
           failNextOptionalReadback = true
@@ -247,11 +246,12 @@ test("signed name request completes after approval and restores on another stora
       deriveIdentity: async (bundle) =>
         bundle.accountNumber === 2 ? secondIdentity : identity,
     })
-  const metadata = (db: ConduitDB) =>
+  const metadata = (db: ConduitDB, userRelayUrls: string[] = []) =>
     new AddressRequestService({
       signer,
       currentSigner: () => signer,
       store: new DexieAddressRequestStore(db),
+      userRelayUrls,
       transport,
     })
   const first = service(dbA)
@@ -412,6 +412,29 @@ test("signed name request completes after approval and restores on another stora
       "mainnet"
     ).requests[walletId].payload
     optionalUnavailable = false
+    // A newer service configuration must retry the saved plan byte-for-byte,
+    // without sending this existing private record to its extra destination.
+    const laterRelay = "wss://later-storage.conduit.market"
+    relays.set(laterRelay, new Map(relays.get(relayUrls[0])!))
+    requestWrites.length = 0
+    const retried = await metadata(dbA, [laterRelay]).save(
+      "mainnet",
+      await first.discover(false, "mainnet"),
+      walletId,
+      (await flowA.load(walletId))!.record
+    )
+    expect(retried.diagnosis).toBeUndefined()
+    expect(retried.confirmed).toBe(true)
+    expect(requestWrites.map(({ url }) => url)).toEqual(
+      retained.operation!.relayPolicyTargets ?? retained.operation!.targets
+    )
+    expect(
+      requestWrites.every(
+        ({ event }) =>
+          JSON.stringify(event) === JSON.stringify(retained.operation!.event)
+      )
+    ).toBe(true)
+    expect(requestWrites.some(({ url }) => url === laterRelay)).toBe(false)
     const submitted = await flowA.submit(walletId, {
       desiredName: "saved-name",
       token: "controlled",
@@ -505,7 +528,7 @@ test("signed name request completes after approval and restores on another stora
       reason: "request_read_unavailable",
       eventSource: "new",
       confirmedTargets: 0,
-      targetCount: 3,
+      targetCount: ACCOUNT_STORAGE_RELAYS.length,
     })
     expect(publishedProfile && verifyEvent(publishedProfile)).toBe(true)
     expect(JSON.parse(publishedProfile!.content)).toEqual({

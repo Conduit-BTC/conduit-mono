@@ -13,7 +13,10 @@ import {
   type ShopperPricePreference,
 } from "../pricing"
 import { SHIPPING_COUNTRIES } from "./countries"
-import type { AccountNetworkLocalStateRepository } from "./account-network-local-state"
+import {
+  configuredRelayTargets,
+  type AccountNetworkLocalStateRepository,
+} from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import { getNdk } from "./ndk"
 import {
@@ -626,12 +629,12 @@ export async function fetchShopperPresets(
   const relayTargets = mergeRelayTargets(
     plan.relayTargets,
     dependencies.readRelayTargets ?? [],
-    relayTargetsFromUrls(config.appWriteRelayUrls, {
+    configuredRelayTargets({
       kind: "app",
       operation: "read",
       bucket: "author_readback",
     }),
-    relayTargetsFromUrls(config.corePublicFallbackRelayUrls, {
+    configuredRelayTargets({
       kind: "public_fallback",
       operation: "read",
       bucket: "core_public",
