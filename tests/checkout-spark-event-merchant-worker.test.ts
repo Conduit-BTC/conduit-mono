@@ -13,6 +13,7 @@ import {
   buildCheckoutSparkRecoveryRumor,
   buildEventMarketOrderRumorTags,
   checkoutSparkConduitFeeRecipient,
+  config,
   createCheckoutSparkNativeTreasurySdkAdapter,
   createInMemoryInboxDeclarationEvidenceRepository,
   createMerchantCheckoutSparkRecoveryDiscovery,
@@ -42,7 +43,15 @@ import {
   getProtectedReadAuthorization,
   __resetProtectedReadSigner,
 } from "@conduit/core/protocol/protected-read-authorization"
-import { __resetInboxDeclarationCache } from "@conduit/core/protocol/private-message-routing"
+import {
+  __resetInboxDeclarationCache,
+  primeInboxDeclarationEvidence,
+} from "@conduit/core/protocol/private-message-routing"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "@conduit/core/protocol/account-network-local-state"
 import {
   activateAccountSigner,
   retireAccountSigner,
@@ -268,7 +277,7 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
       [f.merchantPubkey, f.signMerchant],
       [f.organizerPubkey, f.signOrganizer],
     ] as const) {
-      await declarations.merge({
+      const evidence = await declarations.merge({
         pubkey,
         observedAt: Date.now(),
         signedEvent: await admitFixture(
@@ -280,7 +289,23 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
           })
         ),
       })
+      primeInboxDeclarationEvidence(evidence)
     }
+    // Hermetic provider execution models one declared relay, not the separately
+    // tested compatibility union. Keep real admission and source-count checks.
+    let networkState = emptyAccountNetworkLocalState(f.merchantPubkey)
+    for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+      if (relayUrl === INBOX) continue
+      networkState = applyAccountNetworkRelayExclusion(networkState, {
+        relayUrl,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        committedAt: Date.now(),
+      })
+    }
+    const networkRepository = createInMemoryAccountNetworkLocalStateRepository([
+      networkState,
+    ])
     const delivery = {
       resolveInboxRelays: async () => [INBOX],
       inboxDeclarationEvidenceRepository: declarations,
@@ -509,6 +534,7 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
     relayEvents.set(initialWrap.id, initialWrap)
     __setCommerceTestOverrides({
       getAccountSigner: () => merchantSigner!,
+      accountNetworkLocalStateRepository: networkRepository,
       getCommerceInbox: () => owner!,
       checkoutSparkSettledRepository: repository,
       now: () => f!.clock.now,

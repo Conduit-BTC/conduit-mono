@@ -20,7 +20,10 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
-import { configuredRelayTargets } from "./account-network-local-state"
+import {
+  configuredRelayTargets,
+  filterEligibleAccountRelayTargets,
+} from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -86,6 +89,7 @@ import {
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
+  planInboxReadRelays,
   resolveInboxDeclaration,
   type InboxDeclarationResolution,
   type InboxDeclarationState,
@@ -9185,8 +9189,40 @@ function settledRecoverySnapshotAdvances(
   })
 }
 
+/** Resolve the shared read policy without relabeling compatibility as owner authority. */
+async function merchantCheckoutSparkRecoveryReadPlan(
+  principal: string,
+  declaration: InboxDeclarationResolution,
+  authorization: ProtectedReadAuthorization | null
+) {
+  assertInboxSyncAuthority(authorization)
+  const plan = planInboxReadRelays({
+    declaration,
+    authenticatedPubkey: principal,
+  })
+  const relayTargets = await filterEligibleAccountRelayTargets({
+    accountPubkey: principal,
+    authenticatedPubkey: authorization?.expectedPubkey,
+    targets: plan.relayTargets,
+    operation: "read",
+    repository: testOverrides.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository:
+      testOverrides.ownerRelayListEvidenceRepository,
+  })
+  assertInboxSyncAuthority(authorization)
+  const relayUrls = relayTargets.map((target) => target.url)
+  const eligibleUrls = new Set(relayUrls)
+  return {
+    relayTargets,
+    relayUrls,
+    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls.filter((url) =>
+      eligibleUrls.has(url)
+    ),
+  }
+}
+
 /**
- * A bounded, process-local scan of the merchant's declared inboxes. The
+ * A bounded, process-local scan of the merchant's permitted inbox read plan. The
  * caller owns scheduling: each call reads at most one relay page, and no
  * wallet material or decrypted wrap escapes in the result. A later EOSE on a
  * stitched history is not proof of global absence (backdated wraps can land).
@@ -9222,9 +9258,13 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     authorization
   )
   assertSetup()
-  const relayUrls = normalizeOwnerSelectedRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
+  const readPlan = await merchantCheckoutSparkRecoveryReadPlan(
+    principal,
+    declaration,
+    authorization
   )
+  assertSetup()
+  const relayUrls = readPlan.relayUrls
   type SeenRecovery = {
     wrapId: string
     payload: CheckoutSparkRecoveryPayload
@@ -9604,12 +9644,11 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
           page = await visitProtectedInboxHistoryPage({
             principalPubkey: principal,
             relayUrl: source.relayUrl,
-            declaredRelayUrls: relayUrls,
-            relayTargets: relayTargetsFromUrls([source.relayUrl], {
-              kind: "owner_nip17",
-              operation: "read",
-              ownerPubkey: principal,
-            }),
+            authorizedRelayUrls: relayUrls,
+            declaredRelayUrls: readPlan.ownerSelectedRelayUrls,
+            relayTargets: readPlan.relayTargets.filter(
+              (target) => target.url === source.relayUrl
+            ),
             authorization,
             ...(signal ? { signal } : {}),
             ...(source.cursor ? { cursor: source.cursor } : {}),
@@ -9824,7 +9863,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
 /**
  * Discover merchant recovery authority without projecting wallet material into
  * a conversation cache or a UI query result. This resumes one durable page per source from
- * signed kind-10050 inbox relays only. A capped, failed, or malformed read is
+ * the shared owner inbox read plan. A capped, failed, or malformed read is
  * never presented as proof that no recovery package exists. Call only from an
  * explicit foreground recovery action, never a background polling interval.
  */
@@ -9863,9 +9902,12 @@ async function inspectMerchantCheckoutSparkRecoveries(
     authorization
   )
   assertInboxSyncAuthority(authorization)
-  const relayUrls = normalizeOwnerSelectedRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
+  const readPlan = await merchantCheckoutSparkRecoveryReadPlan(
+    principal,
+    declaration,
+    authorization
   )
+  const relayUrls = readPlan.relayUrls
   const byCheckout = new Map<string, MerchantCheckoutSparkRecoveryAuthority>()
   const conflictingCheckouts = new Set<string>()
   if (!relayUrls.length)
@@ -9890,7 +9932,7 @@ async function inspectMerchantCheckoutSparkRecoveries(
     throw new ProtectedInboxAuthorityChangedError()
   assertInboxSyncAuthority(authorization)
   const owner = getCommerceInbox(principal)
-  // Each explicit discovery resumes one durable page per declared source.
+  // Each explicit discovery resumes one durable page per permitted read source.
   // General inbox history uses the same cursor and original encrypted wrappers.
   await owner.loadOlder({
     includeLegacy: false,
@@ -10226,7 +10268,7 @@ export interface MerchantCheckoutSparkRecoveryPrivateAdapter {
 }
 
 /**
- * An exact signed event is positive evidence from a declared inbox. A timeout
+ * An exact signed event is positive evidence from a permitted inbox. A timeout
  * at a sibling inbox cannot revoke it. Keep malformed/conflicting observations
  * separate, and never use partial emptiness as evidence that a wrap is absent.
  */
@@ -10259,7 +10301,7 @@ function hasExactMerchantRecoveryWrap(
 
 /**
  * Re-fetch one selected, signed recovery wrap by its full ID from the current
- * merchant's declared inbox relays. Bounded discovery retains observed conflicts;
+ * merchant's permitted inbox read plan. Bounded discovery retains observed conflicts;
  * strict exact-wrap validation authorizes opening the selected material.
  * Nothing decrypted is returned to UI/query state or ordinary order caches.
  * Consuming this package is not a merchant application ACK or a funding gate.
@@ -10339,9 +10381,12 @@ export async function withMerchantCheckoutSparkRecovery(
     authorization
   )
   assertInboxSyncAuthority(authorization)
-  const relayUrls = normalizeOwnerSelectedRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
+  const readPlan = await merchantCheckoutSparkRecoveryReadPlan(
+    principal,
+    declaration,
+    authorization
   )
+  const relayUrls = readPlan.relayUrls
   if (relayUrls.length === 0) {
     return {
       status: "incomplete",
@@ -10354,11 +10399,7 @@ export async function withMerchantCheckoutSparkRecovery(
   const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
     principalPubkey: principal,
     relayUrls,
-    relayTargets: relayTargetsFromUrls(relayUrls, {
-      kind: "owner_nip17",
-      operation: "read",
-      ownerPubkey: principal,
-    }),
+    relayTargets: readPlan.relayTargets,
     eventId: wrapId,
     limit: 2,
     authorization,
@@ -10641,11 +10682,7 @@ export async function withMerchantCheckoutSparkRecovery(
     )({
       principalPubkey: principal,
       relayUrls,
-      relayTargets: relayTargetsFromUrls(relayUrls, {
-        kind: "owner_nip17",
-        operation: "read",
-        ownerPubkey: principal,
-      }),
+      relayTargets: readPlan.relayTargets,
       eventId: merchantProgress.wrapId,
       limit: 2,
       authorization,
@@ -10768,11 +10805,7 @@ export async function withMerchantCheckoutSparkRecovery(
       )({
         principalPubkey: principal,
         relayUrls,
-        relayTargets: relayTargetsFromUrls(relayUrls, {
-          kind: "owner_nip17",
-          operation: "read",
-          ownerPubkey: principal,
-        }),
+        relayTargets: readPlan.relayTargets,
         eventId: initialWrapId,
         limit: 2,
         authorization,

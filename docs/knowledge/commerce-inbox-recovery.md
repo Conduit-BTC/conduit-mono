@@ -26,6 +26,15 @@ NIP-17 uses the declared inbox plan; legacy NIP-04 incoming and outgoing reads
 use the established bounded legacy plan, including eligible general/personal and
 fallback relays. These plans remain separate for recent reads and older pages.
 
+Dedicated Merchant router recovery uses the same permissive owner inbox read
+policy: current, retained and cutover inboxes plus the approved compatibility
+read set. Its bounded financial-discovery scan is separate from ordinary message
+projection. Discovery, retained recovery inspection and exact-wrap reopening
+must preserve each target's typed grant and live account exclusions. Finding a
+candidate does not authorize a payment; the original order, recovery authority
+and exact provider evidence retain their separate checks. This read policy does
+not add a private-message write destination or change a signed inbox declaration.
+
 Recent reads and demand-driven older pages use the protected reader and isolated
 NIP-42 executor. Per-relay overlapping inclusive ranges deduplicate wrapper IDs.
 A changed saturated or incomplete recent window invalidates that source's older
