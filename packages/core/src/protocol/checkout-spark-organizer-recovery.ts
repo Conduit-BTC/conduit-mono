@@ -591,6 +591,8 @@ export async function retryCheckoutSparkOrganizerRecovery(input: {
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
   shouldContinue?: () => boolean
   publishFn?: typeof publishWithPlanner
+  /** Explicit delivery-only repair; automatic retries still skip prior ACKs. */
+  replayAcknowledged?: boolean
 }): Promise<{
   record: CheckoutSparkOrganizerRecoveryDelivery
   canExposeFundingInvoice: boolean
@@ -606,14 +608,21 @@ export async function retryCheckoutSparkOrganizerRecovery(input: {
     inboxDeclarationOptions: input.inboxDeclarationOptions,
     shouldContinue: input.shouldContinue,
     publishFn: input.publishFn,
-    acknowledged: (url) => record.acknowledgedRelayRefs.includes(relayRef(url)),
+    ...(input.replayAcknowledged
+      ? {}
+      : {
+          acknowledged: (url: string) =>
+            record.acknowledgedRelayRefs.includes(relayRef(url)),
+        }),
   })
   if (result.recipientDelivery)
     record = acknowledge(record, result.recipientDelivery)
   await input.persistExactWrap(record)
   return {
     record,
-    canExposeFundingInvoice: record.acknowledgedRelayRefs.length > 0,
+    canExposeFundingInvoice: input.replayAcknowledged
+      ? (result.recipientDelivery?.successfulRelayUrls.length ?? 0) > 0
+      : record.acknowledgedRelayRefs.length > 0,
   }
 }
 

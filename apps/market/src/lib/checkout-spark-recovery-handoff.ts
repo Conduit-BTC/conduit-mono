@@ -1559,6 +1559,8 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
   resolveInboxRelays?: (pubkey: string) => Promise<string[]>
   organizerTransport?: CheckoutSparkRecoveryTransportOptions
   shouldContinue?: () => boolean
+  /** A selected-order repair, never a new payment or newly encrypted message. */
+  replayAcknowledged?: boolean
   publishFn?: Parameters<
     typeof retryCheckoutSparkRecoveryDelivery
   >[0]["publishFn"]
@@ -1574,6 +1576,7 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
     resolveInboxRelays: input.resolveInboxRelays,
     shouldContinue: input.shouldContinue,
     publishFn: input.publishFn,
+    replayAcknowledged: input.replayAcknowledged,
   })
   await saveCheckoutSparkRecoveryDelivery(
     stored.record,
@@ -1585,6 +1588,7 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
     const organizer = await retryCheckoutSparkOrganizerRecovery({
       record: stored.organizerDelivery,
       shouldContinue: input.shouldContinue,
+      replayAcknowledged: input.replayAcknowledged,
       recipientInboxRelays: input.organizerTransport?.recipientInboxRelays,
       resolveInboxRelays: input.organizerTransport?.resolveInboxRelays,
       publishFn: input.organizerTransport?.publishFn ?? input.publishFn,

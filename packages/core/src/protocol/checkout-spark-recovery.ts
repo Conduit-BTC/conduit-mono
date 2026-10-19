@@ -1075,6 +1075,8 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
   inboxDeclarationOptions?: ResolveInboxDeclarationOptions
   shouldContinue?: () => boolean
   publishFn?: typeof publishWithPlanner
+  /** Explicit delivery-only repair; automatic retries still skip prior ACKs. */
+  replayAcknowledged?: boolean
 }): Promise<RetryCheckoutSparkRecoveryResult> {
   assertRecoveryDeliveryRecord(input.record)
   let deliveryProgress = parseCheckoutSparkRecoveryDeliveryProgress(
@@ -1092,8 +1094,14 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
     shouldContinue:
       input.shouldContinue ?? input.inboxDeclarationOptions?.shouldContinue,
     publishFn: input.publishFn,
-    acknowledged: (url) =>
-      deliveryProgress.acknowledgedRelayRefs.includes(recoveryRelayRef(url)),
+    ...(input.replayAcknowledged
+      ? {}
+      : {
+          acknowledged: (url: string) =>
+            deliveryProgress.acknowledgedRelayRefs.includes(
+              recoveryRelayRef(url)
+            ),
+        }),
   })
   if (recipientDelivery)
     deliveryProgress = {
@@ -1108,7 +1116,9 @@ export async function retryCheckoutSparkRecoveryDelivery(input: {
   return {
     recipientDelivery,
     deliveryProgress,
-    canExposeFundingInvoice: deliveryProgress.acknowledgedRelayRefs.length > 0,
+    canExposeFundingInvoice: input.replayAcknowledged
+      ? (recipientDelivery?.successfulRelayUrls.length ?? 0) > 0
+      : deliveryProgress.acknowledgedRelayRefs.length > 0,
   }
 }
 
