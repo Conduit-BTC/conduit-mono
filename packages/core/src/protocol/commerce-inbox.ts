@@ -279,7 +279,10 @@ function projectRetainedInboxRecords(
   const orders = new Set(
     orderMessages
       .filter((m) => m.type === "order")
-      .map((m) => `${m.id}:${m.orderId}:${m.senderPubkey}:${m.recipientPubkey}`)
+      .map(
+        (m) =>
+          `${m.id}:${m.wireOrderId ?? m.orderId}:${m.senderPubkey}:${m.recipientPubkey}`
+      )
   )
   const visibleDirect = directMessages.filter((m) => {
     const c = m.orderCompanionIdentity

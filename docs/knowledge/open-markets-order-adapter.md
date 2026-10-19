@@ -150,6 +150,11 @@ saved as encrypted direct-message projections before the optional self-copy;
 a refused self-copy cannot erase the sender's accepted conversation from Messages
 or its derived order preview on reload. Named order messages retain their
 existing order projections.
+Initial named and numeric orders retain the existing fixed, recipient-only
+order advisory after declared-inbox acknowledgement. Guest advisories retain
+one-use scope, privacy and no-self-copy restrictions; proofs and conversation
+never trigger another advisory. Exact authenticated order matching uses the raw
+wire order ID alongside its rumor ID and parties, without changing the local alias.
 Orders may additionally preview a note only for an existing external order with the exact subject and two-party
 identity. The preview cannot grant financial or fulfillment authority.
 

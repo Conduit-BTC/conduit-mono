@@ -392,7 +392,7 @@ export function createValidatedGuestOrderCompanion(input: {
   const scope = Object.freeze({
     rumorId: companion.id,
     orderRumorId: input.authoritativeOrder.id,
-    orderId: parsedOrder.orderId,
+    orderId: parsedOrder.wireOrderId ?? parsedOrder.orderId,
     subject: ORDER_COMPANION_NOTIFICATION_SUBJECT,
     senderPubkey,
     recipientPubkey,

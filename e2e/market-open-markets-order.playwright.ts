@@ -152,6 +152,25 @@ test("Market defaults to one numeric order and completes the external merchant l
           !rumor.tags.some((tag) => tag[0] === "type" && tag[1] === "order")
       )
     ).toBe(true)
+    const advisory = async () =>
+      (await peerRead(14)).filter((rumor) =>
+        rumor.tags.some(
+          (tag) =>
+            tag[0] === "subject" && tag[1] === "conduit-order-notification"
+        )
+      )
+    await expect
+      .poll(
+        async () => new Set((await advisory()).map((rumor) => rumor.id)).size
+      )
+      .toBe(1)
+    expect((await advisory())[0]!.tags).toContainEqual([
+      "conduit",
+      "order-companion",
+      "1",
+      orders[0]!.id,
+    ])
+    expect((await advisory())[0]!.content).not.toContain(title)
     const originalWrap = await page.evaluate(
       async ({ root, orderId }) => {
         const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
@@ -333,6 +352,7 @@ test("Market defaults to one numeric order and completes the external merchant l
       }
     )
     expect(unchanged).toBe(true)
+    expect(new Set((await advisory()).map((rumor) => rumor.id)).size).toBe(1)
     expect(
       new Set(
         (await peerRead(16))

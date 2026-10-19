@@ -380,7 +380,11 @@ async function publishOrderCompanionNotification(input: {
   const messageType = input.authoritativeOrder.tags.find(
     (tag) => tag[0] === "type"
   )?.[1]
-  if (messageType !== "order") return "skipped_non_order"
+  if (
+    input.authoritativeOrder.kind !== EVENT_KINDS.ORDER ||
+    !["order", "1"].includes(messageType ?? "")
+  )
+    return "skipped_non_order"
   if (input.deliveryRoute !== "declared_inbox") {
     return "skipped_non_declared_route"
   }
