@@ -719,7 +719,7 @@ jobs:
           EXPECTED_PUBLIC_CONFIG_DIGEST: ${{ needs.build-mainnet.outputs.public-config-digest }}
         with:
           script: |
-            const { waitForProjectRows } = await import(
+            const { listPublicCloudflareCheckRuns, waitForProjectRows } = await import(
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/preview_links.mjs`
             );
             const headSha = context.payload.pull_request.head.sha;
@@ -755,10 +755,12 @@ jobs:
               market: {
                 label: "Market",
                 project: "conduit-market",
+                previewHostname: "conduit-market-coo.pages.dev",
               },
               merchant: {
                 label: "Merchant",
                 project: "conduit-merchant",
+                previewHostname: "conduit-merchant-33n.pages.dev",
               },
             };
 
@@ -773,6 +775,7 @@ jobs:
 
             const { rows } = await waitForProjectRows({
               listComments: listIssueComments,
+              listChecks: () => listPublicCloudflareCheckRuns({ headSha }),
               projects: PROJECTS,
               headSha,
             });
