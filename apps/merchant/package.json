@@ -23,8 +23,8 @@
     "lucide-react": "^1.55.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-hook-form": "^7.89.0",
-    "zod": "^4.6.5"
+    "react-hook-form": "^7.90.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tanstack/react-query-devtools": "^5.104.1",
