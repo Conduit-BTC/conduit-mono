@@ -364,65 +364,70 @@ export async function observeWalletController(
   page.on("request", (request) => {
     if (request.isNavigationRequest()) navigationRequests++
   })
-  await page.route("**/src/routes/wallet.tsx*", async (route) => {
-    routeStarts++
-    const startedNavigations = navigations
-    const startedNavigationRequests = navigationRequests
-    const navigationRequest = route.request().isNavigationRequest()
-    let response
-    try {
-      response = await route.fetch()
-      routeCompletes++
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ""
-      const category = /closed|disposed|destroyed/i.test(message)
-        ? "closed"
-        : /abort|cancel/i.test(message)
-          ? "aborted"
-          : /timeout/i.test(message)
-            ? "timeout"
-            : /net::|network/i.test(message)
-              ? "network"
-              : "other"
-      const diagnostic: WalletRouteFetchDiagnostic = {
-        routeFetchCategory: category,
-        routeFetchPageClosed: page.isClosed(),
-        routeFetchNavigationRequest: navigationRequest,
-        routeFetchNavigations: navigations,
-        routeFetchStarts: routeStarts,
-        routeFetchCompletes: routeCompletes,
+  await page.route(
+    (url) =>
+      url.pathname.endsWith("/src/routes/wallet.tsx") &&
+      url.searchParams.get("tsr-split") === "component",
+    async (route) => {
+      routeStarts++
+      const startedNavigations = navigations
+      const startedNavigationRequests = navigationRequests
+      const navigationRequest = route.request().isNavigationRequest()
+      let response
+      try {
+        response = await route.fetch()
+        routeCompletes++
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ""
+        const category = /closed|disposed|destroyed/i.test(message)
+          ? "closed"
+          : /abort|cancel/i.test(message)
+            ? "aborted"
+            : /timeout/i.test(message)
+              ? "timeout"
+              : /net::|network/i.test(message)
+                ? "network"
+                : "other"
+        const diagnostic: WalletRouteFetchDiagnostic = {
+          routeFetchCategory: category,
+          routeFetchPageClosed: page.isClosed(),
+          routeFetchNavigationRequest: navigationRequest,
+          routeFetchNavigations: navigations,
+          routeFetchStarts: routeStarts,
+          routeFetchCompletes: routeCompletes,
+        }
+        onFetchErrorDetail?.({
+          ...diagnostic,
+          routeFetchStartNavigations: startedNavigations,
+          routeFetchStartNavigationRequests: startedNavigationRequests,
+          routeFetchFailureNavigationRequests: navigationRequests,
+          routeFetchNewNavigationRequested:
+            navigationRequests > startedNavigationRequests ||
+            navigations > startedNavigations,
+        })
+        onFetchError?.(diagnostic)
+        throw error
       }
-      onFetchErrorDetail?.({
-        ...diagnostic,
-        routeFetchStartNavigations: startedNavigations,
-        routeFetchStartNavigationRequests: startedNavigationRequests,
-        routeFetchFailureNavigationRequests: navigationRequests,
-        routeFetchNewNavigationRequested:
-          navigationRequests > startedNavigationRequests ||
-          navigations > startedNavigations,
+      const body = await response.text()
+      const marker = [
+        "const wallets = useWallets();",
+        "const wallets = automation.wallets;",
+      ].find((candidate) => body.includes(candidate))
+      if (!marker || body.split(marker).length !== 2)
+        throw new Error("Wallet controller observation seam changed")
+      if (observeAccount && !body.includes("const auth = useAuth();"))
+        throw new Error("Wallet account observation seam changed")
+      await route.fulfill({
+        response,
+        body: body.replace(
+          marker,
+          marker +
+            "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
+            (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
+        ),
       })
-      onFetchError?.(diagnostic)
-      throw error
     }
-    const body = await response.text()
-    const marker = [
-      "const wallets = useWallets();",
-      "const wallets = automation.wallets;",
-    ].find((candidate) => body.includes(candidate))
-    if (!marker || body.split(marker).length !== 2)
-      throw new Error("Wallet controller observation seam changed")
-    if (observeAccount && !body.includes("const auth = useAuth();"))
-      throw new Error("Wallet account observation seam changed")
-    await route.fulfill({
-      response,
-      body: body.replace(
-        marker,
-        marker +
-          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
-          (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
-      ),
-    })
-  })
+  )
 }
 
 /** Retain deliberate-lock semantics after removal of the user-facing Lock control. */
