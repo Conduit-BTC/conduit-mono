@@ -3,6 +3,7 @@ import { getEventHash } from "nostr-tools"
 import {
   CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG,
   __resetCommerceTestOverrides,
+  config,
   __setCommerceTestOverrides,
   buildCheckoutSparkRecoveryRumor,
   buildEventMarketOrderRumorTags,
@@ -38,12 +39,20 @@ import type { ProtectedInboxReadResult } from "@conduit/core/protocol/protected-
 import type { ConduitDB } from "@conduit/core/db"
 import { selectMerchantCheckoutSparkSignedNextPayout } from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
 import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
 import { eventMarketFixtureInvoice } from "./support/checkout-spark-event-market-fixture"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const databases: ConduitDB[] = []
 const INBOX = "wss://event-actor-recovery.example"
 afterEach(async () => {
   __resetCommerceTestOverrides()
+  __resetInboxDeclarationCache()
   __resetProtectedReadSigner()
   for (const database of databases.splice(0)) await database.delete()
 })
@@ -289,8 +298,31 @@ it("reopens real Organizer ciphertext before Merchant continuation and retains t
         })),
     },
   } as unknown as CommerceInbox
+  await createInboxDeclarationFixtureEvidence(
+    await f.merchantSigner.signEvent({
+      kind: 10_050,
+      pubkey: f.merchantPubkey,
+      created_at: Math.floor(f.order.createdAt / 1_000),
+      content: "",
+      tags: [["relay", INBOX]],
+    }),
+    { prime: true }
+  )
+  // This actor fixture models one signed inbox, not compatibility transport.
+  let networkState = emptyAccountNetworkLocalState(f.merchantPubkey)
+  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+    if (relayUrl === INBOX) continue
+    networkState = applyAccountNetworkRelayExclusion(networkState, {
+      relayUrl,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+      committedAt: f.order.createdAt,
+    })
+  }
   installProtectedReadSigner(f.merchantSigner, f.merchantPubkey, () => true)
   __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository([networkState]),
     getCommerceInbox: () => owner,
     getAccountSigner: () => f.merchantSigner,
     resolveInboxRelayUrls: async () => [INBOX],
