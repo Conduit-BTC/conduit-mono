@@ -35,29 +35,34 @@ async function observeController(
   app: "market" | "merchant",
   parallel = false
 ) {
-  await page.route("**/src/routes/wallet.tsx*", async (route) => {
-    const response = await route.fetch()
-    const body = await response.text()
-    const marker =
-      app === "market"
-        ? "const wallets = useWallets();"
-        : "const wallets = automation.wallets;"
-    if (body.split(marker).length !== 2)
-      throw new Error("Wallet controller observation seam changed")
-    await route.fulfill({
-      response,
-      body: body.replace(
-        marker,
-        marker +
-          (parallel
-            ? "const otherWallets = useWallets();"
-            : "const otherWallets = null;") +
-          (app === "merchant"
-            ? "window.__walletLifecycle = { wallets, otherWallets, auth, automation };"
-            : "window.__walletLifecycle = { wallets, otherWallets, auth };")
-      ),
-    })
-  })
+  await page.route(
+    (url) =>
+      url.pathname.endsWith("/src/routes/wallet.tsx") &&
+      url.searchParams.get("tsr-split") === "component",
+    async (route) => {
+      const response = await route.fetch()
+      const body = await response.text()
+      const marker =
+        app === "market"
+          ? "const wallets = useWallets();"
+          : "const wallets = automation.wallets;"
+      if (body.split(marker).length !== 2)
+        throw new Error("Wallet controller observation seam changed")
+      await route.fulfill({
+        response,
+        body: body.replace(
+          marker,
+          marker +
+            (parallel
+              ? "const otherWallets = useWallets();"
+              : "const otherWallets = null;") +
+            (app === "merchant"
+              ? "window.__walletLifecycle = { wallets, otherWallets, auth, automation };"
+              : "window.__walletLifecycle = { wallets, otherWallets, auth };")
+        ),
+      })
+    }
+  )
 }
 async function settled(page: Page, parallel = false) {
   await expect
