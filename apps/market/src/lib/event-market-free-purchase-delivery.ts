@@ -1,6 +1,10 @@
-import { z } from "zod"
+import { db, type ConduitDB } from "@conduit/core/db"
 import {
-  isValidSignedPublicNostrEvent,
+  parseEventMarketFreePurchaseDelivery as parse,
+  type EventMarketFreePurchaseDelivery,
+} from "@conduit/core/protocol/event-market-free-purchase-delivery-record"
+export type { EventMarketFreePurchaseDelivery } from "@conduit/core/protocol/event-market-free-purchase-delivery-record"
+import {
   preparePrivateMessageRecipientWrap,
   retryPrivateMessageWraps,
   type NostrKeySigner,
@@ -24,39 +28,6 @@ type RetryOptions = Pick<
   Parameters<typeof retryPrivateMessageWraps>[0],
   "resolveInboxRelays" | "publishFn"
 >
-const hash = z.string().regex(/^[0-9a-f]{64}$/)
-const signedWrapSchema = z
-  .object({
-    id: hash,
-    pubkey: hash,
-    created_at: z.number().int().safe().nonnegative(),
-    kind: z.literal(1059),
-    tags: z.array(z.array(z.string().max(4096)).max(8)).max(8),
-    content: z.string().max(256 * 1024),
-    sig: z.string().regex(/^[0-9a-f]{128}$/),
-  })
-  .strict()
-  .refine(isValidSignedPublicNostrEvent)
-const schema = z
-  .object({
-    schemaVersion: z.literal(1),
-    handoffId: hash,
-    rumorId: hash,
-    orderId: z.string().min(1).max(512),
-    purchaseScope: hash,
-    purchaseClaimDigest: hash,
-    senderPubkey: hash,
-    merchantPubkey: hash,
-    organizerPubkey: hash,
-    buyerIdentityKind: z.enum(["signed_in", "guest_ephemeral"]),
-    createdAt: z.number().int().safe().nonnegative(),
-    wrappedToRecipient: signedWrapSchema,
-    merchantDelivered: z.boolean(),
-    acknowledged: z.boolean(),
-  })
-  .strict()
-export type EventMarketFreePurchaseDelivery = z.infer<typeof schema>
-
 /** Persist a bounded opaque cart partition reference, not its encoded contents. */
 export async function createFreePurchaseScope(
   purchaseId: string
@@ -82,21 +53,6 @@ function storageOrThrow(storage?: StorageLike): StorageLike {
   throw new Error("Free pickup delivery storage is unavailable.")
 }
 
-function parse(value: unknown): EventMarketFreePurchaseDelivery {
-  const row = schema.parse(value)
-  const recipients = row.wrappedToRecipient.tags.filter((tag) => tag[0] === "p")
-  if (
-    row.wrappedToRecipient.kind !== 1059 ||
-    recipients.length !== 1 ||
-    recipients[0]?.length !== 2 ||
-    recipients[0]?.[1] !== row.organizerPubkey ||
-    row.merchantPubkey === row.organizerPubkey ||
-    (row.acknowledged && !row.merchantDelivered)
-  )
-    throw new Error("Saved free pickup delivery is invalid.")
-  return row
-}
-
 export function listEventMarketFreePurchaseDeliveries(
   storage?: StorageLike
 ): EventMarketFreePurchaseDelivery[] {
@@ -116,6 +72,115 @@ export function listEventMarketFreePurchaseDeliveries(
   )
     throw new Error("Saved free pickup deliveries conflict.")
   return rows
+}
+
+/** Read legacy packets alongside the packet committed with its original order.
+ * No second durability write is needed before either recipient can be sent.
+ */
+export async function loadEventMarketFreePurchaseDeliveries(
+  input: {
+    storage?: StorageLike
+    database?: ConduitDB
+    merchantPubkey?: string
+  } = {}
+): Promise<EventMarketFreePurchaseDelivery[]> {
+  const database = input.database ?? db
+  const rows = listEventMarketFreePurchaseDeliveries(input.storage)
+  const orders = input.merchantPubkey
+    ? await database.orderLifecycles
+        .where("merchantPubkey")
+        .equals(input.merchantPubkey)
+        .toArray()
+    : await database.orderLifecycles.toArray()
+  for (const order of orders) {
+    if (!order.eventMarketFreePurchaseDelivery) continue
+    const packet = parse(order.eventMarketFreePurchaseDelivery)
+    if (
+      !order.orderRelayDelivery ||
+      packet.orderId !== order.orderId ||
+      packet.senderPubkey !== order.buyerPubkey ||
+      packet.merchantPubkey !== order.merchantPubkey ||
+      packet.buyerIdentityKind !== order.buyerIdentityKind ||
+      order.totalSats !== 0 ||
+      (packet.merchantDelivered && order.orderDeliveryStatus !== "sent")
+    )
+      throw new Error(
+        "Saved free pickup delivery lost its original order binding."
+      )
+    const existing = rows.find(
+      (row) =>
+        row.orderId === packet.orderId || row.handoffId === packet.handoffId
+    )
+    if (existing) {
+      if (!samePacket(existing, packet))
+        throw new Error("Saved free pickup deliveries conflict.")
+      existing.merchantDelivered ||= packet.merchantDelivered
+      existing.acknowledged ||= packet.acknowledged
+    } else rows.push(packet)
+  }
+  return rows
+}
+
+function samePacket(
+  left: EventMarketFreePurchaseDelivery,
+  right: EventMarketFreePurchaseDelivery
+) {
+  const immutable = (row: EventMarketFreePurchaseDelivery) =>
+    JSON.stringify({
+      ...parse(row),
+      merchantDelivered: false,
+      acknowledged: false,
+    })
+  return immutable(left) === immutable(right)
+}
+
+async function persistProgress(
+  row: EventMarketFreePurchaseDelivery,
+  input: {
+    storage?: StorageLike
+    database?: ConduitDB
+  }
+): Promise<EventMarketFreePurchaseDelivery> {
+  const database = input.database ?? db
+  const storage = storageOrThrow(input.storage)
+  const committed = await database.transaction(
+    "rw",
+    database.orderLifecycles,
+    async () => {
+      const order = await database.orderLifecycles.get(row.orderId)
+      if (!order?.eventMarketFreePurchaseDelivery) return null
+      const previous = parse(order.eventMarketFreePurchaseDelivery)
+      if (
+        !samePacket(previous, row) ||
+        (row.merchantDelivered && order.orderDeliveryStatus !== "sent")
+      )
+        throw new Error(
+          "Free pickup progress does not match the original order."
+        )
+      const next = parse({
+        ...previous,
+        merchantDelivered: previous.merchantDelivered || row.merchantDelivered,
+        acknowledged: previous.acknowledged || row.acknowledged,
+      })
+      await database.orderLifecycles.update(row.orderId, {
+        eventMarketFreePurchaseDelivery: next,
+      })
+      return next
+    }
+  )
+  // Existing pre-upgrade attempts keep their original storage and exact bytes.
+  const legacy = listEventMarketFreePurchaseDeliveries(storage)
+  const index = legacy.findIndex(
+    (candidate) => candidate.handoffId === row.handoffId
+  )
+  if (index >= 0) {
+    if (!samePacket(legacy[index]!, row))
+      throw new Error("Saved free pickup delivery changed.")
+    legacy[index] = committed ?? row
+    save(legacy, storage)
+  } else if (!committed)
+    throw new Error("Saved free pickup delivery is unavailable.")
+  return committed ?? row
 }
 
 function save(rows: EventMarketFreePurchaseDelivery[], storage: StorageLike) {
@@ -141,7 +206,8 @@ function assertCurrent(shouldContinue: () => boolean) {
   if (!shouldContinue()) throw new Error("The buyer session changed.")
 }
 
-/** Prepare one organizer-only seal, durably saved before the original order send.
+/** Prepare one organizer-only seal. Checkout defers persistence so both recipient
+ * records commit together in the original order transaction before any send.
  * The saved record contains ciphertext and delivery references, never an order,
  * contact information, wallet, invoice, or the plaintext free-purchase payload.
  */
@@ -155,6 +221,9 @@ export async function prepareEventMarketFreePurchaseDelivery(input: {
   shouldContinue: () => boolean
   storage?: StorageLike
   now?: () => number
+  /** Checkout commits this packet with the original Merchant wrap in IndexedDB. */
+  deferPersistence?: boolean
+  database?: ConduitDB
 }): Promise<EventMarketFreePurchaseDelivery> {
   const payload = restoreEventMarketFreePurchase(input.payload)
   const storage = storageOrThrow(input.storage)
@@ -195,9 +264,12 @@ export async function prepareEventMarketFreePurchaseDelivery(input: {
   })
   return withCheckoutSparkStorageLock(
     EVENT_MARKET_FREE_PURCHASE_STORAGE_KEY,
-    () => {
+    async () => {
       assertCurrent(input.shouldContinue)
-      const rows = listEventMarketFreePurchaseDeliveries(storage)
+      const rows = await loadEventMarketFreePurchaseDeliveries({
+        ...input,
+        storage,
+      })
       const existing = rows.find(
         (candidate) => candidate.handoffId === row.handoffId
       )
@@ -214,15 +286,23 @@ export async function prepareEventMarketFreePurchaseDelivery(input: {
       if (
         rows.some(
           (candidate) =>
-            !candidate.acknowledged &&
-            (candidate.orderId === row.orderId ||
-              candidate.purchaseClaimDigest === row.purchaseClaimDigest)
+            candidate.orderId === row.orderId ||
+            candidate.purchaseClaimDigest === row.purchaseClaimDigest
         )
       )
         throw new Error(
           "Continue the existing free pickup order; do not create another."
         )
-      save([...rows, row], storage)
+      if (input.deferPersistence) {
+        const pending = rows.filter((candidate) => !candidate.acknowledged)
+        if (
+          pending.length >= 64 ||
+          JSON.stringify([...pending, row]).length > 4 * 1024 * 1024
+        )
+          throw new Error(
+            "Finish a saved free pickup delivery before another order."
+          )
+      } else save([...rows, row], storage)
       return row
     }
   )
@@ -232,20 +312,23 @@ export async function markFreePurchaseMerchantDelivered(input: {
   handoffId: string
   shouldContinue: () => boolean
   storage?: StorageLike
+  database?: ConduitDB
 }): Promise<EventMarketFreePurchaseDelivery> {
   const storage = storageOrThrow(input.storage)
   return withCheckoutSparkStorageLock(
     EVENT_MARKET_FREE_PURCHASE_STORAGE_KEY,
-    () => {
+    async () => {
       assertCurrent(input.shouldContinue)
-      const rows = listEventMarketFreePurchaseDeliveries(storage)
+      const rows = await loadEventMarketFreePurchaseDeliveries({
+        ...input,
+        storage,
+      })
       const row = rows.find(
         (candidate) => candidate.handoffId === input.handoffId
       )
       if (!row) throw new Error("Saved free pickup delivery is unavailable.")
       row.merchantDelivered = true
-      save(rows, storage)
-      return row
+      return persistProgress(row, { ...input, storage })
     }
   )
 }
@@ -271,7 +354,8 @@ export async function discardUnsubmittedFreePurchaseDelivery(input: {
       const row = rows.find(
         (candidate) => candidate.handoffId === input.handoffId
       )
-      if (!row || row.merchantDelivered || row.acknowledged)
+      if (!row) return
+      if (row.merchantDelivered || row.acknowledged)
         throw new Error("The saved free pickup delivery cannot be discarded.")
       save(
         rows.filter((candidate) => candidate.handoffId !== row.handoffId),
@@ -289,13 +373,14 @@ export async function retryStoredEventMarketFreePurchaseDelivery(
     handoffId: string
     shouldContinue: () => boolean
     storage?: StorageLike
+    database?: ConduitDB
   } & RetryOptions
 ): Promise<EventMarketFreePurchaseDelivery> {
   const storage = storageOrThrow(input.storage)
   assertCurrent(input.shouldContinue)
-  const row = listEventMarketFreePurchaseDeliveries(storage).find(
-    (candidate) => candidate.handoffId === input.handoffId
-  )
+  const row = (
+    await loadEventMarketFreePurchaseDeliveries({ ...input, storage })
+  ).find((candidate) => candidate.handoffId === input.handoffId)
   if (!row) throw new Error("Saved free pickup delivery is unavailable.")
   if (!row.merchantDelivered)
     throw new Error(
@@ -317,8 +402,11 @@ export async function retryStoredEventMarketFreePurchaseDelivery(
     )
   return withCheckoutSparkStorageLock(
     EVENT_MARKET_FREE_PURCHASE_STORAGE_KEY,
-    () => {
-      const rows = listEventMarketFreePurchaseDeliveries(storage)
+    async () => {
+      const rows = await loadEventMarketFreePurchaseDeliveries({
+        ...input,
+        storage,
+      })
       const stored = rows.find(
         (candidate) => candidate.handoffId === row.handoffId
       )
@@ -328,8 +416,7 @@ export async function retryStoredEventMarketFreePurchaseDelivery(
         )
       // Persist positive acceptance even if the session changed after the send.
       stored.acknowledged = true
-      save(rows, storage)
-      return stored
+      return persistProgress(stored, { ...input, storage })
     }
   )
 }

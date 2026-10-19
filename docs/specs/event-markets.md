@@ -48,6 +48,11 @@ Unsigned and signed projection work remains attached to these durable records. S
 
 The direct Merchant control supports pickup assignments. Conduit permits organizers to reschedule the same event by updating its calendar at the same coordinate; this application behavior is not a claim of upstream protocol consensus. Known current signed dates govern unused allocations; existing orders and receipts retain their original signed terms and remain available for explicit merchant acceptance, payment confirmation and fulfillment. Merchants coordinate schedule changes and any refunds directly with buyers. Atomic rollover and shipping/digital assignment controls remain separate. Current organizer acceptance uses the finite stock handover, exact order reconciliation and checkout recovery boundaries below. Existing authenticated historical release receipts remain inspectable without granting new authority.
 
+Calendar edits do not transfer an existing order's organizer release authority or
+the exclusive entrusted-stock writer. Changing that authority requires its
+explicit authorized transfer. Entrusted units remain held until the complete
+closing frontier is reconciled; a new calendar deadline does not release them.
+
 ### Market and checkout behavior
 
 Read the known organizer-signed market record and calendar before candidate discovery. Fast provisional discovery may paint clearly provisional product candidates before per-merchant authorization is checked. A candidate is not an admission claim and cannot authorize adding to cart, ordering, or payment. Known negative signed evidence suppresses a candidate; an unavailable optional source does not prove absence. Use the organizer's observed NIP-65 write relays with bounded hints and fallback relays; retain unioned signed observations. Derive the finite roster author set, then discover kind `30410` assignments by those authors and the exact market/occurrence, and resolve their exact ordinary product coordinates. Filters yield candidates only. Before treating a candidate as an admitted event product or allowing a consequential action, including at a direct product link, resolve the current signed product revision and applicable NIP-09 deletion evidence; verify merchant author, exact assignment tuple, active grant, visibility, and valid product terms. A newer product revision supersedes older product terms; product deletion or a revoked/deleted assignment denies new pickup. Removing a product discovery hint does not revoke a still-valid assignment. Retain stronger known signed market, authorization, and product evidence when relays return stale or partial data. Surface incomplete evidence instead of treating it as proof of admission or removal.
@@ -239,6 +244,17 @@ binding that original order; Merchant import independently authenticates the
 buyer order and organizer seal, compares exact terms and debits the existing
 inventory transaction once. No hash, relay acknowledgement, funding receipt or
 fee payment substitutes for the commerce-settlement and unique-claim checks.
+
+A genuinely zero-commerce, zero-fee purchase creates no payment wallet or
+invoice. Its original Merchant order wrap and separately encrypted organizer
+packet are committed together in the existing buyer order transaction before
+either publication. Preparation alone creates no pending recovery attempt.
+After interruption, checkout discovers that same order and retries its saved
+Merchant wrap under the existing session, lease and expiry checks before
+delivering the saved organizer packet. Recipient acknowledgements remain
+separate, monotonic delivery facts, not proof of pickup or stock acceptance.
+Pre-existing standalone organizer packets remain readable and require positive
+original Merchant delivery evidence; missing history cannot justify a new order.
 
 The designated organizer writer uses the existing router after the saved buyer
 cutoff. A fresh device restores exact encrypted decisions, payout attempts and

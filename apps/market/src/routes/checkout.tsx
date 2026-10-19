@@ -48,6 +48,7 @@ import {
   hasWebLN,
   isCommerceReadIncomplete,
   getOrderLifecycle,
+  retryOrderRelayDelivery,
   getShippingOptionsByCoordinates,
   listOrderLifecycles,
   normalizePubkey,
@@ -265,7 +266,7 @@ import { buildCheckoutSparkQuoteAuthority } from "../lib/checkout-spark-quote-au
 import { buildCheckoutSparkCommerceEvidence } from "../lib/checkout-spark-commerce-evidence"
 import { createEventMarketFreePurchase } from "@conduit/core/protocol/event-market-free-purchase"
 import {
-  listEventMarketFreePurchaseDeliveries,
+  loadEventMarketFreePurchaseDeliveries,
   createFreePurchaseScope,
   discardUnsubmittedFreePurchaseDelivery,
   markFreePurchaseMerchantDelivered,
@@ -1636,7 +1637,11 @@ function CheckoutPage() {
     ],
     queryFn: async () => {
       const scope = await createFreePurchaseScope(selectedPurchase!.id)
-      return listEventMarketFreePurchaseDeliveries().filter(
+      return (
+        await loadEventMarketFreePurchaseDeliveries({
+          merchantPubkey: selectedMerchant,
+        })
+      ).filter(
         (row) =>
           !row.acknowledged &&
           row.purchaseScope === scope &&
@@ -3298,7 +3303,22 @@ function CheckoutPage() {
       throw new Error("The buyer session changed.")
     let row = saved
     if (!row.merchantDelivered) {
-      const lifecycle = await getOrderLifecycle(row.orderId)
+      let lifecycle = await getOrderLifecycle(row.orderId)
+      if (
+        lifecycle &&
+        lifecycle.buyerPubkey === row.senderPubkey &&
+        lifecycle.merchantPubkey === row.merchantPubkey &&
+        lifecycle.orderDeliveryStatus !== "sent"
+      ) {
+        lifecycle = await retryOrderRelayDelivery(
+          row.orderId,
+          row.senderPubkey,
+          {
+            allowGuest: row.buyerIdentityKind === "guest_ephemeral",
+            shouldContinue: shouldContinueBuyerSession,
+          }
+        )
+      }
       if (lifecycle?.orderDeliveryStatus !== "sent") {
         throw new Error(
           "The original Merchant order still needs delivery. Open the existing order in Orders; do not submit a new one."
@@ -3449,7 +3469,11 @@ function CheckoutPage() {
         ? await createCheckoutSparkPurchaseClaimDigest(purchaseClaim)
         : null
       const previousFreePurchase = freeOrganizerPurchase
-        ? listEventMarketFreePurchaseDeliveries().find(
+        ? (
+            await loadEventMarketFreePurchaseDeliveries({
+              merchantPubkey: selectedMerchant,
+            })
+          ).find(
             (row) =>
               row.purchaseClaimDigest === purchaseClaimDigest &&
               row.merchantPubkey === selectedMerchant &&
@@ -3556,6 +3580,7 @@ function CheckoutPage() {
         })
         freePurchaseDelivery = await prepareEventMarketFreePurchaseDelivery({
           payload: freePurchase,
+          deferPersistence: true,
           identity: guestIdentity ?? {
             kind: "signed_in",
             pubkey: buyerIdentity.pubkey,
@@ -3565,7 +3590,6 @@ function CheckoutPage() {
           purchaseClaimDigest: purchaseClaimDigest!,
           shouldContinue: shouldContinueBuyerSession,
         })
-        void freePurchaseDeliveriesQuery.refetch()
       }
 
       const rumor = {
@@ -3601,6 +3625,9 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        ...(freePurchaseDelivery
+          ? { eventMarketFreePurchaseDelivery: freePurchaseDelivery }
+          : {}),
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,

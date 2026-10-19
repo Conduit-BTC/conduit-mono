@@ -198,7 +198,12 @@ kind-10050 routing and immutable delivery retry; routes compose these workflows.
 See the [Event Market contract](specs/event-markets.md) and
 [router contract](specs/universal-checkout-router.md). Same-event calendar edits
 update unused allocation deadlines while existing orders retain their original
-terms. Atomic rollover remains a separate, unfinished capability.
+terms. Calendar edits do not transfer release authority or release entrusted
+stock; those retain their explicit transfer and complete-frontier reconciliation
+requirements. Genuinely free organizer pickup stores its Merchant order wrap and
+organizer packet in one buyer order transaction before either send, then resumes
+those exact envelopes after interruption without creating a wallet or invoice.
+Atomic rollover remains a separate, unfinished capability.
 
 ### Orders And Messages
 

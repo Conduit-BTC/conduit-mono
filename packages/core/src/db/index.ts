@@ -1,3 +1,4 @@
+import type { EventMarketFreePurchaseDelivery } from "../protocol/event-market-free-purchase-delivery-record"
 import type { ReceivingWalletBinding } from "../wallets/receiving"
 import type { SparkRecoveryState } from "../wallets/spark-recovery-service"
 import Dexie, {
@@ -1132,6 +1133,8 @@ export interface OrderLifecycle {
   checkoutMode: OrderCheckoutMode
   /** When present, legacy direct-payment retries must not pay this order. */
   checkoutSparkRouterBinding?: OrderCheckoutSparkRouterBinding
+  /** Organizer ciphertext committed atomically with the original Merchant wrap. */
+  eventMarketFreePurchaseDelivery?: EventMarketFreePurchaseDelivery
   publicZapSigner?: OrderPublicZapSigner
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
