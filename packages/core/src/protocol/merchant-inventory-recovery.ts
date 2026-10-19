@@ -290,6 +290,7 @@ export type MerchantInventoryRecoveryResult =
         | "assignment_conflict"
         | "tracking_mismatch"
         | "overallocated"
+        | "evidence_limit"
     }
 
 /**
@@ -381,35 +382,45 @@ export async function recoverMerchantInventoryProduct(
   } catch (error) {
     if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
   }
-  const retainedRowsWithLimit = await db.eventMarketRosterEvidence
+  const isProductAssignment = (event: SignedPublicNostrEvent) =>
+    event.kind === 30410 &&
+    event.pubkey === merchantPubkey &&
+    event.tags.some((tag) => tag[0] === "a" && tag[1] === productCoordinate)
+  // Unrelated cached markets must not displace this product's known holds.
+  const retainedRows = await db.eventMarketRosterEvidence
+    .filter((row) => isProductAssignment(row.signedEvent))
     .limit(MAX_RETAINED + 1)
     .toArray()
-  const retainedRows = retainedRowsWithLimit.slice(0, MAX_RETAINED)
+  if (retainedRows.length > MAX_RETAINED)
+    return {
+      state: "unsafe_conflict",
+      coverage: "partial",
+      reason: "evidence_limit",
+    }
   let coverage = coverageOf(
     plan,
     [candidateRead],
-    candidateRead.events.length >= MAX_CANDIDATES ||
-      retainedRowsWithLimit.length > MAX_RETAINED
+    candidateRead.events.length >= MAX_CANDIDATES
   )
   const candidates = [
     ...new Map(
       [...retainedRows.map((row) => row.signedEvent), ...candidateRead.events]
         .filter(
           (event) =>
-            event.kind === 30410 &&
-            event.pubkey === merchantPubkey &&
-            event.tags.some(
-              (tag) => tag[0] === "a" && tag[1] === productCoordinate
-            ) &&
-            isValidSignedPublicNostrEvent(event)
+            isProductAssignment(event) && isValidSignedPublicNostrEvent(event)
         )
         .map((event) => [event.id, event])
     ).values(),
   ]
+  // Positive knowledge of skipped reservations cannot become ready inventory.
   if (candidates.length > MAX_CANDIDATES)
-    coverage = mergeCoverage(coverage, "partial")
+    return {
+      state: "unsafe_conflict",
+      coverage: "partial",
+      reason: "evidence_limit",
+    }
   const byCoordinate = new Map<string, SignedPublicNostrEvent[]>()
-  for (const event of candidates.slice(0, MAX_CANDIDATES)) {
+  for (const event of candidates) {
     const coordinate = coordinateOf(event)
     if (!coordinate)
       return {
@@ -439,22 +450,24 @@ export async function recoverMerchantInventoryProduct(
       }
     tupleCandidates.set(coordinate, current)
   }
-  const scopedCache = new Map<string, SignedPublicNostrEvent[]>()
-  for (const row of retainedRows) {
-    const entries = scopedCache.get(row.marketCoordinate) ?? []
-    entries.push(row.signedEvent)
-    scopedCache.set(row.marketCoordinate, entries)
-  }
-  for (const [coordinate, assignment] of tupleCandidates) {
-    const entries = scopedCache.get(assignment.marketCoordinate) ?? []
-    entries.push(...(byCoordinate.get(coordinate) ?? []))
-    scopedCache.set(assignment.marketCoordinate, entries)
-  }
   const resolverDependencies = {
     plan: dependencies.plan,
     fetch: dependencies.fetch,
-    load: async (marketCoordinate: string) =>
-      scopedCache.get(marketCoordinate) ?? [],
+    // Keep the market-scoped reader's full retained context, including deletions
+    // and malformed newer revisions that no longer carry the product tag.
+    load: async (marketCoordinate: string) => [
+      ...(
+        await db.eventMarketRosterEvidence
+          .where("marketCoordinate")
+          .equals(marketCoordinate)
+          .toArray()
+      ).map((row) => row.signedEvent),
+      ...candidates.filter(
+        (event) =>
+          parseEventMarketAssignmentEvent(event)?.marketCoordinate ===
+          marketCoordinate
+      ),
+    ],
     retain: async (
       marketCoordinate: string,
       events: readonly SignedPublicNostrEvent[]

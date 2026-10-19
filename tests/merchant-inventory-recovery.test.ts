@@ -84,6 +84,139 @@ describe("first-use merchant inventory recovery", () => {
     })
   })
 
+  it("preserves a retained reservation after unrelated cache rows and an empty relay read", async () => {
+    await withDb(async (db) => {
+      const fixture = createEventMarketOrderFixture({
+        mode: "merchant_present",
+        newAssignment: true,
+      })
+      const unrelated = finalizeEvent(
+        {
+          kind: 1,
+          created_at: 100,
+          tags: [],
+          content: "unrelated cache evidence",
+        },
+        generateSecretKey()
+      )
+      await db.eventMarketRosterEvidence.bulkPut([
+        ...Array.from({ length: 2049 }, (_, index) => ({
+          id: `0000:${index}:${unrelated.id}`,
+          marketCoordinate: `30409:${unrelated.pubkey}:unrelated-${index}`,
+          signedEvent: unrelated,
+          cachedAt: 1,
+        })),
+        ...fixture.events.map((event) => ({
+          id: `zzzz:${event.id}`,
+          marketCoordinate: fixture.fulfillment.market.coordinate,
+          signedEvent: event,
+          cachedAt: 1,
+        })),
+      ])
+      const input = {
+        db,
+        merchantPubkey: fixture.fulfillment.merchantPubkey,
+        productCoordinate: fixture.fulfillment.product.coordinate,
+        signedProductEvent: fixture.fulfillment.product.signedEvent!,
+      }
+      const result = await recoverMerchantInventoryProduct(input, source([]))
+      expect(result.state).toBe("ready")
+      expect(await db.merchantInventoryAssignments.count()).toBe(1)
+      expect(
+        (await db.merchantInventoryAssignments.toCollection().first())
+          ?.inventory
+      ).toEqual({ mode: "tracked", quantity: 6 })
+      await recoverMerchantInventoryProduct(input, source([]))
+      expect(await db.merchantInventoryAssignments.count()).toBe(1)
+    })
+  })
+
+  it("does not initialize unreserved inventory when known relevant candidates exceed the recovery bound", async () => {
+    await withDb(async (db) => {
+      const fixture = createEventMarketOrderFixture({
+        mode: "merchant_present",
+        newAssignment: true,
+      })
+      const events = Array.from({ length: 129 }, (_, index) =>
+        finalizeEvent(
+          {
+            ...buildEventMarketAssignmentDraft({
+              merchantPubkey: fixture.fulfillment.merchantPubkey,
+              marketCoordinate: fixture.fulfillment.market.coordinate,
+              occurrenceCoordinate: `31923:${fixture.fulfillment.calendar.signedEvent!.pubkey}:occurrence-${index}`,
+              productCoordinate: fixture.fulfillment.product.coordinate,
+              state: "active",
+              inventory: { mode: "tracked", quantity: 0 },
+              fulfillmentMethods: ["pickup"],
+            }),
+            created_at: 101,
+          },
+          fixture.merchantSecret
+        )
+      )
+      await db.eventMarketRosterEvidence.bulkPut(
+        events.map((event) => ({
+          id: `${fixture.fulfillment.market.coordinate}:${event.id}`,
+          marketCoordinate: fixture.fulfillment.market.coordinate,
+          signedEvent: event,
+          cachedAt: 1,
+        }))
+      )
+      const result = await recoverMerchantInventoryProduct(
+        {
+          db,
+          merchantPubkey: fixture.fulfillment.merchantPubkey,
+          productCoordinate: fixture.fulfillment.product.coordinate,
+          signedProductEvent: fixture.fulfillment.product.signedEvent!,
+        },
+        source([])
+      )
+      expect(result.state).toBe("unsafe_conflict")
+      expect(await db.merchantInventoryProducts.count()).toBe(0)
+      expect(await db.merchantInventoryAssignments.count()).toBe(0)
+    })
+  })
+
+  it("retains a malformed newer revision even when its product tag is missing", async () => {
+    await withDb(async (db) => {
+      const fixture = createEventMarketOrderFixture({
+        mode: "merchant_present",
+        newAssignment: true,
+      })
+      const assignment = fixture.events.find((event) => event.kind === 30410)!
+      const malformed = finalizeEvent(
+        {
+          kind: assignment.kind,
+          created_at: assignment.created_at + 1,
+          content: assignment.content,
+          tags: assignment.tags.filter(
+            (tag) =>
+              tag[0] !== "a" ||
+              tag[1] !== fixture.fulfillment.product.coordinate
+          ),
+        },
+        fixture.merchantSecret
+      )
+      await db.eventMarketRosterEvidence.put({
+        id: `${fixture.fulfillment.market.coordinate}:${malformed.id}`,
+        marketCoordinate: fixture.fulfillment.market.coordinate,
+        signedEvent: malformed,
+        cachedAt: 1,
+      })
+      const result = await recoverMerchantInventoryProduct(
+        {
+          db,
+          merchantPubkey: fixture.fulfillment.merchantPubkey,
+          productCoordinate: fixture.fulfillment.product.coordinate,
+          signedProductEvent: fixture.fulfillment.product.signedEvent!,
+        },
+        source(fixture.events)
+      )
+      expect(result.state).toBe("unsafe_conflict")
+      expect(await db.merchantInventoryProducts.count()).toBe(0)
+    })
+  })
+
   it("reports degraded bounded coverage without claiming global assignment absence", async () => {
     await withDb(async (db) => {
       const fixture = createEventMarketOrderFixture({
