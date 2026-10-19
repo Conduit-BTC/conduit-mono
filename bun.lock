@@ -136,7 +136,7 @@
       "name": "@conduit/presence",
       "version": "0.0.1",
       "devDependencies": {
-        "@cloudflare/workers-types": "^5.20261012.1",
+        "@cloudflare/workers-types": "^5.20261016.1",
         "typescript": "^6.0.3",
         "wrangler": "4.149.0",
       },
@@ -303,7 +303,7 @@
 
     "@cloudflare/workerd-windows-64": ["@cloudflare/workerd-windows-64@1.20261006.1", "", { "os": "win32", "cpu": "x64" }, "sha512-nWP0URNqOBN9fa/gZ7eh/w051DwjOXN8j4lDZDYVXyQPsux6sV3DfyYZT+CjR/rt9nKBSmJT9QE9/bWT18+84w=="],
 
-    "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261012.1", "", {}, "sha512-5Y0NrKXG9CZaNUZ6Dt3TLRE4UQe2/DGuxIhTEVYHUl0jAlv1TpQtI59YBAszRpSaZAMzbM8nqGc1n9Z2q4TVyA=="],
+    "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261016.1", "", {}, "sha512-I8OJdPl3M6TIl9ksU3wtEyWVhSE8E8txJ/vGOv3SkhjcvN8uMjyFmMvRsNOZgzMe5xYFQ0LctmiGqTwR7DbZ6w=="],
 
     "@codesandbox/nodebox": ["@codesandbox/nodebox@0.1.8", "", { "dependencies": { "outvariant": "^1.4.0", "strict-event-emitter": "^0.4.3" } }, "sha512-2VRS6JDSk+M+pg56GA6CryyUSGPjBEe8Pnae0QL3jJF1mJZJVMDKr93gJRtBbLkfZN6LD/DwMtf+2L0bpWrjqg=="],
 
