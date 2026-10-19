@@ -38,6 +38,8 @@ import {
 import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
 import { getRelayHealth } from "../packages/core/src/protocol/relay-health"
 import { WebSocketCommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
+import { config } from "../packages/core/src/config"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 
 // Optional unchanged-main reference. The same wire fixture and normalized
 // comparison run in a separate process; main is not the ground-truth oracle.
@@ -224,6 +226,104 @@ it("account grants authorize candidates without widening the requested read scop
   )
   expect(bounded.attemptedRelayUrls).toEqual([B])
   expect(sockets.map((socket) => socket.url)).toEqual([B])
+})
+
+it("drains every selected relay with one worker instead of dropping additive coverage", async () => {
+  install((socket, id) => socket.emit(["EOSE", id]))
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    { ...options([A, B, C]), maxRelayAttempts: 1 }
+  )
+  expect(result.attemptedRelayUrls).toEqual([A, B, C])
+  expect(result.readCoverage).toBe("complete")
+})
+
+it("queued reads recheck app-off and exclusions while retaining a duplicate independent grant", async () => {
+  const [appA, appB] = config.appReadRelayUrls
+  const owner = "a".repeat(64)
+  const state = emptyAccountNetworkLocalState(owner)
+  install((socket, id) => {
+    if (socket.url === A) {
+      state.routingPolicy.appRelaysEnabled = false
+      state.exclusions = [
+        {
+          relayUrl: C,
+          committedAt: Date.now(),
+          relayListFrontier: { eventId: null, createdAt: null },
+          inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        },
+      ]
+    }
+    socket.emit(["EOSE", id])
+  })
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    {
+      ...options([A, appA!, appB!, C, B]),
+      maxRelayAttempts: 1,
+      accountPubkey: owner,
+      authenticatedPubkey: owner,
+      accountNetworkLocalStateRepository: {
+        get: async () => structuredClone(state),
+      },
+      relayTargets: [
+        ...relayTargetsFromUrls([appA!, appB!], {
+          kind: "app",
+          operation: "read",
+          bucket: "general_read",
+        }),
+        ...relayTargetsFromUrls([A, appB!, C, B], {
+          kind: "public_hint",
+          operation: "read",
+        }),
+      ],
+    }
+  )
+  expect(result.attemptedRelayUrls).toEqual([A, appB!, B])
+  expect(sockets.map((socket) => socket.url)).toEqual([A, appB!, B])
+})
+
+it("queued reads stop after an account switch", async () => {
+  let current = true
+  install((socket, id) => {
+    current = false
+    socket.emit(["EOSE", id])
+  })
+  await expect(
+    fetchSignedEventsFanoutDetailed(
+      { kinds: [0] },
+      {
+        ...options([A, B, C]),
+        maxRelayAttempts: 1,
+        shouldContinue: () => current,
+      }
+    )
+  ).rejects.toThrow()
+  expect(sockets.map((socket) => socket.url)).toEqual([A])
+})
+
+it("a slow relay cannot prevent the other worker from draining remaining targets", async () => {
+  const started: string[] = []
+  install((socket, id) => {
+    started.push(socket.url)
+    if (socket.url !== A) socket.emit(["EOSE", id])
+  })
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    {
+      ...options([A, B, C]),
+      maxRelayAttempts: 2,
+      fetchTimeoutMs: 30,
+    }
+  )
+  expect(started).toEqual([A, B, C])
+  expect(result.readCoverage).toBe("partial")
+  expect(result.relays.find((relay) => relay.relayUrl === A)?.outcome).toBe(
+    "timeout"
+  )
+  expect(
+    result.relays.filter((relay) => relay.status === "success")
+  ).toHaveLength(2)
 })
 
 it("CON-02 duplicate/cache deliveries never borrow forged or previous-read provenance", async () => {

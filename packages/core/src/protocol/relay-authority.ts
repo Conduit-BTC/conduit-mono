@@ -14,6 +14,8 @@ export type AppRelayGrantBucket =
   | "inbox_read"
   | "author_readback"
   | "diagnostic_read"
+  | "account_storage_read"
+  | "account_storage_write"
 export type PublicFallbackBucket =
   | "core_public"
   | "commerce_discovery"

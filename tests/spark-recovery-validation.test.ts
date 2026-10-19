@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { ACCOUNT_STORAGE_RELAYS as SPARK_RECOVERY_RENDEZVOUS } from "../packages/core/src/config"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -15,7 +16,6 @@ import {
 } from "../packages/core/src/wallets/spark-recovery-contract"
 import {
   mergeSparkRecoveryRecords,
-  SPARK_RECOVERY_RENDEZVOUS,
   validateSparkRecoveryState,
   type SparkRecoveryRecord,
   type SparkRecoveryState,

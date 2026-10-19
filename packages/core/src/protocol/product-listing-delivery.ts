@@ -9,6 +9,7 @@ import {
   type ProductListingRelayTarget,
 } from "../db"
 import {
+  configuredRelayTargets,
   filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
@@ -161,16 +162,22 @@ export function getProductListingDeliveryRelayTarget(
   accountPubkey: string
 ): RelayTarget {
   return mergeRelayTargets(
-    relayTargetsFromUrls([target.relayUrl], {
-      kind: "app",
-      operation: "write",
-      bucket: "commerce_write",
-    }),
-    relayTargetsFromUrls([target.relayUrl], {
-      kind: "app",
-      operation: "write",
-      bucket: "general_write",
-    }),
+    configuredRelayTargets(
+      {
+        kind: "app",
+        operation: "write",
+        bucket: "commerce_write",
+      },
+      [target.relayUrl]
+    ),
+    configuredRelayTargets(
+      {
+        kind: "app",
+        operation: "write",
+        bucket: "general_write",
+      },
+      [target.relayUrl]
+    ),
     relayTargetsFromUrls([target.relayUrl], {
       kind: "owner_nip65",
       operation: "write",

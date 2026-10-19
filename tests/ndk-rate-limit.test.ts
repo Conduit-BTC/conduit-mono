@@ -272,9 +272,9 @@ for (const progressive of [false, true]) {
     held[0].emit(["NOTICE", "rate-limited: shared subscription budget"])
     const result = await bounded
     await Promise.all(siblings)
-    expect(requestedUrls).toEqual([...Array(8).fill(relay), healthy])
+    expect(requestedUrls).toEqual([...Array(8).fill(relay), healthy, unused])
     if (progressive) {
-      expect(progressUrls).toEqual([relay, healthy])
+      expect(progressUrls).toEqual([relay, healthy, unused])
     } else {
       const detailed = result as Awaited<
         ReturnType<typeof fetchSignedEventsFanoutDetailed>
@@ -287,17 +287,19 @@ for (const progressive of [false, true]) {
           failureReason: "rate_limited",
         },
         { relayUrl: healthy, status: "success", eventCount: 0 },
+        { relayUrl: unused, status: "success", eventCount: 0 },
       ])
-      expect(detailed.admittedRelayUrls).toEqual([healthy])
+      expect(detailed.admittedRelayUrls).toEqual([healthy, unused])
       expect(snapshots.map((snapshot) => snapshot.admittedRelayUrls)).toEqual([
         [],
         [healthy],
+        [healthy, unused],
       ])
     }
   })
 }
 
-it("counts an actual throttled relay request against the bounded attempt budget", async () => {
+it("a throttled request releases its concurrency slot to later selected relays", async () => {
   onRequest = (socket, id) =>
     queueMicrotask(() => {
       socket.emit(["CLOSED", id, "rate-limited: subscription budget"])
@@ -311,11 +313,11 @@ it("counts an actual throttled relay request against the bounded attempt budget"
       fetchTimeoutMs: 1_000,
     }
   )
-  expect(result.admittedRelayUrls).toEqual([relay])
-  expect(result.relays).toHaveLength(1)
+  expect(result.admittedRelayUrls).toEqual([relay, "wss://healthy.example"])
+  expect(result.relays).toHaveLength(2)
   expect(result.relays[0]?.failureReason).toBe("rate_limited")
-  expect(requests).toHaveLength(1)
-  expect(connections).toBe(1)
+  expect(requests).toHaveLength(2)
+  expect(connections).toBe(2)
 })
 
 for (const relayUrls of [

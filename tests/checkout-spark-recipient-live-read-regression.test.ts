@@ -39,6 +39,7 @@ function fixture(
     authorTimeout?: boolean
     optionalProfileTimeout?: boolean
     discoveryRelayCount?: number
+    admittedDiscoveryLimit?: number
     storageFailure?: "read" | "write"
     failInitialCacheRead?: boolean
   } = {}
@@ -90,7 +91,7 @@ function fixture(
       const requestedRelayUrls = [...fetchOptions.relayUrls]
       const relayUrls = requestedRelayUrls.slice(
         0,
-        fetchOptions.maxRelayAttempts
+        options.admittedDiscoveryLimit
       )
       expect(relayUrls.length).toBeGreaterThan(1)
       observations.discoveryRequested = requestedRelayUrls.length
@@ -136,10 +137,7 @@ function fixture(
     },
     fetchSignedEventsFanoutDetailed: async (_filter, fetchOptions) => {
       const requestedRelayUrls = [...(fetchOptions?.relayUrls ?? [])]
-      const relayUrls = requestedRelayUrls.slice(
-        0,
-        fetchOptions?.maxRelayAttempts
-      )
+      const relayUrls = requestedRelayUrls
       observations.profileRelayUrls = requestedRelayUrls
       observations.profileAdmittedRelayUrls = relayUrls
       if (relayUrls.includes(AUTHOR_RELAY)) observations.authorReads += 1
@@ -234,7 +232,7 @@ describe("checkout recipient ordinary live-read evidence", () => {
   })
 
   it("accepts a current signed destination when discovery requests eight relays but admits six", async () => {
-    const f = fixture({ discoveryRelayCount: 8 })
+    const f = fixture({ discoveryRelayCount: 8, admittedDiscoveryLimit: 6 })
     const result = await f.read()
     expect(f.observations.discoveryRequested).toBe(8)
     expect(f.observations.discoveryAdmitted).toBe(6)
@@ -272,7 +270,7 @@ describe("checkout recipient ordinary live-read evidence", () => {
     ).toBe(false)
   })
 
-  it("accepts an observed signed profile without falsely completing a capped author-write set", async () => {
+  it("reads all author sources and additive app sources beyond the concurrency limit", async () => {
     const f = fixture()
     const authorRelays = Array.from(
       { length: 9 },
@@ -282,13 +280,15 @@ describe("checkout recipient ordinary live-read evidence", () => {
       f.signRelayList(authorRelays.map((url) => ["r", url, "write"])),
     ])
     expect((await f.read()).state).toBe("ready")
-    expect(f.observations.profileRelayUrls).toHaveLength(9)
-    expect(f.observations.profileAdmittedRelayUrls).toHaveLength(8)
-    expect(f.profileResults[0]!.meta.capped).toBe(true)
-    expect(f.profileResults[0]!.meta.degraded).toBe(true)
+    expect(f.observations.profileRelayUrls).toHaveLength(11)
+    expect(f.observations.profileAdmittedRelayUrls).toEqual(
+      f.observations.profileRelayUrls
+    )
+    expect(f.profileResults[0]!.meta.capped).toBe(false)
+    expect(f.profileResults[0]!.meta.degraded).toBe(false)
     expect(
       f.profileResults[0]!.profileContexts[f.profile.pubkey]!.readComplete
-    ).toBe(false)
+    ).toBe(true)
   })
 
   for (const declaration of [

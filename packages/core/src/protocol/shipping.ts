@@ -1813,9 +1813,6 @@ export async function getShippingOptions(
     readPlan.relayTargets,
     options
   )
-  if (readPlan.maxRelayAttempts) {
-    relayUrls.splice(readPlan.maxRelayAttempts)
-  }
   const executableRelayUrls = new Set(relayUrls)
   const executableRelayTargets = readPlan.relayTargets.filter((target) =>
     executableRelayUrls.has(target.url)
@@ -1827,6 +1824,7 @@ export async function getShippingOptions(
 
   const events = await runShippingFetchEventsFanout(filter, {
     relayUrls,
+    maxRelayAttempts: readPlan.maxRelayAttempts,
     relayTargets: executableRelayTargets,
     accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
     authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
@@ -2174,9 +2172,6 @@ async function readShippingOptionsByCoordinates(
         readPlan.relayTargets,
         options
       )
-      if (readPlan.maxRelayAttempts) {
-        relayUrls.splice(readPlan.maxRelayAttempts)
-      }
       const executableRelayUrls = new Set(relayUrls)
       const executableRelayTargets = readPlan.relayTargets.filter((target) =>
         executableRelayUrls.has(target.url)
@@ -2190,6 +2185,7 @@ async function readShippingOptionsByCoordinates(
         },
         {
           relayUrls,
+          maxRelayAttempts: readPlan.maxRelayAttempts,
           relayTargets: executableRelayTargets,
           accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
           authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,

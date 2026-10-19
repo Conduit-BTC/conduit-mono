@@ -5,6 +5,7 @@ import type {
 } from "../protocol/nostr-event-signer"
 import { getAccountSigner } from "../protocol/session-signer"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
+import { planAccountStorageRelays } from "../protocol/account-storage-relay-policy"
 import {
   mergeAddressRequestRecord,
   requestEvidence,
@@ -27,7 +28,6 @@ import {
   SparkRecoveryError,
 } from "./spark-recovery-contract"
 import {
-  planSparkRecoveryRelays,
   type SparkRecoveryDiscovery,
   type SparkRecoveryTransport,
   type SparkRecoveryWriteStatus,
@@ -87,6 +87,7 @@ export class AddressRequestService {
       transport: SparkRecoveryTransport
       currentSigner?: () => AccountSigner | undefined
       userRelayUrls?: readonly string[]
+      relayTargets?: readonly import("../protocol/account-storage-relay-policy").AccountStorageRelay[]
     }
   ) {
     this.scope = bindSparkRecoveryAccount(
@@ -96,7 +97,9 @@ export class AddressRequestService {
     const isolated = getConfiguredIsolatedE2eRelayUrl()
     this.targets = isolated
       ? [isolated]
-      : planSparkRecoveryRelays(input.userRelayUrls).map((target) => target.url)
+      : (
+          input.relayTargets ?? planAccountStorageRelays(input.userRelayUrls)
+        ).map((target) => target.url)
   }
   private continues = () => {
     try {
@@ -328,6 +331,7 @@ export class AddressRequestService {
       ? "pending"
       : undefined
     let confirmedTargets = 0
+    let targetCount = this.targets.length
     const local = (
       reason: AddressRequestSyncReason,
       writeStatus?: SparkRecoveryWriteStatus
@@ -339,7 +343,7 @@ export class AddressRequestService {
         ...(eventSource ? { eventSource } : {}),
         ...(writeStatus ? { writeStatus } : {}),
         confirmedTargets,
-        targetCount: this.targets.length,
+        targetCount,
       },
     })
     const replacedOperationId = event?.id
@@ -493,7 +497,16 @@ export class AddressRequestService {
           ? "membership_read_unavailable"
           : "membership_head_mismatch"
       )
-    for (const url of this.targets) {
+    // Retry exactly the staged operation (including a separately recorded,
+    // authorized policy transition), never today's constructor defaults.
+    const staged = (await this.input.store.load(this.scope.owner, network))
+      .operation
+    this.scope.assertCurrent()
+    if (!staged || staged.event.id !== event.id)
+      throw new SparkRecoveryError("conflict")
+    const deliveryTargets = staged.relayPolicyTargets ?? staged.targets
+    targetCount = deliveryTargets.length
+    for (const url of deliveryTargets) {
       this.scope.assertCurrent()
       const writeStatus = await this.input.transport.publish(
         url,

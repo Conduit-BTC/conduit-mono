@@ -5,12 +5,12 @@ import type {
 } from "../protocol/nostr-event-signer"
 import { getAccountSigner } from "../protocol/session-signer"
 import { getConfiguredIsolatedE2eRelayUrl } from "../protocol/relay-settings"
+import { planAccountStorageRelays } from "../protocol/account-storage-relay-policy"
 import {
   bindSparkRecoveryAccount,
   SparkRecoveryError,
 } from "./spark-recovery-contract"
 import {
-  planSparkRecoveryRelays,
   type SparkRecoveryDiscovery,
   type SparkRecoveryTransport,
 } from "./spark-recovery-service"
@@ -34,6 +34,7 @@ export class WalletNameService {
       transport: SparkRecoveryTransport
       currentSigner?: () => AccountSigner | undefined
       userRelayUrls?: readonly string[]
+      relayTargets?: readonly import("../protocol/account-storage-relay-policy").AccountStorageRelay[]
     }
   ) {
     this.scope = bindSparkRecoveryAccount(
@@ -43,7 +44,9 @@ export class WalletNameService {
     const isolated = getConfiguredIsolatedE2eRelayUrl()
     this.targets = isolated
       ? [isolated]
-      : planSparkRecoveryRelays(input.userRelayUrls).map((target) => target.url)
+      : (
+          input.relayTargets ?? planAccountStorageRelays(input.userRelayUrls)
+        ).map((target) => target.url)
   }
   private continues = () => {
     try {
@@ -88,7 +91,10 @@ export class WalletNameService {
     const active = new Set(discovery.registry.activeWalletIds)
     const removed = new Set(discovery.registry.removedWalletIds)
     let state = await this.input.store.load(owner, network)
-    const targets = state.operation?.targets ?? this.targets
+    const targets =
+      state.operation?.relayPolicyTargets ??
+      state.operation?.targets ??
+      this.targets
     const reads = await Promise.all(
       targets.map((url) =>
         this.input.transport.read(
@@ -127,7 +133,7 @@ export class WalletNameService {
         }))
         return { ready: false, names: {} }
       }
-      for (const url of operation.targets) {
+      for (const url of targets) {
         this.scope.assertCurrent()
         if (
           (await this.input.transport.publish(

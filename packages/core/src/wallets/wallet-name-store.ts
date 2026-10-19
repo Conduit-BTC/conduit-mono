@@ -22,10 +22,22 @@ export class DexieWalletNameStore implements WalletNameStore {
     owner: string,
     network: WalletNameNetwork
   ): Promise<WalletNameState> {
-    const row = await this.database.sparkRecoveryEvidence.get(owner)
-    return (
-      validateWalletNameStates(row?.walletNameSync, owner)?.[network] ?? {
-        pending: {},
+    return this.database.transaction(
+      "rw",
+      this.database.sparkRecoveryEvidence,
+      async () => {
+        const row = await this.database.sparkRecoveryEvidence.get(owner)
+        const states = validateWalletNameStates(row?.walletNameSync, owner)
+        if (
+          row &&
+          JSON.stringify(states) !== JSON.stringify(row.walletNameSync)
+        ) {
+          await this.database.sparkRecoveryEvidence.put({
+            ...row,
+            walletNameSync: states,
+          })
+        }
+        return states?.[network] ?? { pending: {} }
       }
     )
   }

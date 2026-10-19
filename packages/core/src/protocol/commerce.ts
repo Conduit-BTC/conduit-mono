@@ -20,6 +20,7 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
+import { configuredRelayTargets } from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -956,9 +957,7 @@ async function planCommerceReadRelayPlan(input: {
   const relayLists = relayListResult.relayLists
   const relayListLookupIncomplete =
     !!input.paymentProfileEvidence &&
-    (relayListLookupPlan.parkedRelayUrls.length > 0 ||
-      (relayListLookupPlan.maxRelayAttempts !== undefined &&
-        relayListLookupRelayUrls.length > relayListLookupPlan.maxRelayAttempts))
+    relayListLookupPlan.parkedRelayUrls.length > 0
 
   const plan = planRelayReads({
     intent: input.intent,
@@ -1025,34 +1024,28 @@ async function planCommerceReadRelayPlan(input: {
         ...fallbackRelayUrls,
       ])
   const effectiveMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
-  const clampRelayFanout = (relayUrls: string[]): string[] =>
-    effectiveMaxRelays <= 0 ? relayUrls : relayUrls.slice(0, effectiveMaxRelays)
   const candidateRelayUrls = config.e2eRelayIsolationEnabled
     ? normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls)
     : plannedRelayUrls
-  const executableRelayUrls = clampRelayFanout(candidateRelayUrls)
+  const executableRelayUrls = candidateRelayUrls
   const candidateRelayUrlSet = new Set(candidateRelayUrls)
   const candidateRelayTargets = mergeRelayTargets(
     plan.relayTargets,
-    relayTargetsFromUrls(
-      fallbackRelayUrls.filter((url) =>
-        config.commerceDiscoveryRelayUrls.includes(url)
-      ),
+    configuredRelayTargets(
       {
         kind: "public_fallback",
         operation: "read",
         bucket: "commerce_discovery",
-      }
+      },
+      fallbackRelayUrls
     ),
-    relayTargetsFromUrls(
-      fallbackRelayUrls.filter((url) =>
-        config.corePublicFallbackRelayUrls.includes(url)
-      ),
-      { kind: "public_fallback", operation: "read", bucket: "core_public" }
+    configuredRelayTargets(
+      { kind: "public_fallback", operation: "read", bucket: "core_public" },
+      fallbackRelayUrls
     ),
-    relayTargetsFromUrls(
-      fallbackRelayUrls.filter((url) => config.defaultRelays.includes(url)),
-      { kind: "public_fallback", operation: "read", bucket: "default" }
+    configuredRelayTargets(
+      { kind: "public_fallback", operation: "read", bucket: "default" },
+      fallbackRelayUrls
     ),
     relayTargetsFromUrls(publicExternalRelayHints, {
       kind: "public_hint",
@@ -1123,16 +1116,19 @@ async function planCommerceReadRelayPlan(input: {
   switch (input.intent) {
     case "commerce_products":
     case "author_products": {
-      const relayUrls = clampRelayFanout(commerceReadRelayUrls())
+      const relayUrls = commerceReadRelayUrls()
       const relayUrlSet = new Set(relayUrls)
       const candidateRelayUrls = commerceReadRelayUrls()
       return {
         relayUrls,
-        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
-          kind: "public_fallback",
-          operation: "read",
-          bucket: "commerce_discovery",
-        }),
+        relayTargets: configuredRelayTargets(
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "commerce_discovery",
+          },
+          candidateRelayUrls
+        ),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1151,16 +1147,19 @@ async function planCommerceReadRelayPlan(input: {
       }
     }
     default: {
-      const relayUrls = clampRelayFanout(publicReadRelayUrls())
+      const relayUrls = publicReadRelayUrls()
       const relayUrlSet = new Set(relayUrls)
       const candidateRelayUrls = publicReadRelayUrls()
       return {
         relayUrls,
-        relayTargets: relayTargetsFromUrls(candidateRelayUrls, {
-          kind: "public_fallback",
-          operation: "read",
-          bucket: "default",
-        }),
+        relayTargets: configuredRelayTargets(
+          {
+            kind: "public_fallback",
+            operation: "read",
+            bucket: "default",
+          },
+          candidateRelayUrls
+        ),
         candidateRelayUrls,
         ...(effectiveMaxRelays > 0
           ? { maxRelayAttempts: effectiveMaxRelays }
@@ -1370,13 +1369,9 @@ async function runRawFetchEventsFanoutDetailed(
       options?.signal
     )
     const relayUrls = [...(options?.relayUrls ?? [])]
-    const maxAttempts = options?.maxRelayAttempts
     return {
       events,
-      completedRelayUrls:
-        typeof maxAttempts === "number" && maxAttempts > 0
-          ? relayUrls.slice(0, maxAttempts)
-          : relayUrls,
+      completedRelayUrls: relayUrls,
       coverage: "complete",
       degraded: false,
       capped: isBoundedFanoutSaturated(filter, events),
@@ -4265,21 +4260,17 @@ async function fetchProductDeletionTimestamps(
           kind: "public_hint",
           operation: "read",
         }),
-        relayTargetsFromUrls(
-          config.commerceDiscoveryRelayUrls.filter((url) =>
-            preferredDeletionRelayUrls.includes(url)
-          ),
+        configuredRelayTargets(
           {
             kind: "public_fallback",
             operation: "read",
             bucket: "commerce_discovery",
-          }
+          },
+          preferredDeletionRelayUrls
         ),
-        relayTargetsFromUrls(
-          config.corePublicFallbackRelayUrls.filter((url) =>
-            preferredDeletionRelayUrls.includes(url)
-          ),
-          { kind: "public_fallback", operation: "read", bucket: "core_public" }
+        configuredRelayTargets(
+          { kind: "public_fallback", operation: "read", bucket: "core_public" },
+          preferredDeletionRelayUrls
         )
       )
       options.onSkippedRelayUrls?.(
@@ -4638,11 +4629,14 @@ async function fetchPublicProductRecords(query: {
   const relayPlan = query.searchText
     ? {
         candidateRelayUrls: productSearchRelayUrls,
-        relayTargets: relayTargetsFromUrls(productSearchRelayUrls, {
-          kind: "app",
-          operation: "read",
-          bucket: "search_index",
-        }),
+        relayTargets: configuredRelayTargets(
+          {
+            kind: "app",
+            operation: "read",
+            bucket: "search_index",
+          },
+          productSearchRelayUrls
+        ),
         maxRelayAttempts: productSearchRelayUrls.length,
         ownerSelectedRelayUrls: [],
         appRelayUrls: productSearchRelayUrls,
@@ -7972,7 +7966,7 @@ export async function getProfiles(
     const authorRelayListReady = authorRelayListState === "network"
     const candidateRelayUrlSet = new Set(relayPlan.candidateRelayUrls)
     // A single merchant's signed payment profile is read from all known
-    // NIP-65 author write relays first. Remaining capacity may discover a
+    // NIP-65 author write relays first. Additive routes may discover a
     // newer signed frontier on viewer/app relays, but those opportunistic
     // relays do not define payment-read completion. No author write hints
     // means no payment authority in this branch-only rehearsal.
@@ -7980,13 +7974,9 @@ export async function getProfiles(
       candidateRelayUrlSet.has(relayUrl)
     )
     const authorRelayUrlSet = new Set(knownAuthorRelayUrls)
-    const optionalRelayBudget =
-      relayPlan.maxRelayAttempts === undefined
-        ? Number.POSITIVE_INFINITY
-        : Math.max(0, relayPlan.maxRelayAttempts - knownAuthorRelayUrls.length)
-    const optionalPaymentRelayUrls = relayPlan.candidateRelayUrls
-      .filter((relayUrl) => !authorRelayUrlSet.has(relayUrl))
-      .slice(0, optionalRelayBudget)
+    const optionalPaymentRelayUrls = relayPlan.candidateRelayUrls.filter(
+      (relayUrl) => !authorRelayUrlSet.has(relayUrl)
+    )
     const paymentReadRelayUrls =
       authorCriticalPaymentRead && knownAuthorRelayUrls.length > 0
         ? [...admittedAuthorRelayUrls, ...optionalPaymentRelayUrls]
@@ -8066,16 +8056,9 @@ export async function getProfiles(
             (relayUrl) => !candidateRelayUrlSet.has(relayUrl)
           )
         : relayPlan.parkedRelayUrls.length > 0)
-    // A successful bounded fanout only covers admitted relay attempts. For a
-    // payment profile, known candidates beyond that budget could hold a newer
-    // signed payout destination, so attempted-relay success is not complete.
-    let evidenceCapped =
-      query.requireCompleteEvidence === true &&
-      query.evidenceScope === "payment" &&
-      relayPlan.maxRelayAttempts !== undefined &&
-      (authorCriticalPaymentRead && knownAuthorRelayUrls.length > 0
-        ? knownAuthorRelayUrls.length > relayPlan.maxRelayAttempts
-        : relayPlan.candidateRelayUrls.length > relayPlan.maxRelayAttempts)
+    // Concurrency does not truncate sources. Actual event saturation and
+    // missing required completion below still prevent complete evidence.
+    let evidenceCapped = false
     let events: VerifiedNostrEvent[]
     if (query.requireCompleteEvidence) {
       const evidence = await runFetchEventsFanoutDetailed(

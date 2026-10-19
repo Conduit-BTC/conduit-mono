@@ -5,6 +5,11 @@ import {
   type OrderRelayDeliveryStatus,
   type ConduitDB,
 } from "../db"
+import {
+  CANONICAL_APP_BACKPLANE_RELAYS,
+  HISTORICAL_COMPATIBILITY_ORDER_RELAYS,
+  RETIRED_CONDUIT_RELAY_URL,
+} from "../config"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import { relayTargetsFromUrls } from "./relay-authority"
 import { type AccountNetworkLocalStateRepository } from "./account-network-local-state"
@@ -35,11 +40,14 @@ import {
 const RETRY_DELAY_MS = 60_000
 const FOREGROUND_RETRY_DELAY_MS = 15_000
 export const ORDER_RELAY_DELIVERY_LEASE_MS = 30_000
-// The compatibility registry before the Congee cutover. This is only used to
+// Historical compatibility registries. This is only used to
 // validate already-staged exact wraps; new plans use the current registry.
-const PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS = new Set([
-  "wss://relay.conduit.market",
-  "wss://relay.ditto.pub",
+const PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS = new Set(
+  HISTORICAL_COMPATIBILITY_ORDER_RELAYS
+)
+const HISTORICAL_CONDUIT_RELAYS = new Set([
+  ...CANONICAL_APP_BACKPLANE_RELAYS,
+  RETIRED_CONDUIT_RELAY_URL,
 ])
 
 export type PreparedOrderRelayDelivery = {
@@ -216,7 +224,7 @@ function isValidPersistedCompatibilityPlan(
     (relayUrls.length > 0 &&
       relayUrls.length <= MAX_COMPATIBILITY_ORDER_RELAYS &&
       new Set(relayUrls).size === relayUrls.length &&
-      relayUrls.includes("wss://relay.conduit.market") &&
+      relayUrls.some((url) => HISTORICAL_CONDUIT_RELAYS.has(url)) &&
       relayUrls.every((relayUrl) =>
         PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS.has(relayUrl)
       ))

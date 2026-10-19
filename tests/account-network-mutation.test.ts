@@ -56,7 +56,7 @@ const RELAY_B = "wss://nos.lol"
 const INBOX_A = "wss://relay.primal.net"
 const INBOX_B = "wss://relay.ditto.pub"
 const INBOX_C = "wss://inbox.nostr.wine"
-const PLAN_A = "wss://conduit-congee.fly.dev"
+const PLAN_A = "wss://relay.conduit.market"
 const PLAN_B = "wss://relay.ditto.pub"
 const OBSERVED_AT = 150_000
 const MUTATION_AT = 200_000
@@ -1066,8 +1066,8 @@ describe("account network mutation", () => {
       dependencies: execution.dependencies,
     })
     expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
-      RELAY_B,
       appRelayUrl,
+      RELAY_B,
       personalOnlyRelayUrl,
     ])
 
@@ -1082,8 +1082,8 @@ describe("account network mutation", () => {
 
     for (const calls of [execution.publishCalls, execution.readbackCalls]) {
       expect(calls.map((call) => call.relayUrl)).toEqual([
-        RELAY_B,
         appRelayUrl,
+        RELAY_B,
         personalOnlyRelayUrl,
       ])
       const ownerTarget = calls.find(
@@ -1627,11 +1627,9 @@ describe("account network mutation", () => {
 
     expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_B,
     ])
     expect(execution.readbackCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_B,
     ])
     expect(
       execution.publishCalls.some((call) => call.relayUrl === RELAY_A)
@@ -2190,16 +2188,17 @@ describe("account network mutation", () => {
 
   it("filters a concurrent whole removal only from the new immutable recovery attempt", async () => {
     const fixture = await createFixture()
+    const oldTarget = "wss://conduit-congee.fly.dev"
     const stagedInbox = applyInboxDeclarationDistributionStage(
       fixture.snapshot.inboxDeclaration,
       {
         pubkey: ACCOUNT,
         signedEvent: fixture.inboxEvent,
-        publishRelayUrls: [PLAN_A],
-        confirmationRelayUrls: [PLAN_A],
+        publishRelayUrls: [oldTarget],
+        confirmationRelayUrls: [oldTarget],
         relayOutcomes: [
           {
-            relayUrl: PLAN_A,
+            relayUrl: oldTarget,
             publishStatus: "pending",
             publishAttemptCount: 0,
             readbackStatus: "pending",
@@ -2218,11 +2217,11 @@ describe("account network mutation", () => {
         ...fixture.snapshot,
         inboxDeclaration: stagedInbox,
       },
-      planForKind: () => [PLAN_B, RELAY_B],
+      planForKind: () => [PLAN_B, PLAN_A],
       publishBehavior: ({ relayUrl }) =>
-        relayUrl === PLAN_A ? "timed_out" : "acked",
+        relayUrl === oldTarget ? "timed_out" : "acked",
       readbackBehavior: ({ relayUrl }) =>
-        relayUrl === PLAN_A ? "timed_out" : "observed",
+        relayUrl === oldTarget ? "timed_out" : "observed",
       beforeRestage: async (repository) => {
         await repository.stage({
           pubkey: ACCOUNT,
@@ -2247,27 +2246,25 @@ describe("account network mutation", () => {
     expect(result.checkpoints[0]?.pending).toBe(false)
     expect(execution.restageInputs).toEqual([
       expect.objectContaining({
-        expectedPublishRelayUrls: [PLAN_A],
-        publishRelayUrls: [RELAY_B, PLAN_B],
+        expectedPublishRelayUrls: [oldTarget],
+        publishRelayUrls: [PLAN_A, PLAN_B],
       }),
     ])
     expect(execution.publishCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_B,
     ])
     expect(execution.readbackCalls.map((call) => call.relayUrl)).toEqual([
       PLAN_A,
-      RELAY_B,
     ])
     expect(recovery?.confirmationAttempts).toEqual([
       {
-        relayUrls: [PLAN_A],
+        relayUrls: [oldTarget],
         stagedAt: OBSERVED_AT + 1,
       },
       {
-        relayUrls: [RELAY_B],
-        completedRelayUrls: [RELAY_B],
-        observedRelayUrls: [RELAY_B],
+        relayUrls: [PLAN_A],
+        completedRelayUrls: [PLAN_A],
+        observedRelayUrls: [PLAN_A],
         stagedAt: MUTATION_AT,
       },
     ])

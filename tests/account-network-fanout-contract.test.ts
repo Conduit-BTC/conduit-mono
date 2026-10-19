@@ -124,17 +124,20 @@ afterEach(() => {
 
 describe("ordered plans through final Account Network I/O", () => {
   for (const accountPubkey of [undefined, owner]) {
-    it(`preserves capped source priority and coverage for ${accountPubkey ? "account" : "anonymous"} reads`, async () => {
+    it(`preserves serial source priority and coverage for ${accountPubkey ? "account" : "anonymous"} reads`, async () => {
       eventsByUrl.set(source, [event])
       const result = await fetchSignedEventsFanoutDetailed(
         { kinds: [0] },
         readOptions([source, fallback], accountPubkey)
       )
-      expect(opened).toEqual([source])
+      expect(opened).toEqual([source, fallback])
       expect(result.events.map((event) => event.id)).toEqual([event.id])
-      expect(result.admittedRelayUrls).toEqual([source])
-      expect(result.attemptedRelayUrls).toEqual([source])
-      expect(result.relays.map((relay) => relay.relayUrl)).toEqual([source])
+      expect(result.admittedRelayUrls).toEqual([source, fallback])
+      expect(result.attemptedRelayUrls).toEqual([source, fallback])
+      expect(result.relays.map((relay) => relay.relayUrl)).toEqual([
+        source,
+        fallback,
+      ])
       expect(result.eventSourceRelayUrls[event.id]).toEqual([source])
       expect(result.readCoverage).toBe("complete")
       expect(result.globalAbsence).toBe(false)
@@ -173,8 +176,8 @@ describe("ordered plans through final Account Network I/O", () => {
       { kinds: [0] },
       options
     )
-    expect(opened).toEqual([source])
-    expect(result.attemptedRelayUrls).toEqual([source])
+    expect(opened).toEqual([source, fallback])
+    expect(result.attemptedRelayUrls).toEqual([source, fallback])
   })
 
   it("uses target order when URLs are omitted and honors an explicitly empty request", async () => {
@@ -191,8 +194,8 @@ describe("ordered plans through final Account Network I/O", () => {
       { kinds: [0] },
       options
     )
-    expect(opened).toEqual([source])
-    expect(implicit.admittedRelayUrls).toEqual([source])
+    expect(opened).toEqual([source, fallback])
+    expect(implicit.admittedRelayUrls).toEqual([source, fallback])
   })
 
   it("deduplicates anonymous URL aliases before spending a bounded attempt", async () => {
@@ -239,7 +242,7 @@ describe("ordered plans through final Account Network I/O", () => {
     )
     options.accountNetworkLocalStateRepository = repository
     await fetchSignedEventsFanoutDetailed({ kinds: [0] }, options)
-    expect(opened).toEqual([secondSource])
+    expect(opened).toEqual([secondSource, source, fallback])
   })
 
   it("backfills excluded and throttled prefixes without counting them as attempts or absence", async () => {
@@ -265,8 +268,8 @@ describe("ordered plans through final Account Network I/O", () => {
       { kinds: [0] },
       options
     )
-    expect(opened).toEqual([source])
-    expect(result.attemptedRelayUrls).toEqual([source])
+    expect(opened).toEqual([source, fallback])
+    expect(result.attemptedRelayUrls).toEqual([source, fallback])
     expect(result.relays.some((relay) => relay.relayUrl === excluded)).toBe(
       false
     )
@@ -277,7 +280,7 @@ describe("ordered plans through final Account Network I/O", () => {
     expect(result.globalAbsence).toBe(false)
   })
 
-  it("preserves capped write priority through target intersection and the real writer", async () => {
+  it("preserves serial write priority through target intersection and the real writer", async () => {
     Object.defineProperty(globalThis, "WebSocket", {
       configurable: true,
       writable: true,
@@ -299,14 +302,14 @@ describe("ordered plans through final Account Network I/O", () => {
       requiredRelayCount: 1,
       timeoutMs: 100,
     })
-    expect(opened).toEqual([source])
-    expect(result.attemptedRelayUrls).toEqual([source])
-    expect(result.successfulRelayUrls).toEqual([source])
+    expect(opened).toEqual([source, fallback])
+    expect(result.attemptedRelayUrls).toEqual([source, fallback])
+    expect(result.successfulRelayUrls).toEqual([source, fallback])
     expect(
       frames
         .filter(({ frame }) => frame[0] === "EVENT")
         .map(({ frame }) => frame[1])
-    ).toEqual([JSON.parse(JSON.stringify(event))])
+    ).toEqual(JSON.parse(JSON.stringify([event, event])))
   })
 
   it("backfills a capped write when live policy removes the first candidate before socket admission", async () => {
@@ -355,7 +358,7 @@ describe("ordered plans through final Account Network I/O", () => {
   })
 
   for (const accountPubkey of [undefined, owner]) {
-    it(`reads portable Event Market source hints through the real capped ${accountPubkey ? "account" : "anonymous"} consumer`, async () => {
+    it(`reads portable Event Market source hints through the real bounded ${accountPubkey ? "account" : "anonymous"} consumer`, async () => {
       const organizerSecret = generateSecretKey()
       const organizer = getPublicKey(organizerSecret)
       const hints = Array.from(
@@ -431,7 +434,7 @@ describe("ordered plans through final Account Network I/O", () => {
         )
       ).toBe(true)
       for (const read of reads) {
-        expect(read.attemptedRelayUrls).toHaveLength(8)
+        expect(read.attemptedRelayUrls).toEqual(read.requestedRelayUrls)
         expect(read.attemptedRelayUrls).toContain(hints[6]!)
         expect(read.admittedRelayUrls).toEqual(read.attemptedRelayUrls)
         expect(read.readCoverage).toBe("complete")

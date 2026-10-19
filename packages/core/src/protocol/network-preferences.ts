@@ -1,4 +1,3 @@
-import { config } from "../config"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -23,6 +22,7 @@ import {
 } from "./inbox-declaration-evidence"
 import {
   applyAuthoritativeAccountNetworkReadds,
+  configuredRelayTargets,
   dexieAccountNetworkLocalStateRepository,
   normalizeAccountNetworkLocalState,
   type AccountNetworkLocalStateRepository,
@@ -501,10 +501,11 @@ export function planAccountNetworkInspectionTargets(
   const ownerPubkey = input.projection.pubkey
   const inbox = input.inboxDeclaration
   return mergeRelayTargets(
-    relayTargetsFromUrls(
-      config.appRelayDefinitions.map((definition) => definition.url),
-      { kind: "app", operation: "read", bucket: "diagnostic_read" }
-    ),
+    configuredRelayTargets({
+      kind: "app",
+      operation: "read",
+      bucket: "diagnostic_read",
+    }),
     ...input.ownerRelayList.preferences.flatMap((preference) => [
       ...(preference.readEnabled
         ? [

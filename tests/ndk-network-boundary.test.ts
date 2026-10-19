@@ -565,6 +565,7 @@ describe("NDK network boundary", () => {
         { kinds: [1] },
         {
           relayUrls,
+          maxRelayAttempts: 8,
           relayTargets: publicTargets(relayUrls),
           accountPubkey: ACCOUNT_A,
           accountNetworkLocalStateRepository: repository,

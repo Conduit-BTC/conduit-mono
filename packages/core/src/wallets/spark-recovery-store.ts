@@ -1,5 +1,6 @@
 import { db, type ConduitDB } from "../db"
 import { SparkRecoveryError } from "./spark-recovery-contract"
+import { migrateAccountStorageRelayState } from "./account-storage-relay-migration"
 import {
   mergeSparkRecoveryRecords,
   validateSparkRecoveryState,
@@ -24,6 +25,32 @@ export class DexieSparkRecoveryStore implements SparkRecoveryStore {
   }
   async load(owner: string): Promise<SparkRecoveryState> {
     return validateSparkRecoveryState(await this.readStoredState(owner), owner)
+  }
+  /** Transactional, restart-safe policy transition with no signing or network access. */
+  async migrateRelayPolicy(
+    owner: string,
+    shouldContinue: () => boolean
+  ): Promise<void> {
+    await this.database.transaction(
+      "rw",
+      this.database.sparkRecoveryEvidence,
+      async () => {
+        if (!shouldContinue()) throw new SparkRecoveryError("conflict")
+        const current = await this.readStoredState(owner)
+        if (current.ownerPubkey !== owner)
+          throw new SparkRecoveryError("invalid_record")
+        const next = migrateAccountStorageRelayState(current)
+        if (!shouldContinue()) throw new SparkRecoveryError("conflict")
+        if (JSON.stringify(current) === JSON.stringify(next)) return
+        await this.database.sparkRecoveryEvidence.put(next)
+        if (
+          !shouldContinue() ||
+          JSON.stringify(await this.readStoredState(owner)) !==
+            JSON.stringify(next)
+        )
+          throw new SparkRecoveryError("conflict")
+      }
+    )
   }
   /** Compare the entire checked journal inside one transaction; never discard newer evidence. */
   async repairUnresolved(
