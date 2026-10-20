@@ -11,6 +11,7 @@ import { parseAddressableCoordinate } from "./event-market"
 import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
 import { createEventMarketEvidenceStore } from "./event-market-evidence-store"
 import { parseEventMarketStockAuthorityRumor } from "./event-market-stock-authority"
+import { sameOrganizerStockRumor } from "./event-market-stock-import-authority"
 import { validateOrganizerStockJournalPool } from "./event-market-stock-journal"
 import { organizerStockWriterKey } from "./event-market-stock-writer-guard"
 import { retryPrivateMessageWraps } from "./private-message-delivery"
@@ -165,7 +166,16 @@ async function cohort(
   return { pools, entries }
 }
 
-function validateSnapshot(payload: OrganizerStockWriterHandoverPayload): void {
+type StockWriterSnapshotView = Pick<
+  OrganizerStockWriterHandoverPayload,
+  | "organizerPubkey"
+  | "marketCoordinate"
+  | "writerId"
+  | "transferredAtMs"
+  | "snapshot"
+>
+
+function validateSnapshot(payload: StockWriterSnapshotView): void {
   const { pools, entries, commitments } = payload.snapshot
   if (
     ![pools, entries, commitments].every(
@@ -531,7 +541,7 @@ export async function prepareOrganizerStockWriterTarget(
 
 async function authenticateGrants(
   input: Session,
-  payload: OrganizerStockWriterHandoverPayload
+  payload: Pick<OrganizerStockWriterHandoverPayload, "snapshot">
 ) {
   const auth = session(input)
   for (const pool of payload.snapshot.pools) {
@@ -539,7 +549,7 @@ async function authenticateGrants(
       await unwrapPrivateMessageEnvelope(pool.receivedEnvelope!, input.signer)
     )
     auth.check()
-    if (!same(rumor, pool.grantRumor)) fail()
+    if (!sameOrganizerStockRumor(rumor, pool.grantRumor)) fail()
     const grant = parseEventMarketStockAuthorityRumor(rumor)
     if (
       grant.type !== "grant" ||
@@ -548,6 +558,110 @@ async function authenticateGrants(
     )
       fail()
   }
+}
+
+/** Verify an intact registered writer; this never repairs or replaces its history. */
+export async function verifyOrganizerStockWriterRegistration(
+  input: Session & {
+    marketCoordinate: string
+    writerId: string
+    deviceId: string
+    generation: number
+    transferId?: string
+  }
+): Promise<EventMarketOrganizerStockWriter> {
+  input = { ...input }
+  const auth = session(input)
+  await auth.authenticate()
+  if (
+    ![input.writerId, input.deviceId].every((id) => UUID.test(id)) ||
+    parseAddressableCoordinate(input.marketCoordinate, [30409])
+      ?.authorPubkey !== input.authenticatedPubkey ||
+    !bounded(input.generation) ||
+    (input.generation === 0
+      ? input.writerId !== input.deviceId || input.transferId !== undefined
+      : !HASH.test(input.transferId ?? ""))
+  )
+    fail()
+  const evidence = await createEventMarketEvidenceStore(input.db).load(
+    input.marketCoordinate
+  )
+  auth.check()
+  const key = organizerStockWriterKey(
+    input.authenticatedPubkey,
+    input.marketCoordinate
+  )
+  const captured = await input.db.transaction(
+    "r",
+    tables(input.db),
+    async () => {
+      auth.check()
+      const registration =
+        await input.db.eventMarketOrganizerStockWriters.get(key)
+      if (
+        !registration ||
+        registration.id !== key ||
+        registration.state !== "active" ||
+        registration.accountPubkey !== input.authenticatedPubkey ||
+        registration.marketCoordinate !== input.marketCoordinate ||
+        registration.writerId !== input.writerId ||
+        registration.deviceId !== input.deviceId ||
+        registration.generation !== input.generation ||
+        registration.transferId !== input.transferId ||
+        !Array.isArray(registration.installedPoolIds) ||
+        registration.installedPoolIds.length > MAX_ROWS ||
+        registration.installedPoolIds.some((id) => !HASH.test(id)) ||
+        new Set(registration.installedPoolIds).size !==
+          registration.installedPoolIds.length ||
+        (registration.generation > 0 &&
+          (!registration.receivedEnvelope ||
+            !isValidSignedPublicNostrEvent(registration.receivedEnvelope)))
+      )
+        fail()
+      const current = await cohort(
+        input.db,
+        input.authenticatedPubkey,
+        input.marketCoordinate,
+        input.writerId
+      )
+      auth.check()
+      return { registration, current }
+    }
+  )
+  const snapshot: StockWriterSnapshotView = {
+    organizerPubkey: input.authenticatedPubkey,
+    marketCoordinate: input.marketCoordinate,
+    writerId: input.writerId,
+    transferredAtMs: Date.now(),
+    snapshot: {
+      ...captured.current,
+      commitments: evidence.filter((event) => event.kind === 30410),
+    },
+  }
+  if (snapshot.snapshot.pools.length) {
+    validateSnapshot(snapshot)
+    await authenticateGrants(input, snapshot)
+    auth.check()
+  } else if (snapshot.snapshot.entries.length) fail()
+  return input.db.transaction("r", tables(input.db), async () => {
+    auth.check()
+    const registration =
+      await input.db.eventMarketOrganizerStockWriters.get(key)
+    const current = await cohort(
+      input.db,
+      input.authenticatedPubkey,
+      input.marketCoordinate,
+      input.writerId
+    )
+    if (
+      !registration ||
+      !same(registration, captured.registration) ||
+      !same(current, captured.current)
+    )
+      fail()
+    auth.check()
+    return clone(registration)
+  })
 }
 
 /** Freeze the complete cohort before requesting any external signature. */

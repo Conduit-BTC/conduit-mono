@@ -23,7 +23,6 @@ import {
   publishEventMarketStockWork,
   readEventMarketAssignment,
   readRetainedMerchantOrganizerStockImports,
-  receiveOrganizerStockGrant,
   reconcileMerchantOrganizerStockClose,
   recoverMerchantOrganizerStockFromInbox,
   restoreClosedOrganizerStockFromInbox,
@@ -63,7 +62,7 @@ import {
   readOrganizerStockDevice,
   organizerStockDeviceId,
   prepareOrganizerStockTargetDevice,
-  reserveOrganizerStockInstallation,
+  receiveOrganizerStockGrantOnDevice,
   reserveMerchantOrganizerStockForAssignment,
   stockPoolBelongsToOccurrence,
   type OrganizerStockDevice,
@@ -578,19 +577,11 @@ export function EventMarketStockPanel(props: {
       throw new Error(
         "The seller's exact signed stock commitment is unavailable."
       )
-    const existingPool = await db.eventMarketOrganizerStockPools.get(
-      `${account}:${packet.rumor.id}`
-    )
-    reserveOrganizerStockInstallation({
-      storage: localStorage,
-      account,
-      market: market.coordinate,
-      poolId: packet.rumor.id,
-      writerId: device.writerId,
-      existingPool,
-    })
-    await receiveOrganizerStockGrant({
+    await receiveOrganizerStockGrantOnDevice({
       ...session(),
+      storage: localStorage,
+      marketCoordinate: market.coordinate,
+      expectedDeviceId: organizerStockDeviceId(device),
       expectedWriterId: device.writerId,
       grantEnvelope: packet.envelope,
       committedAssignmentEvent: assignment.assignment.signedEvent,

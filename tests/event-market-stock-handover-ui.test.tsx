@@ -1,8 +1,21 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { getPublicKey, generateSecretKey } from "nostr-tools/pure"
+import { indexedDB, IDBKeyRange } from "fake-indexeddb"
+import { ConduitDB } from "@conduit/core/db"
+import {
+  buildEventMarketAssignmentDraft,
+  computeEventMarketAssignmentDTag,
+} from "@conduit/core/protocol/event-market-assignment"
+import { commitOrganizerStockOrder } from "@conduit/core/protocol/event-market-stock-journal"
+import { registerOrganizerStockWriterDevice } from "@conduit/core/protocol/event-market-stock-writer-handover"
+import { SessionSigner } from "@conduit/core/protocol/session-signer"
+import { wrapPrivateMessage } from "@conduit/core/protocol/private-message-primitives"
+import { receiveOrganizerStockGrant } from "@conduit/core/protocol/event-market-stock-workflow"
+import { sameOrganizerStockRumor } from "@conduit/core/protocol/event-market-stock-import-authority"
 import {
   admitPublicEvent,
+  createEventMarketStockAuthorityRumor,
   parseEventMarketCalendarEvent,
   parseEventMarketRosterEvent,
   parseEventMarketStockAuthorityRumor,
@@ -18,9 +31,11 @@ import { EventMarketOrganizerPickupForm } from "../apps/merchant/src/components/
 import { projectEventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   buildMerchantOrganizerStockGrant,
+  confirmOrganizerStockDeviceRegistration,
   createOrganizerStockDevice,
   prepareOrganizerStockTargetDevice,
   readOrganizerStockDevice,
+  receiveOrganizerStockGrantOnDevice,
   reserveOrganizerStockInstallation,
   stockPoolBelongsToOccurrence,
 } from "../apps/merchant/src/lib/event-market-stock-handover"
@@ -29,15 +44,23 @@ import {
   EVENT_MARKET_FIXTURE_AT as AT,
 } from "./support/checkout-spark-event-market-fixture"
 
-function memoryStorage() {
+function memoryStorage(onSave?: (value: string) => void) {
   const data = new Map<string, string>()
   return {
     getItem: (key: string) => data.get(key) ?? null,
     setItem: (key: string, value: string) => {
       data.set(key, value)
+      onSave?.(value)
     },
   }
 }
+const installationDatabases: ConduitDB[] = []
+const installationClockRestores: (() => void)[] = []
+afterEach(async () => {
+  for (const restore of installationClockRestores.splice(0)) restore()
+  for (const database of installationDatabases.splice(0))
+    await database.delete()
+})
 const hash = () => getPublicKey(generateSecretKey())
 async function grantFixture() {
   const fixture = checkoutSparkEventMarketFixture({ mode: "organizer_handoff" })
@@ -142,7 +165,411 @@ describe("stock restore failure diagnostics", () => {
   })
 })
 
+async function deviceInstallationFixture(priorCohort = false) {
+  const clock = spyOn(Date, "now").mockReturnValue(AT + 10)
+  installationClockRestores.push(() => clock.mockRestore())
+  const f = await grantFixture()
+  const grant = parseEventMarketStockAuthorityRumor(f.rumor)
+  if (grant.type !== "grant") throw new Error("Expected stock grant")
+  async function packet(newProduct = false) {
+    let rumor = f.rumor
+    if (newProduct) {
+      const productDTag = crypto.randomUUID()
+      const productCoordinate = `30402:${f.merchantPubkey}:${productDTag}`
+      const product = f.signMerchant({
+        kind: 30402,
+        created_at: AT / 1_000 - 1,
+        content: "",
+        tags: [
+          ["d", productDTag],
+          ["title", "Stock item"],
+          ["type", "simple", "physical"],
+          ["price", "1", "SATS"],
+          ["stock", "10"],
+        ],
+      })
+      const baseline = f.signMerchant({
+        ...buildEventMarketAssignmentDraft({
+          merchantPubkey: f.merchantPubkey,
+          marketCoordinate: grant.marketCoordinate,
+          occurrenceCoordinate: grant.occurrenceCoordinate,
+          productCoordinate,
+          state: "active",
+          inventory: { mode: "tracked", quantity: 5 },
+          fulfillmentMethods: ["pickup"],
+        }),
+        created_at: AT / 1_000 - 1,
+      })
+      rumor = createEventMarketStockAuthorityRumor({
+        createdAt: AT / 1_000,
+        payload: {
+          ...grant,
+          nonce: crypto.randomUUID(),
+          productCoordinate,
+          assignmentCoordinate: `30410:${f.merchantPubkey}:${computeEventMarketAssignmentDTag({ productCoordinate, marketCoordinate: grant.marketCoordinate, occurrenceCoordinate: grant.occurrenceCoordinate })}`,
+          productEventId: product.id,
+          assignmentEventId: baseline.id,
+        },
+      })
+    }
+    const terms = parseEventMarketStockAuthorityRumor(rumor)
+    if (terms.type !== "grant") throw new Error("Expected stock grant")
+    const commitment = f.signMerchant({
+      ...buildEventMarketAssignmentDraft({
+        merchantPubkey: f.merchantPubkey,
+        marketCoordinate: terms.marketCoordinate,
+        occurrenceCoordinate: terms.occurrenceCoordinate,
+        productCoordinate: terms.productCoordinate,
+        state: "active",
+        inventory: { mode: "tracked", quantity: 5 },
+        fulfillmentMethods: ["pickup"],
+        previousEventId: terms.assignmentEventId,
+        organizerStockPool: {
+          state: "active",
+          poolId: rumor.id,
+          organizerPubkey: f.organizerPubkey,
+          quantity: terms.quantity,
+          importedQuantity: 0,
+        },
+      }),
+      created_at: AT / 1_000,
+    })
+    return {
+      rumor,
+      commitment,
+      envelope: await wrapPrivateMessage(
+        rumor,
+        { pubkey: f.organizerPubkey },
+        f.merchantSigner
+      ),
+    }
+  }
+  const db = new ConduitDB(`stock-ui-retry-${crypto.randomUUID()}`, {
+    indexedDB,
+    IDBKeyRange,
+  })
+  installationDatabases.push(db)
+  let active = true
+  let afterSave: (() => void) | undefined
+  let beforeDecrypt: (() => Promise<void>) | undefined
+  let decryptCalls = 0
+  const storage = memoryStorage(() => afterSave?.())
+  const device = {
+    storage,
+    account: f.organizerPubkey,
+    market: f.market.coordinate,
+  }
+  createOrganizerStockDevice({
+    ...device,
+    hasRetainedPools: false,
+    randomUUID: () => f.writerId,
+  })
+  const provider = {
+    ...f.organizerSigner,
+    decryptNip44: async (peer: string, ciphertext: string) => {
+      decryptCalls++
+      // Two opens authenticate the target; an intact prior cohort adds two
+      // more. Interleave during the second target open, after verification's
+      // final read-only CAS and before the atomic installation check.
+      if (decryptCalls === (priorCohort ? 5 : 3) && beforeDecrypt) {
+        const hook = beforeDecrypt
+        beforeDecrypt = undefined
+        await hook()
+      }
+      return f.organizerSigner.decryptNip44(peer, ciphertext)
+    },
+  }
+  const makeSigner = () =>
+    new SessionSigner(provider, {
+      expectedPubkey: f.organizerPubkey,
+      revision: "stock-ui-install-test",
+      authMethod: "nip07",
+      getCapabilities: () => ({
+        signEvent: true,
+        nip44: true,
+        nip04Decrypt: true,
+      }),
+      hasAuthority: () => active,
+    })
+  let sessionSigner = makeSigner()
+  await registerOrganizerStockWriterDevice({
+    db,
+    signer: sessionSigner,
+    authenticatedPubkey: f.organizerPubkey,
+    shouldContinue: () => true,
+    marketCoordinate: f.market.coordinate,
+    writerId: f.writerId,
+    deviceId: f.writerId,
+    expectedPoolIds: [],
+  })
+  const confirmed = await confirmOrganizerStockDeviceRegistration({
+    ...device,
+    db,
+    expectedDeviceId: f.writerId,
+    shouldContinue: () => true,
+  })
+  expect(confirmed.writerId === f.writerId).toBe(true)
+  type Packet = Awaited<ReturnType<typeof packet>>
+  const receiveInput = (target: Packet) => ({
+    db,
+    signer: sessionSigner,
+    authenticatedPubkey: f.organizerPubkey,
+    expectedWriterId: f.writerId,
+    grantEnvelope: target.envelope,
+    committedAssignmentEvent: target.commitment,
+    shouldContinue: () => active,
+    nowMs: AT + 1,
+  })
+  const receive = (
+    target: Packet,
+    override: Partial<
+      Pick<
+        Parameters<typeof receiveOrganizerStockGrantOnDevice>[0],
+        "expectedDeviceId"
+      >
+    > = {}
+  ) =>
+    receiveOrganizerStockGrantOnDevice({
+      ...receiveInput(target),
+      storage,
+      marketCoordinate: f.market.coordinate,
+      expectedDeviceId: f.writerId,
+      ...override,
+    })
+  const original = await packet()
+  if (priorCohort) {
+    await receive(original)
+    const saved = (await db.eventMarketOrganizerStockPools.get(
+      `${f.organizerPubkey}:${original.rumor.id}`
+    ))!
+    // An intact earlier journal can retain the exact NIP-01 event with a
+    // different outer object order from the freshly decrypted representation.
+    const { kind, pubkey, created_at, tags, content, id } = saved.grantRumor
+    const reordered = { kind, pubkey, created_at, tags, content, id }
+    expect(sameOrganizerStockRumor(saved.grantRumor, reordered)).toBe(true)
+    expect(JSON.stringify(saved.grantRumor) === JSON.stringify(reordered)).toBe(
+      false
+    )
+    await db.eventMarketOrganizerStockPools.put({
+      ...saved,
+      grantRumor: reordered,
+    })
+    await commitOrganizerStockOrder({
+      db,
+      authenticatedPubkey: f.organizerPubkey,
+      orderId: crypto.randomUUID(),
+      identityBinding: hash(),
+      termsBinding: hash(),
+      claimRef: hash(),
+      evidence: "controlled stock-order evidence",
+      entries: [
+        { poolId: original.rumor.id, writerId: f.writerId, quantity: 1 },
+      ],
+      shouldContinue: () => active,
+      nowMs: AT + 1,
+    })
+  }
+  const target = priorCohort ? await packet(true) : original
+  const registrationKey = `${f.organizerPubkey}:${f.market.coordinate}`
+  const writer =
+    (await db.eventMarketOrganizerStockWriters.get(registrationKey))!
+  const localKey = `conduit:event-stock-device:1:${f.organizerPubkey}:${f.market.coordinate}`
+  const local = readOrganizerStockDevice(
+    storage,
+    f.organizerPubkey,
+    f.market.coordinate
+  )!
+  const abort = async () => {
+    afterSave = () => {
+      afterSave = undefined
+      active = false
+    }
+    await expect(receive(target)).rejects.toBeInstanceOf(Error)
+    expect(
+      await db.eventMarketOrganizerStockPools.get(
+        `${f.organizerPubkey}:${target.rumor.id}`
+      )
+    ).toBeUndefined()
+    expect(
+      readOrganizerStockDevice(
+        storage,
+        f.organizerPubkey,
+        f.market.coordinate
+      )!.installedPoolIds.includes(target.rumor.id)
+    ).toBe(true)
+    active = true
+    sessionSigner = makeSigner()
+  }
+  return {
+    f,
+    db,
+    storage,
+    device,
+    packet,
+    target,
+    original,
+    writer,
+    local,
+    localKey,
+    registrationKey,
+    receive,
+    receiveInput,
+    abort,
+    interleave: (hook: () => Promise<void>) => {
+      decryptCalls = 0
+      beforeDecrypt = hook
+    },
+  }
+}
+
 describe("explicit organizer device handover", () => {
+  for (const prior of [false, true])
+    it(`precommit-stock-installation retries with ${prior ? "an intact accepted prior cohort" : "an empty registered cohort"}`, async () => {
+      const f = await deviceInstallationFixture(prior)
+      const poolsBefore = await f.db.eventMarketOrganizerStockPools.toArray()
+      const entriesBefore =
+        await f.db.eventMarketOrganizerStockEntries.toArray()
+      await f.abort()
+      const received = await f.receive(f.target)
+      expect(received.poolId === f.target.rumor.id).toBe(true)
+      expect(received.state).toBe("active")
+      expect(received.acceptedQuantity).toBe(0)
+      expect(await f.db.eventMarketOrganizerStockPools.count()).toBe(
+        poolsBefore.length + 1
+      )
+      expect((await f.receive(f.target)).poolId === received.poolId).toBe(true)
+      expect(
+        JSON.stringify(
+          await f.db.eventMarketOrganizerStockEntries.toArray()
+        ) === JSON.stringify(entriesBefore)
+      ).toBe(true)
+      if (prior)
+        expect(
+          JSON.stringify(
+            await f.db.eventMarketOrganizerStockPools.get(poolsBefore[0]!.id)
+          ) === JSON.stringify(poolsBefore[0])
+        ).toBe(true)
+    })
+  it("precommit-stock-installation keeps missing, retired, target, wrong-device, generation and legacy authorities blocked", async () => {
+    const f = await deviceInstallationFixture()
+    await f.abort()
+    const blocked = async () => {
+      await expect(f.receive(f.target)).rejects.toBeInstanceOf(Error)
+      expect(await f.db.eventMarketOrganizerStockPools.count()).toBe(0)
+    }
+    await f.db.eventMarketOrganizerStockWriters.delete(f.registrationKey)
+    await blocked()
+    for (const row of [
+      { ...f.writer, state: "retired" as const },
+      { ...f.writer, state: "target" as const },
+      { ...f.writer, deviceId: crypto.randomUUID() },
+      { ...f.writer, generation: 1 },
+    ]) {
+      await f.db.eventMarketOrganizerStockWriters.put(row)
+      await blocked()
+    }
+    await f.db.eventMarketOrganizerStockWriters.put(f.writer)
+    await expect(
+      f.receive(f.target, { expectedDeviceId: crypto.randomUUID() })
+    ).rejects.toBeInstanceOf(Error)
+    const pending = readOrganizerStockDevice(
+      f.storage,
+      f.f.organizerPubkey,
+      f.f.market.coordinate
+    )!
+    f.storage.setItem(
+      f.localKey,
+      JSON.stringify({
+        version: 1,
+        writerId: pending.writerId,
+        installedPoolIds: pending.installedPoolIds,
+      })
+    )
+    await blocked()
+  })
+  it("precommit-stock-installation does not repair a lost installed pool, incomplete prefix or extra local marker", async () => {
+    const f = await deviceInstallationFixture(true)
+    await f.abort()
+    const before = (await f.db.eventMarketOrganizerStockPools.get(
+      `${f.f.organizerPubkey}:${f.original.rumor.id}`
+    ))!
+    const entry = (await f.db.eventMarketOrganizerStockEntries.toArray())[0]!
+    const blocked = async () => {
+      await expect(f.receive(f.target)).rejects.toBeInstanceOf(Error)
+      expect(
+        await f.db.eventMarketOrganizerStockPools.get(
+          `${f.f.organizerPubkey}:${f.target.rumor.id}`
+        )
+      ).toBeUndefined()
+    }
+    await f.db.eventMarketOrganizerStockPools.delete(before.id)
+    await blocked()
+    await f.db.eventMarketOrganizerStockPools.put(before)
+    await f.db.eventMarketOrganizerStockEntries.delete(entry.id)
+    await blocked()
+    await f.db.eventMarketOrganizerStockEntries.put(entry)
+    const pending = readOrganizerStockDevice(
+      f.storage,
+      f.f.organizerPubkey,
+      f.f.market.coordinate
+    )!
+    f.storage.setItem(
+      f.localKey,
+      JSON.stringify({
+        ...pending,
+        installedPoolIds: [...pending.installedPoolIds, hash()],
+      })
+    )
+    await blocked()
+    expect(
+      JSON.stringify(
+        await f.db.eventMarketOrganizerStockPools.get(before.id)
+      ) === JSON.stringify(before)
+    ).toBe(true)
+    expect(
+      JSON.stringify(await f.db.eventMarketOrganizerStockEntries.toArray()) ===
+        JSON.stringify([entry])
+    ).toBe(true)
+  })
+  it("precommit-stock-installation rejects a registration that changes after exact pending verification", async () => {
+    const f = await deviceInstallationFixture(true)
+    await f.abort()
+    const concurrent = await f.packet(true)
+    let interleaved = false
+    f.interleave(async () => {
+      interleaved = true
+      await receiveOrganizerStockGrant({
+        ...f.receiveInput(concurrent),
+        signer: new SessionSigner(f.f.organizerSigner, {
+          expectedPubkey: f.f.organizerPubkey,
+          revision: "concurrent-stock-install-test",
+          authMethod: "nip07",
+          getCapabilities: () => ({
+            signEvent: true,
+            nip44: true,
+            nip04Decrypt: true,
+          }),
+          hasAuthority: () => true,
+        }),
+      })
+    })
+    await expect(f.receive(f.target)).rejects.toThrow(
+      "The verified stock writer registration changed."
+    )
+    expect(interleaved).toBe(true)
+    expect(
+      await f.db.eventMarketOrganizerStockPools.get(
+        `${f.f.organizerPubkey}:${f.target.rumor.id}`
+      )
+    ).toBeUndefined()
+    expect(
+      (
+        await f.db.eventMarketOrganizerStockPools.get(
+          `${f.f.organizerPubkey}:${concurrent.rumor.id}`
+        )
+      )?.state
+    ).toBe("active")
+  })
   it("creates once only on explicit action, account/market scopes IDs and never adopts a relay writer", () => {
     const storage = memoryStorage(),
       account = hash(),

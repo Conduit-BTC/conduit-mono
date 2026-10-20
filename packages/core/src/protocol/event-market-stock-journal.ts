@@ -2,6 +2,7 @@ import type {
   ConduitDB,
   EventMarketOrganizerStockEntry,
   EventMarketOrganizerStockPool,
+  EventMarketOrganizerStockWriter,
 } from "../db"
 import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
 import {
@@ -374,6 +375,11 @@ export async function installOrganizerStockHandover(input: {
   committedAssignmentEvent: SignedPublicNostrEvent
   /** Retained positive Merchant closure evidence, never inferred from a new grant. */
   closedAssignmentEvents?: readonly SignedPublicNostrEvent[]
+  /** Captured by authenticated registration verification; constrains this attempt. */
+  expectedWriterRegistration?: Pick<
+    EventMarketOrganizerStockWriter,
+    "deviceId" | "generation" | "installedPoolIds" | "transferId"
+  >
   shouldContinue?(): boolean
   nowMs?: number
 }): Promise<EventMarketOrganizerStockPool> {
@@ -382,6 +388,9 @@ export async function installOrganizerStockHandover(input: {
     grantRumor: clone(input.grantRumor),
     committedAssignmentEvent: clone(input.committedAssignmentEvent),
     closedAssignmentEvents: clone([...(input.closedAssignmentEvents ?? [])]),
+    expectedWriterRegistration: input.expectedWriterRegistration
+      ? clone(input.expectedWriterRegistration)
+      : undefined,
   }
   const rumor = clone(input.grantRumor)
   const grant = readGrant(rumor)
@@ -437,6 +446,17 @@ export async function installOrganizerStockHandover(input: {
           grant.marketCoordinate
         )
       )
+      const expected = input.expectedWriterRegistration
+      if (
+        expected &&
+        (!registration ||
+          registration.deviceId !== expected.deviceId ||
+          registration.generation !== expected.generation ||
+          registration.transferId !== expected.transferId ||
+          JSON.stringify(registration.installedPoolIds) !==
+            JSON.stringify(expected.installedPoolIds))
+      )
+        throw new Error("The verified stock writer registration changed.")
       if (registration) {
         const missingJournal = () => {
           throw new Error(

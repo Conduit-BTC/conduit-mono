@@ -2,6 +2,7 @@ import type {
   ConduitDB,
   EventMarketOrganizerStockEntry,
   EventMarketOrganizerStockPool,
+  EventMarketOrganizerStockWriter,
 } from "../db"
 import { CommerceInboxStore } from "./commerce-inbox-store"
 import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
@@ -559,6 +560,10 @@ export async function receiveOrganizerStockGrant(
     expectedWriterId: string
     grantEnvelope: SignedPublicNostrEvent
     committedAssignmentEvent: SignedPublicNostrEvent
+    expectedWriterRegistration?: Pick<
+      EventMarketOrganizerStockWriter,
+      "deviceId" | "generation" | "installedPoolIds" | "transferId"
+    >
     nowMs?: number
   }
 ) {
@@ -566,6 +571,9 @@ export async function receiveOrganizerStockGrant(
     ...input,
     grantEnvelope: clone(input.grantEnvelope),
     committedAssignmentEvent: clone(input.committedAssignmentEvent),
+    expectedWriterRegistration: input.expectedWriterRegistration
+      ? clone(input.expectedWriterRegistration)
+      : undefined,
   }
   const authority = session(input)
   const packet = await inspectEventMarketStockPacket({

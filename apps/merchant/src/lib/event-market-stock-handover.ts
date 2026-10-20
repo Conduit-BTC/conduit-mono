@@ -18,6 +18,11 @@ import {
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import type { ConduitDB } from "@conduit/core/db"
+import {
+  inspectEventMarketStockPacket,
+  receiveOrganizerStockGrant,
+} from "@conduit/core/protocol/event-market-stock-workflow"
+import { verifyOrganizerStockWriterRegistration } from "@conduit/core/protocol/event-market-stock-writer-handover"
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
@@ -337,6 +342,136 @@ export function reserveOrganizerStockInstallation(input: {
     ...device,
     installedPoolIds: [...device.installedPoolIds, input.poolId],
   })
+}
+
+/**
+ * Receive through the same device marker and atomic journal owner. A marker
+ * records an attempted install, not proof that its transaction committed.
+ * Only an intact registered v2 writer can distinguish that case from loss.
+ */
+export async function receiveOrganizerStockGrantOnDevice(
+  input: Omit<
+    Parameters<typeof receiveOrganizerStockGrant>[0],
+    "expectedWriterRegistration"
+  > & {
+    storage: Storage
+    marketCoordinate: string
+    expectedDeviceId: string
+  }
+) {
+  input = {
+    ...input,
+    grantEnvelope: structuredClone(input.grantEnvelope),
+    committedAssignmentEvent: structuredClone(input.committedAssignmentEvent),
+  }
+  const account = input.authenticatedPubkey
+  const revision = input.signer.revision
+  const authMethod = input.signer.authMethod
+  let device = readOrganizerStockDevice(
+    input.storage,
+    account,
+    input.marketCoordinate
+  )
+  if (
+    !device ||
+    device.mode === "target" ||
+    device.writerId !== input.expectedWriterId ||
+    organizerStockDeviceId(device) !== input.expectedDeviceId
+  )
+    throw new Error("This grant belongs to a different handover device.")
+  let deviceBytes = JSON.stringify(device)
+  const check = () => {
+    if (
+      !input.shouldContinue() ||
+      !revision ||
+      !authMethod ||
+      input.signer.pubkey !== account ||
+      input.signer.revision !== revision ||
+      input.signer.authMethod !== authMethod ||
+      JSON.stringify(
+        readOrganizerStockDevice(input.storage, account, input.marketCoordinate)
+      ) !== deviceBytes
+    )
+      throw new Error("This device's stock installation session changed.")
+  }
+  const shouldContinue = () => {
+    check()
+    return true
+  }
+  check()
+  const packet = await inspectEventMarketStockPacket({
+    ...input,
+    envelope: input.grantEnvelope,
+    shouldContinue,
+  })
+  check()
+  if (
+    !packet ||
+    packet.payload.type !== "grant" ||
+    packet.payload.organizerPubkey !== account ||
+    packet.payload.marketCoordinate !== input.marketCoordinate ||
+    packet.payload.writerId !== device.writerId
+  )
+    throw new Error("This grant belongs to a different handover device.")
+  const existingPool = await input.db.eventMarketOrganizerStockPools.get(
+    `${account}:${packet.rumor.id}`
+  )
+  check()
+  let expectedWriterRegistration:
+    | Parameters<
+        typeof receiveOrganizerStockGrant
+      >[0]["expectedWriterRegistration"]
+    | undefined
+  if (device.installedPoolIds.includes(packet.rumor.id) && !existingPool) {
+    // Do not remove the marker or treat missing rows as evidence. The original
+    // registered cohort is the positive, monotonic installation frontier.
+    if (device.version !== 2 || device.mode !== "writer")
+      throw new Error(
+        "The original stock journal is missing. Recover it before continuing."
+      )
+    const registered = await verifyOrganizerStockWriterRegistration({
+      db: input.db,
+      signer: input.signer,
+      authenticatedPubkey: account,
+      shouldContinue,
+      marketCoordinate: input.marketCoordinate,
+      writerId: device.writerId,
+      deviceId: input.expectedDeviceId,
+      generation: device.generation ?? 0,
+      transferId: device.transferId,
+    })
+    check()
+    if (
+      registered.installedPoolIds.includes(packet.rumor.id) ||
+      JSON.stringify(
+        device.installedPoolIds.filter((id) => id !== packet.rumor.id).sort()
+      ) !== JSON.stringify([...registered.installedPoolIds].sort())
+    )
+      throw new Error("The original complete stock journal needs recovery.")
+    expectedWriterRegistration = {
+      deviceId: registered.deviceId,
+      generation: registered.generation,
+      transferId: registered.transferId,
+      installedPoolIds: [...registered.installedPoolIds],
+    }
+  } else {
+    device = reserveOrganizerStockInstallation({
+      storage: input.storage,
+      account,
+      market: input.marketCoordinate,
+      poolId: packet.rumor.id,
+      writerId: device.writerId,
+      existingPool,
+    })
+    deviceBytes = JSON.stringify(device)
+  }
+  const received = await receiveOrganizerStockGrant({
+    ...input,
+    expectedWriterRegistration,
+    shouldContinue,
+  })
+  check()
+  return received
 }
 
 /** Form composition only; the shared workflow independently validates signed current admission. */

@@ -177,6 +177,15 @@ remain intact; this is neither a consumption reset nor cold read-only recovery.
 Missing or mismatched closure evidence must leave both pool installation and
 the previous frontier unchanged.
 
+`event-market-stock-handover-ui` exercises the same device-receive composition
+used by the stock panel when an installation aborts after its local attempt
+marker is saved. A retry keeps that marker and requires the same active v2
+device registration, its complete authenticated journal and an unchanged
+atomic installation frontier. A grant already recorded as installed cannot be
+reinstalled after journal loss. Missing, retired, legacy-ambiguous or changed
+authority, incomplete history and unrelated extra markers remain blocked.
+Grant authentication compares canonical event fields, not object-property order.
+
 The current extension composes authenticated Merchant import/closing,
 checkout routing and claims, plus complete cooperative fresh-device writer
 handover. The [router acceptance map](event-market-router-acceptance.md) identifies
