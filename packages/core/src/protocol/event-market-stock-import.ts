@@ -280,6 +280,7 @@ export async function importMerchantOrganizerStockOrder(input: {
     orderId: order.id,
     merchantPubkey: order.merchantPubkey,
     ...localBindings,
+    evidenceBinding: sealed.evidenceBinding,
     attribution,
     entries,
     checkSession,

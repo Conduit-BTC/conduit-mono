@@ -17,18 +17,15 @@ import {
   sameOrganizerStockRumor,
   validateMerchantOrganizerStockPool,
 } from "./event-market-stock-import-authority"
-import {
-  getOrganizerStockOrderBindings,
-  merchantOccurrenceAcceptanceBindings,
-} from "./merchant-order-acceptance-bindings"
+import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
 import {
   merchantAcceptanceStore,
-  openMerchantAcceptanceEvidence,
+  merchantAcceptanceForPrivateTransport,
+  protectMerchantAcceptanceRecord,
   protectMerchantAcceptanceHistory,
-  sealMerchantAcceptanceEvidence,
+  sealMerchantStockCheckpoint,
   merchantStockCheckpointKey,
-  encodeMerchantPrivateCipher,
-  decodeMerchantPrivateCipher,
+  merchantPrivateStorageJSON,
 } from "./merchant-acceptance-privacy"
 import type { AccountSigner } from "./nostr-event-signer"
 import { retryPrivateMessageWraps } from "./private-message-delivery"
@@ -70,7 +67,7 @@ const clone = <T>(value: T): T => structuredClone(value)
 const digest = (value: unknown) =>
   bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(value))))
 const exact = (a: unknown, b: unknown) =>
-  JSON.stringify(a) === JSON.stringify(b)
+  merchantPrivateStorageJSON(a) === merchantPrivateStorageJSON(b)
 type ProductSnapshot = Omit<
   MerchantInventoryProduct,
   "publicationJobs" | "organizerStockCheckpoint"
@@ -113,10 +110,10 @@ export async function openMerchantOrganizerStockCheckpoint(input: {
     if (!repaired || checkpointId(repaired) !== checkpointId(saved)) fail()
     saved = repaired
   }
-  const rumor = saved.privateRumor
+  const rumor = saved.sealedRumor
     ? await store.open<PrivateMessageRumor>(
-        decodeMerchantPrivateCipher(saved.privateRumor),
-        merchantStockCheckpointKey(input.productCoordinate, checkpointId(saved))
+        saved.sealedRumor,
+        merchantStockCheckpointKey(checkpointId(saved))
       )
     : clone(saved.rumor)
   if (!rumor || rumor.id !== checkpointId(saved)) fail()
@@ -501,6 +498,11 @@ function validateSnapshot(snapshot: StockSnapshot, merchant: string): void {
     assignments.size !== snapshot.assignments.length ||
     pools.size !== snapshot.pools.length ||
     orders.size !== snapshot.orders.length ||
+    snapshot.orders.some(
+      (order) =>
+        order.evidenceFormat !== undefined ||
+        order.evidenceBinding !== undefined
+    ) ||
     new Set(snapshot.entries.map((row) => row.id)).size !==
       snapshot.entries.length
   )
@@ -816,31 +818,10 @@ async function captureSnapshot(
   const originals = new Map<string, string>()
   portable.orders = await Promise.all(
     raw.orders.map(async (accepted) => {
-      const evidence = await openMerchantAcceptanceEvidence(accepted, store)
-      const parsed = orderSchema.parse(JSON.parse(evidence))
-      const local = merchantOccurrenceAcceptanceBindings(parsed)
-      if (
-        accepted.orderId !== parsed.id ||
-        accepted.merchantPubkey !== merchant ||
-        accepted.identityBinding !== local.identityBinding ||
-        accepted.termsBinding !== local.termsBinding
-      )
-        fail()
-      originals.set(accepted.orderId, evidence)
-      const {
-        evidenceFormat: _format,
-        evidenceBinding: _binding,
-        ...decision
-      } = accepted
-      void _format
-      void _binding
-      const wire = getOrganizerStockOrderBindings(parsed)
-      return {
-        ...decision,
-        identityBinding: wire.identityBinding,
-        termsBinding: wire.termsBinding,
-        evidence,
-      }
+      const wire = await merchantAcceptanceForPrivateTransport(accepted, store)
+      orderSchema.parse(JSON.parse(wire.evidence))
+      originals.set(accepted.orderId, wire.evidence)
+      return wire
     })
   )
   portable.entries = raw.entries.map((entry) => {
@@ -939,12 +920,13 @@ async function publishCheckpoint(
     })
     parseEventMarketStockCheckpointRumor(rumor)
     assertPrivateMessageFitsTransport(rumor)
-    const privateRumor = encodeMerchantPrivateCipher(
-      await store.seal(
-        rumor,
-        merchantStockCheckpointKey(input.productCoordinate, rumor.id)
-      )
-    )
+    const protectedCheckpoint = await sealMerchantStockCheckpoint(store, {
+      sequence: payload.sequence,
+      previousId: payload.previousId,
+      snapshotKey,
+      rumor,
+      acknowledgedRelayUrls: [],
+    })
     authority.check()
     saved = await input.db.transaction(
       "rw",
@@ -969,14 +951,7 @@ async function publishCheckpoint(
           ) !== captured.rawKey
         )
           fail()
-        row.organizerStockCheckpoint = {
-          sequence: payload.sequence,
-          previousId: payload.previousId,
-          snapshotKey,
-          rumorId: rumor.id,
-          privateRumor,
-          acknowledgedRelayUrls: [],
-        }
+        row.organizerStockCheckpoint = protectedCheckpoint
         await input.db.merchantInventoryProducts.put(row)
         authority.check()
         return row.organizerStockCheckpoint
@@ -1178,16 +1153,11 @@ export async function restoreMerchantOrganizerStockCheckpoint(
   // encryption must be renewed here, never copied from the source device.
   const localOrders = new Map<string, MerchantInventoryAcceptedOrder>()
   for (const order of state.orders) {
-    const parsed = orderSchema.parse(JSON.parse(order.evidence))
-    localOrders.set(order.orderId, {
-      ...clone(order),
-      ...merchantOccurrenceAcceptanceBindings(parsed),
-      ...(await sealMerchantAcceptanceEvidence(
-        input.store,
-        order.orderId,
-        order.evidence
-      )),
-    })
+    orderSchema.parse(JSON.parse(order.evidence))
+    localOrders.set(
+      order.orderId,
+      await protectMerchantAcceptanceRecord(input.store, order)
+    )
     check()
   }
   const localEntries = state.entries.map((entry) => ({
@@ -1196,12 +1166,14 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       ? localOrders.get(entry.orderId)!.evidenceBinding!
       : entry.evidence,
   }))
-  const privateRumor = encodeMerchantPrivateCipher(
-    await input.store.seal(
-      rumor,
-      merchantStockCheckpointKey(state.product.coordinate, rumor.id)
-    )
-  )
+  const protectedCheckpoint = await sealMerchantStockCheckpoint(input.store, {
+    sequence: payload.sequence,
+    previousId: payload.previousId,
+    snapshotKey: payload.snapshotKey,
+    rumor,
+    selfEnvelope: clone(input.envelope),
+    acknowledgedRelayUrls: retained.sources,
+  })
   check()
   const beforeCapture = (await input.db.merchantInventoryProducts.get(
     state.product.coordinate
@@ -1414,15 +1386,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
           signedEvent: clone(state.product.signedProductEvent),
         },
       ],
-      organizerStockCheckpoint: {
-        sequence: payload.sequence,
-        previousId: payload.previousId,
-        snapshotKey: payload.snapshotKey,
-        rumorId: rumor.id,
-        privateRumor,
-        selfEnvelope: clone(input.envelope),
-        acknowledgedRelayUrls: retained.sources,
-      },
+      organizerStockCheckpoint: protectedCheckpoint,
     }
     await input.db.merchantInventoryProducts.put(product)
     for (const event of [

@@ -162,6 +162,19 @@ it("requires exact imported stock and the organizer's authenticated physical han
   expect(result.orderId).toBe(f.order.id)
   expect(result).not.toHaveProperty("paid")
   expect(await f.database.eventMarketOrganizerStockEntries.count()).toBe(before)
+  const saved = (await f.database.merchantInventoryAcceptedOrders.get(
+    f.order.id
+  ))!
+  const cipher = JSON.parse(saved.evidence) as { nonce: string; bytes: string }
+  cipher.bytes =
+    (cipher.bytes.startsWith("00") ? "01" : "00") + cipher.bytes.slice(2)
+  await f.database.merchantInventoryAcceptedOrders.update(f.order.id, {
+    evidence: JSON.stringify(cipher),
+  })
+  await expect(
+    assertMerchantOrganizerStockOrderHandout(merchant)
+  ).rejects.toThrow()
+  await f.database.merchantInventoryAcceptedOrders.put(saved)
   await expect(
     assertMerchantOrganizerStockOrderHandout({
       ...merchant,

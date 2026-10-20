@@ -1,3 +1,4 @@
+import type { InboxCipher } from "../protocol/commerce-inbox-store"
 import type { EventMarketFreePurchaseDelivery } from "../protocol/event-market-free-purchase-delivery-record"
 import type { ReceivingWalletBinding } from "../wallets/receiving"
 import type { SparkRecoveryState } from "../wallets/spark-recovery-service"
@@ -1320,10 +1321,10 @@ export interface MerchantInventoryProduct {
     sequence: number
     previousId: string | null
     snapshotKey: string
-    /** Legacy preview draft, repaired before the next stock operation. */
+    /** Legacy plaintext is repaired on authenticated use. New writes retain ciphertext only. */
     rumor?: PrivateMessageRumor
     rumorId?: string
-    privateRumor?: { nonce: string; bytes: string }
+    sealedRumor?: InboxCipher
     selfEnvelope?: SignedPublicNostrEvent
     acknowledgedRelayUrls: string[]
   }

@@ -591,6 +591,7 @@ export async function acceptMerchantInventoryOrder(input: {
       delegated.identityBinding !== identityBinding ||
       delegated.termsBinding !== termsBinding ||
       input.evidenceFormat !== "device-encrypted-v1" ||
+      input.evidenceBinding !== delegated.evidenceBinding ||
       input.priorStockAdjustments?.length)
   )
     throw new Error("Organizer import does not match the stock decision")
@@ -742,6 +743,7 @@ export async function acceptMerchantInventoryOrder(input: {
               })
           }
           delegated.checkSession()
+          input.assertCurrent?.()
           return { replayed: true, order: prior }
         }
       }

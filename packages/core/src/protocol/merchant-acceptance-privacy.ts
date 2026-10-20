@@ -1,16 +1,21 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
-import { db, type ConduitDB, type MerchantInventoryAcceptedOrder } from "../db"
+import {
+  db,
+  type ConduitDB,
+  type MerchantInventoryAcceptedOrder,
+  type MerchantInventoryProduct,
+} from "../db"
 import { CommerceInboxStore, type InboxCipher } from "./commerce-inbox-store"
 import { getProtectedReadAuthorization } from "./protected-read-authorization"
 
 const FORMAT = "device-encrypted-v1" as const
 
-export const encodeMerchantPrivateCipher = (cipher: InboxCipher) => ({
+const encodeMerchantPrivateCipher = (cipher: InboxCipher) => ({
   nonce: bytesToHex(cipher.nonce),
   bytes: bytesToHex(new Uint8Array(cipher.bytes)),
 })
-export const decodeMerchantPrivateCipher = (cipher: {
+const decodeMerchantPrivateCipher = (cipher: {
   nonce: string
   bytes: string
 }): InboxCipher => ({
@@ -44,12 +49,11 @@ export function merchantAcceptanceStore(
   return new CommerceInboxStore(authorization, database)
 }
 
-export function merchantStockCheckpointKey(
-  coordinate: string,
-  rumorId: string
-) {
-  return `merchant-stock-checkpoint:${coordinate}:${rumorId}`
-}
+/** Exact CAS comparison also includes persisted binary ciphertext bytes. */
+export const merchantPrivateStorageJSON = (value: unknown) =>
+  JSON.stringify(value, (_key, item) =>
+    item instanceof ArrayBuffer ? bytesToHex(new Uint8Array(item)) : item
+  )
 
 function evidenceKey(orderId: string): string {
   return `merchant-inventory-acceptance:${orderId}`
@@ -126,11 +130,7 @@ export async function protectMerchantAcceptanceHistory(
     const sealed =
       original.evidenceFormat === FORMAT
         ? original
-        : await sealMerchantAcceptanceEvidence(
-            store,
-            original.orderId,
-            evidence
-          )
+        : await protectMerchantAcceptanceRecord(store, original)
     if (
       entries.some(
         (entry) =>
@@ -172,20 +172,7 @@ export async function protectMerchantAcceptanceHistory(
           throw new Error(
             "Imported accepted evidence changed during privacy migration."
           )
-        await database.merchantInventoryAcceptedOrders.put({
-          ...current,
-          identityBinding:
-            original.evidenceFormat === FORMAT
-              ? current.identityBinding
-              : merchantAcceptanceBinding("identity", current.identityBinding),
-          termsBinding:
-            original.evidenceFormat === FORMAT
-              ? current.termsBinding
-              : merchantAcceptanceBinding("terms", current.termsBinding),
-          evidenceFormat: FORMAT,
-          evidenceBinding: sealed.evidenceBinding,
-          evidence: sealed.evidence,
-        })
+        await database.merchantInventoryAcceptedOrders.put(sealed)
         for (const entry of currentEntries)
           await database.eventMarketOrganizerStockEntries.put({
             ...entry,
@@ -204,10 +191,7 @@ export async function protectMerchantAcceptanceHistory(
   for (const original of products) {
     const checkpoint = original.organizerStockCheckpoint
     if (!checkpoint?.rumor) continue
-    const privateRumor = await store.seal(
-      checkpoint.rumor,
-      merchantStockCheckpointKey(original.coordinate, checkpoint.rumor.id)
-    )
+    const sealed = await sealMerchantStockCheckpoint(store, checkpoint)
     await database.transaction(
       "rw",
       database.merchantInventoryProducts,
@@ -218,21 +202,107 @@ export async function protectMerchantAcceptanceHistory(
         )
         if (
           !current ||
-          JSON.stringify(current.organizerStockCheckpoint) !==
-            JSON.stringify(checkpoint)
+          merchantPrivateStorageJSON(current.organizerStockCheckpoint) !==
+            merchantPrivateStorageJSON(checkpoint)
         )
           throw new Error("Stock checkpoint changed during privacy migration.")
-        const { rumor: _rumor, ...metadata } = checkpoint
-        void _rumor
-        current.organizerStockCheckpoint = {
-          ...metadata,
-          rumorId: checkpoint.rumor!.id,
-          privateRumor: encodeMerchantPrivateCipher(privateRumor),
-        }
+        current.organizerStockCheckpoint = sealed
         await database.merchantInventoryProducts.put(current)
         store.assertCurrent()
       }
     )
   }
   store.assertCurrent()
+}
+
+/** Prepare before an inventory transaction; never run WebCrypto in an idle transaction. */
+export async function protectMerchantAcceptanceRecord(
+  store: CommerceInboxStore,
+  original: MerchantInventoryAcceptedOrder
+): Promise<MerchantInventoryAcceptedOrder> {
+  if (original.merchantPubkey !== store.principal)
+    throw new Error("Accepted order belongs to another account.")
+  store.assertCurrent()
+  if (original.evidenceFormat === FORMAT) return original
+  return {
+    ...original,
+    identityBinding: merchantAcceptanceBinding(
+      "identity",
+      original.identityBinding
+    ),
+    termsBinding: merchantAcceptanceBinding("terms", original.termsBinding),
+    ...(await sealMerchantAcceptanceEvidence(
+      store,
+      original.orderId,
+      original.evidence
+    )),
+  }
+}
+
+/** In-memory checkpoint representation; only the encrypted private transport may retain it. */
+export async function merchantAcceptanceForPrivateTransport(
+  accepted: MerchantInventoryAcceptedOrder,
+  store: CommerceInboxStore
+): Promise<MerchantInventoryAcceptedOrder> {
+  store.assertCurrent()
+  if (accepted.merchantPubkey !== store.principal)
+    throw new Error("Accepted order belongs to another account.")
+  if (!accepted.evidenceFormat) return structuredClone(accepted)
+  const evidence = await openMerchantAcceptanceEvidence(accepted, store)
+  const order = JSON.parse(evidence) as {
+    id: string
+    buyerPubkey: string
+    merchantPubkey: string
+  }
+  const identity = JSON.stringify([
+    order.id,
+    order.buyerPubkey,
+    order.merchantPubkey,
+  ])
+  if (
+    order.id !== accepted.orderId ||
+    order.merchantPubkey !== accepted.merchantPubkey ||
+    merchantAcceptanceBinding("identity", identity) !==
+      accepted.identityBinding ||
+    merchantAcceptanceBinding("terms", evidence) !== accepted.termsBinding
+  )
+    throw new Error(
+      "Accepted order attribution bindings require reconciliation."
+    )
+  const result = {
+    ...accepted,
+    identityBinding: identity,
+    termsBinding: evidence,
+    evidence,
+  }
+  delete result.evidenceFormat
+  delete result.evidenceBinding
+  return result
+}
+
+export type StoredMerchantStockCheckpoint = NonNullable<
+  MerchantInventoryProduct["organizerStockCheckpoint"]
+>
+export function merchantStockCheckpointKey(id: string) {
+  return `merchant-stock-checkpoint:${id}`
+}
+
+/** Keep immutable rumor bytes recoverable, without a second plaintext DB copy. */
+export async function sealMerchantStockCheckpoint(
+  store: CommerceInboxStore,
+  checkpoint: StoredMerchantStockCheckpoint
+): Promise<StoredMerchantStockCheckpoint> {
+  store.assertCurrent()
+  if (!checkpoint.rumor) {
+    if (!checkpoint.rumorId || !checkpoint.sealedRumor)
+      throw new Error("Private checkpoint evidence is unavailable.")
+    return checkpoint
+  }
+  const sealedRumor = await store.seal(
+    checkpoint.rumor,
+    merchantStockCheckpointKey(checkpoint.rumor.id)
+  )
+  const result = { ...checkpoint, rumorId: checkpoint.rumor.id, sealedRumor }
+  delete result.rumor
+  return result
 }
