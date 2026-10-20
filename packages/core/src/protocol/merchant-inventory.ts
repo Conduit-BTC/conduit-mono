@@ -17,6 +17,7 @@ import {
   publishMerchantOrganizerStockCheckpoint,
   type MerchantStockCheckpointDelivery,
   type MerchantStockCheckpointPhase,
+  type MerchantStockCheckpointWrappingOperation,
 } from "./event-market-stock-checkpoint"
 import { NostrSignerError, type AccountSigner } from "./nostr-event-signer"
 import { SessionSignerError } from "./session-signer"
@@ -1409,6 +1410,7 @@ export type MerchantStockCheckpointOutcome = {
   productCoordinate: string
   status: "acknowledged" | "pending"
   phase: MerchantStockCheckpointPhase
+  wrappingOperation?: MerchantStockCheckpointWrappingOperation
   failure?: MerchantStockCheckpointFailure
 }
 
@@ -1486,7 +1488,10 @@ export async function resumeMerchantInventoryPublication(input: {
   for (const coordinate of new Set(
     pools.map((pool) => pool.productCoordinate)
   )) {
-    const observation: { phase: MerchantStockCheckpointPhase } = {
+    const observation: {
+      phase: MerchantStockCheckpointPhase
+      wrappingOperation?: MerchantStockCheckpointWrappingOperation
+    } = {
       phase: "snapshot",
     }
     const observe = (
@@ -1499,6 +1504,9 @@ export async function resumeMerchantInventoryPublication(input: {
             productCoordinate: coordinate,
             status,
             phase: observation.phase,
+            ...(status === "pending" && observation.phase === "wrapping"
+              ? { wrappingOperation: observation.wrappingOperation }
+              : {}),
             ...(status === "pending"
               ? { failure: checkpointFailure(error) }
               : {}),
@@ -1518,6 +1526,9 @@ export async function resumeMerchantInventoryPublication(input: {
         ...input.stockCheckpoint,
         onPhase: (phase) => {
           observation.phase = phase
+        },
+        onWrappingOperation: (operation) => {
+          observation.wrappingOperation = operation
         },
       })
       const state = JSON.parse(checkpoint.rumor.content).snapshot

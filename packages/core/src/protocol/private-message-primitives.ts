@@ -508,14 +508,41 @@ export function assertPrivateMessageFitsTransport(
   }
 }
 
+export type PrivateMessageWrappingOperation =
+  | "identity"
+  | "preparation"
+  | "encryption"
+  | "seal_signing"
+  | "seal_validation"
+  | "local_wrap"
+
 /** NIP-59 construction with plain key operations, independent of relay clients. */
 export async function wrapPrivateMessage(
   event: PrivateMessageEvent,
   recipient: { pubkey: string },
   signer: NostrKeySigner,
-  params: { rumorKind?: number } = {}
+  params: {
+    rumorKind?: number
+    /** Fixed transient observation only; never part of the private envelope. */
+    onOperation?: (operation: PrivateMessageWrappingOperation) => void
+  } = {}
 ): Promise<SignedPublicNostrEvent> {
+  // Pass values through synchronously to preserve nested signer evaluation.
+  const observe = <T>(
+    operation: PrivateMessageWrappingOperation,
+    value: T
+  ): T => {
+    try {
+      const observer = params.onOperation
+      if (observer) void Promise.resolve(observer(operation)).catch(() => {})
+    } catch {
+      // Observers cannot replace a signer result or the original failure.
+    }
+    return value
+  }
+  observe("identity", undefined)
   const pubkey = await signer.getPublicKey()
+  observe("preparation", undefined)
   if (event.pubkey && event.pubkey !== pubkey)
     throw new NostrSignerError("authority_changed")
   const rumor: UnsignedNostrEvent = {
@@ -531,13 +558,21 @@ export async function wrapPrivateMessage(
     kind: EVENT_KINDS.SEAL,
     created_at: Math.round(Date.now() / 1000 - Math.random() * 100_000),
     tags: [],
-    content: await signer.encryptNip44(
-      recipient.pubkey,
-      JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+    content: observe(
+      "seal_signing",
+      await signer.encryptNip44(
+        recipient.pubkey,
+        observe(
+          "encryption",
+          JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+        )
+      )
     ),
   })
+  observe("seal_validation", undefined)
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
+  observe("local_wrap", undefined)
   return createWrap(
     { ...seal, tags: seal.tags.map((tag) => [...tag]) },
     recipient.pubkey

@@ -36,6 +36,7 @@ import {
   unwrapPrivateMessageEnvelope,
   wrapPrivateMessage,
   type PrivateMessageRumor,
+  type PrivateMessageWrappingOperation,
 } from "./private-message-primitives"
 import {
   assertProtectedReadAuthorization,
@@ -1058,12 +1059,17 @@ const inventoryTables = (db: ConduitDB) => [
 /** Retain exact self ciphertext and obtain an inbox ACK before public projection. */
 export type MerchantStockCheckpointPhase =
   "snapshot" | "wrapping" | "delivery_ack" | "freshness"
+export type MerchantStockCheckpointWrappingOperation =
+  PrivateMessageWrappingOperation | "checkpoint_retention"
 
 type PublishCheckpointInput = CheckpointSession & {
   productCoordinate: string
   delivery?: MerchantStockCheckpointDelivery
   /** Transient observation only; never part of a checkpoint or its authority. */
   onPhase?: (phase: MerchantStockCheckpointPhase) => void
+  onWrappingOperation?: (
+    operation: MerchantStockCheckpointWrappingOperation
+  ) => void
 }
 
 function observeCheckpointPhase(
@@ -1072,6 +1078,16 @@ function observeCheckpointPhase(
 ): void {
   try {
     void Promise.resolve(input.onPhase?.(phase)).catch(() => {})
+  } catch {
+    // An observer cannot change the original checkpoint result.
+  }
+}
+function observeCheckpointWrappingOperation(
+  input: PublishCheckpointInput,
+  operation: MerchantStockCheckpointWrappingOperation
+): void {
+  try {
+    void Promise.resolve(input.onWrappingOperation?.(operation)).catch(() => {})
   } catch {
     // An observer cannot change the original checkpoint result.
   }
@@ -1191,8 +1207,13 @@ async function publishCheckpoint(
     const selfEnvelope = await wrapPrivateMessage(
       opened.rumor,
       { pubkey: input.authenticatedPubkey },
-      input.signer
+      input.signer,
+      {
+        onOperation: (operation) =>
+          observeCheckpointWrappingOperation(input, operation),
+      }
     )
+    observeCheckpointWrappingOperation(input, "checkpoint_retention")
     authority.check()
     saved = await input.db.transaction(
       "rw",

@@ -3419,7 +3419,12 @@ it("reports only the typed signer failure code from the actual checkpoint wrappi
     order = f.order(),
     entries = await f.accept(order)
   await f.importOrder(order, entries)
-  const observed: { status: string; phase: string; failure?: unknown }[] = []
+  const observed: {
+    status: string
+    phase: string
+    wrappingOperation?: string
+    failure?: unknown
+  }[] = []
   const encryption = spyOn(
     f.merchantSigner,
     "encryptNip44"
@@ -3437,6 +3442,7 @@ it("reports only the typed signer failure code from the actual checkpoint wrappi
         observed.push({
           status: outcome.status,
           phase: outcome.phase,
+          wrappingOperation: outcome.wrappingOperation,
           failure: outcome.failure,
         })
       },
@@ -3448,6 +3454,7 @@ it("reports only the typed signer failure code from the actual checkpoint wrappi
       {
         status: "pending",
         phase: "wrapping",
+        wrappingOperation: "encryption",
         failure: { source: "signer", code: "unavailable" },
       },
     ])
@@ -3455,6 +3462,109 @@ it("reports only the typed signer failure code from the actual checkpoint wrappi
     encryption.mockRestore()
   }
 })
+
+it("observes checkpoint retention before the unchanged session guard and any delivery", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  await resumeMerchantInventoryPublication({
+    db: f.db,
+    merchantPubkey: f.merchant,
+    sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+    publish: async () => {
+      throw new Error("No write before checkpoint")
+    },
+  })
+  const state: { operation?: string; deliveries: number } = { deliveries: 0 }
+  const table = f.db.merchantInventoryProducts
+  await fails(
+    publishMerchantOrganizerStockCheckpoint({
+      db: f.db,
+      signer: f.merchantSigner,
+      authenticatedPubkey: f.merchant,
+      productCoordinate: f.products[0]!.coordinate,
+      shouldContinue: () => state.operation !== "checkpoint_retention",
+      onWrappingOperation: (operation) => {
+        state.operation = operation
+      },
+      delivery: {
+        resolveInboxRelays: async () => {
+          state.deliveries++
+          throw new Error("No delivery before saved envelope")
+        },
+      },
+    }),
+    "Merchant stock checkpoint session changed"
+  )
+  expect(state.operation).toBe("checkpoint_retention")
+  expect(state.deliveries).toBe(0)
+  const saved = (await table.get(f.products[0]!.coordinate))!
+    .organizerStockCheckpoint!
+  expect(saved.selfEnvelope).toBeUndefined()
+  expect(saved.acknowledgedRelayUrls).toHaveLength(0)
+})
+
+for (const observer of ["throw", "reject"] as const) {
+  it(`does not let a ${observer} wrapping observer change checkpoint ACK or retained bytes`, async () => {
+    const f = await fixture(),
+      order = f.order(),
+      entries = await f.accept(order)
+    await f.importOrder(order, entries)
+    await resumeMerchantInventoryPublication({
+      db: f.db,
+      merchantPubkey: f.merchant,
+      sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+      publish: async () => {
+        throw new Error("No write before checkpoint")
+      },
+    })
+    const state = { deliveries: 0 }
+    const operations: string[] = []
+    const checkpoint = await publishMerchantOrganizerStockCheckpoint({
+      db: f.db,
+      signer: f.merchantSigner,
+      authenticatedPubkey: f.merchant,
+      productCoordinate: f.products[0]!.coordinate,
+      shouldContinue: () => true,
+      onWrappingOperation: (operation) => {
+        operations.push(operation)
+        if (observer === "reject")
+          return Promise.reject(new Error("controlled observer rejection"))
+        throw new Error("controlled observer failure")
+      },
+      delivery: {
+        deliveryStore: new CommerceInboxStore(
+          getProtectedReadAuthorization(f.merchant)!,
+          f.db
+        ),
+        resolveInboxRelays: async () => ["wss://relay.conduit.market"],
+        publishFn: async () => {
+          state.deliveries++
+          return ack("wss://relay.conduit.market")
+        },
+      },
+    })
+    expect(operations).toEqual([
+      "identity",
+      "preparation",
+      "encryption",
+      "seal_signing",
+      "seal_validation",
+      "local_wrap",
+      "checkpoint_retention",
+    ])
+    expect(state.deliveries).toBe(1)
+    expect(checkpoint.acknowledgedRelayUrls).toHaveLength(1)
+    const saved = (await f.db.merchantInventoryProducts.get(
+      f.products[0]!.coordinate
+    ))!.organizerStockCheckpoint!
+    expect(
+      JSON.stringify(saved.selfEnvelope) ===
+        JSON.stringify(checkpoint.selfEnvelope)
+    ).toBe(true)
+  })
+}
 
 for (const scenario of [
   "session",

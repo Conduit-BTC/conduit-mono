@@ -127,6 +127,32 @@ export async function publishMerchantInventoryProduct(
   return hasCommonAcknowledgedRelay(delivered)
 }
 
+function checkpointWrappingNotice(
+  outcome: MerchantStockCheckpointOutcome
+): string {
+  const copy = {
+    identity: "identity check",
+    preparation: "message preparation",
+    encryption: "encryption",
+    seal_signing: "seal signing",
+    seal_validation: "seal validation",
+    local_wrap: "local gift wrap",
+    checkpoint_retention: "checkpoint retention",
+  } as const
+  try {
+    const operation = outcome.wrappingOperation
+    if (
+      outcome.phase === "wrapping" &&
+      typeof operation === "string" &&
+      Object.hasOwn(copy, operation)
+    )
+      return `Wrapping operation: ${copy[operation]}.`
+  } catch {
+    // A diagnostic cannot replace the stock action's existing notice.
+  }
+  return ""
+}
+
 function checkpointFailureNotice(
   failure?: MerchantStockCheckpointFailure
 ): string {
@@ -188,6 +214,7 @@ export function merchantStockCheckpointNotice(
         .join(" ") || "Stock recovery checkpoint status is not confirmed."
     return [
       phaseNotice,
+      ...new Set(pending.map(checkpointWrappingNotice).filter(Boolean)),
       ...new Set(
         pending
           .map((outcome) => checkpointFailureNotice(outcome.failure))

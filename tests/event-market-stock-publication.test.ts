@@ -226,6 +226,91 @@ it("appends only fixed typed failure copy to the current Event checkpoint notice
   )
 })
 
+it("identifies only the fixed operation of the current failed checkpoint wrap", () => {
+  const outcome: MerchantStockCheckpointOutcome = {
+    productCoordinate: "current-product",
+    status: "pending",
+    phase: "wrapping",
+    wrappingOperation: "encryption",
+    failure: { source: "signer", code: "unavailable" },
+  }
+  expect(merchantStockCheckpointNotice(["current-product"], [outcome])).toBe(
+    "Stock recovery checkpoint pending: private message wrapping. Wrapping operation: encryption. Signer report: unavailable."
+  )
+  const copy = {
+    identity: "identity check",
+    preparation: "message preparation",
+    encryption: "encryption",
+    seal_signing: "seal signing",
+    seal_validation: "seal validation",
+    local_wrap: "local gift wrap",
+    checkpoint_retention: "checkpoint retention",
+  } as const
+  for (const [operation, label] of Object.entries(copy)) {
+    expect(
+      merchantStockCheckpointNotice(
+        ["current-product"],
+        [
+          {
+            ...outcome,
+            wrappingOperation:
+              operation as MerchantStockCheckpointOutcome["wrappingOperation"],
+          },
+        ]
+      )
+    ).toBe(
+      `Stock recovery checkpoint pending: private message wrapping. Wrapping operation: ${label}. Signer report: unavailable.`
+    )
+  }
+  for (const wrappingOperation of [
+    "untrusted-dynamic-data",
+    "toString",
+  ] as const) {
+    expect(
+      merchantStockCheckpointNotice(
+        ["current-product"],
+        [
+          {
+            ...outcome,
+            wrappingOperation: wrappingOperation as never,
+          },
+        ]
+      )
+    ).toBe(
+      "Stock recovery checkpoint pending: private message wrapping. Signer report: unavailable."
+    )
+  }
+  const inaccessible = Object.defineProperty(
+    { ...outcome },
+    "wrappingOperation",
+    {
+      get() {
+        throw new Error("controlled operation getter failure")
+      },
+    }
+  )
+  expect(
+    merchantStockCheckpointNotice(["current-product"], [inaccessible])
+  ).toBe(
+    "Stock recovery checkpoint pending: private message wrapping. Signer report: unavailable."
+  )
+  expect(merchantStockCheckpointNotice(["other-product"], [outcome])).toBe("")
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [{ ...outcome, status: "acknowledged" }]
+    )
+  ).toBe("This Event's stock recovery checkpoints were acknowledged.")
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [{ ...outcome, phase: "delivery_ack" }]
+    )
+  ).toBe(
+    "Stock recovery checkpoint pending: inbox acknowledgement. Signer report: unavailable."
+  )
+})
+
 it("does not render unknown codes, outside Event failures or stale acknowledged failures", () => {
   const current: MerchantStockCheckpointOutcome = {
     productCoordinate: "current-product",
