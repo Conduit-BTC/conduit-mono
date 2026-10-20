@@ -941,7 +941,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/orders?order=${otherOrderId}&focus=payment`)
     await expect(
       page.getByRole("link", { name: "View full order details", exact: true })
-    ).toHaveAttribute("href", `/orders?order=${otherOrderId}`)
+    ).toHaveAttribute(
+      "href",
+      `/orders?order=${otherOrderId}&counterparty=${TEST_MERCHANT_PUBKEY}`
+    )
     await expect(
       page.getByRole("button", { name: "Try payment again" })
     ).toBeVisible()

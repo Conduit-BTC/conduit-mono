@@ -205,6 +205,20 @@ const shippingUpdate = {
 } as ParsedOrderMessage
 
 describe("merchant order phase", () => {
+  it("waits for an explicitly requested order instead of selecting another hydrated order", () => {
+    const other = sortableConversation({ id: "other", latestAt: 20 })
+    const requested = sortableConversation({ id: "requested", latestAt: 10 })
+    expect(
+      getMerchantOrderSelection([other], null, requested.orderId)
+    ).toBeNull()
+    expect(
+      getMerchantOrderSelection([other], other.id, requested.orderId)
+    ).toBeNull()
+    expect(
+      getMerchantOrderSelection([other, requested], other.id, requested.orderId)
+    ).toBe(requested.id)
+  })
+
   it("preserves the selected order when incoming orders or sort changes reorder the list", () => {
     const selected = sortableConversation({ id: "selected", latestAt: 10 })
     const incoming = sortableConversation({ id: "incoming", latestAt: 20 })

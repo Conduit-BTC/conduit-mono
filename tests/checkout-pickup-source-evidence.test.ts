@@ -34,9 +34,22 @@ it("carries the exact current signed pickup snapshot through submit and quote fr
   expect(fulfillment.calendar.signedEvent).toEqual(publicEvents[1])
   expect(fulfillment.grant.signedEvidence.tip).toEqual(publicEvents[2])
   expect(fulfillment.product.signedEvent).toEqual(publicEvents[3])
-  // Current Event Market authority is embedded in the immutable fulfillment,
-  // not the retired generic pickup graph side channel.
-  expect(authorization.pickupSourceEvents).toBeUndefined()
+  // The router transports the exact accepted public graph, not mutable relay
+  // annotations or a later lookup of these addressable coordinates.
+  const expectedSources = [...publicEvents].sort((left, right) =>
+    left.id.localeCompare(right.id)
+  )
+  expect(authorization.pickupSourceEvents).toEqual(expectedSources)
+  expect(Object.isFrozen(authorization.pickupSourceEvents)).toBe(true)
+  for (const event of authorization.pickupSourceEvents!) {
+    expect(Object.keys(event).sort().join(",")).toBe(
+      "content,created_at,id,kind,pubkey,sig,tags"
+    )
+    expect(Object.isFrozen(event)).toBe(true)
+    expect(Object.isFrozen(event.tags)).toBe(true)
+    expect(event.tags.every((tag) => Object.isFrozen(tag))).toBe(true)
+    expect(event).not.toBe(source.events.find((live) => live.id === event.id))
+  }
   const quote = buildCheckoutSparkQuoteAuthority({
     authorization,
     rateInput: null,
@@ -51,12 +64,22 @@ it("carries the exact current signed pickup snapshot through submit and quote fr
   })
   expect(commerce.lines[0]?.pickup).toBeUndefined()
   expect(commerce.lines[0]?.shippingOption).toBeUndefined()
-  expect(quote.pickupSourceEvents).toBeUndefined()
+  expect(quote.pickupSourceEvents).toEqual(expectedSources)
+  expect(quote.pickupSourceEvents).not.toBe(authorization.pickupSourceEvents)
+  expect(Object.isFrozen(quote.pickupSourceEvents)).toBe(true)
+  expect(quote.eventMarket?.marketEventId).toBe(fulfillment.market.eventId)
+  expect(quote.eventMarket?.occurrenceEventId).toBe(
+    fulfillment.calendar.eventId
+  )
+  expect(quote.eventMarket?.lines[0]?.assignmentEventId).toBe(
+    fulfillment.occurrenceAssignment?.eventId
+  )
 
   const frozen = JSON.stringify(quote)
   fulfillment.market.signedEvent.tags[0]![1] = "changed-authorized-source"
   source.events[1]!.tags[0]![1] = "changed-live-source"
   expect(JSON.stringify(quote)).toBe(frozen)
+  expect(quote.pickupSourceEvents).toEqual(expectedSources)
   const quoted = quote.pricing.items[0]!.fulfillment
   if (quoted?.type !== "event_market_pickup")
     throw new Error("Missing frozen snapshot")
@@ -94,6 +117,10 @@ it("retains only canonical signed public fields from annotated relay source obje
   })
   expect(JSON.stringify(quote)).not.toContain("private-fixture")
   expect(JSON.stringify(quote)).not.toContain("Private unsigned annotation")
+  for (const event of quote.pickupSourceEvents!)
+    expect(Object.keys(event).sort().join(",")).toBe(
+      "content,created_at,id,kind,pubkey,sig,tags"
+    )
 })
 
 it.each([30409, 31923, 3841, 30402])(

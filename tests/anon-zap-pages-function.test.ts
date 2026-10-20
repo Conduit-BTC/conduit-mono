@@ -37,6 +37,7 @@ import {
   onRequestOptions as signAnonZapOptions,
   onRequestPost as signAnonZap,
 } from "../apps/market/functions/api/anon-zap-sign"
+import { onRequestPost as signProjectTip } from "../apps/market/functions/api/project-tip-sign"
 import { onRequestOptions as rootAuthorizeAnonZapOptions } from "../functions/api/anon-zap-authorize"
 import { onRequestGet as getRootAnonZapConfig } from "../functions/api/anon-zap-config"
 import { onRequestOptions as rootSignAnonZapOptions } from "../functions/api/anon-zap-sign"
@@ -1625,5 +1626,159 @@ describe("Anon zap Pages proxy", () => {
     await expect(response.json()).resolves.toEqual({
       error: "Anon zap signer is temporarily unavailable.",
     })
+  })
+})
+
+describe("anonymous Pages request byte bounds", () => {
+  const limit = 16_384
+  const encoder = new TextEncoder()
+
+  for (const [name, handler, status] of [
+    ["authorization", authorizeAnonZap, 403],
+    ["signing", signAnonZap, 403],
+    ["project tip", signProjectTip, 400],
+  ] as const) {
+    for (const length of [undefined, "1", "invalid"]) {
+      it(`cancels oversized ${name} streams with content-length ${length ?? "absent"}`, async () => {
+        let pulled = 0
+        let cancelled = false
+        let downstreamCalls = 0
+        const stream = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            pulled += 1
+            if (pulled > 1_024) controller.close()
+            else controller.enqueue(new Uint8Array(1_024).fill(32))
+          },
+          cancel() {
+            cancelled = true
+          },
+        })
+        const headers = new Headers({
+          origin: "https://shop.conduit.market",
+          "content-type": "application/json",
+        })
+        if (length !== undefined) headers.set("content-length", length)
+        const request = new Request("https://shop.conduit.market/api/test", {
+          method: "POST",
+          headers,
+          body: stream,
+        })
+        const response = await handler({
+          request,
+          env: env({
+            ANON_ZAP_RATE_LIMIT_SERVICE: {
+              fetch: async () => {
+                downstreamCalls += 1
+                return new Response(null, { status: 204 })
+              },
+            },
+            ANON_ZAP_SIGNER_SERVICE: {
+              fetch: async () => {
+                downstreamCalls += 1
+                throw new Error("Unexpected signer call")
+              },
+            },
+          }),
+        })
+        expect(response.status).toBe(status)
+        expect(await response.json()).toEqual({
+          error: "Request body is too large.",
+        })
+        expect(cancelled).toBe(true)
+        expect(pulled).toBeLessThanOrEqual(limit / 1_024 + 2)
+        expect(downstreamCalls).toBe(0)
+        expect(stream.locked).toBe(false)
+      })
+    }
+  }
+
+  for (const size of [limit - 1, limit]) {
+    it(`accepts ${size} bytes with a multibyte character split across chunks`, async () => {
+      const signerCalls: SignerCall[] = []
+      const dependencies = createDependencies({ signerCalls })
+      const authorization = await issueAuthorization(dependencies)
+      const json = JSON.stringify({
+        authorizationToken: authorization.authorizationToken,
+        zapRequest: authorization.draft,
+        extra: "☃",
+      })
+      const bytes = encoder.encode(
+        json + " ".repeat(size - encoder.encode(json).length)
+      )
+      const split = bytes.indexOf(0xe2) + 1
+      const chunks = [
+        bytes.slice(0, split),
+        bytes.slice(split, split + 1),
+        bytes.slice(split + 1),
+      ]
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks.shift()
+          if (chunk) controller.enqueue(chunk)
+          else controller.close()
+        },
+      })
+      const response = await signAuthorizedAnonZapRequest(
+        new Request("https://shop.conduit.market/api/anon-zap-sign", {
+          method: "POST",
+          body,
+          headers: { origin: "https://shop.conduit.market" },
+        }),
+        env(),
+        dependencies
+      )
+      expect(response.status).toBe(200)
+      expect(signerCalls).toHaveLength(1)
+      expect(body.locked).toBe(false)
+    })
+  }
+
+  it("rejects one excess byte and counts UTF-8 bytes instead of characters", async () => {
+    for (const text of [
+      " ".repeat(limit + 1),
+      JSON.stringify({ extra: "☃".repeat(6_000) }),
+    ]) {
+      let cancelled = false
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(text))
+        },
+        cancel() {
+          cancelled = true
+        },
+      })
+      const response = await signAnonZap({
+        request: new Request("https://shop.conduit.market/api/anon-zap-sign", {
+          method: "POST",
+          body,
+          headers: { origin: "https://shop.conduit.market" },
+        }),
+        env: env(),
+      })
+      expect(await response.json()).toEqual({
+        error: "Request body is too large.",
+      })
+      expect(cancelled).toBe(true)
+    }
+  })
+
+  it("releases a failed stream without calling the signer", async () => {
+    const signerCalls: SignerCall[] = []
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("Synthetic read failure"))
+      },
+    })
+    const response = await signAuthorizedAnonZapRequest(
+      new Request("https://shop.conduit.market/api/anon-zap-sign", {
+        method: "POST",
+        body,
+      }),
+      env(),
+      createDependencies({ signerCalls })
+    )
+    expect(response.status).toBe(403)
+    expect(signerCalls).toHaveLength(0)
+    expect(body.locked).toBe(false)
   })
 })

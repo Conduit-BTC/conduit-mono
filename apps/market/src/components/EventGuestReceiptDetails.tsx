@@ -48,10 +48,10 @@ export function EventGuestReceiptDetails({
         autoComplete="off"
       />
       <p className="text-sm text-[var(--text-secondary)]">
-        The merchant cannot contact you later. Keep this private receipt for
-        support, refunds or rebates; arrange any payment back with the merchant
-        in person. It is not proof of payment or a guaranteed refund. Anyone
-        with the file can present it. No reply inbox is created.
+        Keep your private receipt for pickup and support. Anyone with the file
+        can present it, so keep it private. For a lost receipt or a refund,
+        speak with the seller or organizer; the receipt is not proof of payment
+        or a guaranteed refund. No contact details or reply inbox are shared.
       </p>
       <Button type="button" variant="outline" onClick={save}>
         Save event receipt
@@ -64,7 +64,7 @@ export function EventGuestReceiptDetails({
               onDraftChange({ ...current, saved: checked === true })
             }
           />
-          I saved my receipt and understand the trade-off
+          I saved my private receipt
         </label>
       ) : null}
     </div>

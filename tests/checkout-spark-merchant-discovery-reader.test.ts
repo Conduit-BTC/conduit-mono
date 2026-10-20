@@ -4,21 +4,31 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
+  buildCheckoutSparkMerchantProgressRumor,
   buildCheckoutSparkRecoveryRumor,
   calculateCheckoutSparkSettledGrossFundingSats,
   calculateConduitCheckoutFeeSats,
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
+  config,
   createCheckoutSparkSettledReconciliation,
   createCheckoutSparkSettledRecoveryPayload,
+  createCheckoutSparkSettledRecoveryProgressPayload,
+  createCheckoutSparkMerchantProgress,
   createMerchantCheckoutSparkRecoveryDiscovery,
   deriveCheckoutSparkSignedCommerceObligations,
+  deriveCheckoutSparkSettledTransferId,
   DexieCheckoutSparkSettledRepository,
   freezeCheckoutSparkSettledPlan,
   orderSchema,
+  prepareCheckoutSparkSettledLeg,
+  recordCheckoutSparkSettledCredit,
+  withMerchantCheckoutSparkRecovery,
   wrapPrivateMessage,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
 import { ConduitDB } from "@conduit/core/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
 import {
   __resetProtectedReadSigner,
@@ -70,7 +80,8 @@ class Socket {
 
   constructor(
     readonly url: string,
-    private readonly events: readonly SignedPublicNostrEvent[]
+    private readonly events: readonly SignedPublicNostrEvent[],
+    private readonly unavailable = false
   ) {
     queueMicrotask(() => {
       if (this.readyState === 3) return
@@ -83,7 +94,29 @@ class Socket {
     const frame = JSON.parse(payload) as unknown[]
     if (frame[0] !== "REQ") return
     queueMicrotask(() => {
-      for (const event of this.events)
+      if (this.unavailable) {
+        this.onmessage?.({
+          data: JSON.stringify([
+            "CLOSED",
+            frame[1],
+            "error: controlled relay unavailable",
+          ]),
+        } as MessageEvent<string>)
+        return
+      }
+      const filters = frame.slice(2) as Array<{
+        ids?: string[]
+        kinds?: number[]
+      }>
+      const events = this.events.filter((event) =>
+        filters.some(
+          (filter) =>
+            (!filter.ids ||
+              filter.ids.some((prefix) => event.id.startsWith(prefix))) &&
+            (!filter.kinds || filter.kinds.includes(event.kind))
+        )
+      )
+      for (const event of events)
         this.onmessage?.({
           data: JSON.stringify(["EVENT", frame[1], event]),
         } as MessageEvent<string>)
@@ -98,8 +131,16 @@ class Socket {
   }
 }
 
-async function fixture() {
-  const createdAt = Math.floor(Date.now() / 1_000) * 1_000
+async function fixture(
+  options: {
+    recoveryRelayUrl?: string
+    unavailableRelayUrls?: readonly string[]
+    progress?: "buyer" | "merchant"
+    retainedInbox?: boolean
+  } = {}
+) {
+  const createdAt =
+    Math.floor(Date.now() / 1_000) * 1_000 - (options.progress ? 180_000 : 0)
   const source = await createCheckoutSparkGuestSupplierFixture(createdAt)
   const buyer = plainTestSigner(NDKPrivateKeySigner.generate())
   const quote = buildCheckoutSparkCommerceEvidence(source.quoteAuthority)
@@ -187,6 +228,69 @@ async function fixture() {
     new NDKUser({ pubkey: source.merchantPubkey }),
     buyer
   )
+  let latestState = state
+  const progressWraps: SignedPublicNostrEvent[] = []
+  if (options.progress) {
+    const credited = recordCheckoutSparkSettledCredit(state, {
+      requestId: plan.funding.requestId,
+      paymentHash: plan.funding.paymentHash,
+      transferId: "real-reader-credit",
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+      grossSats: gross,
+      creditedSats: gross - 2,
+      observedAt: createdAt + 2_000,
+    })
+    latestState = credited
+    progressWraps.push(
+      (await wrapPrivateMessage(
+        buildCheckoutSparkRecoveryRumor(
+          createCheckoutSparkSettledRecoveryProgressPayload({
+            initialHandoffId: payload.handoffId,
+            senderPubkey: buyer.pubkey,
+            state: credited,
+            preparedAt: createdAt + 3_000,
+          })
+        ),
+        new NDKUser({ pubkey: source.merchantPubkey }),
+        buyer
+      )) as SignedPublicNostrEvent
+    )
+    if (options.progress === "merchant") {
+      const leg = credited.legs[0]!
+      const invoiceAmountSats = leg.allocationSats! - 1
+      if (invoiceAmountSats <= 0)
+        throw new Error("Fixture payout allocation unavailable")
+      latestState = prepareCheckoutSparkSettledLeg(credited, {
+        legId: leg.legId,
+        transferId: deriveCheckoutSparkSettledTransferId(plan, leg.legId),
+        paymentRequest: makeSignedBolt11Fixture({
+          hrp: `lnbc${invoiceAmountSats * 10}n`,
+          createdAt: plan.takeoverAt / 1_000,
+          fields: [
+            bolt11PaymentHashField(new Uint8Array(32).fill(8)),
+            bolt11PaymentSecretField(),
+            bolt11PlainDescriptionField(),
+          ],
+        }),
+        paymentHash: "08".repeat(32),
+        invoiceAmountSats,
+        maxFeeSats: 1,
+        preparedAt: plan.takeoverAt,
+      })
+      progressWraps.push(
+        (await wrapPrivateMessage(
+          buildCheckoutSparkMerchantProgressRumor(
+            createCheckoutSparkMerchantProgress({
+              initialHandoffId: payload.handoffId,
+              state: latestState,
+            })
+          ),
+          new NDKUser({ pubkey: source.merchantPubkey }),
+          plainTestSigner(source.merchantSigner)
+        )) as SignedPublicNostrEvent
+      )
+    }
+  }
   const order = orderSchema.parse({
     id: plan.orderId,
     buyerPubkey: buyer.pubkey,
@@ -226,7 +330,7 @@ async function fixture() {
   )
   const declaration = new NDKEvent(undefined, {
     kind: 10_050,
-    created_at: createdAt / 1_000,
+    created_at: createdAt / 1_000 - (options.retainedInbox ? 1 : 0),
     tags: [["relay", INBOX]],
     content: "",
   })
@@ -247,6 +351,34 @@ async function fixture() {
   })
   expect(resolved.state).toBe("declared")
   expect(resolved.stale).toBe(false)
+  if (options.retainedInbox) {
+    const signedEmpty = new NDKEvent(undefined, {
+      kind: 10_050,
+      created_at: createdAt / 1_000,
+      tags: [],
+      content: "",
+    })
+    await signedEmpty.sign(source.merchantSigner)
+    const retained = await resolveInboxDeclaration(source.merchantPubkey, {
+      evidenceRepository,
+      freshnessMs: 0,
+      relayUrls: [sharedInboxDiscoveryRelayUrls()[0]!],
+      fetchEventsWithDiagnostics: (filter, options) =>
+        fetchPublicEventsWithDiagnostics(filter, {
+          ...options,
+          reuseRelayConnections: false,
+          socketScope: {
+            createWebSocket: (url) =>
+              new Socket(url, [
+                signedEmpty.rawEvent() as SignedPublicNostrEvent,
+              ]),
+          },
+        }),
+    })
+    expect(retained.state).toBe("signed_empty")
+    expect(retained.relayUrls.length).toBe(0)
+    expect(retained.retainedReadRelayUrls?.includes(INBOX)).toBe(true)
+  }
   const signer = setTestAccountSigner(source.merchantSigner)
   installProtectedReadSigner(signer, source.merchantPubkey, () => true)
   const sockets: Socket[] = []
@@ -254,7 +386,17 @@ async function fixture() {
     configurable: true,
     value: class extends Socket {
       constructor(url: string) {
-        super(url, [recovery, orderWrap] as SignedPublicNostrEvent[])
+        super(
+          url,
+          !options.recoveryRelayUrl || url === options.recoveryRelayUrl
+            ? ([
+                recovery,
+                ...progressWraps,
+                orderWrap,
+              ] as SignedPublicNostrEvent[])
+            : [],
+          options.unavailableRelayUrls?.includes(url) ?? false
+        )
         sockets.push(this)
       }
     },
@@ -264,39 +406,91 @@ async function fixture() {
     IDBKeyRange,
   })
   const repository = new DexieCheckoutSparkSettledRepository(database)
+  const authorization = getProtectedReadAuthorization(source.merchantPubkey)!
+  const inbox = new CommerceInbox(
+    authorization,
+    signer,
+    new CommerceInboxStore(authorization, database)
+  )
   const localStateRepository =
     createInMemoryAccountNetworkLocalStateRepository()
   __setCommerceTestOverrides({
     getAccountSigner: () => signer,
     checkoutSparkSettledRepository: repository,
+    getCommerceInbox: (principal) => {
+      if (principal !== source.merchantPubkey)
+        throw new Error("Fixture inbox principal changed")
+      return inbox
+    },
     accountNetworkLocalStateRepository: localStateRepository,
   })
+  const blockRelay = async (relayUrl: string) => {
+    const previous =
+      (await localStateRepository.get(source.merchantPubkey)) ??
+      emptyAccountNetworkLocalState(source.merchantPubkey)
+    await localStateRepository.replace(
+      source.merchantPubkey,
+      applyAccountNetworkRelayExclusion(previous, {
+        relayUrl,
+        relayListFrontier: { eventId: null, createdAt: null },
+        inboxDeclarationFrontier: {
+          eventId: declaration.id,
+          createdAt: declaration.created_at,
+        },
+        committedAt: Date.now(),
+      })
+    )
+  }
   return {
     plan,
-    state,
+    state: latestState,
     source,
     sockets,
     database,
     repository,
     evidenceRepository,
-    blockInbox: async () => {
-      await localStateRepository.replace(
-        source.merchantPubkey,
-        applyAccountNetworkRelayExclusion(
-          emptyAccountNetworkLocalState(source.merchantPubkey),
-          {
-            relayUrl: INBOX,
-            relayListFrontier: { eventId: null, createdAt: null },
-            inboxDeclarationFrontier: {
-              eventId: declaration.id,
-              createdAt: declaration.created_at,
-            },
-            committedAt: Date.now(),
-          }
-        )
-      )
+    blockInbox: () => blockRelay(INBOX),
+    blockRelay,
+    cleanup: async () => {
+      inbox.stop()
+      await database.delete()
     },
   }
+}
+
+async function discoveryWithWitness(test: Awaited<ReturnType<typeof fixture>>) {
+  return createMerchantCheckoutSparkRecoveryDiscovery(
+    test.plan.merchantPubkey,
+    {
+      onOrderRecovery: async ({
+        state,
+        witness,
+        sourceEvents,
+        assertCurrent,
+      }) => {
+        await test.repository.importMerchantOrderRecovery(
+          state,
+          witness,
+          assertCurrent
+        )
+        await test.repository.recordMerchantPlanSources(
+          state.plan,
+          sourceEvents,
+          assertCurrent
+        )
+      },
+    }
+  )
+}
+
+async function finishScan(
+  discovery: Awaited<ReturnType<typeof discoveryWithWitness>>
+) {
+  let found = await discovery.nextPage()
+  for (let page = 0; found.history.hasMore && page < 16; page++)
+    found = await discovery.nextPage()
+  expect(found.history.hasMore).toBe(false)
+  return found
 }
 
 afterEach(() => {
@@ -310,6 +504,202 @@ afterEach(() => {
 })
 
 describe("cold Merchant discovery through the real protected reader", () => {
+  for (const progress of ["buyer", "merchant"] as const)
+    it(`reopens exact initial and ${progress} progress through an approved compatibility inbox`, async () => {
+      const compatibilityInbox = config.commerceDmFallbackRelayUrls[0]!
+      const test = await fixture({
+        recoveryRelayUrl: compatibilityInbox,
+        unavailableRelayUrls: [INBOX],
+        progress,
+      })
+      const discovery = await discoveryWithWitness(test)
+      try {
+        const found = await finishScan(discovery)
+        expect(found.candidates.length).toBe(1)
+        expect(found.candidates[0]?.schemaVersion).toBe(3)
+        expect(found.candidates[0]?.merchantProgress !== undefined).toBe(
+          progress === "merchant"
+        )
+        let consumedBuyer = false
+        let consumedMerchant = false
+        const handoff = await withMerchantCheckoutSparkRecovery(
+          test.plan.merchantPubkey,
+          found.candidates[0]!,
+          {
+            consume: async () => {
+              throw new Error("Progress requires its exact private callback")
+            },
+            consumeSettled: async (initial, latest, assertCurrent) => {
+              assertCurrent()
+              consumedBuyer =
+                initial.plan.planDigest === test.plan.planDigest &&
+                latest.state.plan.planDigest === test.plan.planDigest
+            },
+            consumeMerchantProgress: async (
+              initial,
+              latest,
+              actor,
+              assertCurrent
+            ) => {
+              assertCurrent()
+              consumedMerchant =
+                initial.plan.planDigest === test.plan.planDigest &&
+                latest.state.plan.planDigest === test.plan.planDigest &&
+                JSON.stringify(actor.state) === JSON.stringify(test.state)
+            },
+          }
+        )
+        expect(handoff.status).toBe("consumed")
+        expect(handoff.coverage).toBe("partial")
+        expect(consumedBuyer).toBe(progress === "buyer")
+        expect(consumedMerchant).toBe(progress === "merchant")
+      } finally {
+        discovery.dispose()
+        await test.cleanup()
+      }
+    })
+
+  it("opens exact declared recovery when an approved compatibility sibling was excluded", async () => {
+    const compatibilityInbox = config.commerceDmFallbackRelayUrls[0]!
+    const test = await fixture()
+    await test.blockRelay(compatibilityInbox)
+    const discovery = await discoveryWithWitness(test)
+    try {
+      const found = await finishScan(discovery)
+      expect(found.candidates.length).toBe(1)
+      let consumed = false
+      const handoff = await withMerchantCheckoutSparkRecovery(
+        test.plan.merchantPubkey,
+        found.candidates[0]!,
+        {
+          consume: async (payload, assertCurrent) => {
+            assertCurrent()
+            consumed = payload.plan.planDigest === test.plan.planDigest
+          },
+        }
+      )
+      expect(handoff.status).toBe("consumed")
+      expect(consumed).toBe(true)
+      expect(
+        test.sockets.some((socket) => socket.url === compatibilityInbox)
+      ).toBe(false)
+    } finally {
+      discovery.dispose()
+      await test.cleanup()
+    }
+  })
+
+  it("opens an exact retained inbox recovery without turning the signed-empty frontier into delivery authority", async () => {
+    const test = await fixture({
+      recoveryRelayUrl: INBOX,
+      retainedInbox: true,
+    })
+    const discovery = await discoveryWithWitness(test)
+    try {
+      const found = await finishScan(discovery)
+      expect(found.candidates.length).toBe(1)
+      let consumed = false
+      const handoff = await withMerchantCheckoutSparkRecovery(
+        test.plan.merchantPubkey,
+        found.candidates[0]!,
+        {
+          consume: async (payload, assertCurrent) => {
+            assertCurrent()
+            consumed = payload.plan.planDigest === test.plan.planDigest
+          },
+        }
+      )
+      expect(handoff.status).toBe("consumed")
+      expect(consumed).toBe(true)
+      expect(test.sockets.some((socket) => socket.url === INBOX)).toBe(true)
+    } finally {
+      discovery.dispose()
+      await test.cleanup()
+    }
+  })
+
+  it("admits authenticated recovery and original order from an approved compatibility inbox while the declared inbox is unavailable", async () => {
+    const compatibilityInbox = config.commerceDmFallbackRelayUrls[0]!
+    expect(typeof compatibilityInbox).toBe("string")
+    const test = await fixture({
+      recoveryRelayUrl: compatibilityInbox,
+      unavailableRelayUrls: [INBOX],
+    })
+    let imports = 0
+    const discovery = await createMerchantCheckoutSparkRecoveryDiscovery(
+      test.plan.merchantPubkey,
+      {
+        onOrderRecovery: async ({
+          state,
+          witness,
+          sourceEvents,
+          assertCurrent,
+        }) => {
+          await test.repository.importMerchantOrderRecovery(
+            state,
+            witness,
+            assertCurrent
+          )
+          await test.repository.recordMerchantPlanSources(
+            state.plan,
+            sourceEvents,
+            assertCurrent
+          )
+          imports++
+        },
+      }
+    )
+    try {
+      let found = await discovery.nextPage()
+      for (let page = 0; found.history.hasMore && page < 16; page++)
+        found = await discovery.nextPage()
+      expect(found.history.hasMore).toBe(false)
+      expect(found.candidates.length).toBe(1)
+      expect(found.coverage).toBe("partial")
+      expect(found.orderBindingFailureCount ?? 0).toBe(0)
+      expect(imports).toBe(1)
+      const saved = await test.repository.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status === "active")
+        expect(JSON.stringify(saved.state) === JSON.stringify(test.state)).toBe(
+          true
+        )
+      const witness = await test.repository.loadMerchantOrderWitness(
+        test.plan.merchantPubkey,
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(witness !== null).toBe(true)
+      expect(
+        test.sockets.some((socket) => socket.url === compatibilityInbox)
+      ).toBe(true)
+      let consumed = false
+      const handoff = await withMerchantCheckoutSparkRecovery(
+        test.plan.merchantPubkey,
+        found.candidates[0]!,
+        {
+          consume: async (payload, assertCurrent) => {
+            assertCurrent()
+            consumed =
+              payload.plan.checkoutId === test.plan.checkoutId &&
+              payload.plan.planDigest === test.plan.planDigest &&
+              payload.plan.orderId === test.plan.orderId &&
+              payload.plan.merchantPubkey === test.plan.merchantPubkey
+          },
+        }
+      )
+      expect(handoff.status).toBe("consumed")
+      expect(handoff.coverage).toBe("partial")
+      expect(consumed).toBe(true)
+    } finally {
+      discovery.dispose()
+      await test.cleanup()
+    }
+  })
+
   it("admits a current owner inbox history page only through its exact signed grant", async () => {
     const test = await fixture()
     try {
@@ -333,7 +723,48 @@ describe("cold Merchant discovery through the real protected reader", () => {
       expect(visited).toBe(2)
       expect(test.sockets).toHaveLength(1)
     } finally {
-      await test.database.delete()
+      await test.cleanup()
+    }
+  })
+
+  it("never contacts an excluded compatibility inbox or imports its recovery authority", async () => {
+    const compatibilityInbox = config.commerceDmFallbackRelayUrls[0]!
+    const test = await fixture({
+      recoveryRelayUrl: compatibilityInbox,
+      unavailableRelayUrls: [INBOX],
+    })
+    await test.blockRelay(compatibilityInbox)
+    let imports = 0
+    const discovery = await createMerchantCheckoutSparkRecoveryDiscovery(
+      test.plan.merchantPubkey,
+      {
+        onOrderRecovery: async ({ state, witness, assertCurrent }) => {
+          imports++
+          await test.repository.importMerchantOrderRecovery(
+            state,
+            witness,
+            assertCurrent
+          )
+        },
+      }
+    )
+    try {
+      let found = await discovery.nextPage()
+      for (let page = 0; found.history.hasMore && page < 16; page++)
+        found = await discovery.nextPage()
+      expect(found.history.hasMore).toBe(false)
+      expect(found.candidates.length).toBe(0)
+      expect(imports).toBe(0)
+      expect(
+        test.sockets.some((socket) => socket.url === compatibilityInbox)
+      ).toBe(false)
+      expect(
+        (await test.repository.load(test.plan.checkoutId, test.plan.planDigest))
+          .status
+      ).toBe("absent")
+    } finally {
+      discovery.dispose()
+      await test.cleanup()
     }
   })
 
@@ -381,12 +812,12 @@ describe("cold Merchant discovery through the real protected reader", () => {
       expect(test.sockets).toHaveLength(1)
     } finally {
       discovery.dispose()
-      await test.database.delete()
+      await test.cleanup()
     }
   })
 
   it("denies discovery contact and import when the current account excludes its earlier signed inbox", async () => {
-    const test = await fixture()
+    const test = await fixture({ recoveryRelayUrl: INBOX })
     await test.blockInbox()
     let imports = 0
     const discovery = await createMerchantCheckoutSparkRecoveryDiscovery(
@@ -405,7 +836,7 @@ describe("cold Merchant discovery through the real protected reader", () => {
     try {
       const found = await discovery.nextPage()
       expect(found.candidates).toHaveLength(0)
-      expect(test.sockets).toHaveLength(0)
+      expect(test.sockets.some((socket) => socket.url === INBOX)).toBe(false)
       expect(imports).toBe(0)
       expect(
         (await test.repository.load(test.plan.checkoutId, test.plan.planDigest))
@@ -413,7 +844,7 @@ describe("cold Merchant discovery through the real protected reader", () => {
       ).toBe("absent")
     } finally {
       discovery.dispose()
-      await test.database.delete()
+      await test.cleanup()
     }
   })
 })

@@ -19,6 +19,7 @@ import {
   createCheckoutSparkSettledRecoveryProgressPayload,
   createMerchantCheckoutSparkRecoveryDiscovery,
   createPrivateMessageRumor,
+  config,
   deriveCheckoutSparkSettledTransferId,
   DexieCheckoutSparkSettledRepository,
   freezeCheckoutSparkSettledPlan,
@@ -52,6 +53,13 @@ import {
   makeSignedBolt11Fixture,
 } from "./support/signed-bolt11-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const MERCHANT_SECRET = generateSecretKey()
 const MERCHANT = getPublicKey(MERCHANT_SECRET)
@@ -456,9 +464,33 @@ function expectPrivateMetadata(
   ])
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
+  await createInboxDeclarationFixtureEvidence(
+    finalizeEvent(
+      {
+        kind: 10_050,
+        created_at: CREATED_AT / 1_000,
+        tags: [["relay", INBOX]],
+        content: "",
+      },
+      MERCHANT_SECRET
+    ),
+    { prime: true }
+  )
+  // This actor-progress fixture models one declared source per protected read.
+  let networkState = emptyAccountNetworkLocalState(MERCHANT, () => CREATED_AT)
+  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+    if (relayUrl === INBOX) continue
+    networkState = applyAccountNetworkRelayExclusion(networkState, {
+      relayUrl,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+      committedAt: CREATED_AT,
+    })
+  }
   sourceDatabase = new ConduitDB(
     `conduit-merchant-progress-sources-${crypto.randomUUID()}`,
     { indexedDB, IDBKeyRange }
@@ -473,6 +505,8 @@ beforeEach(() => {
     () => true
   )
   __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository([networkState]),
     getCommerceInbox: () => fixtureInboxOwner(),
     checkoutSparkSettledRepository: new DexieCheckoutSparkSettledRepository(
       sourceDatabase
@@ -490,6 +524,7 @@ beforeEach(() => {
 afterEach(async () => {
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
   sourceDatabase.close()
   await sourceDatabase.delete()
 })

@@ -180,6 +180,7 @@ function ProductPage() {
       const productRead = await readEventMarketProduct({
         marketRead,
         productCoordinate: product!.id,
+        selectedOccurrenceCoordinate: marketRead.calendar.coordinate,
         authenticatedPubkey,
         signal,
       })
@@ -202,6 +203,7 @@ function ProductPage() {
     queryKey: [
       "product-event-market",
       eventMarketReference,
+      selectedOccurrence,
       selectedProduct?.id,
       session.relayScope,
       authenticatedPubkey,
@@ -215,6 +217,11 @@ function ProductPage() {
       const productRead = await readEventMarketProduct({
         marketRead,
         productCoordinate: selectedProduct!.id,
+        selectedOccurrenceCoordinate:
+          selectedOccurrence ??
+          (marketRead.schedule?.kind === "series"
+            ? undefined
+            : marketRead.calendar?.coordinate),
         authenticatedPubkey,
         signal,
       })
@@ -231,7 +238,11 @@ function ProductPage() {
     try {
       return createEventMarketPickupSnapshot({
         ...eventMarketQuery.data,
-        selectedOccurrenceCoordinate: selectedOccurrence,
+        selectedOccurrenceCoordinate:
+          selectedOccurrence ??
+          (eventMarketQuery.data.marketRead.schedule?.kind === "series"
+            ? undefined
+            : eventMarketQuery.data.marketRead.calendar?.coordinate),
       })
     } catch {
       return null
@@ -581,6 +592,11 @@ function ProductPage() {
         const productRead = await readEventMarketProduct({
           marketRead,
           productCoordinate: selectedProduct.id,
+          selectedOccurrenceCoordinate:
+            selectedOccurrence ??
+            (marketRead.schedule?.kind === "series"
+              ? undefined
+              : marketRead.calendar?.coordinate),
           authenticatedPubkey,
           shouldContinue,
         })
@@ -599,7 +615,11 @@ function ProductPage() {
         const fulfillment = createEventMarketPickupSnapshot({
           marketRead,
           productRead,
-          selectedOccurrenceCoordinate: selectedOccurrence,
+          selectedOccurrenceCoordinate:
+            selectedOccurrence ??
+            (marketRead.schedule?.kind === "series"
+              ? undefined
+              : marketRead.calendar?.coordinate),
         })
         const current = cartItemInputFromProductSelection(
           product,
@@ -621,9 +641,13 @@ function ProductPage() {
         candidate = current
       }
       if (!shouldContinue()) return
-      if (cartItem)
-        await cart.refreshAndIncrementItem(cartItem, candidate, quantity)
-      else await cart.addItem(candidate, quantity)
+      const added = cartItem
+        ? await cart.refreshAndIncrementItem(cartItem, candidate, quantity)
+        : await cart.addItem(candidate, quantity)
+      if (!added)
+        throw new Error(
+          "Selected quantity exceeds current availability. Review the item and try again."
+        )
       recordProductDetailAction("add_to_cart")
     } catch (cause) {
       if (shouldContinue()) {

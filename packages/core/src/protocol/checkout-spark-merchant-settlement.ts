@@ -4,6 +4,7 @@ import {
   recordCheckoutSparkSettledCredit,
   restoreCheckoutSparkSettledPlan,
   restoreCheckoutSparkSettledReconciliation,
+  isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
@@ -61,13 +62,15 @@ function validId(value: unknown): value is string {
 
 /** Private device-local provider facts; never send this record to Nostr or telemetry. */
 export interface CheckoutSparkMerchantSettlementRecord {
-  readonly schemaVersion: 1 | 2
+  readonly schemaVersion: 1 | 2 | 3
   readonly nativeTreasury?: CheckoutSparkNativeTreasurySettlement | null
   readonly merchantPubkey: string
   readonly orderId: string
   readonly checkoutId: string
   readonly planDigest: string
-  readonly merchantLegId: string
+  readonly merchantLegId: string | null
+  /** V3 event records retain organizer evidence separately from goods settlement. */
+  readonly organizerLegId?: string | null
   readonly requiredCommerceLegIds: readonly string[]
   readonly feeLegId: string
   readonly credit: null | {
@@ -150,18 +153,32 @@ export function createCheckoutSparkMerchantSettlementRecord(
   plan: CheckoutSparkSettledPlan
 ): CheckoutSparkMerchantSettlementRecord {
   const canonical = restoreCheckoutSparkSettledPlan(plan)
-  const merchant = canonical.recipients.find((leg) => leg.kind === "merchant")!
+  const merchant = canonical.recipients.find((leg) => leg.kind === "merchant")
   const fee = canonical.recipients.find((leg) => leg.kind === "conduit")!
   return {
-    schemaVersion: canonical.schemaVersion === 4 ? 2 : 1,
-    ...(canonical.schemaVersion === 4 ? { nativeTreasury: null } : {}),
+    schemaVersion:
+      canonical.schemaVersion === 5 ? 3 : canonical.schemaVersion === 4 ? 2 : 1,
+    ...(isCheckoutSparkNativeTreasuryPlan(canonical)
+      ? { nativeTreasury: null }
+      : {}),
+    ...(canonical.schemaVersion === 5
+      ? {
+          organizerLegId:
+            canonical.recipients.find((leg) => leg.kind === "organizer")
+              ?.legId ?? null,
+        }
+      : {}),
     merchantPubkey: canonical.merchantPubkey,
     orderId: canonical.orderId,
     checkoutId: canonical.checkoutId,
     planDigest: canonical.planDigest,
-    merchantLegId: merchant.legId,
+    merchantLegId: merchant?.legId ?? null,
     requiredCommerceLegIds: canonical.recipients
-      .filter((leg) => leg.kind !== "conduit")
+      .filter((leg) =>
+        canonical.schemaVersion === 5
+          ? leg.kind === "merchant" || leg.kind === "supplier"
+          : leg.kind !== "conduit"
+      )
       .map((leg) => leg.legId),
     feeLegId: fee.legId,
     credit: null,
@@ -186,23 +203,44 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
     "feeLegId",
     "credit",
     "paidLegs",
-    ...(record.schemaVersion === 2 ? ["nativeTreasury"] : []),
+    ...(record.schemaVersion === 2 || record.schemaVersion === 3
+      ? ["nativeTreasury"]
+      : []),
+    ...(record.schemaVersion === 3 ? ["organizerLegId"] : []),
   ])
   if (
-    (record.schemaVersion !== 1 && record.schemaVersion !== 2) ||
+    (record.schemaVersion !== 1 &&
+      record.schemaVersion !== 2 &&
+      record.schemaVersion !== 3) ||
     typeof record.merchantPubkey !== "string" ||
     !/^[0-9a-f]{64}$/.test(record.merchantPubkey) ||
     typeof record.planDigest !== "string" ||
     !/^[0-9a-f]{64}$/.test(record.planDigest) ||
     !validId(record.orderId) ||
     !validId(record.checkoutId) ||
-    typeof record.merchantLegId !== "string" ||
-    !/^[0-9a-f]{64}$/.test(record.merchantLegId) ||
+    !(record.schemaVersion === 3 && record.merchantLegId === null
+      ? true
+      : typeof record.merchantLegId === "string" &&
+        /^[0-9a-f]{64}$/.test(record.merchantLegId)) ||
+    (record.schemaVersion === 3 &&
+      !(
+        record.organizerLegId === null ||
+        (typeof record.organizerLegId === "string" &&
+          /^[0-9a-f]{64}$/.test(record.organizerLegId))
+      )) ||
     typeof record.feeLegId !== "string" ||
     !/^[0-9a-f]{64}$/.test(record.feeLegId) ||
     !Array.isArray(record.requiredCommerceLegIds) ||
-    record.requiredCommerceLegIds.length < 1 ||
-    !record.requiredCommerceLegIds.includes(record.merchantLegId) ||
+    (record.merchantLegId === null
+      ? record.schemaVersion !== 3 ||
+        record.requiredCommerceLegIds.length !== 0 ||
+        record.organizerLegId === null
+      : record.requiredCommerceLegIds.length < 1 ||
+        !record.requiredCommerceLegIds.includes(record.merchantLegId)) ||
+    (record.schemaVersion === 3 &&
+      record.organizerLegId !== null &&
+      (record.organizerLegId === record.feeLegId ||
+        record.requiredCommerceLegIds.includes(record.organizerLegId!))) ||
     record.requiredCommerceLegIds.includes(record.feeLegId) ||
     new Set(record.requiredCommerceLegIds).size !==
       record.requiredCommerceLegIds.length ||
@@ -216,7 +254,10 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
   ) {
     invalid()
   }
-  if (record.schemaVersion === 2 && record.nativeTreasury !== null)
+  if (
+    (record.schemaVersion === 2 || record.schemaVersion === 3) &&
+    record.nativeTreasury !== null
+  )
     restoreCheckoutSparkNativeTreasurySettlement(record.nativeTreasury!)
   if (record.credit) {
     exactKeys(record.credit, ["transferId", "creditedSats", "observedAt"])
@@ -239,9 +280,11 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
       ...(leg.recipientVerified === undefined ? [] : ["recipientVerified"]),
     ])
     if (
-      (record.schemaVersion === 2 && leg.legId === record.feeLegId) ||
+      ((record.schemaVersion === 2 || record.schemaVersion === 3) &&
+        leg.legId === record.feeLegId) ||
       (leg.legId !== record.feeLegId &&
-        !record.requiredCommerceLegIds.includes(leg.legId)) ||
+        !record.requiredCommerceLegIds.includes(leg.legId) &&
+        !(record.schemaVersion === 3 && leg.legId === record.organizerLegId)) ||
       ids.has(leg.legId) ||
       !validId(leg.transferId) ||
       validSats(leg.allocationSats) < validSats(leg.finalDebitSats) ||
@@ -264,6 +307,7 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
       record.checkoutId !== expected.checkoutId ||
       record.planDigest !== expected.planDigest ||
       record.merchantLegId !== expected.merchantLegId ||
+      record.organizerLegId !== expected.organizerLegId ||
       record.feeLegId !== expected.feeLegId ||
       JSON.stringify(record.requiredCommerceLegIds) !==
         JSON.stringify(expected.requiredCommerceLegIds)
@@ -276,7 +320,7 @@ export function restoreCheckoutSparkMerchantSettlementRecord(
     requiredCommerceLegIds: [...record.requiredCommerceLegIds],
     credit: record.credit ? { ...record.credit } : null,
     paidLegs: record.paidLegs.map((leg) => ({ ...leg })),
-    ...(record.schemaVersion === 2
+    ...(record.schemaVersion === 2 || record.schemaVersion === 3
       ? {
           nativeTreasury: record.nativeTreasury
             ? restoreCheckoutSparkNativeTreasurySettlement(
@@ -352,7 +396,11 @@ export function recordCheckoutSparkMerchantPayout(
   if (
     !recipient ||
     (!current.requiredCommerceLegIds.includes(recipient.legId) &&
-      recipient.legId !== current.feeLegId) ||
+      recipient.legId !== current.feeLegId &&
+      !(
+        current.schemaVersion === 3 &&
+        recipient.legId === current.organizerLegId
+      )) ||
     observation.legId !== target.legId ||
     observation.transferId !== exact.transferId ||
     observation.paymentRequest !== exact.paymentRequest ||
@@ -443,13 +491,16 @@ export function projectCheckoutSparkMerchantSettlement(
   const creditVerified = verified.credit !== null
   return {
     creditVerified,
-    merchantVerified: attributed.has(verified.merchantLegId),
+    merchantVerified:
+      verified.merchantLegId === null
+        ? creditVerified
+        : attributed.has(verified.merchantLegId),
     commerceVerified:
       creditVerified &&
       verified.requiredCommerceLegIds.every((legId) => attributed.has(legId)),
     feePending:
       creditVerified &&
-      (verified.schemaVersion === 2
+      (verified.schemaVersion === 2 || verified.schemaVersion === 3
         ? verified.nativeTreasury === null
         : !paid.has(verified.feeLegId)),
     recipientUnverified: verified.paidLegs.some(
@@ -472,7 +523,7 @@ export function recordCheckoutSparkMerchantTreasury(
   const intent = state.treasuryFinalization?.intent
   const budget = deriveCheckoutSparkNativeTreasuryBudget(state, record)
   if (
-    record.schemaVersion !== 2 ||
+    (record.schemaVersion !== 2 && record.schemaVersion !== 3) ||
     !intent ||
     evidence.status !== "paid" ||
     evidence.invoiceId !== intent.invoiceId ||

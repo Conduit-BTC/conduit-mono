@@ -18,6 +18,9 @@ import {
   publishFutureEventMarketSeries,
   readEventMarketAuthorization,
   readEventMarketRoster,
+  isEventMarketAuthorizationWriteReady,
+  isEventMarketCalendarWriteReady,
+  isEventMarketRosterWriteReady,
   retainSignedEventMarketEvidence,
   retryEventMarketAuthorizationDelivery,
   retryEventMarketCalendarDelivery,
@@ -79,6 +82,8 @@ import { useEventMarketEnrollment } from "../hooks/useEventMarketEnrollment"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { getEventActorDisplayName } from "../lib/event-actor-identity"
 import { FutureEventMerchantParticipation } from "./FutureEventMerchantParticipation"
+import { EventMarketOrganizerFeeEditor } from "./EventMarketOrganizerFeeEditor"
+import { EventMarketStockPanel } from "./EventMarketStockPanel"
 
 function errorText(error: unknown): string {
   return error instanceof Error
@@ -1268,8 +1273,7 @@ function MerchantAuthorityRow({
     !pending &&
     !decisionPending &&
     !auth.isFetching &&
-    auth.data?.retained === true &&
-    auth.data.coverage === "complete" &&
+    isEventMarketAuthorizationWriteReady(auth.data) &&
     ["active", "revoked", "missing"].includes(authState)
   const expectedTipIds =
     resolution &&
@@ -1714,9 +1718,8 @@ export function FutureEventMarketManager({
   const canManage =
     !!market &&
     market.organizerPubkey === authenticatedPubkey &&
-    result?.retained &&
-    result.coverage === "complete" &&
-    result.calendarCoverage === "complete"
+    isEventMarketRosterWriteReady(result) &&
+    isEventMarketCalendarWriteReady(result)
 
   async function retryRoster(): Promise<void> {
     if (!market || !authenticatedPubkey) return
@@ -1968,6 +1971,42 @@ export function FutureEventMarketManager({
             >
               Retry signed market delivery
             </Button>
+          ) : null}
+          <EventMarketOrganizerFeeEditor
+            key={`${market.eventId}:${authenticatedPubkey ?? "viewer"}`}
+            market={market}
+            authenticatedPubkey={authenticatedPubkey}
+            canManage={!!canManage}
+            onChanged={() => query.refetch()}
+          />
+          {authenticatedPubkey && result ? (
+            authenticatedPubkey === market.organizerPubkey ||
+            market.merchants.some(
+              (row) =>
+                row.pubkey === authenticatedPubkey &&
+                row.mode === "organizer_handoff"
+            ) ? (
+              <EventMarketStockPanel
+                key={`${market.coordinate}:${selectedCalendar?.coordinate ?? "history"}:${authenticatedPubkey}`}
+                market={market}
+                occurrence={selectedCalendar ?? undefined}
+                marketRead={result}
+                authenticatedPubkey={authenticatedPubkey}
+              />
+            ) : (
+              <details className="space-y-3">
+                <summary className="cursor-pointer text-sm">
+                  Recover prior organizer stock history
+                </summary>
+                <EventMarketStockPanel
+                  key={`${market.coordinate}:${selectedCalendar?.coordinate ?? "history"}:${authenticatedPubkey}`}
+                  market={market}
+                  occurrence={selectedCalendar ?? undefined}
+                  marketRead={result}
+                  authenticatedPubkey={authenticatedPubkey}
+                />
+              </details>
+            )
           ) : null}
           {canManage && authenticatedPubkey && !series && calendar ? (
             <MarketLifecycleEditor

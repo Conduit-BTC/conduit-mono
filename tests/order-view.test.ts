@@ -3,6 +3,7 @@ import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixt
 import type {
   KnownOrderStatus,
   OrderLifecycle,
+  StoredPaymentAttempt,
   OrderEventMarketPickupFulfillmentSchema,
 } from "@conduit/core"
 import { config, orderSchema } from "@conduit/core"
@@ -120,6 +121,56 @@ function baseLifecycle(
     ...overrides,
   }
 }
+
+describe("buyer payment evidence identity", () => {
+  it("ignores an attempt from another merchant or buyer with the same order ID", () => {
+    const input = {
+      orderId: "order-1",
+      merchantPubkey: "merchant",
+      messages: [
+        {
+          id: "original",
+          orderId: "order-1",
+          type: "order",
+          createdAt: 1,
+          senderPubkey: "buyer",
+          recipientPubkey: "merchant",
+          rawContent: "",
+          payload: {
+            id: "order-1",
+            buyerPubkey: "buyer",
+            merchantPubkey: "merchant",
+            items: [],
+            subtotal: 1,
+            currency: "SATS",
+            createdAt: 1,
+          },
+        } as never,
+      ],
+    }
+    const paymentAttempt = {
+      orderId: "order-1",
+      buyerPubkey: "buyer",
+      merchantPubkey: "merchant",
+      proofDeliveryStatus: "sent",
+    } as StoredPaymentAttempt
+    expect(
+      buildOrderViewModel({ ...input, paymentAttempt }).proofDeliveryStatus
+    ).toBe("sent")
+    for (const mismatch of [
+      { buyerPubkey: "other-buyer" },
+      { merchantPubkey: "other-merchant" },
+      { orderId: "other-order" },
+    ]) {
+      expect(
+        buildOrderViewModel({
+          ...input,
+          paymentAttempt: { ...paymentAttempt, ...mismatch },
+        }).proofDeliveryStatus
+      ).toBe("not_started")
+    }
+  })
+})
 
 describe("routed buyer payment truth", () => {
   const lifecycle = () =>

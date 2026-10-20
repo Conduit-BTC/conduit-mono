@@ -72,6 +72,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/event-market-router-acceptance.md`: event router evidence
+  boundaries, organizer stock/recovery and final funded/device acceptance
+
 - `docs/knowledge/checkout-spark-native-treasury.md`: one final native Spark
   collection, exact residual accounting, recovery and funded-validation boundary
 - `docs/knowledge/quantum-router-deployment.md`: public activation and treasury
