@@ -4038,6 +4038,347 @@ it("composes historical Merchant reconstruction through the shared public reader
   ).toBe(4)
 })
 
+function partialCheckpointReads(
+  cold: Awaited<ReturnType<typeof coldMerchantCheckpoint>>,
+  signedProductEvent = cold.payload.snapshot.product.signedProductEvent,
+  relayStatus: "success" | "partial" = "partial"
+): NonNullable<Parameters<typeof recoverMerchantOrganizerStockFromInbox>[1]> {
+  const snapshot = cold.payload.snapshot
+  const publicEvents = [
+    ...snapshot.assignments.map((row) => row.signedAssignmentEvent!),
+    ...snapshot.pools.map((row) => row.initialCommitment),
+  ]
+  return {
+    products: async () =>
+      ({
+        data: [
+          {
+            addressId: snapshot.product.coordinate,
+            product: { signedProductEvent },
+          },
+        ],
+        meta: {},
+      }) as never,
+    read: {
+      plan: async () =>
+        ({
+          candidateRelayUrls: ["wss://relay.conduit.market"],
+          maxRelayAttempts: 1,
+        }) as never,
+      fetch: async (filter) => ({
+        events: publicEvents.filter((event) => matchFilter(filter, event)),
+        relays: [
+          { relayUrl: "wss://relay.conduit.market", status: relayStatus },
+        ],
+      }),
+    },
+  }
+}
+
+it("recovers a newer stock checkpoint when positive public product reads are strictly older", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    envelopes = await f.accept(order)
+  await f.importOrder(order, envelopes)
+  await f.publish()
+  const cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const snapshot = cold.payload.snapshot
+  const older = snapshot.product.sourceProductEvent
+  expect(older.created_at).toBeLessThan(
+    snapshot.product.signedProductEvent.created_at
+  )
+  const result = await recoverMerchantOrganizerStockFromInbox(
+    cold.input,
+    partialCheckpointReads(cold, older, "success")
+  )
+  expect(result.state).toBe("ready")
+  expect(result.coverage).toBe("partial")
+  const recovered = await cold.db.merchantInventoryProducts.get(
+    snapshot.product.coordinate
+  )
+  expect(recovered?.signedProductEvent).toEqual(
+    snapshot.product.signedProductEvent
+  )
+  expect(recovered?.stock).toBe(snapshot.product.stock)
+})
+
+for (const mode of ["invalid-signature", "wrong-coordinate"] as const) {
+  it(`rejects an older ${mode} public product without recovering stock`, async () => {
+    const f = await fixture(),
+      order = f.order(),
+      envelopes = await f.accept(order)
+    await f.importOrder(order, envelopes)
+    await f.publish()
+    const cold = await coldMerchantCheckpoint(f)
+    await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+      "wss://relay.conduit.market",
+    ])
+    const snapshot = cold.payload.snapshot
+    const previous = snapshot.product.sourceProductEvent
+    const older =
+      mode === "invalid-signature"
+        ? {
+            ...previous,
+            sig: previous.sig.replace(/^./, (value) =>
+              value === "0" ? "1" : "0"
+            ),
+          }
+        : finalizeEvent(
+            {
+              kind: previous.kind,
+              created_at: previous.created_at,
+              content: previous.content,
+              tags: previous.tags.map((tag) =>
+                tag[0] === "d" ? ["d", "synthetic-other-product"] : tag
+              ),
+            },
+            f.merchantSecret
+          )
+    expect(older.created_at).toBeLessThan(
+      snapshot.product.signedProductEvent.created_at
+    )
+    await expect(
+      recoverMerchantOrganizerStockFromInbox(
+        cold.input,
+        partialCheckpointReads(cold, older, "success")
+      )
+    ).rejects.toThrow()
+    expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+    expect(await cold.db.merchantInventoryAssignments.count()).toBe(0)
+    expect(await cold.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  })
+}
+
+it("reports bounded restore stages while a matching checkpoint survives partial public reads", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const stages: string[] = []
+  const result = await recoverMerchantOrganizerStockFromInbox(
+    {
+      ...cold.input,
+      onRestoreStage: (stage: string) => stages.push(stage),
+    },
+    partialCheckpointReads(cold)
+  )
+  expect(result.state).toBe("ready")
+  expect(result.coverage).toBe("partial")
+  expect(stages).toContain("observation")
+  expect(stages).toContain("public_binding")
+  expect(stages).toContain("product_binding")
+  expect(stages).toContain("assignment_binding")
+  expect(stages).toContain("private_history")
+  expect(stages).toContain("local_reseal")
+  expect(stages).toContain("ancestry")
+  expect(stages).toContain("final_frontier")
+  expect(stages.at(-1)).toBe("commit")
+  expect(
+    stages.every((stage) =>
+      [
+        "observation",
+        "public_binding",
+        "product_binding",
+        "assignment_binding",
+        "private_history",
+        "local_reseal",
+        "ancestry",
+        "final_frontier",
+        "commit",
+      ].includes(stage)
+    )
+  ).toBe(true)
+})
+
+it("reports product binding rejection without installing a superseded stock checkpoint", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const previous = cold.payload.snapshot.product.signedProductEvent
+  const newer = finalizeEvent(
+    {
+      kind: previous.kind,
+      tags: previous.tags,
+      created_at: previous.created_at + 1,
+      content: "Synthetic later product revision",
+    },
+    f.merchantSecret
+  )
+  const stages: string[] = []
+  await expect(
+    recoverMerchantOrganizerStockFromInbox(
+      {
+        ...cold.input,
+        onRestoreStage: (stage: string) => stages.push(stage),
+      },
+      partialCheckpointReads(cold, newer)
+    )
+  ).rejects.toThrow("Merchant stock checkpoint requires reconciliation")
+  expect(stages.at(-1)).toBe("product_binding")
+  expect(stages).not.toContain("assignment_binding")
+  expect(stages).not.toContain("commit")
+  expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+  expect(await cold.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+})
+
+it("reports assignment binding rejection without installing mismatched stock", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const previous = cold.input.signedAssignmentEvents[0]!
+  const conflicting = finalizeEvent(
+    {
+      kind: previous.kind,
+      tags: previous.tags,
+      created_at: previous.created_at + 1,
+      content: "Synthetic different assignment revision",
+    },
+    f.merchantSecret
+  )
+  const stages: string[] = []
+  await expect(
+    restoreMerchantOrganizerStockCheckpoint({
+      ...cold.input,
+      signedAssignmentEvents: cold.input.signedAssignmentEvents.map((event) =>
+        event.id === previous.id ? conflicting : event
+      ),
+      onRestoreStage: (stage: string) => stages.push(stage),
+    })
+  ).rejects.toThrow("Merchant stock checkpoint requires reconciliation")
+  expect(stages.at(-1)).toBe("assignment_binding")
+  expect(stages).toContain("product_binding")
+  expect(stages).not.toContain("private_history")
+  expect(stages).not.toContain("commit")
+  expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+  expect(await cold.db.merchantInventoryAssignments.count()).toBe(0)
+  expect(await cold.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+})
+
+it("rejects a different public product event at the same stock checkpoint timestamp", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const previous = cold.payload.snapshot.product.signedProductEvent
+  const conflicting = finalizeEvent(
+    {
+      kind: previous.kind,
+      tags: previous.tags,
+      created_at: previous.created_at,
+      content: "Synthetic same-time product conflict",
+    },
+    f.merchantSecret
+  )
+  expect(conflicting.id).not.toBe(previous.id)
+  await expect(
+    recoverMerchantOrganizerStockFromInbox(
+      cold.input,
+      partialCheckpointReads(cold, conflicting, "success")
+    )
+  ).rejects.toThrow("Merchant stock checkpoint requires reconciliation")
+  expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+  expect(await cold.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+})
+
+for (const mode of ["throw", "reject"] as const) {
+  it(`ignores ${mode} from a restore observer without changing stock recovery`, async () => {
+    const f = await fixture(),
+      cold = await coldMerchantCheckpoint(f)
+    await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+      "wss://relay.conduit.market",
+    ])
+    const result = await recoverMerchantOrganizerStockFromInbox(
+      {
+        ...cold.input,
+        onRestoreStage: () => {
+          if (mode === "throw") throw new Error("Synthetic observer failure")
+          return Promise.reject(new Error("Synthetic observer rejection"))
+        },
+      },
+      partialCheckpointReads(cold)
+    )
+    expect(result.state).toBe("ready")
+    expect(result.coverage).toBe("partial")
+    expect((await cold.db.merchantInventoryProducts.toArray())[0]?.stock).toBe(
+      cold.payload.snapshot.product.stock
+    )
+  })
+}
+
+it("preserves an original private-history failure when the stage observer throws", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const originalFailure = new Error("Synthetic private history failure")
+  const originalDecrypt = f.merchantSigner.decryptNip44.bind(f.merchantSigner)
+  let lastStage: string | undefined
+  const decrypt = spyOn(f.merchantSigner, "decryptNip44").mockImplementation(
+    async (...args) => {
+      if (lastStage === "private_history") throw originalFailure
+      return originalDecrypt(...args)
+    }
+  )
+  try {
+    const caught = await restoreMerchantOrganizerStockCheckpoint({
+      ...cold.input,
+      onRestoreStage: (stage: string) => {
+        lastStage = stage
+        throw new Error("Synthetic observer failure")
+      },
+    }).catch((error: unknown) => error)
+    expect(caught === originalFailure).toBe(true)
+    expect(lastStage).toBe("private_history")
+    expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+  } finally {
+    decrypt.mockRestore()
+  }
+})
+
+it("reports retained frontier rejection before committing recovered stock", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  const previous = cold.payload.snapshot.assignments[0]!.signedAssignmentEvent!
+  const newer = finalizeEvent(
+    {
+      kind: previous.kind,
+      tags: previous.tags,
+      created_at: previous.created_at + 1,
+      content: "Synthetic later assignment revision",
+    },
+    f.merchantSecret
+  )
+  await cold.db.eventMarketRosterEvidence.put({
+    id: `${f.marketCoordinate}:${newer.id}`,
+    marketCoordinate: f.marketCoordinate,
+    signedEvent: newer,
+    cachedAt: Date.now(),
+  })
+  const stages: string[] = []
+  await expect(
+    restoreMerchantOrganizerStockCheckpoint({
+      ...cold.input,
+      onRestoreStage: (stage: string) => stages.push(stage),
+    })
+  ).rejects.toThrow("Merchant stock checkpoint requires reconciliation")
+  expect(stages.at(-1)).toBe("final_frontier")
+  expect(stages).not.toContain("commit")
+  expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+})
+
 it("quarantines Merchant stock checkpoints and unknown versions from generic conversations", async () => {
   const f = await fixture(),
     product = (await f.db.merchantInventoryProducts.get(

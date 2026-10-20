@@ -10,7 +10,10 @@ import {
   type MerchantInventoryAssignment,
   type MerchantInventoryProduct,
 } from "@conduit/core"
-import { EventMarketStockPoolList } from "../apps/merchant/src/components/EventMarketStockPanel"
+import {
+  EventMarketStockPoolList,
+  merchantStockRestoreFailureNotice,
+} from "../apps/merchant/src/components/EventMarketStockPanel"
 import { EventMarketOrganizerPickupForm } from "../apps/merchant/src/components/EventMarketOrganizerPickupCard"
 import { projectEventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
@@ -104,6 +107,40 @@ async function grantFixture() {
   }
   return { ...fixture, input, rumor, pool, writerId, market, occurrence }
 }
+
+describe("stock restore failure diagnostics", () => {
+  it("renders only fixed restore stages, never unknown strings or object properties", () => {
+    expect(merchantStockRestoreFailureNotice("public_binding")).toBe(
+      "Stock recovery stopped during signed inventory verification."
+    )
+    expect(merchantStockRestoreFailureNotice("product_binding")).toBe(
+      "Stock recovery stopped during product revision verification."
+    )
+    expect(merchantStockRestoreFailureNotice("assignment_binding")).toBe(
+      "Stock recovery stopped during assignment revision verification."
+    )
+    for (const stage of [
+      "observation",
+      "private_history",
+      "local_reseal",
+      "ancestry",
+      "final_frontier",
+      "commit",
+    ])
+      expect(merchantStockRestoreFailureNotice(stage)).toMatch(
+        /^Stock recovery stopped during [a-z ]+\.$/
+      )
+    for (const stage of [
+      undefined,
+      null,
+      "constructor",
+      "__proto__",
+      "not-an-approved-stage",
+      { toString: () => "not-an-approved-stage" },
+    ])
+      expect(merchantStockRestoreFailureNotice(stage)).toBeNull()
+  })
+})
 
 describe("explicit organizer device handover", () => {
   it("creates once only on explicit action, account/market scopes IDs and never adopts a relay writer", () => {

@@ -73,6 +73,33 @@ import {
   merchantStockCheckpointNotice,
   resumeMerchantOccurrencePublication,
 } from "../lib/merchant-occurrence-publication"
+import type { MerchantStockCheckpointRestoreStage } from "@conduit/core/protocol/event-market-stock-checkpoint"
+
+const RESTORE_STAGE_LABELS: Record<
+  MerchantStockCheckpointRestoreStage,
+  string
+> = {
+  observation: "saved checkpoint verification",
+  public_binding: "signed inventory verification",
+  product_binding: "product revision verification",
+  assignment_binding: "assignment revision verification",
+  private_history: "private stock history verification",
+  local_reseal: "local recovery protection",
+  ancestry: "checkpoint ancestry verification",
+  final_frontier: "retained inventory verification",
+  commit: "local recovery commit",
+}
+
+export function merchantStockRestoreFailureNotice(
+  stage: unknown
+): string | null {
+  if (
+    typeof stage !== "string" ||
+    !Object.prototype.hasOwnProperty.call(RESTORE_STAGE_LABELS, stage)
+  )
+    return null
+  return `Stock recovery stopped during ${RESTORE_STAGE_LABELS[stage as MerchantStockCheckpointRestoreStage]}.`
+}
 
 type StockAction = "retry" | "close" | "reconcile"
 export function EventMarketStockPoolList(props: {
@@ -194,6 +221,9 @@ export function EventMarketStockPanel(props: {
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
   const [error, setError] = useState("")
+  const [restoreFailureDiagnostic, setRestoreFailureDiagnostic] = useState<
+    string | null
+  >(null)
   const [notice, setNotice] = useState("")
   const [packets, setPackets] = useState<
     readonly AuthenticatedEventMarketStockPacket[]
@@ -226,6 +256,7 @@ export function EventMarketStockPanel(props: {
   useEffect(() => {
     setDevice(null)
     setDeviceError("")
+    setRestoreFailureDiagnostic(null)
     setWriterHandovers([])
     setConfirmMove(false)
     setReplacementId("")
@@ -318,6 +349,7 @@ export function EventMarketStockPanel(props: {
     setBusy(true)
     setError("")
     setNotice("")
+    setRestoreFailureDiagnostic(null)
     try {
       if (!shouldContinue()) throw new Error("Account session changed.")
       await operation()
@@ -706,12 +738,27 @@ export function EventMarketStockPanel(props: {
     const authorization = getProtectedReadAuthorization(account)
     if (!authorization)
       throw new Error("Reconnect the seller signer to recover saved stock.")
-    const result = await recoverMerchantOrganizerStockFromInbox({
-      ...session(),
-      authorization,
-      store: getCommerceInbox(account).store,
-      envelope: packet.envelope,
-    })
+    let restoreStage: MerchantStockCheckpointRestoreStage | undefined
+    let result: Awaited<
+      ReturnType<typeof recoverMerchantOrganizerStockFromInbox>
+    >
+    try {
+      result = await recoverMerchantOrganizerStockFromInbox({
+        ...session(),
+        authorization,
+        store: getCommerceInbox(account).store,
+        envelope: packet.envelope,
+        onRestoreStage: (stage) => {
+          restoreStage = stage
+        },
+      })
+    } catch (cause) {
+      if (shouldContinue())
+        setRestoreFailureDiagnostic(
+          merchantStockRestoreFailureNotice(restoreStage)
+        )
+      throw cause
+    }
     if (result.state !== "ready")
       throw new Error(
         "The saved stock checkpoint conflicts with current signed inventory. Reconcile it before making another stock promise."
@@ -1248,6 +1295,7 @@ export function EventMarketStockPanel(props: {
         {error ? (
           <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
+            {restoreFailureDiagnostic ? ` ${restoreFailureDiagnostic}` : ""}
           </p>
         ) : null}
       </CardContent>

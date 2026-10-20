@@ -19,6 +19,7 @@ import { readEventMarketAssignment } from "./event-market-roster-read"
 import { parseProductEvent } from "./products"
 import {
   observeMerchantOrganizerStockCheckpoint,
+  observeMerchantStockRestoreStage,
   readMerchantStockCheckpointPredecessors,
   restoreMerchantOrganizerStockCheckpoint,
 } from "./event-market-stock-checkpoint"
@@ -72,6 +73,7 @@ export async function recoverMerchantOrganizerStockFromInbox(
       throw new Error("Merchant recovery session changed")
   }
   check()
+  observeMerchantStockRestoreStage(input, "observation")
   const retained = await observeMerchantOrganizerStockCheckpoint(input)
   check()
   if (
@@ -80,6 +82,7 @@ export async function recoverMerchantOrganizerStockFromInbox(
   )
     throw new Error("A newer Merchant stock checkpoint requires reconciliation")
   const snapshot = retained.payload.snapshot
+  observeMerchantStockRestoreStage(input, "public_binding")
   const evidence = createEventMarketEvidenceStore(input.db)
   for (const assignment of snapshot.assignments) {
     await evidence.retain(assignment.marketCoordinate, [
@@ -109,10 +112,20 @@ export async function recoverMerchantOrganizerStockFromInbox(
   )
   // Positive historical checkpoint evidence remains usable after withdrawal or
   // a partial read. This is stock reconciliation, not current listing admission.
+  const publicProductEvent = product?.product.signedProductEvent
+  const publicProductIsOlder =
+    publicProductEvent &&
+    isValidSignedPublicNostrEvent(publicProductEvent) &&
+    coordinateOf(publicProductEvent) === snapshot.product.coordinate &&
+    publicProductEvent.created_at <
+      snapshot.product.signedProductEvent.created_at
   const signedProductEvent =
-    product?.product.signedProductEvent ?? snapshot.product.signedProductEvent
+    !publicProductEvent || publicProductIsOlder
+      ? snapshot.product.signedProductEvent
+      : publicProductEvent
   const signedAssignmentEvents: SignedPublicNostrEvent[] = []
-  let coverage: Coverage = product ? "complete" : "partial"
+  let coverage: Coverage =
+    publicProductEvent && !publicProductIsOlder ? "complete" : "partial"
   for (const assignment of snapshot.assignments) {
     const resolved = await readEventMarketAssignment(
       {
@@ -136,6 +149,7 @@ export async function recoverMerchantOrganizerStockFromInbox(
       resolved.assignment?.signedEvent ?? assignment.signedAssignmentEvent!
     )
   }
+  observeMerchantStockRestoreStage(input, "ancestry")
   const predecessorEnvelopes = await readMerchantStockCheckpointPredecessors({
     ...input,
     shouldContinue: () => {
@@ -159,6 +173,7 @@ export async function recoverMerchantOrganizerStockFromInbox(
       envelope: input.envelope,
       signedAssignmentEvents,
       predecessorEnvelopes,
+      onRestoreStage: (stage) => observeMerchantStockRestoreStage(input, stage),
     },
   })
   check()

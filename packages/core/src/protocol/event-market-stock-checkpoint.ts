@@ -152,6 +152,32 @@ type ObservedCheckpointInput = CheckpointSession & {
   store: CommerceInboxStore
   envelope: SignedPublicNostrEvent
 }
+export type MerchantStockCheckpointRestoreStage =
+  | "observation"
+  | "public_binding"
+  | "product_binding"
+  | "assignment_binding"
+  | "private_history"
+  | "local_reseal"
+  | "ancestry"
+  | "final_frontier"
+  | "commit"
+
+type MerchantStockRestoreObservation = {
+  /** Optional transient observation only; never recovery authority or persisted. */
+  onRestoreStage?: (stage: MerchantStockCheckpointRestoreStage) => void
+}
+
+export function observeMerchantStockRestoreStage(
+  input: MerchantStockRestoreObservation,
+  stage: MerchantStockCheckpointRestoreStage
+): void {
+  try {
+    void Promise.resolve(input.onRestoreStage?.(stage)).catch(() => {})
+  } catch {
+    // Observation must not replace the original recovery result or failure.
+  }
+}
 export type MerchantStockCheckpointDelivery = Pick<
   Parameters<typeof retryPrivateMessageWraps>[0],
   | "deliveryStore"
@@ -1304,12 +1330,13 @@ async function publishCheckpoint(
 
 /** Positive exact self-copy + projections restore one existing inventory owner. */
 export async function restoreMerchantOrganizerStockCheckpoint(
-  input: ObservedCheckpointInput & {
-    signedProductEvent: SignedPublicNostrEvent
-    signedAssignmentEvents: readonly SignedPublicNostrEvent[]
-    /** Positive retained ancestry only; a gap without every exact link rejects. */
-    predecessorEnvelopes?: readonly SignedPublicNostrEvent[]
-  }
+  input: ObservedCheckpointInput &
+    MerchantStockRestoreObservation & {
+      signedProductEvent: SignedPublicNostrEvent
+      signedAssignmentEvents: readonly SignedPublicNostrEvent[]
+      /** Positive retained ancestry only; a gap without every exact link rejects. */
+      predecessorEnvelopes?: readonly SignedPublicNostrEvent[]
+    }
 ) {
   input = {
     ...input,
@@ -1335,6 +1362,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     )
       fail()
   }
+  observeMerchantStockRestoreStage(input, "observation")
   await authority.authenticate()
   check()
   await protectMerchantAcceptanceHistory(input.store)
@@ -1348,8 +1376,11 @@ export async function restoreMerchantOrganizerStockCheckpoint(
   )
     fail()
   const state = payload.snapshot
+  observeMerchantStockRestoreStage(input, "product_binding")
+  if (!sameSigned(input.signedProductEvent, state.product.signedProductEvent))
+    fail()
+  observeMerchantStockRestoreStage(input, "assignment_binding")
   if (
-    !sameSigned(input.signedProductEvent, state.product.signedProductEvent) ||
     input.signedAssignmentEvents.length !== state.assignments.length ||
     state.assignments.some(
       (assignment) =>
@@ -1361,6 +1392,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     fail()
   // A Merchant self checkpoint binds authenticated imported history; re-open
   // original grants and organizer evidence rather than trusting serialized rows.
+  observeMerchantStockRestoreStage(input, "private_history")
   for (const { pool } of state.pools) {
     const grant = completePrivateMessageEvent(
       await unwrapPrivateMessageEnvelope(pool.grantWraps!.self, input.signer)
@@ -1401,6 +1433,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
   }
   // Portable checkpoint rows retain their original canonical terms. Device
   // encryption must be renewed here, never copied from the source device.
+  observeMerchantStockRestoreStage(input, "local_reseal")
   const localOrders = new Map<string, MerchantInventoryAcceptedOrder>()
   for (const order of state.orders) {
     orderSchema.parse(JSON.parse(order.evidence))
@@ -1437,6 +1470,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     : undefined
   check()
   const ancestryBase = beforeProduct?.organizerStockCheckpoint
+  observeMerchantStockRestoreStage(input, "ancestry")
   const checkedPredecessors: { id: string; event: SignedPublicNostrEvent }[] =
     []
   const gap = ancestryBase && payload.sequence > ancestryBase.sequence + 1
@@ -1484,6 +1518,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       fail()
   } else if (input.predecessorEnvelopes?.length) fail()
   check()
+  observeMerchantStockRestoreStage(input, "final_frontier")
   const tables = [...inventoryTables(input.db), input.db.commerceInboxWrappers]
   return input.db.transaction("rw", tables, async () => {
     check()
@@ -1651,6 +1686,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       )
     )
       fail()
+    observeMerchantStockRestoreStage(input, "commit")
     for (const order of state.orders) {
       const existing = await input.db.merchantInventoryAcceptedOrders.get(
         order.orderId
