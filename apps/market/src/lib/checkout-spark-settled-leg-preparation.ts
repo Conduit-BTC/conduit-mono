@@ -1,6 +1,7 @@
 import {
   assertCheckoutSparkSettledBuyerPreparationWindow,
   DexieCheckoutSparkSettledRepository,
+  RelayPublishDiagnosticsError,
   prepareCheckoutSparkSettledOutgoingLegShared,
   resolveCheckoutSparkLnurlInvoice,
   type CheckoutSparkLnurlInvoice,
@@ -16,6 +17,14 @@ import type { SparkWalletManager } from "./spark-wallet"
 import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
 
 export type { CheckoutSparkSettledLegPreparationInput }
+
+/** Exact saved recovery ciphertext can be retried; this never grants a send. */
+export class CheckoutSparkPreparationAckUnavailableError extends Error {
+  constructor() {
+    super("Checkout Spark prepared recovery has no relay ACK yet.")
+    this.name = "CheckoutSparkPreparationAckUnavailableError"
+  }
+}
 
 export interface CheckoutSparkSettledLegPreparationDependencies {
   repository?: Pick<
@@ -100,7 +109,17 @@ export function createBuyerCheckoutSparkLegPreparationPorts(
         assertCheckoutSparkSettledBuyerPreparationWindow(state, nowMs)
       }
     },
-    acknowledgeRecoverySnapshot: dependencies.acknowledgeRecoverySnapshot,
+    async acknowledgeRecoverySnapshot(state) {
+      try {
+        await dependencies.acknowledgeRecoverySnapshot(state)
+      } catch (error) {
+        // Only the publisher's transport outcome is retryable. Signature,
+        // identity, validation and durable-storage failures are not transport.
+        if (error instanceof RelayPublishDiagnosticsError)
+          throw new CheckoutSparkPreparationAckUnavailableError()
+        throw error
+      }
+    },
     nowMs: dependencies.nowMs,
   }
 }

@@ -519,6 +519,28 @@ describe("checkout Spark settled plan and progress", () => {
     ).toMatch(/^[0-9a-f-]{36}$/)
   })
 
+  it("never appends event obligations to a new ordinary plan", () => {
+    for (const frozen of [plan(), nativeTreasuryFixture().plan]) {
+      const freeze =
+        frozen.schemaVersion === 4
+          ? freezeCheckoutSparkSettledTreasuryPlan
+          : freezeCheckoutSparkSettledPlan
+      expect(() =>
+        freeze({ ...frozen, eventMarket: undefined } as never)
+      ).toThrow("event obligations")
+      expect(() =>
+        freeze({
+          ...frozen,
+          recipients: frozen.recipients.map((recipient) =>
+            recipient.kind !== "conduit"
+              ? { ...recipient, kind: "organizer" }
+              : recipient
+          ),
+        } as never)
+      ).toThrow()
+    }
+  })
+
   it("preserves the quote merchant and separate supplier across a v3 round trip", () => {
     const frozen = plan()
     const restored = restoreCheckoutSparkSettledPlan(

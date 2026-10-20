@@ -1,27 +1,41 @@
 import { describe, expect, it } from "bun:test"
+import { spawnSync } from "node:child_process"
 
 import {
   expandSmokeMatrix,
   parseChangedPaths,
   selectSmokeShards,
 } from "../scripts/ci/select_smoke_shards"
+import {
+  buildPlaywrightSmokeDiscoveryArgs,
+  buildPlaywrightSmokeManifest,
+  type PlaywrightJsonReport,
+  validatePlaywrightSmokeAreas,
+  validatePlaywrightSmokeShardPartition,
+} from "../scripts/ci/validate_playwright_smoke_areas"
 
 describe("path-aware smoke shard selection", () => {
   it("splits Market and Merchant into required jobs without changing area selection", () => {
     expect(expandSmokeMatrix(["market", "merchant", "commerce"])).toEqual([
-      { id: "market-1", area: "market", shard: "1/3" },
-      { id: "market-2", area: "market", shard: "2/3" },
-      { id: "market-3", area: "market", shard: "3/3" },
-      { id: "merchant-1", area: "merchant", shard: "1/2" },
-      { id: "merchant-2", area: "merchant", shard: "2/2" },
+      { id: "market-1", area: "market", shard: "1/5" },
+      { id: "market-2", area: "market", shard: "2/5" },
+      { id: "market-3", area: "market", shard: "3/5" },
+      { id: "market-4", area: "market", shard: "4/5" },
+      { id: "market-5", area: "market", shard: "5/5" },
+      { id: "merchant-1", area: "merchant", shard: "1/4" },
+      { id: "merchant-2", area: "merchant", shard: "2/4" },
+      { id: "merchant-3", area: "merchant", shard: "3/4" },
+      { id: "merchant-4", area: "merchant", shard: "4/4" },
       { id: "commerce", area: "commerce", shard: "" },
     ])
     expect(expandSmokeMatrix([])).toEqual([
       { id: "none", area: "none", shard: "" },
     ])
     expect(expandSmokeMatrix(["merchant"])).toEqual([
-      { id: "merchant-1", area: "merchant", shard: "1/2" },
-      { id: "merchant-2", area: "merchant", shard: "2/2" },
+      { id: "merchant-1", area: "merchant", shard: "1/4" },
+      { id: "merchant-2", area: "merchant", shard: "2/4" },
+      { id: "merchant-3", area: "merchant", shard: "3/4" },
+      { id: "merchant-4", area: "merchant", shard: "4/4" },
     ])
   })
   it("selects only the changed app for app-local runtime changes", () => {
@@ -135,3 +149,64 @@ describe("path-aware smoke shard selection", () => {
     expect(selectSmokeShards(paths)).toEqual(["market", "merchant"])
   })
 })
+
+for (const [area, partCount] of [
+  ["market", 5],
+  ["merchant", 4],
+] as const)
+  it(`partitions actual ${area} discovery into ${partCount} nonempty project-aware jobs`, () => {
+    const jobs = expandSmokeMatrix([area])
+    expect(jobs).toHaveLength(partCount)
+    const evidence = {
+      baseSha: "b".repeat(40),
+      sourceHeadSha: "a".repeat(40),
+      testedSha: "c".repeat(40),
+    }
+    function discover(shard?: string) {
+      const result = spawnSync(
+        "bunx",
+        buildPlaywrightSmokeDiscoveryArgs(shard),
+        {
+          encoding: "utf8",
+          timeout: 30_000,
+          maxBuffer: 16 * 1024 * 1024,
+          env: {
+            ...process.env,
+            CI: "true",
+            NODE_ENV: "development",
+            PLAYWRIGHT_SMOKE_DISCOVERY: "true",
+            PLAYWRIGHT_SMOKE_AREA: area,
+            PLAYWRIGHT_SMOKE_FILES: "[]",
+            PLAYWRIGHT_SMOKE_BASE_SHA: evidence.baseSha,
+            PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: evidence.sourceHeadSha,
+            PLAYWRIGHT_SMOKE_TESTED_SHA: evidence.testedSha,
+          },
+        }
+      )
+      if (result.error || result.status !== 0)
+        throw new Error(`${area} partition discovery failed.`)
+      let report: PlaywrightJsonReport
+      try {
+        report = JSON.parse(result.stdout) as PlaywrightJsonReport
+      } catch {
+        throw new Error(`${area} partition discovery returned invalid JSON.`)
+      }
+      expect((report.errors ?? []).length).toBe(0)
+      expect(report.config?.metadata?.smokeEvidence).toEqual(evidence)
+      validatePlaywrightSmokeAreas(report, [area])
+      return buildPlaywrightSmokeManifest(report, [area], evidence)
+    }
+    const full = discover()
+    expect([...new Set(full.tests.map((test) => test.project))].sort()).toEqual(
+      ["chromium", "mobile-chromium", "mobile-webkit"]
+    )
+    const parts = jobs.map((job) => discover(job.shard))
+    for (const part of parts) {
+      expect(part.selectedTestCount).toBeGreaterThan(0)
+      expect(part.evidence).toEqual(evidence)
+    }
+    validatePlaywrightSmokeShardPartition(full, parts)
+    expect(
+      parts.reduce((count, part) => count + part.selectedTestCount, 0)
+    ).toBe(full.selectedTestCount)
+  }, 60_000)

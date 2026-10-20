@@ -9,6 +9,7 @@ import {
   deriveCheckoutSparkSettledRenewalTransferId,
   deriveCheckoutSparkSettledTransferId,
   getCheckoutSparkSettledLegGeneration,
+  isCheckoutSparkNativeTreasuryPlan,
   getAccountSigner,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   proveSparkCheckoutReceiveCredit,
@@ -197,7 +198,7 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
       throw new Error("Checkout Spark payout leg is not in this plan.")
     }
     if (
-      plan.schemaVersion === 4 &&
+      isCheckoutSparkNativeTreasuryPlan(plan) &&
       plan.recipients.find((recipient) => recipient.legId === input.legId)
         ?.kind === "conduit"
     ) {

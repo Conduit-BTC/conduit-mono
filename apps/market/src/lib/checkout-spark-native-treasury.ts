@@ -3,6 +3,7 @@ import {
   classifyCheckoutSparkSettledExactOutgoingHistory,
   deriveCheckoutSparkNativeTreasuryBudget,
   isCheckoutSparkNativePreProviderRetry,
+  isCheckoutSparkNativeTreasuryPlan,
   proveCheckoutSparkNativeTreasuryHistory,
   proveCheckoutSparkSettledClosedReturnedTransfer,
   requireCheckoutSparkSettledExactOutgoingRequest,
@@ -70,7 +71,10 @@ export async function inspectBuyerCheckoutSparkTreasuryCommerce(input: {
   const { state, manager, repository, now, assertAuthority, assertCurrent } =
     input
   const { plan } = state
-  if ((plan.schemaVersion !== 3 && plan.schemaVersion !== 4) || !state.credit) {
+  if (
+    (plan.schemaVersion !== 3 && !isCheckoutSparkNativeTreasuryPlan(plan)) ||
+    !state.credit
+  ) {
     throw new Error("Checkout Spark final payment is not funded.")
   }
   await assertAuthority()
@@ -294,7 +298,7 @@ export function createBuyerCheckoutSparkNativeTreasuryProvider(input: {
       !saved.state.treasuryFinalization?.intent ||
       saved.state.plan.checkoutId !== input.checkoutId ||
       saved.state.plan.planDigest !== target.planDigest ||
-      saved.state.plan.schemaVersion !== 4 ||
+      !isCheckoutSparkNativeTreasuryPlan(saved.state.plan) ||
       saved.state.plan.walletId !== target.walletId ||
       saved.state.plan.network !== target.network ||
       saved.state.plan.recipients.find((leg) => leg.legId === target.legId)

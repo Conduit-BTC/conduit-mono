@@ -14,6 +14,7 @@ import {
 import { assessCheckoutSparkSettledOrderControl } from "./checkout-spark-settled-order-control"
 import { getCheckoutSparkSettledPreparation } from "./checkout-spark-settled-preparation"
 import { getCheckoutSparkRecoveryDelivery } from "./checkout-spark-recovery-handoff"
+import { CheckoutSparkPreparationAckUnavailableError } from "./checkout-spark-settled-leg-preparation"
 import type { CheckoutSparkExternalFundingInvoice } from "./checkout-spark-settled-funding"
 import { getSparkConfiguration, getSparkWalletManager } from "./spark-sdk"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
@@ -337,10 +338,13 @@ export function createCheckoutSparkSettledShopperRunner(
         assertCurrent()
         if (error instanceof CheckoutSparkBuyerPreparationAuthorityEndedError)
           throw new RoutingPaused("authority_transferred")
-        // Only this finite, pre-invoice metadata transport classification may
+        // Only bounded metadata transport or an exact saved recovery ACK may
         // re-enter preparation. Unknown, validation, authority and storage
         // failures stay fail-closed; every retry reloads the frozen plan.
-        if (error instanceof CheckoutSparkLnurlMetadataUnavailableError)
+        if (
+          error instanceof CheckoutSparkLnurlMetadataUnavailableError ||
+          error instanceof CheckoutSparkPreparationAckUnavailableError
+        )
           return null
         throw error
       })

@@ -8,6 +8,7 @@ import {
   __setCommerceTestOverrides,
   buildCheckoutSparkRecoveryRumor,
   createCheckoutSparkRecoveryPayload,
+  config,
   freezeCheckoutSparkPlan,
   getDirectMessageConversationList,
   getMerchantCheckoutSparkRecoveryList,
@@ -41,6 +42,11 @@ import {
 import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
 import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const MERCHANT_SECRET = generateSecretKey()
 const BUYER_SECRET = generateSecretKey()
@@ -277,7 +283,20 @@ beforeEach(async () => {
     { prime: true }
   )
   activeRead = async () => protectedRead([])
+  // Keep this declared-source scheduler fixture isolated using actual exclusions.
+  let networkState = emptyAccountNetworkLocalState(MERCHANT, () => CREATED_AT)
+  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+    if (relayUrl === INBOX) continue
+    networkState = applyAccountNetworkRelayExclusion(networkState, {
+      relayUrl,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+      committedAt: CREATED_AT,
+    })
+  }
   __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository([networkState]),
     resolveInboxRelayUrls: async () => [INBOX],
     readProtectedInbox: (options) => activeRead(options),
   })
@@ -388,20 +407,39 @@ describe("Merchant checkout Spark recovery discovery", () => {
     ).toEqual([])
   })
 
-  it("does not read compatibility relays without a declared inbox", async () => {
-    let readCalled = false
-    __setCommerceTestOverrides({ resolveInboxRelayUrls: async () => [] })
-    activeRead = async () => {
-      readCalled = true
+  it("reads bounded compatibility history without granting delivery authority", async () => {
+    __resetInboxDeclarationCache()
+    const reads: ReadProtectedInboxOptions[] = []
+    __setCommerceTestOverrides({
+      accountNetworkLocalStateRepository:
+        createInMemoryAccountNetworkLocalStateRepository(),
+      resolveInboxRelayUrls: async () => [],
+    })
+    activeRead = async (options) => {
+      reads.push(options)
       return protectedRead([])
     }
     const result = await getMerchantCheckoutSparkRecoveryList(MERCHANT)
     expect(result).toMatchObject({
       candidates: [],
-      coverage: "unavailable",
+      coverage: "complete",
       declarationState: "not_observed",
     })
-    expect(readCalled).toBe(false)
+    expect(reads.map((read) => read.relayUrls[0])).toEqual(
+      config.commerceDmFallbackRelayUrls
+    )
+    for (const read of reads) {
+      expect(read.relayTargets).toEqual(
+        relayTargetsFromUrls(read.relayUrls, {
+          kind: "compatibility",
+          operation: "read",
+          policy: "inbox_read",
+        })
+      )
+      expect(
+        read.relayTargets!.flatMap((target) => target.grants)
+      ).not.toContainEqual(expect.objectContaining({ operation: "write" }))
+    }
   })
 
   it("preserves a discovered descriptor when a later history page is partial", async () => {

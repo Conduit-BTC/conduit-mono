@@ -14,6 +14,107 @@ export interface CheckoutSparkSettledAllocation {
   readonly conduitAllocationSats: number
 }
 
+export interface CheckoutSparkEventAllocationWeights extends CheckoutSparkAllocationWeights {
+  readonly organizerWeightSats: number
+}
+
+export interface CheckoutSparkEventSettledAllocation extends CheckoutSparkSettledAllocation {
+  readonly organizerAllocationSats: number
+}
+
+/** Event fees are additive, never part of the Conduit percentage base. */
+export function calculateCheckoutSparkEventAllocationWeights(
+  commerceTotalSats: number,
+  organizerFeeSats: number
+): CheckoutSparkEventAllocationWeights {
+  if (
+    !Number.isSafeInteger(commerceTotalSats) ||
+    commerceTotalSats < 0 ||
+    !Number.isSafeInteger(organizerFeeSats) ||
+    organizerFeeSats < 0 ||
+    (commerceTotalSats === 0 && organizerFeeSats === 0)
+  )
+    throw new Error("Checkout Spark event allocation weights are invalid.")
+  const conduitWeightSats = calculateConduitCheckoutFeeSats(
+    commerceTotalSats || 1
+  )
+  if (
+    BigInt(commerceTotalSats) +
+      BigInt(organizerFeeSats) +
+      BigInt(conduitWeightSats) >
+    MAX_SAFE_SATS
+  )
+    throw new Error("Checkout Spark event allocation weights are unsafe.")
+  return Object.freeze({
+    commerceWeightSats: commerceTotalSats,
+    conduitWeightSats,
+    organizerWeightSats: organizerFeeSats,
+  })
+}
+
+export function calculateCheckoutSparkEventSettledGrossFundingSats(
+  commerceTotalSats: number,
+  organizerFeeSats: number
+): number {
+  const weights = calculateCheckoutSparkEventAllocationWeights(
+    commerceTotalSats,
+    organizerFeeSats
+  )
+  const allowanceBase = commerceTotalSats + organizerFeeSats
+  const gross =
+    BigInt(allowanceBase) +
+    BigInt(weights.conduitWeightSats) +
+    BigInt(calculateCheckoutSparkInboundNetworkAllowanceSats(allowanceBase))
+  if (gross * 1_000n > MAX_SAFE_SATS)
+    throw new Error("Checkout Spark event gross funding is unsafe.")
+  return Number(gross)
+}
+
+/** The signed organizer budget is exact; only the remaining credit uses C/D rounding. */
+export function allocateCheckoutSparkEventSettledSats(input: {
+  settledSats: number
+  fundingInvoiceGrossSats: number
+  weights: CheckoutSparkEventAllocationWeights
+}): CheckoutSparkEventSettledAllocation {
+  const { settledSats, fundingInvoiceGrossSats, weights } = input
+  const expected = calculateCheckoutSparkEventAllocationWeights(
+    weights.commerceWeightSats,
+    weights.organizerWeightSats
+  )
+  if (
+    expected.conduitWeightSats !== weights.conduitWeightSats ||
+    !Number.isSafeInteger(settledSats) ||
+    !Number.isSafeInteger(fundingInvoiceGrossSats) ||
+    settledSats > fundingInvoiceGrossSats ||
+    BigInt(settledSats) <
+      BigInt(expected.commerceWeightSats) +
+        BigInt(expected.conduitWeightSats) +
+        BigInt(expected.organizerWeightSats) ||
+    fundingInvoiceGrossSats !==
+      calculateCheckoutSparkEventSettledGrossFundingSats(
+        expected.commerceWeightSats,
+        expected.organizerWeightSats
+      )
+  )
+    throw new Error(
+      "Checkout Spark event credit does not cover frozen obligations."
+    )
+  const remaining = settledSats - weights.organizerWeightSats
+  const divided =
+    weights.commerceWeightSats === 0
+      ? { commerceAllocationSats: 0, conduitAllocationSats: remaining }
+      : allocateCheckoutSparkSettledSats({
+          settledSats: remaining,
+          fundingInvoiceGrossSats:
+            fundingInvoiceGrossSats - weights.organizerWeightSats,
+          weights,
+        })
+  return Object.freeze({
+    ...divided,
+    organizerAllocationSats: weights.organizerWeightSats,
+  })
+}
+
 /**
  * Calculate weights for the pre-funding signed plan. Freezing this JS object
  * does not itself authorize the economics; the caller must bind the weights,
@@ -71,6 +172,43 @@ export interface CheckoutSparkBuyerPrice {
   readonly coordinationFeeSats: number
   readonly totalSats: number
   readonly minimumApplies: boolean
+}
+
+export interface CheckoutSparkEventBuyerPrice extends CheckoutSparkBuyerPrice {
+  readonly organizerFeeSats: number
+}
+
+export function calculateCheckoutSparkEventBuyerPrice(input: {
+  itemSubtotalSats: number
+  shippingSubtotalSats: number
+  organizerFeeSats: number
+}): CheckoutSparkEventBuyerPrice {
+  const ordinary = calculateCheckoutSparkBuyerPrice(input)
+  if (ordinary.commerceTotalSats === 0 && input.organizerFeeSats === 0)
+    return Object.freeze({ ...ordinary, organizerFeeSats: 0 })
+  const weights = calculateCheckoutSparkEventAllocationWeights(
+    ordinary.commerceTotalSats,
+    input.organizerFeeSats
+  )
+  const totalSats = calculateCheckoutSparkEventSettledGrossFundingSats(
+    ordinary.commerceTotalSats,
+    input.organizerFeeSats
+  )
+  return Object.freeze({
+    ...ordinary,
+    organizerFeeSats: weights.organizerWeightSats,
+    conduitFeeSats: weights.conduitWeightSats,
+    networkAllowanceSats:
+      totalSats -
+      ordinary.commerceTotalSats -
+      weights.conduitWeightSats -
+      weights.organizerWeightSats,
+    coordinationFeeSats:
+      totalSats - ordinary.commerceTotalSats - weights.organizerWeightSats,
+    totalSats,
+    minimumApplies:
+      weights.conduitWeightSats === calculateConduitCheckoutFeeSats(1),
+  })
 }
 
 /** Estimate the existing router funding policy once per order, not per item. */

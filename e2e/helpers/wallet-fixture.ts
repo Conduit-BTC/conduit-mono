@@ -4,6 +4,43 @@ import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { recordSmokeDiagnostic } from "./smoke-diagnostics"
 
+type ControlledWalletFixtureWindow = Window & {
+  __walletFixtureFactory?: {
+    network: "mainnet"
+    open(input: {
+      mnemonic: string
+      accountNumber: number
+      walletId: string
+    }): Promise<unknown>
+  }
+  __walletFixtureReady?: () => void
+  __walletSetupBarrier?: () => Promise<void>
+  __walletProbe: {
+    restoredAddress?: string
+    registrations: number
+    opens: number
+    openedAccounts: number[]
+    disconnects: number
+    failRegistration: boolean
+    importMnemonic: string
+    savedMnemonic: string
+    lastAccount: number
+    failOpen?: boolean
+    addressUnavailableReason?: string
+    balanceReads?: number
+    delayBalance?: boolean
+    releaseBalance?: () => void
+    infoBarrier?: () => Promise<void>
+    failBalance?: boolean
+    balanceSats?: number
+    delayRegistration?: boolean
+    releaseRegistration?: () => void
+    delayReceive?: boolean
+    receiveStarted?: boolean
+    releaseReceive?: () => void
+  }
+}
+
 async function walletRetryControlState(retry: Locator) {
   return retry.evaluateAll((buttons) => {
     const button =
@@ -144,7 +181,7 @@ export async function prepareControlledWallet(page: Page) {
   // Replace network initialization at the existing single manager's factory.
   // Production modules and UI/hooks/storage/signers otherwise run unchanged.
   await page.addInitScript(() => {
-    const fixtureWindow = window as any
+    const fixtureWindow = window as unknown as ControlledWalletFixtureWindow
     fixtureWindow.__walletFixtureFactory = {
       network: "mainnet",
       async open(input: {
@@ -177,7 +214,7 @@ export async function prepareControlledWallet(page: Page) {
                     ? registered
                     : imported ||
                       (recovered &&
-                        probe.restoredAddress.endsWith("@conduit.cash"))
+                        probe.restoredAddress!.endsWith("@conduit.cash"))
                 )
               ? {
                   status: "registered",
@@ -187,7 +224,7 @@ export async function prepareControlledWallet(page: Page) {
                         ? "support@conduit.cash"
                         : probe.restoredAddress
                       : recovered &&
-                          probe.restoredAddress.endsWith("@breez.tips")
+                          probe.restoredAddress!.endsWith("@breez.tips")
                         ? probe.restoredAddress
                         : `${selectedName ?? `wallet${probe.registrations}`}@breez.tips`,
                   lnurl: `https://${domain}/lnurlp/test`,
@@ -292,7 +329,9 @@ export async function installControlledWallet(
           lastAccount: -1,
         },
       })
-      ;(window as any).__walletFixtureReady?.()
+      ;(
+        window as unknown as ControlledWalletFixtureWindow
+      ).__walletFixtureReady?.()
     },
     {
       restoredAddress,
@@ -343,9 +382,9 @@ type WalletRouteFetchDiagnostic = {
 
 export type WalletRouteFetchDetail = WalletRouteFetchDiagnostic & {
   routeFetchStartNavigations: number
-  routeFetchStartNavigationRequests: number
-  routeFetchFailureNavigationRequests: number
-  routeFetchNewNavigationRequested: boolean
+  routeFetchStartNavRequests: number
+  routeFetchFailureNavRequests: number
+  routeFetchNewNavRequested: boolean
 }
 
 export async function observeWalletController(
@@ -395,9 +434,9 @@ export async function observeWalletController(
       onFetchErrorDetail?.({
         ...diagnostic,
         routeFetchStartNavigations: startedNavigations,
-        routeFetchStartNavigationRequests: startedNavigationRequests,
-        routeFetchFailureNavigationRequests: navigationRequests,
-        routeFetchNewNavigationRequested:
+        routeFetchStartNavRequests: startedNavigationRequests,
+        routeFetchFailureNavRequests: navigationRequests,
+        routeFetchNewNavRequested:
           navigationRequests > startedNavigationRequests ||
           navigations > startedNavigations,
       })

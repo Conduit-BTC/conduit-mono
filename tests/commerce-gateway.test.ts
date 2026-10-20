@@ -5663,7 +5663,7 @@ describe("commerce gateway", () => {
     expect(asMerchant.data.map((row) => row.orderId)).not.toContain("orphan")
   })
 
-  it("excludes partial buckets with conflicting roles or counterparties", async () => {
+  it("keeps ambiguous roles hidden while separating partial history by counterparty", async () => {
     const partialRow = (
       id: string,
       orderId: string,
@@ -5729,7 +5729,17 @@ describe("commerce gateway", () => {
     })
 
     expect(asBuyer.data).toHaveLength(0)
-    expect(asMerchant.data).toHaveLength(0)
+    expect(asMerchant.data).toHaveLength(2)
+    expect(asMerchant.data.map((row) => row.buyerPubkey).sort()).toEqual([
+      "buyer-a",
+      "buyer-b",
+    ])
+    expect(
+      asMerchant.data.every(
+        (row) =>
+          row.orderId === "counterparty-conflict" && row.messageCount === 1
+      )
+    ).toBe(true)
   })
 
   it("persists buyer-originated order messages into the conversation cache", async () => {

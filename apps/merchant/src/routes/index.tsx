@@ -645,7 +645,10 @@ function DashboardPage() {
                 onClick={() =>
                   navigate({
                     to: "/orders",
-                    search: { order: conversation.orderId },
+                    search: {
+                      order: conversation.orderId,
+                      counterparty: conversation.buyerPubkey,
+                    },
                   })
                 }
               />
