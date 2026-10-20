@@ -733,7 +733,7 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
     ).toBe(1)
   })
 
-  it("requires the exact merchant invoice and wallet settlement before confirming a Lightning claim", async () => {
+  it("requires the exact invoice and settlement for an uppercase Lightning preimage", async () => {
     const f = fixture()
     const now = Math.floor(Date.now() / 1000)
     f.order.created_at = now - 5
@@ -757,7 +757,7 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
         ["subject", "Receipt"],
         ["order", "external-order"],
         ["amount", "200"],
-        ["payment", "lightning", invoice, bytesToHex(preimage)],
+        ["payment", "lightning", invoice, bytesToHex(preimage).toUpperCase()],
       ],
       content: "Payment sent",
     }
@@ -874,6 +874,11 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
       receiptTags.map((tag) =>
         tag[0] === "payment" ? ["payment", "bitcoin", "unsupported"] : tag
       ),
+      ...["CD".repeat(32), "AB".repeat(31), "GG".repeat(32)].map((proof) =>
+        receiptTags.map((tag) =>
+          tag[0] === "payment" ? ["payment", "lightning", invoice, proof] : tag
+        )
+      ),
       [...receiptTags, ["payment", "lightning", invoice, bytesToHex(preimage)]],
       [...receiptTags, ["payment", "bitcoin", "synthetic-bitcoin-address"]],
     ])
@@ -891,7 +896,7 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
       })
     }
     expect(f.owner.getSnapshot().orderMessages.length).toBe(4)
-    expect(f.owner.getSnapshot().externalRecords.length).toBe(5)
+    expect(f.owner.getSnapshot().externalRecords.length).toBe(8)
     expect(
       f.owner
         .getSnapshot()

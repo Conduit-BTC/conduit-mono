@@ -1,9 +1,10 @@
 import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
+import { bytesToHex } from "@noble/hashes/utils.js"
 import {
   decodeLightningInvoiceAmount,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
+  isLightningPaymentPreimageForInvoice,
 } from "./lightning"
 import type { ParsedOrderMessage } from "./orders"
 
@@ -314,8 +315,7 @@ export function parseOpenMarketsOrderMessage(
   const preimage = payment[3]
   if (
     preimage !== undefined &&
-    (!HEX.test(preimage) ||
-      bytesToHex(sha256(hexToBytes(preimage))) !== paymentHash)
+    !isLightningPaymentPreimageForInvoice(invoice, preimage)
   )
     throw new Error("Invalid commerce payment proof")
   return {

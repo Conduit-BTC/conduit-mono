@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { describe, expect, it, spyOn } from "bun:test"
 import * as buyerOrderPublish from "../apps/market/src/lib/order-publish"
@@ -418,6 +419,133 @@ it.each(["external report", "proof resend"] as const)(
 )
 
 describe("runOrderPayment", () => {
+  it.each(["AB", "aB"])(
+    "resends a numeric report with %s wallet preimage casing without paying again",
+    async (hexByte) => {
+      const orderId = `numeric-preimage-${hexByte}`
+      const merchantPubkey = "b".repeat(64)
+      const preimage = hexByte.repeat(32)
+      const paymentHash = createHash("sha256")
+        .update(Buffer.from(preimage, "hex"))
+        .digest()
+      const invoice = makeBolt11Fixture({
+        hrp: "lnbc10n",
+        createdAt: Math.floor(Date.now() / 1000),
+        fields: [
+          bolt11PaymentHashField(paymentHash),
+          bolt11PlainDescriptionField("Synthetic numeric receipt"),
+        ],
+      })
+      const buyerIdentity = {
+        kind: "guest_ephemeral" as const,
+        pubkey: ANON_SIGNER_PUBKEY,
+        signer: plainTestSigner(
+          new NDKPrivateKeySigner(
+            Buffer.from(ANON_SIGNER_SECRET).toString("hex")
+          )
+        ),
+        orderId,
+        merchantPubkey,
+      }
+      let stored = lifecycle({
+        orderId,
+        buyerPubkey: buyerIdentity.pubkey,
+        merchantPubkey,
+        orderWireFormat: "open_markets",
+        checkoutMode: "private_checkout",
+        publicZapSigner: undefined,
+        invoice: undefined,
+        invoiceStatus: "not_requested",
+        paymentStatus: "not_started",
+      })
+      const get = spyOn(db.orderLifecycles, "get").mockImplementation(
+        async () => stored
+      )
+      const put = spyOn(db.orderLifecycles, "put").mockImplementation(
+        async (next) => {
+          stored = next
+          return next.orderId
+        }
+      )
+      const restoreTransaction = mockImmediateOrderLifecycleTransaction()
+      const publishOriginal = buyerOrderPublish.publishBuyerOrderMessage
+      let paymentCalls = 0
+      let reportAttempts = 0
+      const publish = spyOn(
+        buyerOrderPublish,
+        "publishBuyerOrderMessage"
+      ).mockImplementation((rumor, merchant, buyer, dependencies) =>
+        publishOriginal(rumor, merchant, buyer, {
+          ...dependencies,
+          publishPrivateMessageFn: async (input) => {
+            reportAttempts++
+            expect(input.rumor.kind).toBe(17)
+            expect(input.rumor.tags).toContainEqual([
+              "payment",
+              "lightning",
+              invoice,
+              preimage,
+            ])
+            if (reportAttempts === 1) throw new Error("Synthetic relay timeout")
+            return {
+              wrappedToRecipient: { id: "synthetic-receipt" },
+              wrappedToSelf: null,
+              selfCopyError: null,
+              deliveryRoute: "declared_inbox",
+            } as never
+          },
+        })
+      )
+      try {
+        await runOrderPayment(
+          basePaymentContext({
+            orderId,
+            buyerPubkey: buyerIdentity.pubkey,
+            merchantPubkey,
+            buyerIdentity,
+            merchantLud16: "merchant@wallet.example",
+            zapMode: "private_checkout",
+          }),
+          paymentDependencies({
+            fetchLnurlPayMetadata: async () => lnurlMetadata(),
+            requestCheckoutLnurlInvoice: async () => ({
+              invoice,
+              zapRelayUrls: [],
+              shouldWaitForZapReceipt: false,
+            }),
+            payCheckoutInvoice: async () => {
+              paymentCalls++
+              return {
+                status: "paid",
+                rail: "webln",
+                preimage,
+                paymentHash: paymentHash.toString("hex"),
+              }
+            },
+            savePaymentAttempt: async () => {},
+            updatePaymentAttempt: async () => {},
+            publishBuyerOrderMessage: publish,
+          })
+        )
+        expect(stored).toMatchObject({
+          paymentStatus: "paid",
+          proofDeliveryStatus: "retry_needed",
+          preimage,
+        })
+        expect(reportAttempts).toBe(1)
+        await resendOrderProof(orderId, buyerIdentity)
+        expect(stored.proofDeliveryStatus).toBe("sent")
+        expect(reportAttempts).toBe(2)
+        expect(paymentCalls).toBe(1)
+      } finally {
+        publish.mockRestore()
+        get.mockRestore()
+        put.mockRestore()
+        restoreTransaction()
+      }
+    }
+  )
+
   it("preserves the prior invoice when payment authority changes during LNURL metadata lookup", async () => {
     const orderId = "payment-authority-changes-during-metadata"
     const oldInvoice = privateInvoice()
