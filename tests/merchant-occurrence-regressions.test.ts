@@ -1,3 +1,4 @@
+import * as eventMarketProtocol from "../packages/core/src/protocol/event-market"
 import { installMerchantAcceptanceTestSession } from "./helpers/merchant-acceptance-session"
 import { __resetProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
 import { openMerchantAcceptanceEvidence } from "../packages/core/src/protocol/merchant-acceptance-privacy"
@@ -1050,15 +1051,32 @@ for (const hidden of [false, true]) {
         )
       )
       const staleProduct = parseProductEvent(stale)
-      await expect(
-        acceptMerchantOccurrenceOrder({
-          ...session,
-          order: order([staleProduct]),
-          products: reverse
-            ? [parseProductEvent(fresh), staleProduct]
-            : [staleProduct, parseProductEvent(fresh)],
-        })
-      ).rejects.toThrow()
+      // This tests signed revision selection, not relay recovery. Keep the
+      // uninitialized inventory path while making unavailable coverage explicit.
+      const plan = spyOn(
+        eventMarketProtocol,
+        "getEventMarketReadPlan"
+      ).mockRejectedValue(new Error("Synthetic relay coverage unavailable"))
+      try {
+        await expect(
+          acceptMerchantOccurrenceOrder({
+            ...session,
+            order: order([staleProduct]),
+            products: reverse
+              ? [parseProductEvent(fresh), staleProduct]
+              : [staleProduct, parseProductEvent(fresh)],
+          })
+        ).rejects.toThrow(
+          hidden ? "not currently sellable" : "Insufficient ordinary stock"
+        )
+        expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+        if (!hidden)
+          expect(
+            (await db.merchantInventoryProducts.get(staleProduct.id))?.stock
+          ).toBe(0)
+      } finally {
+        plan.mockRestore()
+      }
     })
   }
 }
