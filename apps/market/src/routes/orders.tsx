@@ -210,6 +210,11 @@ import {
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
 import {
+  canReplayCheckoutSparkOrderRecovery,
+  replayCheckoutSparkOrderRecovery,
+  type CheckoutSparkRecoveryReplayDeliveryEvidence,
+} from "../lib/checkout-spark-order-recovery-replay"
+import {
   acknowledgeOrRetryCheckoutSparkSettledSnapshot,
   getCheckoutSparkRecoveryDelivery,
 } from "../lib/checkout-spark-recovery-handoff"
@@ -867,6 +872,13 @@ function OrderDetail({
   >(null)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [recoveryReplayNotice, setRecoveryReplayNotice] = useState<{
+    orderId: string
+    buyerPubkey: string
+    authGeneration: number
+    text: string
+    deliveries: CheckoutSparkRecoveryReplayDeliveryEvidence[]
+  } | null>(null)
   const [paymentAddressUpdate, setPaymentAddressUpdate] =
     useState<OrderPaymentAddressUpdate | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -1075,6 +1087,47 @@ function OrderDetail({
   const settledRouterControl = isRouterSavedStateCurrent()
     ? (settledRouterQuery.data ?? null)
     : null
+  const recoveryReplayEligible =
+    !!routerBinding &&
+    !guestIdentity &&
+    actionsReady &&
+    isRouterSavedStateCurrent() &&
+    !routerProgress &&
+    settledRouterControl !== null &&
+    settledRouterControl.status !== "complete" &&
+    settledRouterControl.status !== "retired"
+  function recoveryReplayRequest(shouldContinue: () => boolean) {
+    if (!routerBinding)
+      throw new Error("This order has no saved router binding.")
+    return {
+      orderId: vm.orderId,
+      buyerPubkey,
+      merchantPubkey: row.merchantPubkey,
+      ...routerBinding,
+      shouldContinue,
+    }
+  }
+  const recoveryReplayQuery = useQuery({
+    queryKey: [
+      "checkout-spark-order-recovery-replay",
+      vm.orderId,
+      routerBinding?.planDigest ?? "none",
+      buyerPubkey,
+      authGeneration,
+      settledRouterControl?.status ?? "unavailable",
+    ],
+    enabled: recoveryReplayEligible,
+    queryFn: ({ signal }) =>
+      canReplayCheckoutSparkOrderRecovery(
+        recoveryReplayRequest(
+          () =>
+            !signal.aborted &&
+            viewMountedRef.current &&
+            isRouterSavedStateCurrent()
+        )
+      ),
+    refetchOnWindowFocus: false,
+  })
   const settledControlRefreshAt =
     settledRouterControl?.status === "pay_funding"
       ? settledRouterControl.fundingExpiresAt
@@ -1546,6 +1599,34 @@ function OrderDetail({
     },
     [actionsReady]
   )
+
+  async function resendSelectedOrderRecovery(): Promise<void> {
+    if (routerActionInFlightRef.current || !recoveryReplayEligible) return
+    routerActionInFlightRef.current = true
+    setRecoveryReplayNotice(null)
+    const shouldContinue = () =>
+      viewMountedRef.current && isRouterSavedStateCurrent() && !routerProgress
+    try {
+      await withBusy(async () => {
+        const result = await replayCheckoutSparkOrderRecovery(
+          recoveryReplayRequest(shouldContinue)
+        )
+        if (!shouldContinue()) return
+        setRecoveryReplayNotice({
+          orderId: vm.orderId,
+          buyerPubkey,
+          authGeneration,
+          deliveries: result.deliveries,
+          text:
+            result.status === "relay_accepted"
+              ? "Saved recovery copies were resent to the seller and organizer inbox relays. This does not confirm they were read. No payment was sent."
+              : "Both inbox relay acknowledgements could not be confirmed. No payment was sent; retry this same action.",
+        })
+      })
+    } finally {
+      routerActionInFlightRef.current = false
+    }
+  }
 
   async function verifyRetryFreshness(): Promise<void> {
     await assertCreatedEventMarketPickupTerms({
@@ -2690,6 +2771,49 @@ function OrderDetail({
               </span>
             )}
           </div>
+          {recoveryReplayEligible && recoveryReplayQuery.data === true && (
+            <details className="mt-3 text-xs text-[var(--text-secondary)]">
+              <summary className="cursor-pointer">Recovery delivery</summary>
+              <p className="mt-2">
+                Resend this order's saved recovery copies if the seller or
+                organizer cannot find them. This does not send another payment
+                or extend buyer routing.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-2 h-9 px-3 text-xs"
+                disabled={busy || recoveryReplayQuery.isFetching}
+                onClick={() => void resendSelectedOrderRecovery()}
+              >
+                Resend saved recovery copies
+              </Button>
+              {recoveryReplayNotice?.orderId === vm.orderId &&
+                recoveryReplayNotice.buyerPubkey === buyerPubkey &&
+                recoveryReplayNotice.authGeneration === authGeneration && (
+                  <div className="mt-2" role="status">
+                    <p>{recoveryReplayNotice.text}</p>
+                    <ul className="mt-2 space-y-1">
+                      {recoveryReplayNotice.deliveries.map((delivery) => (
+                        <li key={delivery.recipient}>
+                          {delivery.recipient === "seller"
+                            ? "Seller"
+                            : "Organizer"}{" "}
+                          copy
+                          {" · "}encrypted envelope {delivery.outerEnvelopeSize}
+                          {" · "}attempted:{" "}
+                          {delivery.attemptedSources.join(", ") ||
+                            "none confirmed"}
+                          {" · "}accepted:{" "}
+                          {delivery.acceptedSources.join(", ") ||
+                            "none confirmed"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+            </details>
+          )}
         </StatusNotice>
       )}
 

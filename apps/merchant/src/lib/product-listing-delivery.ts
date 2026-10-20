@@ -15,6 +15,8 @@ import {
   getStagedProductListingDeliveries,
   isProductListingEventReplayEligible,
   getAuthorEventFallbackRelayUrls,
+  getAccountSigner,
+  publishMerchantOrganizerStockCheckpoint,
   normalizePublicWebSocketUrl,
   markProductListingDeliveryReady,
   armRecoveredProductListingDelivery,
@@ -36,6 +38,38 @@ import {
 
 const WORKER_INTERVAL_MS = 15_000
 const MAX_JOB_DELIVERY_CONCURRENCY = 3
+
+function withStockCheckpointGate(
+  options: ProductListingDeliveryOptions
+): ProductListingDeliveryOptions {
+  return {
+    ...options,
+    prepareStockCheckpoint:
+      options.prepareStockCheckpoint ??
+      (async (input) => {
+        const signer = getAccountSigner()
+        if (
+          !signer ||
+          options.authenticatedPubkey !== input.merchantPubkey ||
+          (await signer.getPublicKey()) !== input.merchantPubkey
+        )
+          throw new Error(
+            "Reconnect Merchant to preserve entrusted-stock recovery"
+          )
+        const shouldContinue = () =>
+          getAccountSigner() === signer &&
+          options.isAuthenticatedPubkeyCurrent?.(input.merchantPubkey) !== false
+        for (const productCoordinate of input.productCoordinates)
+          await publishMerchantOrganizerStockCheckpoint({
+            db: options.inventoryDatabase ?? db,
+            signer,
+            authenticatedPubkey: input.merchantPubkey,
+            shouldContinue,
+            productCoordinate,
+          })
+      }),
+  }
+}
 
 async function runJobsWithConcurrency<T>(
   jobs: readonly T[],
@@ -534,14 +568,18 @@ export async function deliverQueuedProductListings(
   }
 
   await restoreLocalEvidence(queuedJob)
-  const deliveredJob = await deliverProductListingJob(jobId, publisher, {
-    ...deliveryOptions,
-    isAuthenticatedPubkeyCurrent: bindAuthenticatedProductListingAuthority(
-      deliveryOptions.authenticatedPubkey,
-      shouldContinue,
-      deliveryOptions.isAuthenticatedPubkeyCurrent
-    ),
-  })
+  const deliveredJob = await deliverProductListingJob(
+    jobId,
+    publisher,
+    withStockCheckpointGate({
+      ...deliveryOptions,
+      isAuthenticatedPubkeyCurrent: bindAuthenticatedProductListingAuthority(
+        deliveryOptions.authenticatedPubkey,
+        shouldContinue,
+        deliveryOptions.isAuthenticatedPubkeyCurrent
+      ),
+    })
+  )
   await restoreLocalEvidence(deliveredJob)
   return productListingJobToPublishResult(deliveredJob)
 }
@@ -655,7 +693,7 @@ export async function resumePendingProductListingDeliveries(
         customPublisher ??
           ((input) =>
             publishProductListingRelay(input, job.id, deliveryOptions)),
-        deliveryOptions
+        withStockCheckpointGate(deliveryOptions)
       )
       await restoreLocalEvidence(deliveredJob)
     } catch {

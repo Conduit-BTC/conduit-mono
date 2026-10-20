@@ -82,15 +82,45 @@ describe("Quantum Router V1 ordinary payment scope", () => {
     expect(body).not.toContain("freezeCheckoutSparkMerchantPublicZapPolicy")
   })
 
-  it("keeps V1 writers ordinary without changing the historical restore path", () => {
+  it("keeps every new writer private and separates event obligations without changing historical restore", () => {
     const writers = router.slice(
       router.indexOf("export function freezeCheckoutSparkSettledPlan("),
       router.indexOf("export function restoreCheckoutSparkSettledPlan(")
     )
     expect(
       writers.match(/assertPrivateCheckoutSparkSettledPlanInput\(input\)/g)
-    ).toHaveLength(2)
+    ).toHaveLength(3)
+    for (const name of [
+      "freezeCheckoutSparkSettledPlan",
+      "freezeCheckoutSparkSettledTreasuryPlan",
+      "freezeCheckoutSparkSettledEventPlan",
+    ]) {
+      const start = writers.indexOf(`export function ${name}(`)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const body = writers.slice(start, writers.indexOf("\n}", start) + 2)
+      const privateGuard = body.indexOf(
+        "assertPrivateCheckoutSparkSettledPlanInput(input)"
+      )
+      const freeze = body.indexOf("freezeCheckoutSparkSettledPlanInternal(")
+      expect(privateGuard).toBeGreaterThan(0)
+      expect(privateGuard).toBeLessThan(freeze)
+      if (name === "freezeCheckoutSparkSettledEventPlan") {
+        expect(body).toContain("readonly eventMarket:")
+        expect(body).toContain("input.eventMarket")
+        expect(body).not.toContain(
+          "assertOrdinaryCheckoutSparkSettledPlanInput(input)"
+        )
+      } else {
+        const ordinaryGuard = body.indexOf(
+          "assertOrdinaryCheckoutSparkSettledPlanInput(input)"
+        )
+        expect(ordinaryGuard).toBeGreaterThan(privateGuard)
+        expect(ordinaryGuard).toBeLessThan(freeze)
+      }
+    }
     expect(writers).toContain("input.merchantPublicZapPolicy !== undefined")
+    expect(writers).toContain('Object.hasOwn(input, "eventMarket")')
+    expect(writers).toContain('recipient.kind === "organizer"')
     const restore = router.slice(
       router.indexOf("export function restoreCheckoutSparkSettledPlan("),
       router.indexOf(

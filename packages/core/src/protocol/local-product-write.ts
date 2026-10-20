@@ -1800,6 +1800,7 @@ export async function commitLocalProductWrite(
             0
           )
           if (
+            (row.stock === undefined && reserved > 0) ||
             assignments.some(
               (assignment) =>
                 assignment.state === "active" &&

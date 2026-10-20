@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
   assertCheckoutSparkSettledFundingCoverage,
+  isCheckoutSparkNativeTreasuryPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
@@ -269,7 +270,7 @@ function budgetFromExactState(
   state: CheckoutSparkSettledReconciliation
 ): CheckoutSparkNativeTreasuryBudget {
   if (
-    state.plan.schemaVersion !== 4 ||
+    !isCheckoutSparkNativeTreasuryPlan(state.plan) ||
     !state.plan.nativeTreasury ||
     !state.credit
   )
@@ -347,7 +348,13 @@ export function deriveCheckoutSparkNativeTreasuryBudget(
     record.credit.creditedSats !== state.credit!.creditedSats
   )
     invalid()
-  for (const legId of record.requiredCommerceLegIds) {
+  const requiredPayoutIds =
+    state.plan.schemaVersion === 5
+      ? state.plan.recipients
+          .filter((recipient) => recipient.kind !== "conduit")
+          .map((recipient) => recipient.legId)
+      : record.requiredCommerceLegIds
+  for (const legId of requiredPayoutIds) {
     const leg = state.legs.find((candidate) => candidate.legId === legId)!
     const paid = record.paidLegs.find((candidate) => candidate.legId === legId)
     if (
@@ -647,7 +654,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
   let state = restoreCheckoutSparkSettledReconciliation(loaded.state)
   let revision = loaded.revision
   if (
-    state.plan.schemaVersion !== 4 ||
+    !isCheckoutSparkNativeTreasuryPlan(state.plan) ||
     state.plan.checkoutId !== input.checkoutId ||
     state.plan.planDigest !== input.planDigest ||
     state.plan.recipients.find((recipient) => recipient.legId === input.legId)

@@ -26,11 +26,14 @@ export function requireCheckoutSparkSettledExactOutgoingRequest(
     (candidate) => candidate.legId === target.legId
   )
   if (
-    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
+    (plan.schemaVersion !== 3 &&
+      plan.schemaVersion !== 4 &&
+      plan.schemaVersion !== 5) ||
     target.walletId !== plan.walletId ||
     target.network !== plan.network ||
     !recipient ||
-    (plan.schemaVersion === 4 && recipient.kind === "conduit") ||
+    ((plan.schemaVersion === 4 || plan.schemaVersion === 5) &&
+      recipient.kind === "conduit") ||
     target.recipientId !== recipient.recipientId ||
     target.intent.legId !== recipient.legId ||
     (target.generation !== undefined &&

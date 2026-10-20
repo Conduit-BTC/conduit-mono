@@ -22,7 +22,7 @@ const HEX_64 = /^[0-9a-f]{64}$/
 
 /** Machine reconciliation data, never takeover authorization or payment proof. */
 export interface CheckoutSparkMerchantProgressPayload {
-  schemaVersion: 1 | 2 | 3
+  schemaVersion: 1 | 2 | 3 | 4
   type: "checkout_spark_merchant_progress"
   snapshotId: string
   initialHandoffId: string
@@ -71,7 +71,7 @@ function canonicalState(
           }
         : {}),
     })),
-    ...(state.schemaVersion === 5
+    ...(state.schemaVersion === 5 || state.schemaVersion === 6
       ? { treasuryFinalization: structuredClone(state.treasuryFinalization) }
       : {}),
     updatedAt: state.updatedAt,
@@ -126,17 +126,25 @@ export function createCheckoutSparkMerchantProgress(input: {
     }
     return {
       schemaVersion:
-        state.schemaVersion === 5 ? 3 : state.schemaVersion === 4 ? 2 : 1,
+        state.schemaVersion === 6
+          ? 4
+          : state.schemaVersion === 5
+            ? 3
+            : state.schemaVersion === 4
+              ? 2
+              : 1,
       type: "checkout_spark_merchant_progress",
       snapshotId: bytesToHex(
         sha256(
           new TextEncoder().encode(
             JSON.stringify([
-              state.schemaVersion === 5
-                ? "conduit:checkout-spark-merchant-progress:v3"
-                : state.schemaVersion === 4
-                  ? "conduit:checkout-spark-merchant-progress:v2"
-                  : SNAPSHOT_DOMAIN,
+              state.schemaVersion === 6
+                ? "conduit:checkout-spark-merchant-progress:v4"
+                : state.schemaVersion === 5
+                  ? "conduit:checkout-spark-merchant-progress:v3"
+                  : state.schemaVersion === 4
+                    ? "conduit:checkout-spark-merchant-progress:v2"
+                    : SNAPSHOT_DOMAIN,
               input.initialHandoffId,
               state,
             ])

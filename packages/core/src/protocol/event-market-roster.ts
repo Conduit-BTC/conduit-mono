@@ -13,6 +13,10 @@ import {
   type ParsedEventMarketCalendar,
 } from "./event-market"
 import { EVENT_KINDS } from "./kinds"
+import {
+  buildEventMarketOrganizerFeeTags,
+  type EventMarketOrganizerFeeAuthoring,
+} from "./event-market-organizer-fee"
 import { parseProductEvent } from "./products"
 import {
   compareReplaceableEventFrontiers,
@@ -57,6 +61,8 @@ export interface EventMarketRosterDraftInput {
   state: EventMarketCommerceState
   merchants: readonly EventMarketMerchantRow[]
   previousEventId?: string
+  /** Optional Conduit fee extension; ordinary product prices remain Merchant-owned. */
+  organizerFee?: EventMarketOrganizerFeeAuthoring
 }
 
 function validDTag(value: string): boolean {
@@ -122,6 +128,9 @@ export function buildEventMarketRosterDraft(
       row.mode,
       row.assignment,
     ]),
+    ...(input.organizerFee !== undefined
+      ? buildEventMarketOrganizerFeeTags(input.organizerFee)
+      : []),
     ...(input.previousEventId ? [["prev", input.previousEventId]] : []),
   ]
   const draft = { kind: EVENT_KINDS.EVENT_MARKET, tags, content: "" }
@@ -138,9 +147,17 @@ export function buildEventMarketRosterDraft(
 export function parseEventMarketRosterEvent(
   event: VerifiedNostrEvent
 ): ParsedEventMarketRoster | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketRosterFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private evidence only; callers verify its exact signature first. */
+export function parseEventMarketRosterFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedEventMarketRoster | null {
   if (
     event.kind !== EVENT_KINDS.EVENT_MARKET ||
-    !isVerifiedNostrEvent(event) ||
     new TextEncoder().encode(JSON.stringify(event)).length > MAX_EVENT_BYTES
   ) {
     return null
@@ -433,6 +450,13 @@ export function resolveEventMarketProduct(input: {
         assignment,
         product,
         parentProduct: input.parentProduct,
+        ...(merchant.mode === "organizer_handoff"
+          ? {
+              organizerHandoff: {
+                organizerPubkey: input.market.organizerPubkey,
+              },
+            }
+          : {}),
       })
     ) {
       return { state: "malformed" }

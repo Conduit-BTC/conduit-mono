@@ -166,7 +166,9 @@ export async function advanceCheckoutSparkSettledShopper(
   const { plan } = prepared
   assertMarketCheckoutSparkDispatchPlan(plan)
   if (
-    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
+    (plan.schemaVersion !== 3 &&
+      plan.schemaVersion !== 4 &&
+      plan.schemaVersion !== 5) ||
     plan.checkoutId !== input.checkoutId ||
     plan.planDigest !== input.planDigest ||
     plan.orderId !== input.orderId ||

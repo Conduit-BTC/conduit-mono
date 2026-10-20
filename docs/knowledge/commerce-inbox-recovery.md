@@ -26,6 +26,15 @@ NIP-17 uses the declared inbox plan; legacy NIP-04 incoming and outgoing reads
 use the established bounded legacy plan, including eligible general/personal and
 fallback relays. These plans remain separate for recent reads and older pages.
 
+Dedicated Merchant router recovery uses the same permissive owner inbox read
+policy: current, retained and cutover inboxes plus the approved compatibility
+read set. Its bounded financial-discovery scan is separate from ordinary message
+projection. Discovery, retained recovery inspection and exact-wrap reopening
+must preserve each target's typed grant and live account exclusions. Finding a
+candidate does not authorize a payment; the original order, recovery authority
+and exact provider evidence retain their separate checks. This read policy does
+not add a private-message write destination or change a signed inbox declaration.
+
 Recent reads and demand-driven older pages use the protected reader and isolated
 NIP-42 executor. Per-relay overlapping inclusive ranges deduplicate wrapper IDs.
 A changed saturated or incomplete recent window invalidates that source's older
@@ -262,3 +271,18 @@ blocks the dependent action; a disconnected or different account cannot perform
 the repair. Rows belonging to another account remain pending until that account
 accesses acceptance. This is local persistence protection, not a change to NIP-44
 wire encryption or signer authority.
+
+Delegated stock imports use that same account/DB-fenced owner. Imported journal
+entries retain stable evidence commitments rather than another plaintext copy of
+the buyer order. Legacy acceptance and related entry repairs commit together;
+partial repair, changed rows, lost authority or failed persistence leave the
+once-only stock decision intact and block the dependent operation.
+
+Merchant stock checkpoints keep their original portable order bytes and wire
+hashes inside the authenticated private envelope. Local checkpoint drafts are
+device-encrypted too. A fresh device authenticates the original checkpoint and
+frontiers, then reseals acceptance evidence using its own device key before the
+atomic stock restore. Device ciphertext and randomized nonces never become wire
+commitments, replay identities or inventory frontiers. Historical checkpoint
+payloads remain readable, and interrupted delivery retries the exact saved rumor
+and envelope rather than signing another stock decision.

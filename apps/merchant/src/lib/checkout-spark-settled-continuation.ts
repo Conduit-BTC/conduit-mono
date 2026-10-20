@@ -9,6 +9,7 @@ import {
   getCheckoutSparkSettledLegGeneration,
   getAccountSigner,
   hasCheckoutSparkProviderSendWindow,
+  isCheckoutSparkNativeTreasuryPlan,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
   proveSparkCheckoutReceiveCredit,
   publishMerchantCheckoutSparkProgress,
@@ -311,7 +312,7 @@ export async function selectMerchantCheckoutSparkSignedNextPayout(
       return
     }
     if (
-      state.plan.schemaVersion === 4 &&
+      isCheckoutSparkNativeTreasuryPlan(state.plan) &&
       state.plan.recipients.find((recipient) => recipient.legId === next.legId)
         ?.kind === "conduit"
     ) {
@@ -362,6 +363,19 @@ export async function selectMerchantCheckoutSparkSignedNextPayout(
       progress,
       assertCurrent
     ) {
+      if (progress.type === "checkout_spark_organizer_execution") {
+        if (
+          progress.merchantPubkey !== principal ||
+          progress.initialMerchantHandoffId !== initial.handoffId
+        )
+          throw new Error(
+            "Checkout Spark Organizer progress selection changed."
+          )
+        // The Merchant will retain/acknowledge its own role-bound checkpoint
+        // before dispatch; an Organizer snapshot is not a Merchant self-wrap.
+        await inspect(initial, progress.state, assertCurrent, false)
+        return
+      }
       if (
         progress.merchantPubkey !== principal ||
         progress.initialHandoffId !== initial.handoffId ||

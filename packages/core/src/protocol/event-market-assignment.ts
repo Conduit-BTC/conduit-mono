@@ -17,10 +17,27 @@ const MAX_EVENT_BYTES = 65_536
 const PROFILE = "event-market-assignment"
 const ALT = "Open Markets occurrence product assignment"
 
+/** Conduit extension; the public commitment is not the private grant itself. */
+export const EVENT_MARKET_ASSIGNMENT_STOCK_POOL_TAG = "conduit_stock_pool"
+
 export type EventMarketAssignmentState = "active" | "removed"
 export type EventMarketAssignmentFulfillment = "pickup" | "shipping" | "digital"
 export type EventMarketAssignmentInventory =
   { mode: "tracked"; quantity: number } | { mode: "untracked" }
+
+export interface EventMarketAssignmentOrganizerStockPool {
+  state: "active" | "closed"
+  /** Exact immutable private grant rumor id. */
+  poolId: string
+  organizerPubkey: string
+  quantity: number
+  importedQuantity: number
+}
+
+export type EventMarketAssignmentStockPoolStatus =
+  | { state: "absent" }
+  | { state: "invalid" }
+  | { state: "valid"; pool: EventMarketAssignmentOrganizerStockPool }
 
 export interface EventMarketAssignmentTuple {
   marketCoordinate: string
@@ -41,6 +58,7 @@ export interface EventMarketAssignmentDraftInput extends EventMarketAssignmentTu
   fulfillmentMethods: readonly EventMarketAssignmentFulfillment[]
   previousEventId?: string
   relayHints?: EventMarketAssignmentRelayHints
+  organizerStockPool?: EventMarketAssignmentOrganizerStockPool
 }
 
 export interface ParsedEventMarketAssignment extends EventMarketAssignmentTuple {
@@ -55,6 +73,8 @@ export interface ParsedEventMarketAssignment extends EventMarketAssignmentTuple 
   fulfillmentMethods: EventMarketAssignmentFulfillment[]
   previousEventId?: string
   relayHints: EventMarketAssignmentRelayHints
+  /** Independently decoded; malformed extensions grant no stock authority. */
+  stockPool: EventMarketAssignmentStockPoolStatus
   /** The signed record retains optional display and source tags. */
   signedEvent: SignedPublicNostrEvent
 }
@@ -157,6 +177,57 @@ function validFulfillment(
   )
 }
 
+function validOrganizerStockPool(
+  pool: EventMarketAssignmentOrganizerStockPool,
+  organizerPubkey: string,
+  inventory: EventMarketAssignmentInventory
+): boolean {
+  return (
+    inventory.mode === "tracked" &&
+    (pool.state === "active" || pool.state === "closed") &&
+    HEX_64.test(pool.poolId) &&
+    HEX_64.test(pool.organizerPubkey) &&
+    pool.organizerPubkey === organizerPubkey &&
+    Number.isInteger(pool.quantity) &&
+    pool.quantity > 0 &&
+    pool.quantity <= MAX_ALLOCATION &&
+    Number.isInteger(pool.importedQuantity) &&
+    pool.importedQuantity >= 0 &&
+    pool.importedQuantity <= pool.quantity
+  )
+}
+
+function parseOrganizerStockPool(
+  tags: readonly (readonly string[])[],
+  organizerPubkey: string,
+  inventory: EventMarketAssignmentInventory
+): EventMarketAssignmentStockPoolStatus {
+  const markers = tags.filter(
+    (tag) => tag[0] === EVENT_MARKET_ASSIGNMENT_STOCK_POOL_TAG
+  )
+  if (markers.length === 0) return { state: "absent" }
+  const marker = markers[0]!
+  if (
+    markers.length !== 1 ||
+    marker.length !== 7 ||
+    marker[1] !== "1" ||
+    (marker[2] !== "active" && marker[2] !== "closed") ||
+    !/^[1-9][0-9]*$/.test(marker[5] ?? "") ||
+    !/^(0|[1-9][0-9]*)$/.test(marker[6] ?? "")
+  )
+    return { state: "invalid" }
+  const pool: EventMarketAssignmentOrganizerStockPool = {
+    state: marker[2],
+    poolId: marker[3]!,
+    organizerPubkey: marker[4]!,
+    quantity: Number(marker[5]),
+    importedQuantity: Number(marker[6]),
+  }
+  return validOrganizerStockPool(pool, organizerPubkey, inventory)
+    ? { state: "valid", pool }
+    : { state: "invalid" }
+}
+
 export function buildEventMarketAssignmentDraft(
   input: EventMarketAssignmentDraftInput
 ): EventMarketEventDraft {
@@ -171,7 +242,13 @@ export function buildEventMarketAssignmentDraft(
       !HEX_64.test(input.previousEventId)) ||
     !validRelayHint(input.relayHints?.market) ||
     !validRelayHint(input.relayHints?.occurrence) ||
-    !validRelayHint(input.relayHints?.product)
+    !validRelayHint(input.relayHints?.product) ||
+    (input.organizerStockPool !== undefined &&
+      !validOrganizerStockPool(
+        input.organizerStockPool,
+        tuple.market.authorPubkey,
+        input.inventory
+      ))
   )
     throw new Error("Event Market occurrence assignment is invalid.")
   const reference = (coordinate: string, hint?: string) =>
@@ -191,6 +268,19 @@ export function buildEventMarketAssignmentDraft(
         : ["inventory", "untracked"],
       ...input.fulfillmentMethods.map((method) => ["fulfillment", method]),
       ...(input.previousEventId ? [["prev", input.previousEventId]] : []),
+      ...(input.organizerStockPool
+        ? [
+            [
+              EVENT_MARKET_ASSIGNMENT_STOCK_POOL_TAG,
+              "1",
+              input.organizerStockPool.state,
+              input.organizerStockPool.poolId,
+              input.organizerStockPool.organizerPubkey,
+              String(input.organizerStockPool.quantity),
+              String(input.organizerStockPool.importedQuantity),
+            ],
+          ]
+        : []),
       ["alt", ALT],
     ],
   }
@@ -297,6 +387,11 @@ export function parseEventMarketAssignmentEvent(
     state,
     inventory,
     fulfillmentMethods,
+    stockPool: parseOrganizerStockPool(
+      event.tags,
+      coordinates.market.authorPubkey,
+      inventory
+    ),
     ...(prevTags[0] ? { previousEventId: prevTags[0][1] } : {}),
     relayHints: {
       ...(market[0]!.hint ? { market: market[0]!.hint } : {}),
@@ -312,10 +407,26 @@ export function isEventMarketAssignmentProductSuitable(input: {
   assignment: ParsedEventMarketAssignment
   product: ProductSchema
   parentProduct?: ProductSchema
+  /** Current roster delegation only; the private writer grant is verified at checkout. */
+  organizerHandoff?: { organizerPubkey: string }
 }): boolean {
-  const { assignment, product, parentProduct } = input
+  const { assignment, product, parentProduct, organizerHandoff } = input
+  const pool = assignment.stockPool
+  if (
+    organizerHandoff &&
+    (pool.state !== "valid" ||
+      pool.pool.state !== "active" ||
+      pool.pool.organizerPubkey !== organizerHandoff.organizerPubkey ||
+      pool.pool.importedQuantity >= pool.pool.quantity ||
+      assignment.inventory.mode !== "tracked")
+  )
+    return false
   if (
     assignment.state !== "active" ||
+    assignment.stockPool.state === "invalid" ||
+    (assignment.stockPool.state === "valid" &&
+      assignment.stockPool.pool.state === "active" &&
+      !organizerHandoff) ||
     product.id !== assignment.productCoordinate ||
     product.pubkey !== assignment.merchantPubkey ||
     product.visibility !== "public" ||

@@ -281,7 +281,7 @@ cross-app commerce Playwright shards. App-local changes keep their owning app
 shard and add commerce when they affect the shared checkout, order, product,
 messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
 `main` run every critical shard; docs-only changes skip browser installation.
-Full Market and Merchant areas each run in three single-worker jobs. Their
+Full Market runs in five single-worker jobs; Merchant runs in four. Their
 project-aware discovery manifests must combine to each complete area selection
 with no missing or repeated tests.
 Market browser fixtures use synthetic mainnet invoices so Spark wallet setup and
@@ -307,15 +307,18 @@ job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
-25-minute limit for its serial ordinary, native-router, and receiver setup
-lanes, including setup, evidence upload, and cleanup. Individual test deadlines
+25-minute limit for its serial ordinary, ordinary native-router, and receiver setup
+lanes. Event native-router cases run in a separate parallel, 25-minute job with
+independent app, relay, wallet, signer and browser-storage state. Both jobs remain
+required whenever commerce is selected. Limits include setup, evidence upload,
+and cleanup. Individual test deadlines
 remain unchanged. Job cancellation still fails the aggregate gate, even when
 all test artifacts were uploaded successfully.
 
 A retry-dependent pass still fails the smoke gate. Required CI runs use zero
 automatic retries; a separate diagnostic rerun cannot turn a failed first
-attempt into readiness evidence. Concurrent shards and selected coverage are
-unchanged.
+attempt into readiness evidence. Selected coverage and first-attempt requirements
+remain unchanged.
 
 Every progress and failure entry includes an opaque case ID derived from
 Playwright's test identity. Parameterized cases at the same source line retain
@@ -332,6 +335,11 @@ execution; the separate manifest/SHA/first-attempt verifier remains the gate.
 
 The isolated router and receiver setup lanes retain separate `smoke-evidence-router-<attempt>`
 and `smoke-evidence-router-receiver-setup-<attempt>` artifacts under the same policy.
+Event native cases retain `smoke-evidence-event-router-<attempt>` under that same
+policy. Before execution, project-aware discovery verifies that the ordinary and
+Event native profiles form the exact full native manifest with no omissions or
+overlap. The default local router profile still runs the complete native set;
+`PLAYWRIGHT_ROUTER_NATIVE_PROFILE=ordinary` or `event` selects a CI partition.
 Each lane runs after an earlier lane fails only when its own setup and selection
 succeeded. A later passing lane does not replace an earlier failure.
 
@@ -473,8 +481,14 @@ These are non-negotiable across all code:
   A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
   Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
   signing to the initial private order, same-order payment reports, and the
-  separately constrained merchant-only router recovery envelopes documented in
+  separately constrained router recovery envelopes documented in
   [the protocol specification](docs/specs/protocol.md#client-ephemeral-guest-order-key-exception).
+  Event organizer delivery is limited to the organizer frozen in that order's
+  exact authorized event binding: the recovery/progress package for a
+  version-five organizer-handoff plan, or the separate zero-commerce, zero-fee
+  purchase packet with no wallet or
+  invoice. It permits no stock records, generic messages, guest inbox, other
+  order or recipient, or extension of the existing guest signing lifetime.
   It must never become an account key or nsec.
 - A revocable NIP-46 client connection key must use encrypted browser-local
   storage and must be deleted on logout. Store a CI client key only as a

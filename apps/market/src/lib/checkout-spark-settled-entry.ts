@@ -13,6 +13,8 @@ import {
   deriveCheckoutSparkSignedCommerceObligations,
   calculateConduitCheckoutFeeSats,
   calculateCheckoutSparkSettledGrossFundingSats,
+  calculateCheckoutSparkEventSettledGrossFundingSats,
+  isContactFreeEventHandoff,
   checkoutSparkConduitFeeRecipient,
   getNdk,
   getShippingDestinationEligibility,
@@ -31,6 +33,8 @@ import {
   type SignedPublicNostrEvent,
   type CheckoutSparkMerchantPublicZapPolicy,
 } from "@conduit/core"
+import { assertCheckoutSparkSignedEventMarketSources } from "@conduit/core/protocol/checkout-spark-event-market-sources"
+import { matchesCheckoutSparkOrderEventMarketSnapshot } from "@conduit/core/protocol/checkout-spark-event-market"
 
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
 import {
@@ -81,6 +85,7 @@ export interface PrepareCheckoutSparkSettledOrderInput {
   shouldContinue: () => boolean
   note?: string
   guestContact?: OrderSchema["guestContact"]
+  contactFreePickup?: OrderSchema["contactFreePickup"]
   shippingAddress?: OrderSchema["shippingAddress"]
   relayAuthMethod?: "nip07" | "nip46"
   merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
@@ -189,6 +194,15 @@ async function prepareCheckoutSparkSettledOrderPhase(
   }
   assertCurrent()
   const commerceQuote = buildCheckoutSparkCommerceEvidence(quote)
+  const eventMarket = quote.eventMarket
+    ? assertCheckoutSparkSignedEventMarketSources({
+        eventMarket: quote.eventMarket,
+        commerceQuote,
+        merchantPubkey,
+        sourceEvents: quote.pickupSourceEvents ?? [],
+        acceptedAtMs: input.nowMs,
+      })
+    : undefined
   // Old event-pickup snapshots are recovery-only after the event-model cutover.
   // The new event-market flow needs its own current signed admission proof.
   if (commerceQuote.lines.some((line) => line.pickup)) {
@@ -198,10 +212,13 @@ async function prepareCheckoutSparkSettledOrderPhase(
     !HEX_PUBKEY.test(buyer.pubkey) ||
     !HEX_PUBKEY.test(merchantPubkey) ||
     quote.pricing.status !== "ok" ||
-    !quote.pricing.paymentRequired ||
+    (!quote.pricing.paymentRequired &&
+      !(eventMarket && eventMarket.organizerFeeSats > 0)) ||
     quote.pricing.shippingCost.status === "manual" ||
     quote.pricing.shippingCost.missingProductIds.length !== 0 ||
-    quote.pricing.totalSats <= 0 ||
+    (eventMarket
+      ? quote.pricing.totalSats < 0
+      : quote.pricing.totalSats <= 0) ||
     quote.pricing.itemSubtotalSats + quote.pricing.shippingCost.totalSats !==
       quote.pricing.totalSats ||
     quote.pricing.totalMsats !== quote.pricing.totalSats * 1_000 ||
@@ -216,7 +233,11 @@ async function prepareCheckoutSparkSettledOrderPhase(
       (priced) =>
         (priced.format !== "digital" && priced.format !== "physical") ||
         priced.currency !== "SATS" ||
-        !matchesCheckoutSparkOrderPrice(priced, commerceQuote.pricing)
+        !matchesCheckoutSparkOrderPrice(
+          priced,
+          commerceQuote.pricing,
+          eventMarket !== undefined
+        )
     ) ||
     !Number.isSafeInteger(input.nowMs) ||
     input.nowMs <= 0 ||
@@ -236,6 +257,9 @@ async function prepareCheckoutSparkSettledOrderPhase(
     shippingEvents: quote.shippingSourceEvents,
     pickupSourceEvents: quote.pickupSourceEvents,
     acceptedAtMs: input.nowMs,
+    ...(eventMarket
+      ? { eventMarket, eventSourceEvents: quote.pickupSourceEvents }
+      : {}),
   })
   if (getMixedFulfillmentBlockingMessage(quote.pricing.items)) {
     throw new Error(
@@ -258,6 +282,28 @@ async function prepareCheckoutSparkSettledOrderPhase(
     )!
     const event = product.supplierAllocation?.revisionEvent
     if (!event) throw new Error("Checkout Spark product source is unavailable.")
+    if (eventMarket) {
+      if (
+        priced.format !== "physical" ||
+        !matchesCheckoutSparkOrderEventMarketSnapshot(
+          priced.fulfillment,
+          eventMarket,
+          line.productCoordinate
+        ) ||
+        (priced.shippingCostSats ?? 0) !== 0 ||
+        priced.sourceShippingCost !== undefined ||
+        priced.shippingOptionId !== undefined ||
+        priced.shippingOptionDTag !== undefined ||
+        priced.shippingPolicyQuote !== undefined ||
+        (priced.shippingCountries?.length ?? 0) !== 0 ||
+        (priced.shippingCountryRules?.length ?? 0) !== 0
+      )
+        throw new Error(
+          "Checkout Spark Event Market fulfillment changed after validation."
+        )
+      hasPhysicalFulfillment = true
+      continue
+    }
     const option = resolveCheckoutSparkSignedShipping({
       productEvent: event,
       line,
@@ -325,9 +371,14 @@ async function prepareCheckoutSparkSettledOrderPhase(
   }
   const timing = getCheckoutSparkSettledTiming()
   const takeoverAt = input.nowMs + timing.takeoverAfterMs
-  const grossFundingSats = calculateCheckoutSparkSettledGrossFundingSats(
-    commerceQuote.commerceTotalSats
-  )
+  const grossFundingSats = eventMarket
+    ? calculateCheckoutSparkEventSettledGrossFundingSats(
+        commerceQuote.commerceTotalSats,
+        eventMarket.organizerFeeSats
+      )
+    : calculateCheckoutSparkSettledGrossFundingSats(
+        commerceQuote.commerceTotalSats
+      )
   if (
     !Number.isSafeInteger(takeoverAt) ||
     !Number.isSafeInteger(grossFundingSats) ||
@@ -356,18 +407,23 @@ async function prepareCheckoutSparkSettledOrderPhase(
     shippingAddress,
     note: input.note || undefined,
     guestContact: input.guestContact,
+    contactFreePickup: input.contactFreePickup,
     createdAt: input.nowMs,
   })
   // Historical pickup parsing permits one contact; new guest orders do not.
   if (
     buyer.kind === "guest_ephemeral" &&
+    !(
+      orderDraft.contactFreePickup &&
+      isContactFreeEventHandoff(orderDraft.items, input.nowMs)
+    ) &&
     (!orderDraft.guestContact?.email?.trim() ||
       !orderDraft.guestContact.phone?.trim())
   ) {
     throw new Error("Guest orders require both email and phone.")
   }
   const conduitFeeSats = calculateConduitCheckoutFeeSats(
-    commerceQuote.commerceTotalSats
+    commerceQuote.commerceTotalSats || (eventMarket ? 1 : 0)
   )
   const policy = canUseCheckoutSparkLocalRouterCanary()
     ? ("local_router_canary" as const)
@@ -440,6 +496,27 @@ async function prepareCheckoutSparkSettledOrderPhase(
     ...sourcesById.values(),
   ])
 
+  if (eventMarket && eventMarket.organizerFeeSats > 0) {
+    const fee = eventMarket.organizerFee
+    if (fee.state !== "active")
+      throw new Error("Checkout Spark organizer fee terms are unavailable.")
+    recipients.push({
+      kind: "organizer",
+      recipientId: eventMarket.organizerPubkey,
+      destination: {
+        type: "lightning_address",
+        value: fee.lightningAddress,
+        source: {
+          type: "signed_event_market",
+          marketCoordinate: eventMarket.marketCoordinate,
+          eventId: eventMarket.marketEventId,
+          eventCreatedAt: fee.createdAt,
+        },
+      },
+      weightSats: eventMarket.organizerFeeSats,
+    })
+  }
+
   const conduitAddress = checkoutSparkConduitFeeRecipient(policy)
   recipients.push({
     kind: "conduit",
@@ -476,6 +553,10 @@ async function prepareCheckoutSparkSettledOrderPhase(
             quoteAuthority: quote,
             sourceEvents,
             recipients,
+            ...(eventMarket ? { eventMarket } : {}),
+            ...(eventMarket?.mode === "organizer_handoff"
+              ? { organizerOrder: orderDraft }
+              : {}),
             onPlanPrepared: ({ plan, sourceEvents: canonicalSources }) => {
               continuationPlanDigest = plan.planDigest
               saveCheckoutSparkSettledContinuation(
@@ -493,7 +574,9 @@ async function prepareCheckoutSparkSettledOrderPhase(
                       : plan.createdAt + 24 * 60 * 60_000,
                   order: orderSchema.parse({
                     ...orderDraft,
-                    createdAt: Math.max(input.nowMs, plan.createdAt),
+                    createdAt: eventMarket
+                      ? plan.createdAt
+                      : Math.max(input.nowMs, plan.createdAt),
                   }),
                   sourceEvents: canonicalSources,
                   addressValidity,
@@ -522,7 +605,9 @@ async function prepareCheckoutSparkSettledOrderPhase(
   assertCurrent()
   const order = orderSchema.parse({
     ...orderDraft,
-    createdAt: Math.max(input.nowMs, prepared.plan.createdAt),
+    createdAt: eventMarket
+      ? prepared.plan.createdAt
+      : Math.max(input.nowMs, prepared.plan.createdAt),
   })
   const published = await (
     dependencies.publishOrder ?? publishCheckoutSparkSettledBoundOrder

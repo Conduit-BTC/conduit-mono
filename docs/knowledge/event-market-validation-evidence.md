@@ -139,9 +139,63 @@ the upgraded database. Structural union preservation in
 
 These are synthetic cryptographic/database integration tests. They do not prove
 external signer compatibility, independent-device reconciliation, live relay
-convergence, funded settlement or physical handout. Same-event rescheduling retains original order terms and updates unused
-allocation deadlines. Atomic rollover remains incomplete. New delegated organizer acceptance is gated;
-historical organizer receipt tests cannot stand in for that integration.
+convergence, funded settlement or physical handout. Same-event rescheduling
+retains original order terms and updates unused allocation deadlines. Atomic
+rollover remains incomplete. Current organizer checkout, stock and recovery
+integration has separate coverage in the
+[router acceptance map](event-market-router-acceptance.md); historical organizer
+receipts are not a substitute for it.
+
+## Organizer stock handover foundation
+
+`event-market-stock-authority` checks the Conduit-private grant, consumption and
+closing grammar with real NIP-59/NIP-44 encryption. It separates structural
+parsing from authenticated envelope evidence. `event-market-organizer-stock-marker`
+checks the public assignment commitment, material forks and cold-recovery denial
+when private stock authority is unresolved. Unknown extensions do not erase the
+signed catalog record or become new financial authority.
+
+`merchant-inventory-organizer-hold` and `merchant-inventory-product-write` cover
+the shared stock owner: ordinary availability, seller pickup exclusion,
+concurrent sales, assignment removal, expiry/cancellation, tracking-mode edits,
+rollback and preservation of the entrusted quantity.
+
+`event-market-stock-journal` composes a saved Merchant reservation, its signed
+assignment successor and an explicitly designated organizer's local journal.
+It covers atomic acceptance/claim uniqueness, exact replay, closing races,
+chronology, input mutation, reload, external signing refusal, session changes
+and durable exact recipient/owner envelope retries. No test publishes to public
+relays or transfers funds. `event-market-stock-schema` preserves populated
+installed v25/v26/v26.1/v27/v28 histories through additive v29 and proves that
+normal cache clearing/pruning retains inventory and private journals.
+
+`event-market-stock-import` also exercises a second finite grant on the intact
+original organizer writer after Merchant reconciliation. Receiving the new grant
+requires the separately retained, exact Merchant-signed closed projection and
+the complete local closing prefix. The original journal and delivery evidence
+remain intact; this is neither a consumption reset nor cold read-only recovery.
+Missing or mismatched closure evidence must leave both pool installation and
+the previous frontier unchanged.
+
+`event-market-stock-handover-ui` exercises the same device-receive composition
+used by the stock panel when an installation aborts after its local attempt
+marker is saved. A retry keeps that marker and requires the same active v2
+device registration, its complete authenticated journal and an unchanged
+atomic installation frontier. A grant already recorded as installed cannot be
+reinstalled after journal loss. Missing, retired, legacy-ambiguous or changed
+authority, incomplete history and unrelated extra markers remain blocked.
+Grant authentication compares canonical event fields, not object-property order.
+
+The current extension composes authenticated Merchant import/closing,
+checkout routing and claims, plus complete cooperative fresh-device writer
+handover. The [router acceptance map](event-market-router-acceptance.md) identifies
+the matching shared integration suites and actual-screen browser journeys,
+including interrupted Organizer-to-Merchant continuation and replacement-device
+recovery. Ordinary suitability remains gated for an active or invalid stock
+commitment. These controlled tests do not establish live delivery, funded
+handout, external signer compatibility or physical-device acceptance. An
+unavailable original device without a complete positive handover still requires
+reconciliation; an empty inbox never grants a replacement writer.
 
 ## Order continuity regression coverage
 
@@ -204,3 +258,10 @@ order, including equal timestamps, sold-out/hidden revisions and unrelated or
 invalid events. The browser acceptance helper waits for the durable replay
 control, not a temporary publication notice; a synthetic signer interruption
 reproduces replacement of that notice while the acceptance remains committed.
+
+Organizer stock import coverage also inspects raw acceptance, imported-entry and
+checkpoint rows for private notes; it restores the same exact order on a fresh
+device with a new encryption key. Legacy repair retains immutable checkpoint
+rumor and envelope identities. Stock closing, whole-order manifests, concurrent
+import, handout provenance and publication retry run with the encrypted records.
+Signed organizer identity and terms commitments remain byte-compatible.

@@ -81,6 +81,89 @@ Funding is credit to the isolated wallet, not proof of any recipient payment.
 The funding invoice, supplier payouts and Conduit collection remain private;
 they never become public NIP-57 checkout payments.
 
+## Event Market checkout extension
+
+New coordinated occurrence purchases use frozen plan version five and
+reconciliation version six. Ordinary plans retain version four; historical
+version-three/four plans retain their canonical bytes, economics and deadlines.
+The event binding retains the exact signed market, selected occurrence, optional
+schedule, active authorization and each product/assignment revision, Merchant
+roster mode/assignment, quantities and organizer-fee terms. These are Conduit
+extensions to the experimental Event Market profile, not inferred public
+protocol payment authority. Admission independently verifies the signed graph,
+current authority and qualified endpoints before creating or exposing funding.
+Later event edits cannot rewrite a funded plan.
+
+Their encrypted kind-16 order uses the explicit
+`["conduit_checkout_payment", "spark_router", "2", "event_market"]` marker,
+with the canonical occurrence-order tags and complete signed public evidence.
+Ordinary and historical orders keep their version-one marker unchanged. The
+event marker permits zero merchandise only for a signed positive organizer
+minimum; entirely free orders do not use funded routing. Mixed markers,
+incomplete event snapshots and shipping/event mixtures are invalid. This parse
+classification does not grant payment, stock or handout authority: each later
+plan/witness admission independently verifies the exact signed graph and terms.
+
+Let `C` be approved merchandise plus shipping, `D` the existing Conduit fee on
+`C`, and `F` the signed organizer fee. Do not charge Conduit's percentage on
+`F`. A funded event plan requests `C + D + F + ceil((C + F) * 15 / 10000)`
+sats. The organizer allocation is exactly `F`; apply the existing commerce/
+Conduit allocation and rounding to the credited amount less `F`. An exact
+credit below `C + D + F` pauses rather than reducing approved obligations.
+Every Lightning leg pays its own outgoing fee within its allocation. After
+Merchant and optional supplier payouts, pay the organizer, then send the exact
+attributed residual through the existing frozen native Conduit rail. An
+unresolved organizer payout cannot be swept into Conduit's payment.
+
+Zero commerce and zero organizer fee create no funding invoice. A signed
+positive organizer minimum on zero-price goods is not silently waived: use an
+explicitly disclosed fee-only event plan with `F`, the existing 111-sat Conduit
+minimum, and its inbound allowance, without a zero-value Merchant invoice.
+Historical and ordinary free orders keep their existing behavior.
+The current Lightning payout policy requires positive room for each leg's own
+send reserve. A new positive one-sat organizer allocation, or a receiving minimum
+that cannot fit within the exact organizer allocation minus its reserve, is
+rejected before wallet/invoice creation. Do not increase the signed fee, waive
+it or silently take the difference from commerce.
+
+Only Merchant and supplier obligations establish commerce settlement and
+otherwise authorized handout. An organizer-fee or Conduit problem cannot make
+verified goods unpaid. Routing completion still requires all planned payments;
+receiver claim and safe wallet retirement remain separate evidence gates.
+
+In organizer-handoff mode, require the Merchant's exact reserved-stock grant
+and assignment commitment. Before funding disclosure, retain separate NIP-59/
+NIP-44 recovery envelopes for the Merchant and specifically authorized organizer
+and acknowledge each through that recipient's current signed kind-10050 inbox.
+The organizer receives only this checkout wallet and bounded commercial,
+source and reconciliation evidence, never the Merchant account key, buyer
+source-wallet credential, contacts, shipping address or full ordinary order.
+Machine-only order identifiers and hashes bind the original buyer order; they
+are not independently sufficient payment, stock or handout authority. Human
+claim/handout views retain their minimal receipt contract.
+Every Buyer payout checkpoint also retains both role-bound encrypted progress
+copies before use. Organizer continuation retains a separately organizer-signed
+Merchant/self checkpoint containing the same exact attempts and writer manifest.
+Organizer execution rechecks the designated stock writer at its provider
+boundaries; an active account session or restored plaintext alone grants no
+organizer dispatch authority. Merchant financial fallback retains its separate
+original-order and exact-payment verification, not the organizer's stock role.
+
+All three financial actors use the same immutable plan, attempt identifiers and executor.
+Buyer dispatch ends at the saved two-minute cutoff; the fifteen-minute funding
+invoice remains separate. Merchant financial recovery remains available alongside
+the authorized organizer; neither actor restarts a paid leg or replaces a saved
+outgoing intent. Authenticate and merge role-attributed progress, then independently
+reconcile exact provider and recipient evidence before continuation. The original
+Buyer-to-Merchant order witness remains required for Merchant recovery. Financial
+recovery does not adopt the exclusive organizer stock writer or authorize a claim
+or handout; those require their own complete journal and verified writer handover.
+Local locks and encrypted credentials are not a distributed lease or cryptographic
+spending restrictions. Reconcile every possible send before continuing, including
+after device restoration. The bounded guest
+wrapping exception permits only these exact version-five recipient/role bindings,
+with its unchanged lifetime and no guest inbox or generic signing permission.
+
 ## Signed live fiat pricing
 
 New product authoring, shipping quotes and checkout conversion use the shared

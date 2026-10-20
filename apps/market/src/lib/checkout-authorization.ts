@@ -5,6 +5,7 @@ import {
   type PricingRateInput,
   type Product,
   type SignedPublicNostrEvent,
+  snapshotCheckoutSparkPlanSourceEvents,
 } from "@conduit/core"
 import {
   createEventMarketPickupSnapshot,
@@ -212,6 +213,35 @@ export async function resolveCurrentFutureEventMarketFulfillments(
   return snapshots
 }
 
+/** Detach exact accepted revisions; later stages must never look up their latest replacements. */
+function eventMarketSourceEvents(
+  snapshots: ReadonlyMap<string, OrderEventMarketPickupFulfillmentSchema>
+): readonly SignedPublicNostrEvent[] | undefined {
+  if (snapshots.size === 0) return undefined
+  const sources = new Map<string, SignedPublicNostrEvent>()
+  for (const snapshot of snapshots.values()) {
+    for (const event of [
+      snapshot.market.signedEvent,
+      snapshot.calendar.signedEvent,
+      snapshot.product.signedEvent,
+      ...(snapshot.parentProduct ? [snapshot.parentProduct.signedEvent] : []),
+      ...(snapshot.schedule ? [snapshot.schedule.signedEvent] : []),
+      ...(snapshot.occurrenceAssignment
+        ? [snapshot.occurrenceAssignment.signedEvent]
+        : []),
+      snapshot.grant.signedEvidence.tip,
+      ...snapshot.grant.signedEvidence.ancestry,
+      ...snapshot.grant.signedEvidence.deletions,
+    ]) {
+      const previous = sources.get(event.id)
+      if (previous && JSON.stringify(previous) !== JSON.stringify(event))
+        throw new Error("Current Event Market signed evidence conflicts.")
+      sources.set(event.id, event)
+    }
+  }
+  return snapshotCheckoutSparkPlanSourceEvents([...sources.values()])
+}
+
 /**
  * Rebuilds one checkout snapshot from authoritative 30402 and 30406 reads.
  * The caller must use the returned items for every subsequent pricing,
@@ -261,6 +291,7 @@ export async function authorizeCurrentCheckoutItems(input: {
     input.futureEventMarketDependencies
   )
   if (!futureSnapshots) return { status: "changed" }
+  const pickupSourceEvents = eventMarketSourceEvents(futureSnapshots)
   for (const item of input.reviewedItems) {
     const saved = item.fulfillment
     const current = futureSnapshots.get(item.productId)
@@ -374,6 +405,7 @@ export async function authorizeCurrentCheckoutItems(input: {
         status: "unavailable_order_first",
         options: [],
       },
+      ...(pickupSourceEvents ? { pickupSourceEvents } : {}),
     }
   }
   const prepared = prepareCartFulfillment(
@@ -417,5 +449,6 @@ export async function authorizeCurrentCheckoutItems(input: {
       shippingCoordinates.length === 0
         ? { status: "not_required", options: [] }
         : { status: "verified", options: shippingOptions },
+    ...(pickupSourceEvents ? { pickupSourceEvents } : {}),
   }
 }

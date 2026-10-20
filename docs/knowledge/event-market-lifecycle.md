@@ -66,8 +66,8 @@ Explicit payment confirmation of a merchant-present assignment order may occur
 past the original or rescheduled end. The order must predate its original
 signed end and retain its exact identity and complete terms. Ordinary new
 acceptance still requires an unended occurrence. Expired allocations do not
-reserve goods: confirmation uses the currently unallocated stock in the same
-atomic acceptance transaction, preserving other active allocations and credit
+reserve merchant-present goods: confirmation uses the currently unallocated stock in the same
+atomic acceptance transaction, preserving other active allocations, unreconciled organizer holds and credit
 for that order's earlier stock decision. It reduces any remaining allocation
 without making it negative. Retry after signing/delivery failure or reload uses
 the saved acceptance and does not consume stock again. Stock shortages,
@@ -84,14 +84,20 @@ acceptance or publication job. Exact accepted-order retries return the saved
 decision without another debit. This protects known retained evidence, not
 unseen future organizer revisions.
 
-Merchant-present assignment pickup is supported. New organizer acceptance is
-gated on advance delegation, writer handover and order-ID reconciliation.
-Historical authenticated organizer handoff remains inspectable. Organizer
-release requires an authenticated, order-specific merchant message and exact
-merchandise evidence. An organizer acknowledgement grants no merchant payment
-or general lifecycle authority. Private ready/revoke/acknowledgement operations
-retain exact encrypted bytes and delivery evidence for retry across reload.
-Known revocations and conflicts dominate retained positive evidence.
+Merchant-present assignment pickup is supported. Current organizer handout uses
+the separate Conduit finite-stock delegation, exclusive writer and once-only
+reconciliation extension. Required commerce settlement and the bound unique
+claim authorize handout; checkout recovery reuses the shared router without a
+new live merchant signature for each order. See the
+[Event Market contract](../specs/event-markets.md#conduit-organizer-stock-handover-extension)
+and [router acceptance checklist](event-market-router-acceptance.md).
+
+Historical authenticated organizer handoff remains inspectable with its original
+order-specific merchant release message and exact merchandise evidence. Its
+acknowledgement grants no merchant payment or general lifecycle authority.
+Private ready/revoke/acknowledgement operations retain exact encrypted bytes and
+delivery evidence for retry across reload. Known revocations and conflicts
+dominate retained positive evidence.
 
 Event and merchant QR signs remain available with preview, batch selection,
 and Print / Save as PDF. Merchant signs open that merchant's event catalog;

@@ -256,8 +256,8 @@ export function EventAssignmentPanel(props: {
             />
           )}
           <p className="text-pretty text-xs text-[var(--text-muted)]">
-            Pickup from the merchant. Organizer handout integration is not
-            available here yet.
+            Allocate stock for this event date. For organizer pickup, reserve
+            the organizer's stock separately from the event page.
           </p>
         </div>
       </div>

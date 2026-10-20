@@ -18,6 +18,14 @@ import {
 import { readEventMarketAssignment } from "./event-market-roster-read"
 import { parseProductEvent } from "./products"
 import {
+  observeMerchantOrganizerStockCheckpoint,
+  observeMerchantStockRestoreStage,
+  readMerchantStockCheckpointPredecessors,
+  restoreMerchantOrganizerStockCheckpoint,
+} from "./event-market-stock-checkpoint"
+import { createEventMarketEvidenceStore } from "./event-market-evidence-store"
+import { getProductsByIds } from "./commerce"
+import {
   fetchSignedEventsFanoutDetailed,
   verifySignedEventBatches,
   type PublicRelayReadOptions,
@@ -47,6 +55,130 @@ const defaultDependencies: ReadDependencies = {
 const MAX_CANDIDATES = 128
 const MAX_RETAINED = 2_048
 const MAX_OCCURRENCE_REVISIONS = 64
+
+/** Cold Merchant composition: source reads stay in their existing shared owners. */
+export async function recoverMerchantOrganizerStockFromInbox(
+  input: Omit<
+    Parameters<typeof restoreMerchantOrganizerStockCheckpoint>[0],
+    "signedProductEvent" | "signedAssignmentEvents" | "predecessorEnvelopes"
+  > & { signal?: AbortSignal },
+  dependencies: {
+    products?: typeof getProductsByIds
+    read?: ReadDependencies
+  } = {}
+): Promise<MerchantInventoryRecoveryResult> {
+  input = { ...input, envelope: structuredClone(input.envelope) }
+  const check = () => {
+    if (input.signal?.aborted || !input.shouldContinue())
+      throw new Error("Merchant recovery session changed")
+  }
+  check()
+  observeMerchantStockRestoreStage(input, "observation")
+  const retained = await observeMerchantOrganizerStockCheckpoint(input)
+  check()
+  if (
+    retained.observation.sequence !== retained.payload.sequence ||
+    retained.observation.rumorId !== retained.rumor.id
+  )
+    throw new Error("A newer Merchant stock checkpoint requires reconciliation")
+  const snapshot = retained.payload.snapshot
+  observeMerchantStockRestoreStage(input, "public_binding")
+  const evidence = createEventMarketEvidenceStore(input.db)
+  for (const assignment of snapshot.assignments) {
+    await evidence.retain(assignment.marketCoordinate, [
+      assignment.signedAssignmentEvent!,
+      ...snapshot.pools
+        .filter(
+          ({ pool }) => pool.assignmentCoordinate === assignment.coordinate
+        )
+        .map(({ initialCommitment }) => initialCommitment),
+    ])
+    check()
+  }
+  const publicRead = dependencies.read ?? defaultDependencies
+  const productRead = await (dependencies.products ?? getProductsByIds)(
+    [snapshot.product.coordinate],
+    {
+      includeMarketHidden: true,
+      accountPubkey: input.authenticatedPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      signal: input.signal,
+      shouldContinue: input.shouldContinue,
+    }
+  )
+  check()
+  const product = productRead.data.find(
+    (record) => record.addressId === snapshot.product.coordinate
+  )
+  // Positive historical checkpoint evidence remains usable after withdrawal or
+  // a partial read. This is stock reconciliation, not current listing admission.
+  const publicProductEvent = product?.product.signedProductEvent
+  const publicProductIsOlder =
+    publicProductEvent &&
+    isValidSignedPublicNostrEvent(publicProductEvent) &&
+    coordinateOf(publicProductEvent) === snapshot.product.coordinate &&
+    publicProductEvent.created_at <
+      snapshot.product.signedProductEvent.created_at
+  const signedProductEvent =
+    !publicProductEvent || publicProductIsOlder
+      ? snapshot.product.signedProductEvent
+      : publicProductEvent
+  const signedAssignmentEvents: SignedPublicNostrEvent[] = []
+  let coverage: Coverage =
+    publicProductEvent && !publicProductIsOlder ? "complete" : "partial"
+  for (const assignment of snapshot.assignments) {
+    const resolved = await readEventMarketAssignment(
+      {
+        marketCoordinate: assignment.marketCoordinate,
+        occurrenceCoordinate: assignment.occurrenceCoordinate,
+        productCoordinate: assignment.productCoordinate,
+        authenticatedPubkey: input.authenticatedPubkey,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      },
+      { ...publicRead, load: evidence.load, retain: evidence.retain }
+    )
+    check()
+    if (["conflicting", "malformed", "incomplete"].includes(resolved.state))
+      throw new Error("Signed assignment history needs reconciliation")
+    coverage = mergeCoverage(
+      coverage,
+      resolved.coverage === "stale" ? "partial" : resolved.coverage
+    )
+    signedAssignmentEvents.push(
+      resolved.assignment?.signedEvent ?? assignment.signedAssignmentEvent!
+    )
+  }
+  observeMerchantStockRestoreStage(input, "ancestry")
+  const predecessorEnvelopes = await readMerchantStockCheckpointPredecessors({
+    ...input,
+    shouldContinue: () => {
+      check()
+      return true
+    },
+  })
+  check()
+  const result = await recoverMerchantInventoryProduct({
+    db: input.db,
+    merchantPubkey: input.authenticatedPubkey,
+    authenticatedPubkey: input.authenticatedPubkey,
+    productCoordinate: snapshot.product.coordinate,
+    signedProductEvent,
+    shouldContinue: input.shouldContinue,
+    signal: input.signal,
+    organizerCheckpoint: {
+      signer: input.signer,
+      authorization: input.authorization,
+      store: input.store,
+      envelope: input.envelope,
+      signedAssignmentEvents,
+      predecessorEnvelopes,
+      onRestoreStage: (stage) => observeMerchantStockRestoreStage(input, stage),
+    },
+  })
+  check()
+  return { ...result, coverage }
+}
 
 function options(
   plan: EventMarketReadPlan,
@@ -94,6 +226,16 @@ function coordinateOf(event: SignedPublicNostrEvent): string | undefined {
   const dTags = event.tags.filter((tag) => tag[0] === "d")
   if (dTags.length !== 1 || dTags[0]?.length !== 2) return undefined
   return `${event.kind}:${event.pubkey}:${dTags[0][1]}`
+}
+
+function requiresOrganizerStockRecovery(
+  assignment: ParsedEventMarketAssignment
+): boolean {
+  return (
+    assignment.stockPool.state === "invalid" ||
+    (assignment.stockPool.state === "valid" &&
+      assignment.stockPool.pool.state === "active")
+  )
 }
 
 function cancellation(event: SignedPublicNostrEvent): boolean {
@@ -291,6 +433,7 @@ export type MerchantInventoryRecoveryResult =
         | "tracking_mismatch"
         | "overallocated"
         | "evidence_limit"
+        | "organizer_stock_recovery_required"
     }
 
 /**
@@ -307,10 +450,45 @@ export async function recoverMerchantInventoryProduct(
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
+    /** Explicit positive private recovery, never inferred from public absence. */
+    organizerCheckpoint?: Omit<
+      Parameters<typeof restoreMerchantOrganizerStockCheckpoint>[0],
+      "db" | "authenticatedPubkey" | "shouldContinue" | "signedProductEvent"
+    >
   },
   dependencies: ReadDependencies = defaultDependencies
 ): Promise<MerchantInventoryRecoveryResult> {
   const { db, merchantPubkey, productCoordinate, signedProductEvent } = input
+  if (input.organizerCheckpoint) {
+    if (coordinateOf(signedProductEvent) !== productCoordinate)
+      throw new Error("Merchant recovery product coordinate mismatch")
+    if (
+      input.authenticatedPubkey !== merchantPubkey ||
+      input.signal?.aborted ||
+      input.shouldContinue?.() === false
+    )
+      throw new Error("Merchant recovery session changed")
+    const restored = await restoreMerchantOrganizerStockCheckpoint({
+      ...input.organizerCheckpoint,
+      db,
+      authenticatedPubkey: merchantPubkey,
+      signedProductEvent,
+      shouldContinue: () =>
+        !input.signal?.aborted && input.shouldContinue?.() !== false,
+    })
+    if (restored.product.coordinate !== productCoordinate)
+      throw new Error(
+        "Recovered Merchant product does not match requested coordinate"
+      )
+    return {
+      state: "ready",
+      coverage: "complete",
+      product: restored.product,
+      recoveredAssignments:
+        input.organizerCheckpoint.signedAssignmentEvents.length,
+      alreadyCommitted: restored.replayed,
+    }
+  }
   const existing = await db.merchantInventoryProducts.get(productCoordinate)
   if (existing)
     return {
@@ -448,31 +626,60 @@ export async function recoverMerchantInventoryProduct(
         coverage,
         reason: "malformed_assignment",
       }
+    if (requiresOrganizerStockRecovery(current)) {
+      // The public marker cannot reconstruct private consumption. Retain it
+      // even when blocking: a later stale relay copy must not free the hold.
+      await db.eventMarketRosterEvidence.put({
+        id: `${current.marketCoordinate}:${current.eventId}`,
+        marketCoordinate: current.marketCoordinate,
+        signedEvent: current.signedEvent,
+        cachedAt: Date.now(),
+      })
+      return {
+        state: "unsafe_conflict",
+        coverage,
+        reason: "organizer_stock_recovery_required",
+      }
+    }
     tupleCandidates.set(coordinate, current)
   }
-  const resolverDependencies = {
-    plan: dependencies.plan,
-    fetch: dependencies.fetch,
-    // Keep the market-scoped reader's full retained context, including deletions
-    // and malformed newer revisions that no longer carry the product tag.
-    load: async (marketCoordinate: string) => [
-      ...(
+  // Preserve complete market-scoped context, including malformed newer
+  // revisions, deletions and organizer stock markers without a product tag.
+  const scopedCache = new Map<string, SignedPublicNostrEvent[]>()
+  for (const { marketCoordinate } of tupleCandidates.values()) {
+    if (scopedCache.has(marketCoordinate)) continue
+    scopedCache.set(
+      marketCoordinate,
+      (
         await db.eventMarketRosterEvidence
           .where("marketCoordinate")
           .equals(marketCoordinate)
           .toArray()
-      ).map((row) => row.signedEvent),
-      ...candidates.filter(
-        (event) =>
-          parseEventMarketAssignmentEvent(event)?.marketCoordinate ===
-          marketCoordinate
-      ),
-    ],
+      ).map((row) => row.signedEvent)
+    )
+  }
+  for (const [coordinate, assignment] of tupleCandidates) {
+    const entries = scopedCache.get(assignment.marketCoordinate) ?? []
+    entries.push(...(byCoordinate.get(coordinate) ?? []))
+    scopedCache.set(assignment.marketCoordinate, entries)
+  }
+  const resolverDependencies = {
+    plan: dependencies.plan,
+    fetch: dependencies.fetch,
+    load: async (marketCoordinate: string) =>
+      scopedCache.get(marketCoordinate) ?? [],
     retain: async (
       marketCoordinate: string,
       events: readonly SignedPublicNostrEvent[]
     ) => {
       if (!events.length) return
+      scopedCache.set(marketCoordinate, [
+        ...new Map(
+          [...(scopedCache.get(marketCoordinate) ?? []), ...events].map(
+            (event) => [event.id, event]
+          )
+        ).values(),
+      ])
       await db.eventMarketRosterEvidence.bulkPut(
         events.map((event) => ({
           id: `${marketCoordinate}:${event.id}`,
@@ -500,6 +707,24 @@ export async function recoverMerchantInventoryProduct(
       coverage,
       resolved.coverage === "stale" ? "partial" : resolved.coverage
     )
+    // An exact read can discover a newer pool marker than candidate discovery.
+    // Even deleting that assignment does not prove its private pool reconciled.
+    const strongest = (scopedCache.get(candidate.marketCoordinate) ?? [])
+      .filter((event) => coordinateOf(event) === candidate.coordinate)
+      .sort(
+        (a, b) =>
+          -compareReplaceableEventFrontiers(
+            { createdAt: a.created_at, eventId: a.id },
+            { createdAt: b.created_at, eventId: b.id }
+          )
+      )[0]
+    const observed = strongest && parseEventMarketAssignmentEvent(strongest)
+    if (observed && requiresOrganizerStockRecovery(observed))
+      return {
+        state: "unsafe_conflict",
+        coverage,
+        reason: "organizer_stock_recovery_required",
+      }
     if (
       ["conflicting", "malformed", "incomplete", "missing"].includes(
         resolved.state
@@ -512,6 +737,12 @@ export async function recoverMerchantInventoryProduct(
       }
     if (!resolved.assignment) continue
     const assignment = resolved.assignment
+    if (requiresOrganizerStockRecovery(assignment))
+      return {
+        state: "unsafe_conflict",
+        coverage,
+        reason: "organizer_stock_recovery_required",
+      }
     const lifecycle =
       assignment.state === "removed"
         ? {

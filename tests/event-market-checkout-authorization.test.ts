@@ -25,6 +25,7 @@ import {
   createCartItemFromProduct,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
+import { cartItemInputFromProductSelection } from "../apps/market/src/lib/productVariations"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -250,7 +251,112 @@ async function fixture(series = false) {
   }
 }
 
+async function directEventVariationFixture() {
+  const state = await fixture()
+  const parentCoordinate = `30402:${merchant}:soap-family`
+  const parent = signed(
+    30402,
+    [
+      ["d", "soap-family"],
+      ["title", "Soap sizes"],
+      ["type", "variable", "physical"],
+      ["price", "0.5", "USD"],
+    ],
+    100,
+    merchantSecret
+  )
+  const child = signed(
+    30402,
+    [
+      ["d", "soap"],
+      ["title", "Small soap"],
+      ["type", "variation", "physical"],
+      ["a", parentCoordinate],
+      ["spec", "Size", "Small"],
+      ["price", "0.5", "USD"],
+      ["stock", "6"],
+    ],
+    101,
+    merchantSecret
+  )
+  state.live.splice(
+    state.live.findIndex((event) => event.kind === 30402),
+    1,
+    parent,
+    child
+  )
+  const marketRead = await state.readMarket({ reference: marketCoordinate })
+  const productRead = await state.readProduct({
+    marketRead,
+    productCoordinate,
+    selectedOccurrenceCoordinate: calendarCoordinate,
+  })
+  expect(productRead.actionable).toBe(true)
+  if (productRead.resolution.state !== "eligible")
+    throw new Error("Expected current variation")
+  const fulfillment = createEventMarketPickupSnapshot({
+    marketRead,
+    productRead,
+    selectedOccurrenceCoordinate: calendarCoordinate,
+  })
+  const selected = productRead.resolution.product
+  // Direct Event catalog children are already the selected sellable product;
+  // unlike a family card, its display product is not the variable parent.
+  const item: CartItem = {
+    ...cartItemInputFromProductSelection(selected, selected, fulfillment),
+    quantity: 1,
+  }
+  return { state, item, child, parent, selected }
+}
+
 describe("composed Event Market submit authorization", () => {
+  it("submits an unchanged fiat variation added directly from its Event catalog card", async () => {
+    const { state, item, selected, parent } =
+      await directEventVariationFixture()
+    const result = await state.submit([item], [item])
+    expect(result.status).toBe("ok")
+    expect(item.familyProductId === selected.parentProductId).toBe(true)
+    const ordinaryFamilySelection = cartItemInputFromProductSelection(
+      parseProductEvent(await admitFixture(parent)),
+      selected,
+      item.fulfillment
+    )
+    expect(
+      ordinaryFamilySelection.familyProductId === item.familyProductId
+    ).toBe(true)
+    expect(state.handlerCalls()).toBe(1)
+  })
+
+  it.each(["price", "pickup assignment"] as const)(
+    "still blocks a material %s change after direct Event variation selection",
+    async (change) => {
+      const { state, item, child } = await directEventVariationFixture()
+      expect((await state.submit([item], [item])).status).toBe("ok")
+      if (change === "price") {
+        state.live.splice(
+          state.live.indexOf(child),
+          1,
+          signed(
+            30402,
+            child.tags.map((tag) =>
+              tag[0] === "price" ? ["price", "1", "USD"] : tag
+            ),
+            102,
+            merchantSecret
+          )
+        )
+      } else {
+        const previous = state.live.find((event) => event.kind === 30409)!
+        state.replace(
+          30409,
+          roster([{ ...row, assignment: "Booth 99" }], 102, previous.id)
+        )
+      }
+      expect((await state.submit([item], [item])).status).toBe("changed")
+      expect(state.handlerCalls()).toBe(1)
+    }
+  )
+
   it("blocks a single-date market after its occurrence ends", async () => {
     const state = await fixture(false)
     const originalNow = Date.now

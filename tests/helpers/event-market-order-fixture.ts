@@ -10,6 +10,7 @@ import {
   orderSchema,
   type OrderEventMarketPickupFulfillmentSchema,
   type SignedPublicNostrEvent,
+  type EventMarketOrganizerFeeAuthoring,
 } from "@conduit/core"
 
 const organizerSecret = generateSecretKey()
@@ -29,6 +30,7 @@ export function createEventMarketOrderFixture(
     calendarCreatedAt?: number
     newAssignment?: boolean
     authorizationDepth?: number
+    organizerFee?: EventMarketOrganizerFeeAuthoring
   } = {}
 ) {
   const organizer = getPublicKey(organizerSecret)
@@ -53,6 +55,7 @@ export function createEventMarketOrderFixture(
         calendarCoordinate,
         state: "open",
         merchants: [{ pubkey: merchant, mode, assignment }],
+        ...(options.organizerFee ? { organizerFee: options.organizerFee } : {}),
       }),
       created_at: 100,
     },

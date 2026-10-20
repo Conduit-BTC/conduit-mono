@@ -1,4 +1,8 @@
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import {
+  observeEventMarketWriteScope,
+  type EventMarketWriteObservation,
+} from "./event-market-write-readiness"
 import type { Filter } from "nostr-tools"
 import {
   readEventMarketAuthorization,
@@ -93,6 +97,8 @@ export interface EventMarketRosterReadResult {
   calendarCoverage?: EventMarketRosterReadCoverage
   schedule?: EventMarketSchedule
   scheduleCoverage?: EventMarketRosterReadCoverage
+  writeObservation?: EventMarketWriteObservation
+  calendarWriteObservation?: EventMarketWriteObservation
 }
 
 export interface EventMarketProductReadResult {
@@ -707,6 +713,18 @@ export async function readEventMarketRoster(
           idDeletions.events.length >= 64
         ? "partial"
         : "complete"
+  const writeObservation = observeEventMarketWriteScope({
+    selectedLive:
+      resolution.state === "current" &&
+      rosterRead.events.some((event) => event.id === resolution.market.eventId),
+    limited:
+      !!plan.relayHintTruncated ||
+      knownRevisions.length > 32 ||
+      rosterRead.events.length >= 64 ||
+      coordinateDeletions.events.length >= 64 ||
+      idDeletions.events.length >= 64,
+    reads,
+  })
   if (resolution.state !== "current") {
     return {
       coordinate,
@@ -715,6 +733,7 @@ export async function readEventMarketRoster(
       retained,
       observedRelayUrls,
       observedEvidence: all,
+      writeObservation,
     }
   }
   const linkedCoordinate = parseAddressableCoordinate(
@@ -802,6 +821,20 @@ export async function readEventMarketRoster(
               masterIdDeletions.events.length >= 64
             ? "partial"
             : "complete"
+    const calendarWriteObservation = observeEventMarketWriteScope({
+      selectedLive:
+        seriesResolution.state === "current" &&
+        masterRead.events.some(
+          (event) => event.id === seriesResolution.series.eventId
+        ),
+      limited:
+        !!plan.relayHintTruncated ||
+        knownMaster.length > 32 ||
+        masterRead.events.length >= 64 ||
+        masterCoordinateDeletions.events.length >= 64 ||
+        masterIdDeletions.events.length >= 64,
+      reads: masterReads,
+    })
     if (seriesResolution.state !== "current") {
       return {
         coordinate,
@@ -813,6 +846,8 @@ export async function readEventMarketRoster(
         calendar: null,
         calendarCoverage: masterCoverage,
         scheduleCoverage: masterCoverage,
+        writeObservation,
+        calendarWriteObservation,
       }
     }
     const members = seriesResolution.series.memberCoordinates.map((value) =>
@@ -966,6 +1001,8 @@ export async function readEventMarketRoster(
       calendarCoverage: masterCoverage,
       schedule,
       scheduleCoverage,
+      writeObservation,
+      calendarWriteObservation,
     }
   }
   const calendarCoordinate = parseAddressableCoordinate(
@@ -1088,6 +1125,18 @@ export async function readEventMarketRoster(
           calendarIdDeletions.events.length >= 64
         ? "partial"
         : "complete"
+  const calendarWriteObservation = observeEventMarketWriteScope({
+    selectedLive:
+      !!calendar &&
+      calendarRead.events.some((event) => event.id === calendar.eventId),
+    limited:
+      !!plan.relayHintTruncated ||
+      calendarRevisionIds.size > 32 ||
+      calendarRead.events.length >= 64 ||
+      calendarCoordinateDeletions.events.length >= 64 ||
+      calendarIdDeletions.events.length >= 64,
+    reads: calendarReads,
+  })
   return {
     coordinate,
     resolution,
@@ -1105,6 +1154,8 @@ export async function readEventMarketRoster(
       (event) => event.id === calendar?.eventId
     ),
     calendarCoverage,
+    writeObservation,
+    calendarWriteObservation,
     ...(calendar?.signedEvent
       ? {
           schedule: {
@@ -1395,6 +1446,7 @@ export async function readEventMarketAssignment(
       value.state,
       value.inventory,
       [...value.fulfillmentMethods].sort(),
+      value.stockPool,
     ])
   if (new Set(tips.map(material)).size > 1) {
     const paths = tips.map((tip) => {

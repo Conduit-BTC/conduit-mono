@@ -182,16 +182,28 @@ not consume units again. Dexie v27 retains the complete main/preview union,
 including populated installed-v25 assignment stores. This is local writer
 serialization, not cross-device atomicity.
 
-The buyer's encrypted order remains buyer-to-merchant. Historical organizer handoff uses a
-separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
-scoped organizer-to-merchant handoff acknowledgement. Core owns their strict
-schemas, authority checks, kind-10050 routing, and immutable delivery retry;
-routes never fan out or redact full orders themselves. New organizer acceptance
-for occurrence assignments remains gated on the separate advance-delegation,
-writer-handover and reconciliation contract. Same-event calendar edits update
-unused allocation deadlines while existing orders retain their original terms.
-Atomic rollover remains unfinished; fees and offline checkout-wallet recovery
-are separate work.
+The buyer's full encrypted order remains buyer-to-merchant. Historical organizer
+handoff retains its separate minimal NIP-17 fulfillment receipt and narrowly
+scoped acknowledgement. Current organizer handout uses finite entrusted stock,
+one exclusive writer, bound claims and once-only Merchant reconciliation;
+unused units return only after the complete accepted frontier is reconciled.
+Cooperative replacement-device handover transfers the complete encrypted journal
+and retires the source writer, rather than resetting consumption from incomplete
+history. Event organizer fees and offline checkout recovery reuse the shared
+router, frozen signed terms and separately protected Merchant/organizer recovery
+packages for the same checkout wallet. This does not share account keys or
+standing wallets. Exact required commerce settlement and the unique claim gate
+handout independently of non-blocking fees. Core owns schemas, authority,
+kind-10050 routing and immutable delivery retry; routes compose these workflows.
+See the [Event Market contract](specs/event-markets.md) and
+[router contract](specs/universal-checkout-router.md). Same-event calendar edits
+update unused allocation deadlines while existing orders retain their original
+terms. Calendar edits do not transfer release authority or release entrusted
+stock; those retain their explicit transfer and complete-frontier reconciliation
+requirements. Genuinely free organizer pickup stores its Merchant order wrap and
+organizer packet in one buyer order transaction before either send, then resumes
+those exact envelopes after interruption without creating a wallet or invoice.
+Atomic rollover remains a separate, unfinished capability.
 
 ### Orders And Messages
 

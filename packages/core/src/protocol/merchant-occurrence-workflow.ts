@@ -1,10 +1,10 @@
 import {
-  merchantAcceptanceBinding,
   merchantAcceptanceStore,
   protectMerchantAcceptanceHistory,
   sealMerchantAcceptanceEvidence,
 } from "./merchant-acceptance-privacy"
 import { verifySignedEventBatches } from "./relay-reader"
+import { merchantOccurrenceAcceptanceBindings } from "./merchant-order-acceptance-bindings"
 import { db, type MerchantInventoryAcceptedOrder } from "../db"
 import { normalizeCurrencyIdentity } from "../pricing"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
@@ -48,6 +48,7 @@ import {
   resumeMerchantInventoryPublication,
   type MerchantInventoryOrderItem,
   type MerchantInventoryPriorStockAdjustment,
+  type MerchantStockCheckpointOutcome,
 } from "./merchant-inventory"
 
 import {
@@ -211,8 +212,16 @@ export async function saveMerchantOccurrenceAssignment(
     occurrenceCoordinate: string
     quantity?: number
     remove: boolean
+    /** Explicit pre-grant setup only; this baseline cannot authorize handout. */
+    organizerHandoverSetup?: { organizerPubkey: string; writerId: string }
   }
 ) {
+  if (input.organizerHandoverSetup)
+    input = {
+      ...input,
+      product: structuredClone(input.product),
+      organizerHandoverSetup: { ...input.organizerHandoverSetup },
+    }
   assertSession(input)
   if (input.remove) {
     const marketCoordinate = decodeEventMarketReference(
@@ -266,6 +275,18 @@ export async function saveMerchantOccurrenceAssignment(
   const row = market.merchants.find(
     (entry) => entry.pubkey === input.merchantPubkey
   )
+  const handover = input.organizerHandoverSetup
+  if (
+    handover &&
+    (handover.organizerPubkey !== market.organizerPubkey ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        handover.writerId
+      ) ||
+      row?.mode !== "organizer_handoff")
+  )
+    throw new Error(
+      "Choose the event organizer and an explicit stock writer for handover."
+    )
   const occurrence =
     marketRead.schedule?.kind === "series"
       ? marketRead.schedule.occurrences.find(
@@ -286,6 +307,18 @@ export async function saveMerchantOccurrenceAssignment(
   )
   if (product.type === "variable" || product.format !== "physical")
     throw new Error("Choose a sellable physical product for pickup.")
+  // Assignment authoring only allocates Merchant inventory. The separate
+  // explicit grant subsequently selects the organizer device and publishes
+  // its commitment; an uncommitted assignment cannot admit delegated sales.
+  if (
+    (handover || row?.mode === "organizer_handoff") &&
+    (product.stock === undefined ||
+      !Number.isInteger(input.quantity) ||
+      input.quantity! < 1)
+  )
+    throw new Error(
+      "Organizer handover requires an explicit finite stock allocation."
+    )
   if (product.type === "variation") {
     const parents = await getProductsByIds([product.parentProductId ?? ""], {
       accountPubkey: input.merchantPubkey,
@@ -316,7 +349,7 @@ export async function saveMerchantOccurrenceAssignment(
   if (
     !input.remove &&
     (market.state !== "open" ||
-      row?.mode !== "merchant_present" ||
+      (row?.mode !== "merchant_present" && row?.mode !== "organizer_handoff") ||
       authorization.resolution.state !== "active" ||
       !authorization.actionable ||
       occurrence.end <= Date.now() ||
@@ -325,7 +358,7 @@ export async function saveMerchantOccurrenceAssignment(
         !occurrence.signedEvent.tags.some((tag) => tag[0] === "end")))
   )
     throw new Error(
-      "Current merchant pickup approval and a non-ended occurrence are required. Organizer handout needs its delegation integration."
+      "Current merchant pickup approval and a non-ended occurrence are required."
     )
   if (authorization.resolution.state !== "active")
     throw new Error("Current signed merchant authorization is unavailable.")
@@ -384,15 +417,30 @@ export async function saveMerchantOccurrenceAssignment(
 /** Resume immutable public projections. Delivery never decides whether the sale happened. */
 export async function resumeMerchantOccurrencePublication(
   input: MerchantOccurrenceSession & {
+    onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
+    replayAcknowledgedCheckpointCoordinates?: readonly string[]
     publishProduct: (
       event: SignedPublicNostrEvent
     ) => Promise<boolean | "superseded">
   }
 ) {
   assertSession(input)
+  const checkpointSigner = getAccountSigner()
   return resumeMerchantInventoryPublication({
     db,
     merchantPubkey: input.merchantPubkey,
+    onStockCheckpoint: input.onStockCheckpoint,
+    stockCheckpoint: checkpointSigner
+      ? {
+          signer: checkpointSigner,
+          replayAcknowledgedCoordinates:
+            input.replayAcknowledgedCheckpointCoordinates,
+          shouldContinue: () => {
+            assertSession(input)
+            return getAccountSigner() === checkpointSigner
+          },
+        }
+      : undefined,
     sign: async (draft) => {
       assertSession(input)
       const signer = getAccountSigner()
@@ -425,16 +473,6 @@ export async function resumeMerchantOccurrencePublication(
   })
 }
 
-function acceptanceBindings(order: OrderSchema) {
-  return {
-    identityBinding: merchantAcceptanceBinding(
-      "identity",
-      JSON.stringify([order.id, order.buyerPubkey, order.merchantPubkey])
-    ),
-    termsBinding: merchantAcceptanceBinding("terms", JSON.stringify(order)),
-  }
-}
-
 /** A saved stock decision authorizes only its original order, not an ID alias. */
 export function matchesMerchantOccurrenceAcceptance(
   accepted: MerchantInventoryAcceptedOrder,
@@ -442,7 +480,7 @@ export function matchesMerchantOccurrenceAcceptance(
 ): boolean {
   const parsed = orderSchema.safeParse(candidate)
   if (!parsed.success) return false
-  const binding = acceptanceBindings(parsed.data)
+  const binding = merchantOccurrenceAcceptanceBindings(parsed.data)
   return (
     accepted.orderId === parsed.data.id &&
     accepted.merchantPubkey === parsed.data.merchantPubkey &&
@@ -516,7 +554,8 @@ export async function acceptMerchantOccurrenceOrder(
   const store = merchantAcceptanceStore(input.merchantPubkey)
   await protectMerchantAcceptanceHistory(store)
   assertSession(input)
-  const { identityBinding, termsBinding } = acceptanceBindings(order)
+  const { identityBinding, termsBinding } =
+    merchantOccurrenceAcceptanceBindings(order)
   const previous = await db.merchantInventoryAcceptedOrders.get(order.id)
   if (previous) {
     assertSession(input)

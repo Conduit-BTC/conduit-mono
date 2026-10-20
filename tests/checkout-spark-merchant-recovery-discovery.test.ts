@@ -13,6 +13,7 @@ import {
   __setCommerceTestOverrides,
   buildCheckoutSparkRecoveryRumor,
   calculateCheckoutSparkSettledGrossFundingSats,
+  config,
   createCheckoutSparkSettledReconciliation,
   createCheckoutSparkSettledRecoveryPayload,
   createCheckoutSparkSettledRecoveryProgressPayload,
@@ -39,6 +40,13 @@ import {
 } from "./support/signed-bolt11-fixture"
 import { createCheckoutSparkPickupFixture } from "./support/checkout-spark-pickup-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const MNEMONIC = createRuntimeMnemonic()
 const CONFLICT_MNEMONIC = createRuntimeMnemonic()
@@ -53,6 +61,40 @@ const BUYER = getPublicKey(BUYER_SECRET)
 const FIRST_INBOX = "wss://merchant-history-a.example"
 const SECOND_INBOX = "wss://merchant-history-b.example"
 const CREATED_AT = 1_800_000_000_000
+
+async function installDeclaredInboxFixture(relayUrls = [FIRST_INBOX]) {
+  // Each call installs a complete isolated fixture authority, not a competing
+  // same-timestamp replacement whose NIP-01 winner depends on its signed ID.
+  __resetInboxDeclarationCache()
+  await createInboxDeclarationFixtureEvidence(
+    finalizeEvent(
+      {
+        kind: 10_050,
+        created_at: CREATED_AT / 1_000,
+        tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
+        content: "",
+      },
+      MERCHANT_SECRET
+    ),
+    { prime: true }
+  )
+  // Pagination tests model declared sources only; compatibility union behavior
+  // has separate real-reader coverage and is not simulated with false counts.
+  let state = emptyAccountNetworkLocalState(MERCHANT, () => CREATED_AT)
+  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+    if (relayUrls.includes(relayUrl)) continue
+    state = applyAccountNetworkRelayExclusion(state, {
+      relayUrl,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+      committedAt: CREATED_AT,
+    })
+  }
+  __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository([state]),
+  })
+}
 const PRODUCT_SOURCE = finalizeEvent(
   {
     kind: 30_402,
@@ -425,9 +467,11 @@ function installMerchantSession() {
   })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
+  await installDeclaredInboxFixture()
   installMerchantSession()
   __setCommerceTestOverrides({
     readCheckoutSparkPlanSourceEvents: async () => ({
@@ -439,6 +483,7 @@ beforeEach(() => {
 afterEach(() => {
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
+  __resetInboxDeclarationCache()
 })
 
 describe("exact signed Merchant recovery source reads", () => {
@@ -1005,6 +1050,7 @@ describe("paginated Merchant Spark recovery discovery", () => {
   }
 
   it("deduplicates one order rumor wrapped separately on sibling relays", async () => {
+    await installDeclaredInboxFixture([FIRST_INBOX, SECOND_INBOX])
     const { initial } = settledFixtures()
     const initialWrap = wrap(3)
     const firstOrder = wrap(2)
@@ -1551,6 +1597,7 @@ describe("paginated Merchant Spark recovery discovery", () => {
   })
 
   it("retains a healthy relay's candidate while a sibling is unavailable", async () => {
+    await installDeclaredInboxFixture([FIRST_INBOX, SECOND_INBOX])
     const { initial } = settledFixtures()
     const initialWrap = wrap(1)
     __setCommerceTestOverrides({
@@ -1575,6 +1622,7 @@ describe("paginated Merchant Spark recovery discovery", () => {
   })
 
   it("deduplicates cross-relay wraps and quarantines conflicting wallet authority", async () => {
+    await installDeclaredInboxFixture([FIRST_INBOX, SECOND_INBOX])
     const { initial } = settledFixtures()
     const first = wrap(1)
     const second = wrap(2)

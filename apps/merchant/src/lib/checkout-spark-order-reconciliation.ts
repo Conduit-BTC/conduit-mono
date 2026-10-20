@@ -2,6 +2,7 @@ import {
   DexieCheckoutSparkSettledRepository,
   observeCheckoutSparkOperation,
   projectCheckoutSparkMerchantSettlement,
+  isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkPerformanceObserver,
   type MerchantCheckoutSparkReconciliationStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
@@ -249,7 +250,11 @@ async function inspectMerchantCheckoutSparkOrder(
       allCommerceProviderPaid,
       allProviderPaid:
         allCommerceProviderPaid &&
-        (record.schemaVersion === 2
+        (record.schemaVersion !== 3 ||
+          record.organizerLegId === null ||
+          (record.organizerLegId !== undefined &&
+            paid.has(record.organizerLegId))) &&
+        (record.schemaVersion === 2 || record.schemaVersion === 3
           ? record.nativeTreasury !== null
           : paid.has(record.feeLegId)),
     }
@@ -263,7 +268,7 @@ async function inspectMerchantCheckoutSparkOrder(
       ? projection.allProviderPaid
       : !projection.commerceVerified && projection.allCommerceProviderPaid)
   const nativeReceiptNeedsReconciliation =
-    saved.state.plan.schemaVersion === 4 &&
+    isCheckoutSparkNativeTreasuryPlan(saved.state.plan) &&
     saved.state.treasuryFinalization?.status !== "paid"
   let projection = await readProjection()
   if (originNeedsAttention(projection))
@@ -414,7 +419,8 @@ async function advanceMerchantCheckoutSparkOrderPhase(
     // invocation to exact provider reconciliation: a delayed/missing readback
     // must never turn an older prepared snapshot into another native send.
     const inspectionOnly =
-      settlement?.schemaVersion === 2 && settlement.nativeTreasury !== null
+      (settlement?.schemaVersion === 2 || settlement?.schemaVersion === 3) &&
+      settlement.nativeTreasury !== null
     const result = await (
       dependencies.continueNativeTreasury ??
       continueMerchantCheckoutSparkNativeTreasury

@@ -16,6 +16,7 @@ import {
   getCheckoutSparkSettledLegGeneration,
   inspectSparkCheckoutLightningReturnedAttempt,
   inspectSparkCheckoutLightningClosedReturnedAttempt,
+  isCheckoutSparkNativeTreasuryPlan,
   proveCheckoutSparkSettledClosedReturnedTransfer,
   proveCheckoutSparkSettledReturnedTransfer,
   proveSparkCheckoutReceiveCredit,
@@ -706,7 +707,7 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
   const { plan } = state
   assertCurrent()
   if (
-    plan.schemaVersion !== 4 ||
+    !isCheckoutSparkNativeTreasuryPlan(plan) ||
     !state.credit ||
     (input.proofMode !== "receipt" && !wallet.openRetirementReader)
   )
@@ -1489,7 +1490,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
       (leg) =>
         leg.intent === null &&
         !(
-          imported.state.plan.schemaVersion === 4 &&
+          isCheckoutSparkNativeTreasuryPlan(imported.state.plan) &&
           nativeIntent &&
           imported.state.plan.recipients.find(
             (recipient) => recipient.legId === leg.legId
@@ -1539,7 +1540,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
       mnemonic: initial.wallet.mnemonic,
       accountNumber: initial.wallet.accountNumber,
       network: initial.wallet.network,
-      ...(initial.plan.schemaVersion === 4
+      ...(isCheckoutSparkNativeTreasuryPlan(initial.plan)
         ? { retirement: true as const }
         : {}),
     })

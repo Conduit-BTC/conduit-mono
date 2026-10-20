@@ -33,6 +33,46 @@ afterEach(() => {
   __resetProtectedReadSigner()
 })
 
+it("expired merchant payment cannot consume an unreconciled organizer hold", async () => {
+  const f = await setup()
+  const time = spyOn(Date, "now").mockReturnValue(
+    f.fulfillment.calendar.end + 1
+  )
+  try {
+    const hold = {
+      poolId: "expired-held-pool",
+      organizerPubkey: f.organizer,
+      quantity: 6,
+      importedQuantity: 0,
+      closed: false,
+    }
+    await db.merchantInventoryAssignments.update(f.assignmentCoordinate, {
+      organizerStockHold: hold,
+    })
+    await expect(f.confirm()).rejects.toThrow("Insufficient unallocated stock")
+    expect(f.publications()).toBe(0)
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+    expect((await db.merchantInventoryProducts.get(f.product.id))!.stock).toBe(
+      6
+    )
+    // One unallocated unit may settle; the five entrusted units stay held.
+    await db.merchantInventoryAssignments.update(f.assignmentCoordinate, {
+      organizerStockHold: { ...hold, quantity: 5 },
+    })
+    await f.confirm()
+    expect(f.publications()).toBe(1)
+    expect((await db.merchantInventoryProducts.get(f.product.id))!.stock).toBe(
+      5
+    )
+    expect(
+      (await db.merchantInventoryAssignments.get(f.assignmentCoordinate))!
+        .organizerStockHold
+    ).toEqual({ ...hold, quantity: 5 })
+  } finally {
+    time.mockRestore()
+  }
+})
+
 async function setup() {
   const f = createEventMarketOrderFixture({
     mode: "merchant_present",

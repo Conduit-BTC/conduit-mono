@@ -6,6 +6,7 @@ import {
   orderPickupFulfillmentSchema,
   orderSchema,
   type OrderSchema,
+  type OrderEventMarketPickupFulfillmentSchema,
 } from "../schemas"
 import {
   canonicalizeShippingCost,
@@ -42,6 +43,14 @@ import {
   restoreCheckoutSparkSettledPlan,
   type CheckoutSparkSettledPlan,
 } from "./checkout-spark-settled-router"
+import { validateCheckoutSparkPlanSources } from "./checkout-spark-plan-sources"
+import { matchesCheckoutSparkOrderEventMarketSnapshot } from "./checkout-spark-event-market"
+import {
+  getOrganizerStockOrderBindings,
+  getOrganizerStockOrderIdentityHash,
+} from "./merchant-order-acceptance-bindings"
+import { classifyEventMarketOrderHandoff } from "./event-market-order-handoff-policy"
+import type { CheckoutSparkOrganizerOrderBinding } from "./checkout-spark-organizer-recovery"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const CONTENT_DOMAIN = "conduit:checkout-spark-merchant-order-content:v1"
@@ -146,6 +155,8 @@ export interface CheckoutSparkMerchantOrderEvidence {
   readonly commerceTotalSats: number
   readonly pricing?: CheckoutSparkCommercePricing
   readonly pricingAuthority?: CheckoutSparkPricingRateAttestation
+  /** Hashes of the actual authenticated Buyer order, never Organizer claims. */
+  readonly organizerOrderBinding?: CheckoutSparkOrganizerOrderBinding
   readonly lines: readonly {
     readonly productCoordinate: string
     readonly quantity: number
@@ -157,12 +168,13 @@ export interface CheckoutSparkMerchantOrderEvidence {
     readonly variation?: CheckoutSparkCommerceVariation
     readonly shipping?: OrderShippingSnapshot
     readonly pickup?: OrderPickupSnapshot
+    readonly eventPickup?: OrderEventMarketPickupFulfillmentSchema
   }[]
 }
 
 /** Persisted local binding only; no order body, buyer contact, or wallet data. */
 export interface CheckoutSparkMerchantOrderWitness {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 1 | 2
   readonly merchantPubkey: string
   readonly buyerPubkey: string
   readonly orderId: string
@@ -170,6 +182,45 @@ export interface CheckoutSparkMerchantOrderWitness {
   readonly contentHash: string
   readonly checkoutId: string
   readonly planDigest: string
+  readonly organizerOrderBinding?: CheckoutSparkOrganizerOrderBinding
+}
+
+const authenticatedOrganizerEvidence = new WeakMap<object, string>()
+const authenticatedOrganizerWitnesses = new WeakMap<object, string>()
+
+/** An additive binding upgrade needs the original authenticated-order read owner. */
+export function isAuthenticatedCheckoutSparkOrganizerOrderWitness(
+  witness: CheckoutSparkMerchantOrderWitness
+): boolean {
+  return (
+    witness.schemaVersion === 2 &&
+    authenticatedOrganizerWitnesses.get(witness) === JSON.stringify(witness)
+  )
+}
+
+function validOrganizerOrderBinding(
+  value: CheckoutSparkOrganizerOrderBinding | undefined,
+  identity: { orderId: string; buyerPubkey: string; merchantPubkey: string }
+): value is CheckoutSparkOrganizerOrderBinding {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 3 &&
+    Object.keys(value).every((key) =>
+      ["identityHash", "termsHash", "createdAt"].includes(key)
+    ) &&
+    isHex64(value.identityHash) &&
+    isHex64(value.termsHash) &&
+    Number.isSafeInteger(value.createdAt) &&
+    value.createdAt >= 0 &&
+    value.identityHash ===
+      getOrganizerStockOrderIdentityHash({
+        id: identity.orderId,
+        buyerPubkey: identity.buyerPubkey,
+        merchantPubkey: identity.merchantPubkey,
+      })
+  )
 }
 
 /**
@@ -235,7 +286,12 @@ export function readCheckoutSparkMerchantOrderEvidence(
       )
         return null
     }
-    return {
+    const organizerOrderBinding =
+      classifyEventMarketOrderHandoff(message.payload) ===
+      "reserved_organizer_stock"
+        ? getOrganizerStockOrderBindings(message.payload)
+        : undefined
+    const evidence: CheckoutSparkMerchantOrderEvidence = {
       buyerPubkey: message.senderPubkey,
       merchantPubkey: message.recipientPubkey,
       orderId: message.orderId,
@@ -243,6 +299,15 @@ export function readCheckoutSparkMerchantOrderEvidence(
       contentHash: contentHash(rumor.content),
       orderCreatedAt: message.payload.createdAt,
       commerceTotalSats: message.payload.subtotal,
+      ...(organizerOrderBinding
+        ? {
+            organizerOrderBinding: {
+              identityHash: organizerOrderBinding.identityHash,
+              termsHash: organizerOrderBinding.termsHash,
+              createdAt: message.payload.createdAt,
+            },
+          }
+        : {}),
       ...(message.payload.checkoutSparkPricing
         ? { pricing: message.payload.checkoutSparkPricing }
         : {}),
@@ -292,6 +357,9 @@ export function readCheckoutSparkMerchantOrderEvidence(
               },
             }
           : {}),
+        ...(item.fulfillment?.type === "event_market_pickup"
+          ? { eventPickup: item.fulfillment }
+          : {}),
         ...(item.sourcePrice
           ? {
               sourcePriceAmount: item.sourcePrice.amount,
@@ -301,6 +369,9 @@ export function readCheckoutSparkMerchantOrderEvidence(
           : {}),
       })),
     }
+    if (organizerOrderBinding)
+      authenticatedOrganizerEvidence.set(evidence, JSON.stringify(evidence))
+    return evidence
   } catch {
     return null
   }
@@ -315,6 +386,11 @@ export function createCheckoutSparkMerchantOrderWitness(
 ): CheckoutSparkMerchantOrderWitness | null {
   try {
     const frozen = restoreCheckoutSparkSettledPlan(plan)
+    const organizerHandoff =
+      frozen.schemaVersion === 5 &&
+      frozen.eventMarket?.mode === "organizer_handoff"
+    if (frozen.schemaVersion === 5)
+      validateCheckoutSparkPlanSources(frozen, sourceEvents ?? [])
     const quote = frozen.commerceQuote
     assertCheckoutSparkCommerceShippingPolicies(quote, frozen.createdAt)
     const lines = new Map(
@@ -329,6 +405,16 @@ export function createCheckoutSparkMerchantOrderWitness(
       !isHex64(evidence.contentHash) ||
       !Number.isSafeInteger(evidence.orderCreatedAt) ||
       evidence.orderCreatedAt < frozen.createdAt ||
+      (organizerHandoff &&
+        (authenticatedOrganizerEvidence.get(evidence) !==
+          JSON.stringify(evidence) ||
+          !validOrganizerOrderBinding(
+            evidence.organizerOrderBinding,
+            evidence
+          ) ||
+          evidence.organizerOrderBinding.createdAt !==
+            evidence.orderCreatedAt ||
+          evidence.organizerOrderBinding.createdAt >= frozen.takeoverAt)) ||
       evidence.commerceTotalSats !== quote.commerceTotalSats ||
       JSON.stringify(
         canonicalCheckoutSparkCommerceEvidence(evidence.pricing)
@@ -363,14 +449,30 @@ export function createCheckoutSparkMerchantOrderWitness(
             pricing: quote.pricing,
             acceptedAtMs:
               quote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
+            ...(frozen.schemaVersion === 5 ? { allowZero: true as const } : {}),
           })
         }
         let fulfillmentMatches =
           !line?.shippingOption &&
           !line?.pickup &&
           item.shipping === undefined &&
-          item.pickup === undefined
-        if (line?.pickup && item.pickup && item.shipping === undefined) {
+          item.pickup === undefined &&
+          item.eventPickup === undefined
+        if (frozen.schemaVersion === 5 && line && item.eventPickup) {
+          fulfillmentMatches =
+            item.shipping === undefined &&
+            item.pickup === undefined &&
+            matchesCheckoutSparkOrderEventMarketSnapshot(
+              item.eventPickup,
+              frozen.eventMarket!,
+              item.productCoordinate
+            )
+        } else if (
+          line?.pickup &&
+          item.pickup &&
+          item.shipping === undefined &&
+          item.eventPickup === undefined
+        ) {
           const productEvent = sourceEvents?.find(
             (event) => event.id === line.productEventId
           )
@@ -438,8 +540,8 @@ export function createCheckoutSparkMerchantOrderWitness(
     ) {
       return null
     }
-    return {
-      schemaVersion: 1,
+    const witness: CheckoutSparkMerchantOrderWitness = {
+      schemaVersion: organizerHandoff ? 2 : 1,
       merchantPubkey: frozen.merchantPubkey,
       buyerPubkey: evidence.buyerPubkey,
       orderId: frozen.orderId,
@@ -447,7 +549,13 @@ export function createCheckoutSparkMerchantOrderWitness(
       contentHash: evidence.contentHash,
       checkoutId: frozen.checkoutId,
       planDigest: frozen.planDigest,
+      ...(organizerHandoff
+        ? { organizerOrderBinding: { ...evidence.organizerOrderBinding! } }
+        : {}),
     }
+    if (organizerHandoff)
+      authenticatedOrganizerWitnesses.set(witness, JSON.stringify(witness))
+    return witness
   } catch {
     return null
   }
@@ -461,7 +569,7 @@ export function restoreCheckoutSparkMerchantOrderWitness(
   if (
     !witness ||
     typeof witness !== "object" ||
-    Object.keys(witness).length !== 8 ||
+    Object.keys(witness).length !== (witness.schemaVersion === 2 ? 9 : 8) ||
     Object.keys(witness).some(
       (key) =>
         ![
@@ -473,9 +581,10 @@ export function restoreCheckoutSparkMerchantOrderWitness(
           "contentHash",
           "checkoutId",
           "planDigest",
+          ...(witness.schemaVersion === 2 ? ["organizerOrderBinding"] : []),
         ].includes(key)
     ) ||
-    witness.schemaVersion !== 1 ||
+    (witness.schemaVersion !== 1 && witness.schemaVersion !== 2) ||
     !isHex64(witness.merchantPubkey) ||
     !isHex64(witness.buyerPubkey) ||
     !isHex64(witness.rumorId) ||
@@ -488,7 +597,9 @@ export function restoreCheckoutSparkMerchantOrderWitness(
     typeof witness.checkoutId !== "string" ||
     !witness.checkoutId ||
     witness.checkoutId.length > 512 ||
-    witness.checkoutId.trim() !== witness.checkoutId
+    witness.checkoutId.trim() !== witness.checkoutId ||
+    (witness.schemaVersion === 2 &&
+      !validOrganizerOrderBinding(witness.organizerOrderBinding, witness))
   ) {
     throw new Error("Checkout Spark order witness is invalid.")
   }
@@ -498,12 +609,22 @@ export function restoreCheckoutSparkMerchantOrderWitness(
       witness.merchantPubkey !== frozen.merchantPubkey ||
       witness.orderId !== frozen.orderId ||
       witness.checkoutId !== frozen.checkoutId ||
-      witness.planDigest !== frozen.planDigest
+      witness.planDigest !== frozen.planDigest ||
+      (witness.organizerOrderBinding !== undefined &&
+        (frozen.schemaVersion !== 5 ||
+          frozen.eventMarket?.mode !== "organizer_handoff" ||
+          witness.organizerOrderBinding.createdAt < frozen.createdAt ||
+          witness.organizerOrderBinding.createdAt >= frozen.takeoverAt))
     ) {
       throw new Error("Checkout Spark order witness does not match plan.")
     }
   }
-  return { ...witness }
+  return {
+    ...witness,
+    ...(witness.organizerOrderBinding
+      ? { organizerOrderBinding: { ...witness.organizerOrderBinding } }
+      : {}),
+  }
 }
 
 /**
@@ -528,7 +649,18 @@ export function matchesCheckoutSparkMerchantOrderWitness(
       return false
     }
     const parsed = orderSchema.parse(JSON.parse(message.rawContent) as unknown)
-    return JSON.stringify(parsed) === JSON.stringify(message.payload)
+    if (JSON.stringify(parsed) !== JSON.stringify(message.payload)) return false
+    if (exact.organizerOrderBinding) {
+      const binding = getOrganizerStockOrderBindings(parsed)
+      return (
+        classifyEventMarketOrderHandoff(parsed) ===
+          "reserved_organizer_stock" &&
+        exact.organizerOrderBinding.identityHash === binding.identityHash &&
+        exact.organizerOrderBinding.termsHash === binding.termsHash &&
+        exact.organizerOrderBinding.createdAt === parsed.createdAt
+      )
+    }
+    return true
   } catch {
     return false
   }
