@@ -714,6 +714,38 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
       expect(new URL(page.url()).searchParams.get("counterparty")).toBe(
         scenario.target.pubkey
       )
+      if (scenario.app === "market") {
+        const browse = page.getByRole("button", { name: "Browse", exact: true })
+        const compact = await browse.isVisible()
+        const filterOrders = async (query: string) => {
+          if (compact) await browse.click()
+          await page
+            .getByRole("searchbox", { name: "Search orders" })
+            .filter({ visible: true })
+            .fill(query)
+          if (compact) {
+            await page
+              .getByRole("dialog", { name: "Your orders" })
+              .getByRole("button", { name: "Close", exact: true })
+              .click()
+          }
+        }
+        // A filter must not replace the participant named in the restored URL.
+        await filterOrders(scenario.first.pubkey)
+        await expect(
+          page.getByText("Select an order to view its status.", { exact: true })
+        ).toBeVisible()
+        await expect(
+          page.getByRole("button", { name: "Open messages", exact: true })
+        ).toHaveCount(0)
+        expect(new URL(page.url()).searchParams.get("counterparty")).toBe(
+          scenario.target.pubkey
+        )
+        await filterOrders("")
+        await expect(
+          page.getByRole("button", { name: "Open messages", exact: true })
+        ).toBeVisible()
+      }
       await page
         .getByRole("button", { name: "Open messages", exact: true })
         .click()
