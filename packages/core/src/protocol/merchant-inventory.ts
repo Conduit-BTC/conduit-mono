@@ -18,7 +18,8 @@ import {
   type MerchantStockCheckpointDelivery,
   type MerchantStockCheckpointPhase,
 } from "./event-market-stock-checkpoint"
-import type { AccountSigner } from "./nostr-event-signer"
+import { NostrSignerError, type AccountSigner } from "./nostr-event-signer"
+import { SessionSignerError } from "./session-signer"
 import { merchantAcceptanceBinding } from "./merchant-acceptance-privacy"
 import {
   buildEventMarketAssignmentDraft,
@@ -1363,11 +1364,52 @@ async function markDelivered(
   })
 }
 
+const CHECKPOINT_SIGNER_CODES = [
+  "authorization_denied",
+  "timeout",
+  "unavailable",
+  "unsupported_operation",
+  "disconnected",
+  "authority_changed",
+  "invalid_response",
+] as const
+const CHECKPOINT_SESSION_CODES = [
+  "authority_changed",
+  "identity_changed",
+  "timeout",
+  "invalid_response",
+  "background_paused",
+  "queue_full",
+  "provider_unavailable",
+] as const
+export type MerchantStockCheckpointFailure =
+  | { source: "signer"; code: (typeof CHECKPOINT_SIGNER_CODES)[number] }
+  | { source: "session"; code: (typeof CHECKPOINT_SESSION_CODES)[number] }
+  | { source: "unclassified" }
+
+function checkpointFailure(error: unknown): MerchantStockCheckpointFailure {
+  try {
+    if (error instanceof NostrSignerError) {
+      const code = error.code
+      if (CHECKPOINT_SIGNER_CODES.includes(code))
+        return { source: "signer", code }
+    } else if (error instanceof SessionSignerError) {
+      const code = error.code
+      if (CHECKPOINT_SESSION_CODES.includes(code))
+        return { source: "session", code }
+    }
+  } catch {
+    // Even error inspection is observational, never a replacement failure.
+  }
+  return { source: "unclassified" }
+}
+
 export type MerchantStockCheckpointOutcome = {
   /** Internal correlation only; never render or log this coordinate. */
   productCoordinate: string
   status: "acknowledged" | "pending"
   phase: MerchantStockCheckpointPhase
+  failure?: MerchantStockCheckpointFailure
 }
 
 /** Delivery may fail; the durable order decision and later acceptances remain intact. */
@@ -1447,13 +1489,19 @@ export async function resumeMerchantInventoryPublication(input: {
     const observation: { phase: MerchantStockCheckpointPhase } = {
       phase: "snapshot",
     }
-    const observe = (status: MerchantStockCheckpointOutcome["status"]) => {
+    const observe = (
+      status: MerchantStockCheckpointOutcome["status"],
+      error?: unknown
+    ) => {
       try {
         void Promise.resolve(
           input.onStockCheckpoint?.({
             productCoordinate: coordinate,
             status,
             phase: observation.phase,
+            ...(status === "pending"
+              ? { failure: checkpointFailure(error) }
+              : {}),
           })
         ).catch(() => {})
       } catch {
@@ -1488,9 +1536,9 @@ export async function resumeMerchantInventoryPublication(input: {
         ])
       )
       observe("acknowledged")
-    } catch {
+    } catch (error) {
       blockedProducts.add(coordinate)
-      observe("pending")
+      observe("pending", error)
     }
   }
   for (const record of records) {

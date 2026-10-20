@@ -1053,10 +1053,13 @@ for (const hidden of [false, true]) {
       const staleProduct = parseProductEvent(stale)
       // This tests signed revision selection, not relay recovery. Keep the
       // uninitialized inventory path while making unavailable coverage explicit.
-      const plan = spyOn(
-        eventMarketProtocol,
-        "getEventMarketReadPlan"
-      ).mockRejectedValue(new Error("Synthetic relay coverage unavailable"))
+      const coverage = { lookups: 0 }
+      eventMarketProtocol.__setEventMarketTestOverrides({
+        getRelayListsDetailed: async () => {
+          coverage.lookups++
+          throw new Error("Synthetic relay coverage unavailable")
+        },
+      })
       try {
         await expect(
           acceptMerchantOccurrenceOrder({
@@ -1074,8 +1077,9 @@ for (const hidden of [false, true]) {
           expect(
             (await db.merchantInventoryProducts.get(staleProduct.id))?.stock
           ).toBe(0)
+        expect(coverage.lookups).toBe(hidden ? 0 : 1)
       } finally {
-        plan.mockRestore()
+        eventMarketProtocol.__resetEventMarketTestOverrides()
       }
     })
   }
@@ -1114,23 +1118,37 @@ it("duplicate observations use the signed tie-break and ignore forged or unrelat
     ...winner,
     signedProductEvent: { ...events[0]!, created_at: 300 },
   }
-  for (const products of [
-    [loser, winner],
-    [winner, loser],
-  ]) {
-    await db.merchantInventoryProducts.clear()
-    await db.merchantInventoryAcceptedOrders.clear()
-    const accept = acceptMerchantOccurrenceOrder({
-      ...session,
-      order: order([winner]),
-      products: [forged, { ...unrelated, id: winner.id }, ...products],
-    })
-    if (winner.stock === 0)
-      await expect(accept).rejects.toThrow("Insufficient ordinary stock")
-    else {
-      await accept
-      expect((await db.merchantInventoryProducts.get(winner.id))?.stock).toBe(5)
+  const coverage = { lookups: 0 }
+  eventMarketProtocol.__setEventMarketTestOverrides({
+    getRelayListsDetailed: async () => {
+      coverage.lookups++
+      throw new Error("Synthetic relay coverage unavailable")
+    },
+  })
+  try {
+    for (const products of [
+      [loser, winner],
+      [winner, loser],
+    ]) {
+      await db.merchantInventoryProducts.clear()
+      await db.merchantInventoryAcceptedOrders.clear()
+      const accept = acceptMerchantOccurrenceOrder({
+        ...session,
+        order: order([winner]),
+        products: [forged, { ...unrelated, id: winner.id }, ...products],
+      })
+      if (winner.stock === 0)
+        await expect(accept).rejects.toThrow("Insufficient ordinary stock")
+      else {
+        await accept
+        expect((await db.merchantInventoryProducts.get(winner.id))?.stock).toBe(
+          5
+        )
+      }
     }
+    expect(coverage.lookups).toBe(2)
+  } finally {
+    eventMarketProtocol.__resetEventMarketTestOverrides()
   }
 })
 

@@ -207,3 +207,87 @@ it("uses only fixed allowlisted phase copy and the latest per-product outcome", 
     )
   ).toBe("Stock recovery checkpoint status is not confirmed.")
 })
+
+it("appends only fixed typed failure copy to the current Event checkpoint notice", () => {
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [
+        {
+          productCoordinate: "current-product",
+          status: "pending",
+          phase: "wrapping",
+          failure: { source: "signer", code: "unavailable" },
+        },
+      ]
+    )
+  ).toBe(
+    "Stock recovery checkpoint pending: private message wrapping. Signer report: unavailable."
+  )
+})
+
+it("does not render unknown codes, outside Event failures or stale acknowledged failures", () => {
+  const current: MerchantStockCheckpointOutcome = {
+    productCoordinate: "current-product",
+    status: "pending",
+    phase: "wrapping",
+    failure: { source: "session", code: "queue_full" },
+  }
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [
+        current,
+        {
+          ...current,
+          productCoordinate: "outside-product",
+          failure: { source: "signer", code: "authorization_denied" },
+        },
+      ]
+    )
+  ).toBe(
+    "Stock recovery checkpoint pending: private message wrapping. Session report: queue full."
+  )
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [
+        {
+          ...current,
+          failure: { source: "signer", code: "untrusted-code" } as never,
+        },
+      ]
+    )
+  ).toBe(
+    "Stock recovery checkpoint pending: private message wrapping. No typed signer/session error code was available."
+  )
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [
+        {
+          ...current,
+          status: "acknowledged",
+        },
+      ]
+    )
+  ).toBe("This Event's stock recovery checkpoints were acknowledged.")
+  const failure = Object.defineProperty({}, "source", {
+    get() {
+      throw new Error("controlled diagnostic getter")
+    },
+  })
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [
+        {
+          ...current,
+          failure: failure as never,
+        },
+      ]
+    )
+  ).toBe(
+    "Stock recovery checkpoint pending: private message wrapping. No typed signer/session error code was available."
+  )
+})

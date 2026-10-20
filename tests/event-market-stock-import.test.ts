@@ -45,8 +45,14 @@ import {
   parseEventMarketAssignmentEvent,
 } from "@conduit/core/protocol/event-market-assignment"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
-import { SessionSigner } from "@conduit/core/protocol/session-signer"
-import type { NostrKeySigner } from "@conduit/core/protocol/nostr-event-signer"
+import {
+  SessionSigner,
+  SessionSignerError,
+} from "@conduit/core/protocol/session-signer"
+import {
+  NostrSignerError,
+  type NostrKeySigner,
+} from "@conduit/core/protocol/nostr-event-signer"
 import {
   buildEventMarketOrderRumorTags,
   serializeOrderRumorContent,
@@ -3406,6 +3412,189 @@ it("keeps checkpoint observers separate from failed ACKs and successful retries"
   expect(unchanged.acknowledgedRelayUrls).toHaveLength(1)
   expect(phases).toEqual(["snapshot"])
   expect(calls.private).toBe(2)
+})
+
+it("reports only the typed signer failure code from the actual checkpoint wrapping failure", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  const observed: { status: string; phase: string; failure?: unknown }[] = []
+  const encryption = spyOn(
+    f.merchantSigner,
+    "encryptNip44"
+  ).mockRejectedValueOnce(new NostrSignerError("unavailable"))
+  try {
+    const result = await resumeMerchantInventoryPublication({
+      db: f.db,
+      merchantPubkey: f.merchant,
+      stockCheckpoint: { signer: f.merchantSigner, shouldContinue: () => true },
+      sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+      publish: async () => {
+        throw new Error("No public write before checkpoint")
+      },
+      onStockCheckpoint: (outcome: (typeof observed)[number]) => {
+        observed.push({
+          status: outcome.status,
+          phase: outcome.phase,
+          failure: outcome.failure,
+        })
+      },
+    })
+    expect(result.delivered).toBe(0)
+    expect(result.pending).toBeGreaterThan(0)
+    expect(encryption).toHaveBeenCalledTimes(1)
+    expect(observed).toEqual([
+      {
+        status: "pending",
+        phase: "wrapping",
+        failure: { source: "signer", code: "unavailable" },
+      },
+    ])
+  } finally {
+    encryption.mockRestore()
+  }
+})
+
+for (const scenario of [
+  "session",
+  "plain-code",
+  "unknown-typed-code",
+  "throwing-code",
+  "proxied-error",
+  "private-getters",
+] as const) {
+  it(`keeps ${scenario} checkpoint failure diagnostics typed, content-free and observational`, async () => {
+    const f = await fixture(),
+      order = f.order(),
+      entries = await f.accept(order)
+    await f.importOrder(order, entries)
+    const access = { privateFields: 0, code: 0, public: 0 }
+    const failure =
+      scenario === "session" || scenario === "throwing-code"
+        ? new SessionSignerError("queue_full", "controlled session failure")
+        : scenario === "plain-code"
+          ? Object.assign(new Error("controlled failure"), {
+              code: "unavailable",
+            })
+          : scenario === "proxied-error"
+            ? new Proxy(
+                {},
+                {
+                  getPrototypeOf() {
+                    throw new Error("controlled inspection failure")
+                  },
+                }
+              )
+            : new NostrSignerError("unavailable")
+    if (scenario === "unknown-typed-code")
+      Object.defineProperty(failure, "code", { value: "untrusted-code" })
+    if (scenario === "throwing-code")
+      Object.defineProperty(failure, "code", {
+        get() {
+          access.code++
+          throw new Error("controlled code getter")
+        },
+      })
+    for (const key of ["message", "cause"])
+      Object.defineProperty(failure, key, {
+        get() {
+          access.privateFields++
+          throw new Error("private failure detail must not be read")
+        },
+      })
+    const observed: unknown[] = []
+    const encryption = spyOn(
+      f.merchantSigner,
+      "encryptNip44"
+    ).mockRejectedValueOnce(failure)
+    try {
+      const result = await resumeMerchantInventoryPublication({
+        db: f.db,
+        merchantPubkey: f.merchant,
+        stockCheckpoint: {
+          signer: f.merchantSigner,
+          shouldContinue: () => true,
+        },
+        sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+        publish: async () => {
+          access.public++
+          return true
+        },
+        onStockCheckpoint: (outcome) => {
+          observed.push(outcome.failure)
+          throw new Error("controlled observer failure")
+        },
+      })
+      expect(observed).toEqual([
+        scenario === "session"
+          ? { source: "session", code: "queue_full" }
+          : scenario === "private-getters"
+            ? { source: "signer", code: "unavailable" }
+            : { source: "unclassified" },
+      ])
+      expect(result.delivered).toBe(0)
+      expect(result.pending).toBeGreaterThan(0)
+      expect(Object.keys(result).sort()).toEqual([
+        "delivered",
+        "pending",
+        "signed",
+      ])
+      expect(encryption).toHaveBeenCalledTimes(1)
+      expect(access.public).toBe(0)
+      expect(access.privateFields).toBe(0)
+      expect(access.code).toBe(scenario === "throwing-code" ? 1 : 0)
+      const retained = (await f.db.merchantInventoryProducts.get(
+        f.products[0]!.coordinate
+      ))!.organizerStockCheckpoint!
+      expect(retained.selfEnvelope).toBeUndefined()
+      expect(retained.acknowledgedRelayUrls).toHaveLength(0)
+    } finally {
+      encryption.mockRestore()
+    }
+  })
+}
+
+it("does not inspect checkpoint failure details when no observer is installed", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  const access = { code: 0, public: 0 }
+  const failure = new NostrSignerError("unavailable")
+  Object.defineProperty(failure, "code", {
+    get() {
+      access.code++
+      throw new Error("controlled code getter")
+    },
+  })
+  const encryption = spyOn(
+    f.merchantSigner,
+    "encryptNip44"
+  ).mockRejectedValueOnce(failure)
+  try {
+    const result = await resumeMerchantInventoryPublication({
+      db: f.db,
+      merchantPubkey: f.merchant,
+      stockCheckpoint: { signer: f.merchantSigner, shouldContinue: () => true },
+      sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+      publish: async () => {
+        access.public++
+        return true
+      },
+    })
+    expect(result.delivered).toBe(0)
+    expect(result.pending).toBeGreaterThan(0)
+    expect(Object.keys(result).sort()).toEqual([
+      "delivered",
+      "pending",
+      "signed",
+    ])
+    expect(encryption).toHaveBeenCalledTimes(1)
+    expect(access).toEqual({ code: 0, public: 0 })
+  } finally {
+    encryption.mockRestore()
+  }
 })
 
 it("reports snapshot and wrapping phases without replacing the checkpoint failure", async () => {

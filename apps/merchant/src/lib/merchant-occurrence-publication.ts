@@ -9,6 +9,7 @@ import {
   resumeMerchantOccurrencePublication as resumeCoreOccurrencePublication,
   type SignedPublicNostrEvent,
   type MerchantStockCheckpointOutcome,
+  type MerchantStockCheckpointFailure,
 } from "@conduit/core"
 import { db } from "@conduit/core/db"
 import {
@@ -126,6 +127,36 @@ export async function publishMerchantInventoryProduct(
   return hasCommonAcknowledgedRelay(delivered)
 }
 
+function checkpointFailureNotice(
+  failure?: MerchantStockCheckpointFailure
+): string {
+  if (!failure) return ""
+  const copy = {
+    authorization_denied: "approval declined",
+    timeout: "request timed out",
+    unavailable: "unavailable",
+    unsupported_operation: "operation unsupported",
+    disconnected: "disconnected",
+    authority_changed: "authority changed",
+    invalid_response: "invalid response",
+    identity_changed: "identity changed",
+    background_paused: "background work paused",
+    queue_full: "queue full",
+    provider_unavailable: "provider unavailable",
+  } as const
+  try {
+    const source = failure.source
+    if (source === "signer" || source === "session") {
+      const code = failure.code
+      if (typeof code === "string" && Object.hasOwn(copy, code))
+        return `${source === "signer" ? "Signer" : "Session"} report: ${copy[code]}.`
+    }
+  } catch {
+    // A diagnostic cannot replace the stock action's existing notice.
+  }
+  return "No typed signer/session error code was available."
+}
+
 /** Fixed, transient UI copy only; coordinates are used solely for local scope. */
 export function merchantStockCheckpointNotice(
   productCoordinates: readonly string[],
@@ -150,12 +181,19 @@ export function merchantStockCheckpointNotice(
       delivery_ack: "Stock recovery checkpoint pending: inbox acknowledgement.",
       freshness: "Stock recovery checkpoint pending: current stock recheck.",
     } as const
-    return (
+    const phaseNotice =
       (Object.keys(copy) as (keyof typeof copy)[])
         .filter((phase) => phases.has(phase))
         .map((phase) => copy[phase])
         .join(" ") || "Stock recovery checkpoint status is not confirmed."
-    )
+    return [
+      phaseNotice,
+      ...new Set(
+        pending
+          .map((outcome) => checkpointFailureNotice(outcome.failure))
+          .filter(Boolean)
+      ),
+    ].join(" ")
   }
   return scoped.size === products.size
     ? "This Event's stock recovery checkpoints were acknowledged."
