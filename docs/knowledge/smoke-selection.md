@@ -54,7 +54,7 @@ Measured About and legal source scopes run unsharded. Scopes above 150 project
 cases fall back to full-area partitions as the inventory grows. This count is a
 size guard, not a runtime bound. General test-file edits always keep full-area
 partitions in all areas, regardless of case count. Full areas retain the existing
-four Market, four Merchant, one Commerce and one Event-router jobs. Build runs independently of
+five Market, four Merchant, one Commerce and one Event-router jobs. Build runs independently of
 quality checks;
 preview verification still requires the validated build and configuration digest.
 Every required check must pass independently.
@@ -70,6 +70,13 @@ reject missing, repeated or empty partitions. Assertions, retries, browser
 projects, worker counts and deadlines remain unchanged.
 Broad changes may remain slower; do not weaken coverage or introduce arbitrary
 runner fanout or a dependency framework solely to reach a timing goal. The
+Market inventory grew to 607 project cases. A four-way partition repeatedly
+reached the existing 20-minute job deadline without retaining a complete
+execution artifact. Five Market partitions distribute the same full
+project-aware case multiset across smaller jobs; actual discovery rejects
+missing, repeated or empty partitions. Assertions, retries, browser projects,
+worker counts and deadlines remain unchanged. This scheduling change does not
+establish the cause of a timeout or replace fresh required runtime evidence. The
 bounded Event-router split preserves all native cases while keeping the existing
 Commerce job's serial lanes within their unchanged deadline; it does not increase
 test deadlines or make a failed lane optional. Unit execution

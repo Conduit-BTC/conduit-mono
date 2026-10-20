@@ -1,4 +1,3 @@
-import { merchantOccurrenceAcceptanceBindings } from "@conduit/core/protocol/merchant-order-acceptance-bindings"
 import { afterEach, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
@@ -7,7 +6,7 @@ import {
   getPublicKey,
 } from "nostr-tools/pure"
 import { v2 as nip44 } from "nostr-tools/nip44"
-import { matchFilter } from "nostr-tools"
+import { matchFilter, type Filter } from "nostr-tools"
 import { ConduitDB } from "@conduit/core/db"
 import { config } from "@conduit/core/config"
 import {
@@ -71,6 +70,7 @@ import {
   restoreClosedOrganizerStockJournal,
   restoreClosedOrganizerStockFromInbox,
   startMerchantOrganizerStockGrant,
+  type EventMarketStockDiscoveryPage,
 } from "@conduit/core/protocol/event-market-stock-workflow"
 import { CommerceInboxStore } from "@conduit/core/protocol/commerce-inbox-store"
 import {
@@ -78,7 +78,16 @@ import {
   getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "@conduit/core/protocol/protected-read-authorization"
-import type { ProtectedInboxReadResult } from "@conduit/core/protocol/protected-inbox-read"
+import {
+  readProtectedInbox,
+  type ProtectedInboxReadResult,
+} from "@conduit/core/protocol/protected-inbox-read"
+import {
+  WebSocketCommerceRelayExecutor,
+  type RelayWebSocket,
+} from "@conduit/core/protocol/relay-executor"
+import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "@conduit/core/protocol/inbox-declaration-evidence"
 import type { PublishWithPlannerResult } from "@conduit/core/protocol/relay-publish"
 import { db as sharedDb } from "@conduit/core/db"
 import * as rosterReads from "@conduit/core/protocol/event-market-roster-read"
@@ -4756,6 +4765,285 @@ it("keeps only the strongest authenticated checkpoint per product during bounded
     )
   ).toBe(true)
   scan.dispose()
+})
+
+// Real checkpoint setup and 50 encrypted wrappers precede the bounded reads;
+// this composed-test budget does not extend any reader or provider deadline.
+it("discovers a backdated third stock checkpoint through authenticated pages despite an unavailable source", async () => {
+  const random = spyOn(Math, "random").mockReturnValue(0)
+  let scan:
+    Awaited<ReturnType<typeof createEventMarketStockDiscovery>> | undefined
+  let executor: WebSocketCommerceRelayExecutor | undefined
+  try {
+    const f = await fixture()
+    const first = await merchantCheckpoint(f),
+      acceptances: SignedPublicNostrEvent[] = []
+    for (let index = 0; index < 3; index++) {
+      const order = f.order(1),
+        accepted = await f.accept(order)
+      acceptances.push(...accepted)
+      await f.importOrder(order, accepted)
+      if (index === 0) expect((await f.publish()).pending).toBe(0)
+    }
+    const middle = await merchantCheckpoint(f)
+    random.mockReturnValue(0.75)
+    expect((await f.publish()).pending).toBe(0)
+    random.mockReturnValue(0)
+    const cold = await coldMerchantCheckpoint(f),
+      latest = cold.checkpoint,
+      versions = [first, middle, latest].map((checkpoint) => {
+        const payload = parseEventMarketStockCheckpointRumor(checkpoint.rumor)
+        return [payload.sequence, payload.snapshot.orders.length]
+      })
+    expect(versions).toEqual([
+      [1, 0],
+      [2, 1],
+      [3, 3],
+    ])
+    expect(latest.selfEnvelope!.created_at).toBeLessThan(
+      middle.selfEnvelope!.created_at
+    )
+    const recent = [first.selfEnvelope!, middle.selfEnvelope!, ...acceptances]
+    for (let index = recent.length; index < 50; index++)
+      recent.push(
+        await wrapPrivateMessage(
+          createPrivateMessageRumor({
+            kind: 14,
+            pubkey: f.merchant,
+            created_at: 110 + index,
+            tags: [["p", f.merchant]],
+            content: `Synthetic unrelated history ${index}`,
+          }),
+          { pubkey: f.merchant },
+          f.merchantSigner
+        )
+      )
+    expect(
+      recent.every(
+        (event) => event.created_at > latest.selfEnvelope!.created_at
+      )
+    ).toBe(true)
+    const relayUrls = [
+        "wss://stock-unavailable.test",
+        "wss://stock-history.test",
+      ],
+      requests: { relayUrl: string; filter: Filter; authenticated: boolean }[] =
+        [],
+      auths = { count: 0 },
+      unavailable = { count: 0 },
+      retained = [...recent, latest.selfEnvelope!]
+    // Wire-emulated relays only: production auth, executor, paging and crypto run.
+    class StockHistorySocket implements RelayWebSocket {
+      readyState = 0
+      onopen: RelayWebSocket["onopen"] = null
+      onmessage: RelayWebSocket["onmessage"] = null
+      onerror: RelayWebSocket["onerror"] = null
+      onclose: RelayWebSocket["onclose"] = null
+      private authenticated = false
+      constructor(private readonly relayUrl: string) {
+        queueMicrotask(() => {
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+          this.emit(["AUTH", "synthetic-stock-history-challenge"])
+        })
+      }
+      private emit(frame: unknown[]) {
+        this.onmessage?.({
+          data: JSON.stringify(frame),
+        } as MessageEvent<string>)
+      }
+      send(payload: string) {
+        const frame = JSON.parse(payload) as unknown[]
+        if (frame[0] === "AUTH") {
+          auths.count++
+          queueMicrotask(() => {
+            this.emit(["OK", (frame[1] as SignedPublicNostrEvent).id, true, ""])
+            this.authenticated = true
+          })
+        } else if (frame[0] === "REQ") {
+          const subscription = frame[1],
+            filter = frame[2] as Filter,
+            authenticated = this.authenticated
+          requests.push({ relayUrl: this.relayUrl, filter, authenticated })
+          queueMicrotask(() => {
+            if (!authenticated) {
+              this.emit(["CLOSED", subscription, "auth-required: authenticate"])
+              return
+            }
+            const isUnavailable = this.relayUrl === relayUrls[0]
+            const available = isUnavailable
+              ? unavailable.count++ === 0
+                ? [first.selfEnvelope!, middle.selfEnvelope!]
+                : []
+              : retained
+            for (const event of available
+              .filter((event) => matchFilter(filter, event))
+              .sort(
+                (a, b) =>
+                  b.created_at - a.created_at || a.id.localeCompare(b.id)
+              )
+              .slice(0, filter.limit))
+              this.emit(["EVENT", subscription, event])
+            this.emit(
+              isUnavailable
+                ? [
+                    "CLOSED",
+                    subscription,
+                    "error: controlled source unavailable",
+                  ]
+                : ["EOSE", subscription]
+            )
+          })
+        }
+      }
+      close() {
+        this.readyState = 3
+        this.onclose?.(new Event("close"))
+      }
+    }
+    const inboxEvidence = createInMemoryInboxDeclarationEvidenceRepository()
+    await inboxEvidence.merge({
+      pubkey: f.merchant,
+      signedEvent: await admitFixtureEvent(
+        finalizeEvent(
+          {
+            kind: 10050,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: relayUrls.map((relayUrl) => ["relay", relayUrl]),
+            content: "",
+          },
+          f.merchantSecret
+        )
+      ),
+      observedAt: Date.now(),
+    })
+    executor = new WebSocketCommerceRelayExecutor({
+      createWebSocket: (relayUrl) => new StockHistorySocket(relayUrl),
+    })
+    const controlledExecutor = executor,
+      accountState = createInMemoryAccountNetworkLocalStateRepository()
+    scan = await createEventMarketStockDiscovery({
+      db: cold.db,
+      ...cold.auth,
+      shouldContinue: () => true,
+      resolveDeclaration: async () => ({
+        pubkey: f.merchant,
+        state: "declared",
+        relayUrls,
+        stale: false,
+        fetchedAt: Date.now(),
+      }),
+      read: (options) =>
+        readProtectedInbox({
+          ...options,
+          executor: controlledExecutor,
+          accountNetworkLocalStateRepository: accountState,
+          inboxDeclarationEvidenceRepository: inboxEvidence,
+        }),
+    })
+    const selectedCheckpoint = (page: EventMarketStockDiscoveryPage) =>
+      page.packets.find(
+        (packet) => packet.payload.type === "merchant_checkpoint"
+      )
+    const firstPage = await scan.nextPage()
+    const firstCheckpoint = selectedCheckpoint(firstPage)
+    expect({
+      status: firstPage.pageStatus,
+      version:
+        firstCheckpoint?.payload.type === "merchant_checkpoint"
+          ? firstCheckpoint.payload.sequence
+          : 0,
+      decryptFailures: firstPage.decryptFailureCount,
+      malformed: firstPage.malformedCount,
+      authenticated: auths.count,
+    }).toEqual({
+      status: "unavailable",
+      version: 2,
+      decryptFailures: 0,
+      malformed: 0,
+      authenticated: 1,
+    })
+    expect(selectedCheckpoint(firstPage)?.rumor.id === middle.rumorId).toBe(
+      true
+    )
+    expect(firstPage.hasMore).toBe(true)
+    const recentPage = await scan.nextPage()
+    expect(recentPage.pageStatus).toBe("advanced")
+    expect(selectedCheckpoint(recentPage)?.rumor.id === middle.rumorId).toBe(
+      true
+    )
+    const unavailablePage = await scan.nextPage()
+    expect(unavailablePage.pageStatus).toBe("unavailable")
+    expect(
+      selectedCheckpoint(unavailablePage)?.rumor.id === middle.rumorId
+    ).toBe(true)
+    expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+    const finalPage = await scan.nextPage(),
+      selected = selectedCheckpoint(finalPage)!
+    expect(selected.rumor.id === latest.rumorId).toBe(true)
+    expect(finalPage.pageStatus).toBe("source_eose")
+    expect(finalPage.hasMore).toBe(true)
+    expect(auths.count).toBe(2)
+    expect(requests.filter((request) => request.authenticated)).toHaveLength(4)
+    expect(
+      requests.every(
+        ({ filter }) =>
+          filter.kinds?.length === 1 &&
+          filter.kinds[0] === 1059 &&
+          filter["#p"]?.length === 1 &&
+          filter["#p"][0] === f.merchant
+      )
+    ).toBe(true)
+    const unavailableRequests = requests.filter(
+      ({ relayUrl }) => relayUrl === relayUrls[0]
+    )
+    expect(unavailableRequests).toHaveLength(1)
+    expect(
+      unavailableRequests.every(({ filter }) => filter.until === undefined)
+    ).toBe(true)
+    expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+    expect(await cold.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  } finally {
+    scan?.dispose()
+    executor?.dispose()
+    random.mockRestore()
+  }
+}, 15_000)
+
+it("restores a fresh three-order stock checkpoint and preserves exact replay", async () => {
+  const f = await fixture()
+  for (let index = 0; index < 3; index++) {
+    const order = f.order(1),
+      accepted = await f.accept(order)
+    await f.importOrder(order, accepted)
+    if (index === 0) expect((await f.publish()).pending).toBe(0)
+  }
+  expect((await f.publish()).pending).toBe(0)
+  const cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+  const ready = await recoverMerchantOrganizerStockFromInbox(
+    cold.input,
+    partialCheckpointReads(cold)
+  )
+  expect(ready.state).toBe("ready")
+  const stock = await cold.db.eventMarketOrganizerStockPools.get(
+    `${f.merchant}:${f.products[0]!.poolId}`
+  )
+  expect(stock?.importedQuantity).toBe(3)
+  expect(stock!.quantity - stock!.acceptedQuantity).toBe(1)
+  const replayed = await recoverMerchantOrganizerStockFromInbox(
+    cold.input,
+    partialCheckpointReads(cold)
+  )
+  expect(replayed.state === "ready" && replayed.alreadyCommitted).toBe(true)
+  expect(
+    (await cold.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!
+      .stock
+  ).toBe(17)
+  expect(await cold.db.merchantInventoryAcceptedOrders.count()).toBe(3)
 })
 
 function listingRepository(event: SignedPublicNostrEvent) {

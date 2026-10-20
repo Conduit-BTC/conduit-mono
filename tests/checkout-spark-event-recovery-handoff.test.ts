@@ -122,7 +122,395 @@ function delivery(success = true) {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (cause: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
+function publicationGate() {
+  const ack = deferred<ReturnType<typeof delivery>>()
+  const entered = deferred<void>()
+  const ids: string[] = []
+  return {
+    ack,
+    entered,
+    ids,
+    publishFn: async (event: { id: string }) => {
+      ids.push(event.id)
+      entered.resolve()
+      return ack.promise
+    },
+  }
+}
+
 describe("atomic Merchant and organizer checkout recovery handoff", () => {
+  it("overlaps both durable recovery publications but waits for both relay ACKs", async () => {
+    const f = fixture()
+    const merchantEntered = deferred<void>()
+    const merchantAck = deferred<ReturnType<typeof delivery>>()
+    const organizerAck = deferred<ReturnType<typeof delivery>>()
+    let organizerEntered = false
+    let completed = false
+    const assertDurablePair = () => {
+      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)
+      expect(saved).toHaveLength(1)
+      expect(!!saved[0]!.organizerDelivery).toBe(true)
+      expect(saved[0]!.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
+      expect(saved[0]!.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
+    }
+    const pending = publishCheckoutSparkEventRecoveryHandoff({
+      ...f.input,
+      transport: {
+        recipientInboxRelays: relays,
+        publishFn: async () => {
+          assertDurablePair()
+          merchantEntered.resolve()
+          return merchantAck.promise
+        },
+      },
+      organizerTransport: {
+        recipientInboxRelays: relays,
+        publishFn: async () => {
+          assertDurablePair()
+          organizerEntered = true
+          return organizerAck.promise
+        },
+      },
+    }).finally(() => {
+      completed = true
+    })
+    try {
+      await merchantEntered.promise
+      await nextTurn()
+      expect(organizerEntered).toBe(true)
+      expect(completed).toBe(false)
+      merchantAck.resolve(delivery())
+      await nextTurn()
+      expect(completed).toBe(false)
+      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
+      expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
+      organizerAck.resolve(delivery())
+      expect((await pending).canExposeFundingInvoice).toBe(true)
+    } finally {
+      merchantAck.resolve(delivery())
+      organizerAck.resolve(delivery())
+      await pending.catch(() => {})
+    }
+  })
+
+  for (const failedRole of ["merchant", "organizer"] as const) {
+    it(`drains and retains the other ACK when ${failedRole} fails, then retries only the missing exact wrap`, async () => {
+      const f = fixture()
+      if (f.identity.kind !== "signed_in")
+        throw new Error("Expected account fixture")
+      let signs = 0
+      const signEvent = f.identity.signer.signEvent
+      f.identity.signer.signEvent = async (draft) => {
+        signs++
+        return signEvent(draft)
+      }
+      const merchant = publicationGate()
+      const organizer = publicationGate()
+      const failed = failedRole === "merchant" ? merchant : organizer
+      const successful = failedRole === "merchant" ? organizer : merchant
+      const cause = new Error(`Controlled ${failedRole} publication failure`)
+      let completed = false
+      const pending = publishCheckoutSparkEventRecoveryHandoff({
+        ...f.input,
+        transport: {
+          recipientInboxRelays: relays,
+          publishFn: merchant.publishFn,
+        },
+        organizerTransport: {
+          recipientInboxRelays: relays,
+          publishFn: organizer.publishFn,
+        },
+      })
+        .then(
+          (result) => ({ result, error: null }),
+          (error: unknown) => ({ result: null, error })
+        )
+        .finally(() => {
+          completed = true
+        })
+      try {
+        await merchant.entered.promise
+        await nextTurn()
+        expect(organizer.ids).toHaveLength(1)
+        const signedCount = signs
+        const original = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+        failed.ack.reject(cause)
+        await nextTurn()
+        expect(completed).toBe(false)
+        successful.ack.resolve(delivery())
+        const outcome = await pending
+        expect(outcome.result).toBeNull()
+        expect(outcome.error).toBe(cause)
+        const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+        expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(
+          failedRole === "merchant" ? 0 : 1
+        )
+        expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(
+          failedRole === "organizer" ? 0 : 1
+        )
+        const retriedIds: string[] = []
+        const retried = await retryStoredCheckoutSparkRecoveryHandoff({
+          handoffId: saved.record.handoffId,
+          storage: f.storage,
+          now: f.input.now,
+          recipientInboxRelays: relays,
+          organizerTransport: { recipientInboxRelays: relays },
+          publishFn: async (event) => {
+            retriedIds.push(event.id)
+            return delivery()
+          },
+        })
+        expect(retried.canExposeFundingInvoice).toBe(true)
+        expect(retriedIds.length === 1 && retriedIds[0] === failed.ids[0]).toBe(
+          true
+        )
+        expect(signs).toBe(signedCount)
+        const complete = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+        expect(complete.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
+        expect(complete.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(
+          1
+        )
+        expect(
+          JSON.stringify(complete.record) === JSON.stringify(original.record)
+        ).toBe(true)
+        expect(
+          JSON.stringify(complete.organizerDelivery!.signedRecipientWrap) ===
+            JSON.stringify(original.organizerDelivery!.signedRecipientWrap)
+        ).toBe(true)
+      } finally {
+        merchant.ack.resolve(delivery())
+        organizer.ack.resolve(delivery())
+        await pending
+      }
+    })
+  }
+
+  it("preserves both ACKs when the Organizer publication finishes first", async () => {
+    const f = fixture()
+    const merchant = publicationGate()
+    const organizer = publicationGate()
+    let completed = false
+    const pending = publishCheckoutSparkEventRecoveryHandoff({
+      ...f.input,
+      transport: {
+        recipientInboxRelays: relays,
+        publishFn: merchant.publishFn,
+      },
+      organizerTransport: {
+        recipientInboxRelays: relays,
+        publishFn: organizer.publishFn,
+      },
+    }).finally(() => {
+      completed = true
+    })
+    try {
+      await merchant.entered.promise
+      await nextTurn()
+      expect(organizer.ids).toHaveLength(1)
+      organizer.ack.resolve(delivery())
+      await nextTurn()
+      expect(completed).toBe(false)
+      const partial = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      expect(partial.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
+      expect(partial.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
+      merchant.ack.resolve(delivery())
+      expect((await pending).canExposeFundingInvoice).toBe(true)
+      const complete = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      expect(complete.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
+      expect(complete.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
+    } finally {
+      merchant.ack.resolve(delivery())
+      organizer.ack.resolve(delivery())
+      await pending.catch(() => {})
+    }
+  })
+
+  it("drains both failed publications and reports the Merchant failure regardless of completion order", async () => {
+    const f = fixture()
+    const merchant = publicationGate()
+    const organizer = publicationGate()
+    const merchantFailure = new Error("Controlled Merchant failure")
+    const organizerFailure = new Error("Controlled Organizer failure")
+    let completed = false
+    const pending = publishCheckoutSparkEventRecoveryHandoff({
+      ...f.input,
+      transport: {
+        recipientInboxRelays: relays,
+        publishFn: merchant.publishFn,
+      },
+      organizerTransport: {
+        recipientInboxRelays: relays,
+        publishFn: organizer.publishFn,
+      },
+    })
+      .then(
+        (result) => ({ result, error: null }),
+        (error: unknown) => ({ result: null, error })
+      )
+      .finally(() => {
+        completed = true
+      })
+    try {
+      await merchant.entered.promise
+      await nextTurn()
+      expect(organizer.ids).toHaveLength(1)
+      organizer.ack.reject(organizerFailure)
+      await nextTurn()
+      expect(completed).toBe(false)
+      merchant.ack.reject(merchantFailure)
+      const outcome = await pending
+      expect(outcome.result).toBeNull()
+      expect(outcome.error).toBe(merchantFailure)
+      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
+      expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
+    } finally {
+      merchant.ack.resolve(delivery())
+      organizer.ack.resolve(delivery())
+      await pending
+    }
+  })
+
+  it("retains both real ACKs but rejects exposure when the session changes after both sends start", async () => {
+    const f = fixture()
+    const merchant = publicationGate()
+    const organizer = publicationGate()
+    let current = true
+    let completed = false
+    const pending = publishCheckoutSparkEventRecoveryHandoff({
+      ...f.input,
+      transport: {
+        recipientInboxRelays: relays,
+        publishFn: merchant.publishFn,
+        shouldContinue: () => current,
+      },
+      organizerTransport: {
+        recipientInboxRelays: relays,
+        publishFn: organizer.publishFn,
+        shouldContinue: () => current,
+      },
+    })
+      .then(
+        (result) => ({ result, error: null }),
+        (error: unknown) => ({ result: null, error })
+      )
+      .finally(() => {
+        completed = true
+      })
+    try {
+      await merchant.entered.promise
+      await nextTurn()
+      expect(organizer.ids).toHaveLength(1)
+      current = false
+      organizer.ack.resolve(delivery())
+      await nextTurn()
+      expect(completed).toBe(false)
+      merchant.ack.resolve(delivery())
+      const outcome = await pending
+      expect(outcome.result).toBeNull()
+      expect(outcome.error instanceof Error).toBe(true)
+      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
+      expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
+    } finally {
+      merchant.ack.resolve(delivery())
+      organizer.ack.resolve(delivery())
+      await pending
+    }
+  })
+
+  for (const missingRole of ["merchant", "organizer"] as const) {
+    it(`requires a fresh ${missingRole} ACK during explicit replay despite both saved ACKs`, async () => {
+      const f = fixture()
+      const transport = {
+        recipientInboxRelays: relays,
+        publishFn: async () => delivery(),
+      }
+      const initial = await publishCheckoutSparkEventRecoveryHandoff({
+        ...f.input,
+        transport,
+        organizerTransport: transport,
+      })
+      const original = getCheckoutSparkRecoveryDelivery(
+        initial.handoffId,
+        f.storage
+      )!
+      const merchant = publicationGate()
+      const organizer = publicationGate()
+      const missing = missingRole === "merchant" ? merchant : organizer
+      const successful = missingRole === "merchant" ? organizer : merchant
+      let completed = false
+      const pending = retryStoredCheckoutSparkRecoveryHandoff({
+        handoffId: initial.handoffId,
+        storage: f.storage,
+        now: f.input.now,
+        replayAcknowledged: true,
+        recipientInboxRelays: relays,
+        publishFn: merchant.publishFn,
+        organizerTransport: {
+          recipientInboxRelays: relays,
+          publishFn: organizer.publishFn,
+        },
+      })
+        .then(
+          (result) => ({ result, error: null }),
+          (error: unknown) => ({ result: null, error })
+        )
+        .finally(() => {
+          completed = true
+        })
+      try {
+        await merchant.entered.promise
+        await nextTurn()
+        expect(organizer.ids).toHaveLength(1)
+        expect(merchant.ids[0] === original.record.signedRecipientWrap.id).toBe(
+          true
+        )
+        expect(
+          organizer.ids[0] ===
+            original.organizerDelivery!.signedRecipientWrap.id
+        ).toBe(true)
+        missing.ack.resolve(delivery(false))
+        await nextTurn()
+        expect(completed).toBe(false)
+        successful.ack.resolve(delivery())
+        const outcome = await pending
+        expect(outcome.result).toBeNull()
+        expect(outcome.error instanceof Error).toBe(true)
+        const retained = getCheckoutSparkRecoveryDelivery(
+          initial.handoffId,
+          f.storage
+        )!
+        expect(retained.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
+        expect(retained.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(
+          1
+        )
+        expect(
+          JSON.stringify(retained.record) === JSON.stringify(original.record)
+        ).toBe(true)
+      } finally {
+        merchant.ack.resolve(delivery())
+        organizer.ack.resolve(delivery())
+        await pending
+      }
+    })
+  }
+
   it("wraps state-only organizer progress for a bounded guest without adding wallet material or a generic signing scope", async () => {
     const f = fixture(true)
     const transport = {

@@ -281,7 +281,7 @@ cross-app commerce Playwright shards. App-local changes keep their owning app
 shard and add commerce when they affect the shared checkout, order, product,
 messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
 `main` run every critical shard; docs-only changes skip browser installation.
-Full Market runs in four single-worker jobs; Merchant runs in four. Their
+Full Market runs in five single-worker jobs; Merchant runs in four. Their
 project-aware discovery manifests must combine to each complete area selection
 with no missing or repeated tests.
 Market browser fixtures use synthetic mainnet invoices so Spark wallet setup and

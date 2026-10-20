@@ -17,10 +17,11 @@ import {
 describe("path-aware smoke shard selection", () => {
   it("splits Market and Merchant into required jobs without changing area selection", () => {
     expect(expandSmokeMatrix(["market", "merchant", "commerce"])).toEqual([
-      { id: "market-1", area: "market", shard: "1/4" },
-      { id: "market-2", area: "market", shard: "2/4" },
-      { id: "market-3", area: "market", shard: "3/4" },
-      { id: "market-4", area: "market", shard: "4/4" },
+      { id: "market-1", area: "market", shard: "1/5" },
+      { id: "market-2", area: "market", shard: "2/5" },
+      { id: "market-3", area: "market", shard: "3/5" },
+      { id: "market-4", area: "market", shard: "4/5" },
+      { id: "market-5", area: "market", shard: "5/5" },
       { id: "merchant-1", area: "merchant", shard: "1/4" },
       { id: "merchant-2", area: "merchant", shard: "2/4" },
       { id: "merchant-3", area: "merchant", shard: "3/4" },
@@ -149,10 +150,13 @@ describe("path-aware smoke shard selection", () => {
   })
 })
 
-for (const area of ["market", "merchant"] as const)
-  it(`partitions actual ${area} discovery into four nonempty project-aware jobs`, () => {
+for (const [area, partCount] of [
+  ["market", 5],
+  ["merchant", 4],
+] as const)
+  it(`partitions actual ${area} discovery into ${partCount} nonempty project-aware jobs`, () => {
     const jobs = expandSmokeMatrix([area])
-    expect(jobs).toHaveLength(4)
+    expect(jobs).toHaveLength(partCount)
     const evidence = {
       baseSha: "b".repeat(40),
       sourceHeadSha: "a".repeat(40),

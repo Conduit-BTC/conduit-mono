@@ -1569,24 +1569,30 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
   const storage = input.storage === undefined ? browserStorage() : input.storage
   const stored = getCheckoutSparkRecoveryDelivery(input.handoffId, storage)
   if (!stored) throw new Error("Checkout recovery delivery was not found.")
-  const result = await retryCheckoutSparkRecoveryDelivery({
-    record: stored.record,
-    deliveryProgress: stored.deliveryProgress,
-    recipientInboxRelays: input.recipientInboxRelays,
-    resolveInboxRelays: input.resolveInboxRelays,
-    shouldContinue: input.shouldContinue,
-    publishFn: input.publishFn,
-    replayAcknowledged: input.replayAcknowledged,
-  })
-  await saveCheckoutSparkRecoveryDelivery(
-    stored.record,
-    result.deliveryProgress,
-    storage,
-    (input.now ?? Date.now)()
-  )
-  if (stored.organizerDelivery) {
-    const organizer = await retryCheckoutSparkOrganizerRecovery({
-      record: stored.organizerDelivery,
+  const deliverMerchant = async () => {
+    const result = await retryCheckoutSparkRecoveryDelivery({
+      record: stored.record,
+      deliveryProgress: stored.deliveryProgress,
+      recipientInboxRelays: input.recipientInboxRelays,
+      resolveInboxRelays: input.resolveInboxRelays,
+      shouldContinue: input.shouldContinue,
+      publishFn: input.publishFn,
+      replayAcknowledged: input.replayAcknowledged,
+    })
+    await saveCheckoutSparkRecoveryDelivery(
+      stored.record,
+      result.deliveryProgress,
+      storage,
+      (input.now ?? Date.now)()
+    )
+    return result
+  }
+  if (!stored.organizerDelivery) return deliverMerchant()
+
+  const organizerDelivery = stored.organizerDelivery
+  const deliverOrganizer = async () =>
+    retryCheckoutSparkOrganizerRecovery({
+      record: organizerDelivery,
       shouldContinue: input.shouldContinue,
       replayAcknowledged: input.replayAcknowledged,
       recipientInboxRelays: input.organizerTransport?.recipientInboxRelays,
@@ -1609,11 +1615,22 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
         )
       },
     })
-    return {
-      ...result,
-      canExposeFundingInvoice:
-        result.canExposeFundingInvoice && organizer.canExposeFundingInvoice,
-    }
+
+  // The exact pair is already durable. Drain both independent sends and ACK
+  // saves, including failures, before releasing the caller's snapshot lock.
+  const [merchant, organizer] = await Promise.allSettled([
+    deliverMerchant(),
+    deliverOrganizer(),
+  ])
+  if (merchant.status === "rejected") throw merchant.reason
+  if (organizer.status === "rejected") throw organizer.reason
+  if (input.shouldContinue?.() === false) {
+    throw new Error("Event checkout recovery session changed.")
   }
-  return result
+  return {
+    ...merchant.value,
+    canExposeFundingInvoice:
+      merchant.value.canExposeFundingInvoice &&
+      organizer.value.canExposeFundingInvoice,
+  }
 }
