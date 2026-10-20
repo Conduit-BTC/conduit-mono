@@ -168,6 +168,19 @@ describe("participant-bound order conversation identity", () => {
     ).toBe(true)
   })
 
+  it("does not select another conversation when a filter hides the qualified target", () => {
+    const rows = [conversation("merchant-a"), conversation("merchant-b")]
+    expect(
+      getMerchantOrderSelection(
+        [rows[0]!],
+        rows[0]!.id,
+        "shared-order",
+        rows[1]!.id,
+        rows
+      )
+    ).toBeNull()
+  })
+
   it("requires a qualified link when the full list contains a collision, even across filters", () => {
     const rows = [conversation("merchant-a"), conversation("merchant-b")]
     expect(findOrderConversation(rows, "shared-order")).toBeNull()

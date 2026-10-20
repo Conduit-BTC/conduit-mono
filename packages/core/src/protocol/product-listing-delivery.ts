@@ -1,6 +1,7 @@
 import { config } from "../config"
 import {
   db,
+  type ConduitDB,
   type ProductListingDeliveryJob,
   type ProductListingDeliveryState,
   type ProductListingRelayDelivery,
@@ -20,6 +21,10 @@ import {
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import { EVENT_KINDS } from "./kinds"
 import { readCurrentProductWriteRevision } from "./local-product-coordinate-lock"
+import {
+  parseEventMarketStockCheckpointRumor,
+  openMerchantOrganizerStockCheckpoint,
+} from "./event-market-stock-checkpoint"
 import {
   getConfiguredIsolatedE2eRelayUrl,
   tryNormalizeRelayUrl,
@@ -120,6 +125,13 @@ export interface ProductListingOutboxRepository {
 
 export interface ProductListingDeliveryOptions {
   repository?: ProductListingOutboxRepository
+  /** Same inventory owner; injected repositories may supply their matching DB. */
+  inventoryDatabase?: ConduitDB
+  /** Refresh private recovery evidence, never create another stock decision. */
+  prepareStockCheckpoint?: (input: {
+    merchantPubkey: string
+    productCoordinates: readonly string[]
+  }) => Promise<void>
   authenticatedPubkey?: string | null
   isAuthenticatedPubkeyCurrent?: (pubkey: string) => boolean
   accountNetworkLocalStateRepository?: Pick<
@@ -994,6 +1006,80 @@ async function deliverProductListingJobUnlocked(
     return await repository.update(id, (current) =>
       reconcileJob(current, getNow(options), retryDelayMs)
     )
+  }
+  const inventory =
+    options.inventoryDatabase ?? (options.repository ? undefined : db)
+  if (inventory) {
+    const coordinates = immutableSignedEvents.map(
+      (event) =>
+        `${event.kind}:${event.pubkey}:${event.tags.find((tag) => tag[0] === "d")?.[1]}`
+    )
+    const held = await inventory.eventMarketOrganizerStockPools
+      .where("accountPubkey")
+      .equals(stored.merchantPubkey)
+      .filter((pool) => coordinates.includes(pool.productCoordinate))
+      .toArray()
+    const productCoordinates = [
+      ...new Set(held.map((pool) => pool.productCoordinate)),
+    ]
+    if (productCoordinates.length) {
+      const matchesCheckpoint = async (address: string) => {
+        const product = await inventory.merchantInventoryProducts.get(address)
+        const checkpoint = product?.organizerStockCheckpoint
+        const event = immutableSignedEvents.find(
+          (candidate) =>
+            `${candidate.kind}:${candidate.pubkey}:${candidate.tags.find((tag) => tag[0] === "d")?.[1]}` ===
+            address
+        )!
+        const payload =
+          checkpoint &&
+          parseEventMarketStockCheckpointRumor(
+            (
+              await openMerchantOrganizerStockCheckpoint({
+                db: inventory,
+                authenticatedPubkey: stored.merchantPubkey,
+                productCoordinate: address,
+                checkpoint,
+              })
+            ).rumor
+          )
+        return Boolean(
+          product &&
+          product.merchantPubkey === stored.merchantPubkey &&
+          checkpoint?.selfEnvelope &&
+          checkpoint.acknowledgedRelayUrls.length &&
+          payload &&
+          payload.merchantPubkey === stored.merchantPubkey &&
+          payload.snapshot.product.coordinate === address &&
+          signedEventMatches(
+            payload.snapshot.product.signedProductEvent,
+            event
+          ) &&
+          signedEventMatches(product.signedProductEvent, event)
+        )
+      }
+      const needsRefresh: string[] = []
+      for (const address of productCoordinates)
+        if (!(await matchesCheckpoint(address))) needsRefresh.push(address)
+      if (needsRefresh.length) {
+        if (getCurrentAuthenticatedPubkey(options) !== stored.merchantPubkey)
+          throw new Error(
+            "Reconnect Merchant before publishing entrusted stock"
+          )
+        await options.prepareStockCheckpoint?.({
+          merchantPubkey: stored.merchantPubkey,
+          productCoordinates: Object.freeze([...needsRefresh]),
+        })
+        if (getCurrentAuthenticatedPubkey(options) !== stored.merchantPubkey)
+          throw new Error("Merchant stock publication session changed")
+      }
+      for (const address of productCoordinates) {
+        if (!(await matchesCheckpoint(address)))
+          throw new Error(
+            "Exact Merchant stock checkpoint must be acknowledged before listing publication"
+          )
+      }
+    }
   }
 
   let deliveryRunStart: Promise<ProductListingDeliveryJob> | null = null

@@ -8,6 +8,8 @@ counts, filters, selection, or action targets.
 
 `ConversationSummary.id` is this opaque local identity. Display and publish
 `orderId`; never put the composite identity into a signed order tag or payload.
+Escape this identity when using it in a CSS selector and capture it separately
+from the wire order ID when checking completion of an asynchronous UI action.
 The wire format, signed messages, encrypted inbox records and existing database
 keys are unchanged. Cached and live projections use the same grouping helper,
 so this correction requires no persisted-data migration.
@@ -23,7 +25,8 @@ coverage and missing-order status retain their existing meanings.
 Order links retain `order` and add `counterparty` when the participant is known.
 An old order-only link selects a conversation only when it is unique in the full
 observed list. Filtering the visible queue cannot make an ambiguous old link
-select an unrelated participant. Users can select the intended order to obtain
+select an unrelated participant. A qualified target hidden by a filter stays
+unselected rather than falling back to another row. Users can select the intended order to obtain
 a qualified link. This is a local data-integrity boundary, not a claim that
 unobserved conversations do not exist elsewhere on the network.
 

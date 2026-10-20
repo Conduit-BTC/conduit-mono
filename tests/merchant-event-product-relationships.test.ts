@@ -127,6 +127,19 @@ async function negativeRead(
 }
 
 describe("Merchant product Event Market relationships", () => {
+  it("hydrates saved assignments outside the graph without product associations", async () => {
+    const references = getMerchantProductMarketReferences(
+      [{ eventMarketRefs: [] }],
+      [{ marketCoordinate: coordinate }, { marketCoordinate: coordinate }]
+    )
+    expect(references).toEqual([coordinate])
+    const exact = await hydrateMerchantProductMarkets({
+      references,
+      read: async () => exactRead,
+    })
+    expect(mergeMerchantTimelineMarketReads([], exact.markets)).toHaveLength(1)
+  })
+
   it("finds a signed Selling at market outside the perspective organizer graph", async () => {
     const references = getMerchantProductMarketReferences([
       { eventMarketRefs: [coordinate, coordinate] },

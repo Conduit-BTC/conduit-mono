@@ -4,8 +4,20 @@ import type {
   Product,
   SignedPublicNostrEvent,
   CheckoutSparkPricingRateAttestation,
+  OrderEventMarketPickupFulfillmentSchema,
+  CheckoutSparkEventMarketBinding,
 } from "@conduit/core"
-import { orderEventMarketPickupFulfillmentSchema } from "@conduit/core"
+import {
+  orderEventMarketPickupFulfillmentSchema,
+  parseEventMarketAssignmentEvent,
+  parseEventMarketOrganizerFeeTerms,
+  assertCurrentEventMarketOrganizerFeeTerms,
+  calculateEventMarketOrganizerFeeSats,
+  snapshotCheckoutSparkPlanSourceEvents,
+} from "@conduit/core"
+import { freezeCheckoutSparkEventMarketBinding } from "@conduit/core/protocol/checkout-spark-event-market"
+import { assertCheckoutSparkSignedEventMarketSources } from "@conduit/core/protocol/checkout-spark-event-market-sources"
+import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
 import { freezeCheckoutSparkPricingRateAttestation } from "@conduit/core/protocol/checkout-spark-pricing-authority"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
@@ -46,6 +58,8 @@ export interface CheckoutSparkQuoteAuthority {
   shippingSourceEvents?: readonly SignedPublicNostrEvent[]
   /** Exact calendar, collection and pickup revisions from current authorization. */
   pickupSourceEvents?: readonly SignedPublicNostrEvent[]
+  /** Exact additive fee/source terms; not a separate router or mutable cart projection. */
+  eventMarket?: CheckoutSparkEventMarketBinding
 }
 
 const EVENT_ID = /^[0-9a-f]{64}$/
@@ -192,6 +206,7 @@ export function buildCheckoutSparkQuoteAuthority(input: {
 
   const usedProducts = new Set<string>()
   const usedShipping = new Set<string>()
+  const eventFulfillments: OrderEventMarketPickupFulfillmentSchema[] = []
   const lines = authorization.items.map((item) => {
     const listing = requireMatchingProduct(
       item,
@@ -203,9 +218,10 @@ export function buildCheckoutSparkQuoteAuthority(input: {
 
     if (item.fulfillment?.type === "event_market_pickup") {
       const fulfillment = item.fulfillment
+      const parsed =
+        orderEventMarketPickupFulfillmentSchema.safeParse(fulfillment)
       if (
-        !orderEventMarketPickupFulfillmentSchema.safeParse(fulfillment)
-          .success ||
+        !parsed.success ||
         fulfillment.product.coordinate !== item.productId ||
         fulfillment.product.eventId !== listing.sourceEventId ||
         fulfillment.product.createdAt !== listing.updatedAt ||
@@ -217,6 +233,7 @@ export function buildCheckoutSparkQuoteAuthority(input: {
       ) {
         invalidEvidence()
       }
+      eventFulfillments.push(parsed.data)
       return {
         productCoordinate: item.productId,
         productEventId: listing.sourceEventId!,
@@ -291,14 +308,14 @@ export function buildCheckoutSparkQuoteAuthority(input: {
   )
   if (
     pricing.status !== "ok" ||
-    !pricing.paymentRequired ||
+    (!pricing.paymentRequired && eventFulfillments.length === 0) ||
     pricing.shippingCost.status === "manual" ||
     pricing.items.length !== authorization.items.length
   ) {
     invalidEvidence()
   }
 
-  return freezeDeep({
+  const authority: CheckoutSparkQuoteAuthority = {
     pricing: structuredClone(pricing),
     ...(input.pricingAuthority
       ? {
@@ -322,5 +339,136 @@ export function buildCheckoutSparkQuoteAuthority(input: {
           ),
         }
       : {}),
-  })
+    ...(authorization.pickupSourceEvents
+      ? {
+          pickupSourceEvents: snapshotCheckoutSparkPlanSourceEvents(
+            authorization.pickupSourceEvents
+          ),
+        }
+      : {}),
+  }
+  if (eventFulfillments.length > 0) {
+    if (
+      eventFulfillments.length !== lines.length ||
+      !authority.pickupSourceEvents
+    )
+      invalidEvidence()
+    const first = eventFulfillments[0]!
+    if (
+      eventFulfillments.some(
+        (fulfillment) =>
+          fulfillment.merchantPubkey !== first.merchantPubkey ||
+          fulfillment.organizerPubkey !== first.organizerPubkey ||
+          fulfillment.market.eventId !== first.market.eventId ||
+          fulfillment.calendar.eventId !== first.calendar.eventId ||
+          fulfillment.schedule?.eventId !== first.schedule?.eventId ||
+          fulfillment.grant.eventId !== first.grant.eventId ||
+          fulfillment.mode !== first.mode ||
+          fulfillment.assignment !== first.assignment
+      )
+    )
+      invalidEvidence()
+    const acceptedAtMs = input.nowMs ?? Date.now()
+    try {
+      const organizerFee = assertCurrentEventMarketOrganizerFeeTerms(
+        parseEventMarketOrganizerFeeTerms({
+          event: first.market.signedEvent,
+          marketCoordinate: first.market.coordinate,
+        }),
+        acceptedAtMs
+      )
+      const quote = buildCheckoutSparkCommerceEvidence(authority)
+      const eventMarket = freezeCheckoutSparkEventMarketBinding(
+        {
+          schemaVersion: 1,
+          organizerPubkey: first.organizerPubkey,
+          marketCoordinate: first.market.coordinate,
+          marketEventId: first.market.eventId,
+          occurrenceCoordinate: first.calendar.coordinate,
+          occurrenceEventId: first.calendar.eventId,
+          ...(first.schedule
+            ? {
+                schedule: {
+                  coordinate: first.schedule.coordinate,
+                  eventId: first.schedule.eventId,
+                },
+              }
+            : {}),
+          grantEventId: first.grant.eventId,
+          grantAncestryEventIds: [
+            ...new Set(
+              eventFulfillments.flatMap(
+                (fulfillment) => fulfillment.grant.ancestryEventIds
+              )
+            ),
+          ],
+          observedDeletionEventIds: [
+            ...new Set(
+              eventFulfillments.flatMap(
+                (fulfillment) => fulfillment.grant.observedDeletionEventIds
+              )
+            ),
+          ],
+          mode: first.mode,
+          assignment: first.assignment,
+          lines: eventFulfillments.map((fulfillment, index) => {
+            const assignment =
+              fulfillment.occurrenceAssignment &&
+              parseEventMarketAssignmentEvent(
+                fulfillment.occurrenceAssignment.signedEvent
+              )
+            if (!assignment) invalidEvidence()
+            const pool = assignment.stockPool
+            if (
+              first.mode === "organizer_handoff" &&
+              (pool.state !== "valid" || pool.pool.state !== "active")
+            )
+              invalidEvidence()
+            return {
+              productCoordinate: fulfillment.product.coordinate,
+              productEventId: fulfillment.product.eventId,
+              assignmentCoordinate: assignment.coordinate,
+              assignmentEventId: assignment.eventId,
+              quantity: lines[index]!.quantity,
+              ...(first.mode === "organizer_handoff" && pool.state === "valid"
+                ? { stockPoolId: pool.pool.poolId }
+                : {}),
+              ...(fulfillment.parentProduct
+                ? {
+                    parentProduct: {
+                      coordinate: fulfillment.parentProduct.coordinate,
+                      eventId: fulfillment.parentProduct.eventId,
+                    },
+                  }
+                : {}),
+            }
+          }),
+          organizerFee,
+          organizerFeeSats:
+            organizerFee.state === "active"
+              ? calculateEventMarketOrganizerFeeSats({
+                  commerceTotalSats: quote.commerceTotalSats,
+                  basisPoints: organizerFee.basisPoints,
+                  minimumSats: organizerFee.minimumSats,
+                })
+              : 0,
+        },
+        {
+          merchantPubkey: first.merchantPubkey,
+          commerceQuote: quote,
+          acceptedAtMs,
+        }
+      )
+      authority.eventMarket = assertCheckoutSparkSignedEventMarketSources({
+        eventMarket,
+        commerceQuote: quote,
+        merchantPubkey: first.merchantPubkey,
+        sourceEvents: authority.pickupSourceEvents,
+        acceptedAtMs,
+      })
+    } catch {
+      invalidEvidence()
+    }
+  }
+  return freezeDeep(authority)
 }

@@ -43,6 +43,13 @@ export function createPlaywrightRouterConfig(
   const { marketPort, merchantPort } = resolvePlaywrightRouterPorts(environment)
   const receiverSetupCase =
     environment.PLAYWRIGHT_ROUTER_RECEIVER_SETUP_CASE === "true"
+  const nativeProfile = environment.PLAYWRIGHT_ROUTER_NATIVE_PROFILE ?? "all"
+  if (!["all", "ordinary", "event"].includes(nativeProfile)) {
+    throw new Error("Unknown isolated router native profile.")
+  }
+  if (receiverSetupCase && nativeProfile !== "all") {
+    throw new Error("Receiver setup cannot select a native router partition.")
+  }
   const serverEnvironment = {
     PLAYWRIGHT_MARKET_PORT: marketPort,
     PLAYWRIGHT_MERCHANT_PORT: merchantPort,
@@ -56,7 +63,11 @@ export function createPlaywrightRouterConfig(
     testMatch: "**/commerce-router-recovery.playwright.ts",
     grep: receiverSetupCase
       ? /receiver setup.*@commerce/
-      : /native router.*@commerce/,
+      : nativeProfile === "ordinary"
+        ? /native router (?!Event Market\b).*@commerce/
+        : nativeProfile === "event"
+          ? /native router Event Market\b.*@commerce/
+          : /native router.*@commerce/,
     grepInvert: undefined,
     fullyParallel: false,
     workers: 1,

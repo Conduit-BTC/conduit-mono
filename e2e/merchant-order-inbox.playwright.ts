@@ -722,7 +722,10 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
       const reply = `participant collision reply ${scenario.app}`
       await dialog.getByRole("textbox", { name: "Message" }).fill(reply)
       await dialog.getByRole("button", { name: "Send message" }).click()
-      const deliveredReplies = async (recipient: typeof buyer) => {
+      const deliveredReplies = async (
+        recipient: typeof buyer,
+        content = reply
+      ) => {
         const received = await readAuthenticatedGiftWraps(
           recipient,
           TEST_RELAY_URL
@@ -737,7 +740,7 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
           })
           return (
             rumor?.kind === 16 &&
-            rumor.content.includes(reply) &&
+            rumor.content.includes(content) &&
             rumor.tags.some(
               ([tag, value]) => tag === "order" && value === orderId
             )
@@ -748,6 +751,53 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
         .poll(() => deliveredReplies(scenario.target), { timeout: 30_000 })
         .toBe(1)
       expect(await deliveredReplies(scenario.first)).toBe(0)
+      if (scenario.app === "market") {
+        // A single filtered thread exercises automatic selection with an opaque
+        // tuple ID. An explicit colliding thread must survive URL restoration.
+        await page.goto(
+          `${marketUrl}/messages?tab=merchants&merchant=${scenario.first.pubkey}`
+        )
+        const composer = page.getByRole("textbox", {
+          name: "Reply to merchant",
+        })
+        await expect(composer).toBeVisible()
+        const firstThread = JSON.stringify([
+          orderId,
+          buyer.pubkey,
+          scenario.first.pubkey,
+        ])
+        await expect
+          .poll(() =>
+            JSON.parse(new URL(page.url()).searchParams.get("thread") ?? "null")
+          )
+          .toBe(firstThread)
+        const targetThread = JSON.stringify([
+          orderId,
+          buyer.pubkey,
+          scenario.target.pubkey,
+        ])
+        await page.goto(
+          `${marketUrl}/messages?tab=merchants&thread=${encodeURIComponent(JSON.stringify(targetThread))}`
+        )
+        await expect(composer).toBeVisible()
+        await page.reload()
+        await expect(composer).toBeVisible()
+        expect(
+          JSON.parse(new URL(page.url()).searchParams.get("thread") ?? "null")
+        ).toBe(targetThread)
+        const messageReply = "participant collision Messages reply"
+        await composer.fill(messageReply)
+        await page
+          .getByRole("button", { name: "Send message", exact: true })
+          .click()
+        await expect(composer).toHaveValue("")
+        await expect
+          .poll(() => deliveredReplies(scenario.target, messageReply), {
+            timeout: 30_000,
+          })
+          .toBe(1)
+        expect(await deliveredReplies(scenario.first, messageReply)).toBe(0)
+      }
       recordSmokeDiagnostic(testInfo, "order-reply", {
         phase: "complete",
       })

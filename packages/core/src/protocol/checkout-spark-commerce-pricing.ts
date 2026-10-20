@@ -342,6 +342,8 @@ export function assertCheckoutSparkCommerceProductPrice(input: {
   line: CheckoutSparkCommerceQuoteLine
   pricing?: CheckoutSparkCommercePricing
   acceptedAtMs?: number
+  /** Only an independently admitted version-five event may use a zero-price line. */
+  allowZero?: true
 }): void {
   const { product, line } = input
   const pricing =
@@ -352,7 +354,10 @@ export function assertCheckoutSparkCommerceProductPrice(input: {
     product.sourcePrice?.amount ?? product.price,
     product.sourcePrice?.currency ?? product.currency,
     pricing?.rate ?? null,
-    { currencyPolicy: "historical" }
+    {
+      currencyPolicy: "historical",
+      ...(input.allowZero ? { allowZero: true } : {}),
+    }
   )
   if (
     product.priceEvidenceMalformed ||

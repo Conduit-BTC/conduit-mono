@@ -13,12 +13,63 @@ import {
   getFeeInclusiveListingCardPriceDisplay,
 } from "../apps/market/src/lib/checkout-coordination-pricing"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
+import { groupCartPurchases } from "../apps/market/src/lib/cart-model"
+import { createEventMarketCheckoutFixture } from "./helpers/event-market-checkout-fixture"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
 import { isCheckoutSparkSettledCart } from "../apps/market/src/lib/checkout-spark-settled-cart"
 
 const preference = { currency: "BITCOIN", bitcoinUnit: "sats" } as const
 
 describe("buyer coordination pricing", () => {
+  it("discloses a separately verified event fee without adding it to Conduit's percentage base", async () => {
+    const event = await createEventMarketCheckoutFixture({ price: 100_000 })
+    const estimate = getCheckoutCoordinationPriceEstimate({
+      itemSubtotalSats: 100_000,
+      shippingSubtotalSats: 0,
+      organizerFeeSats: 2_500,
+    })
+    expect(estimate).toMatchObject({
+      commerceTotalSats: 100_000,
+      organizerFeeSats: 2_500,
+      conduitFeeSats: 2_100,
+      networkAllowanceSats: 154,
+      coordinationFeeSats: 2_254,
+      totalSats: 104_754,
+    })
+    expect(getCartCoordinationEstimate([event.item], null)).toBeNull()
+    const group = groupCartPurchases([event.item])[0]!
+    expect(
+      getCartCoordinationEstimate(
+        [event.item],
+        null,
+        new Map([[group.id, 2_500]])
+      )
+    ).toEqual({
+      totalSats: 104_754,
+      coordinationFeeSats: 2_254,
+      organizerFeeSats: 2_500,
+      shippingPending: false,
+    })
+    expect(
+      getCheckoutCoordinationPriceEstimate({
+        itemSubtotalSats: 0,
+        shippingSubtotalSats: 0,
+        organizerFeeSats: 5,
+      })
+    ).toMatchObject({
+      commerceTotalSats: 0,
+      organizerFeeSats: 5,
+      conduitFeeSats: 111,
+      totalSats: 117,
+    })
+    expect(
+      getCheckoutCoordinationPriceEstimate({
+        itemSubtotalSats: 100,
+        shippingSubtotalSats: 0,
+        organizerFeeSats: -1,
+      })
+    ).toBeNull()
+  })
   it("rolls the minimum and network allowance into one fee without changing the base", () => {
     expect(
       calculateCheckoutSparkBuyerPrice({

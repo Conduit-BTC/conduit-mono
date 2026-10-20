@@ -532,9 +532,9 @@ export function getMerchantOrderSelection(
       requestedOrderId,
       requestedConversationId
     )
-    if (!requested) return null
-    if (conversations.some((item) => item.id === requested.id))
-      return requested.id
+    return requested && conversations.some((item) => item.id === requested.id)
+      ? requested.id
+      : null
   }
   if (selectedId && conversations.some((item) => item.id === selectedId)) {
     return selectedId

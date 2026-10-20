@@ -21,7 +21,10 @@ import {
   type StoredMessage,
 } from "../db"
 import { config } from "../config"
-import { configuredRelayTargets } from "./account-network-local-state"
+import {
+  configuredRelayTargets,
+  filterEligibleAccountRelayTargets,
+} from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -45,6 +48,11 @@ import {
   selectCheckoutSparkMerchantProgress,
   type CheckoutSparkMerchantProgressSelectionEntry,
 } from "./checkout-spark-merchant-progress-selection"
+import { openCheckoutSparkOrganizerExecutionProgress } from "./checkout-spark-organizer-progress"
+import {
+  selectCheckoutSparkOrganizerProgressForMerchant,
+  type CheckoutSparkRecoveryActorProgress,
+} from "./checkout-spark-recovery-actor-progress"
 import { EVENT_KINDS } from "./kinds"
 import {
   createCheckoutSparkMerchantOrderWitness,
@@ -82,6 +90,7 @@ import {
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
+  planInboxReadRelays,
   resolveInboxDeclaration,
   type InboxDeclarationResolution,
   type InboxDeclarationState,
@@ -9139,8 +9148,40 @@ function settledRecoverySnapshotAdvances(
   })
 }
 
+/** Resolve the shared read policy without relabeling compatibility as owner authority. */
+async function merchantCheckoutSparkRecoveryReadPlan(
+  principal: string,
+  declaration: InboxDeclarationResolution,
+  authorization: ProtectedReadAuthorization | null
+) {
+  assertInboxSyncAuthority(authorization)
+  const plan = planInboxReadRelays({
+    declaration,
+    authenticatedPubkey: principal,
+  })
+  const relayTargets = await filterEligibleAccountRelayTargets({
+    accountPubkey: principal,
+    authenticatedPubkey: authorization?.expectedPubkey,
+    targets: plan.relayTargets,
+    operation: "read",
+    repository: testOverrides.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository:
+      testOverrides.ownerRelayListEvidenceRepository,
+  })
+  assertInboxSyncAuthority(authorization)
+  const relayUrls = relayTargets.map((target) => target.url)
+  const eligibleUrls = new Set(relayUrls)
+  return {
+    relayTargets,
+    relayUrls,
+    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls.filter((url) =>
+      eligibleUrls.has(url)
+    ),
+  }
+}
+
 /**
- * A bounded, process-local scan of the merchant's declared inboxes. The
+ * A bounded, process-local scan of the merchant's permitted inbox read plan. The
  * caller owns scheduling: each call reads at most one relay page, and no
  * wallet material or decrypted wrap escapes in the result. A later EOSE on a
  * stitched history is not proof of global absence (backdated wraps can land).
@@ -9176,9 +9217,13 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     authorization
   )
   assertSetup()
-  const relayUrls = normalizeOwnerSelectedRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
+  const readPlan = await merchantCheckoutSparkRecoveryReadPlan(
+    principal,
+    declaration,
+    authorization
   )
+  assertSetup()
+  const relayUrls = readPlan.relayUrls
   type SeenRecovery = {
     wrapId: string
     payload: CheckoutSparkRecoveryPayload
@@ -9558,12 +9603,11 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
           page = await visitProtectedInboxHistoryPage({
             principalPubkey: principal,
             relayUrl: source.relayUrl,
-            declaredRelayUrls: relayUrls,
-            relayTargets: relayTargetsFromUrls([source.relayUrl], {
-              kind: "owner_nip17",
-              operation: "read",
-              ownerPubkey: principal,
-            }),
+            authorizedRelayUrls: relayUrls,
+            declaredRelayUrls: readPlan.ownerSelectedRelayUrls,
+            relayTargets: readPlan.relayTargets.filter(
+              (target) => target.url === source.relayUrl
+            ),
             authorization,
             ...(signal ? { signal } : {}),
             ...(source.cursor ? { cursor: source.cursor } : {}),
@@ -9778,7 +9822,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
 /**
  * Discover merchant recovery authority without projecting wallet material into
  * a conversation cache or a UI query result. This resumes one durable page per source from
- * signed kind-10050 inbox relays only. A capped, failed, or malformed read is
+ * the shared owner inbox read plan. A capped, failed, or malformed read is
  * never presented as proof that no recovery package exists. Call only from an
  * explicit foreground recovery action, never a background polling interval.
  */
@@ -9817,9 +9861,12 @@ async function inspectMerchantCheckoutSparkRecoveries(
     authorization
   )
   assertInboxSyncAuthority(authorization)
-  const relayUrls = normalizeOwnerSelectedRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
+  const readPlan = await merchantCheckoutSparkRecoveryReadPlan(
+    principal,
+    declaration,
+    authorization
   )
+  const relayUrls = readPlan.relayUrls
   const byCheckout = new Map<string, MerchantCheckoutSparkRecoveryAuthority>()
   const conflictingCheckouts = new Set<string>()
   if (!relayUrls.length)
@@ -9844,7 +9891,7 @@ async function inspectMerchantCheckoutSparkRecoveries(
     throw new ProtectedInboxAuthorityChangedError()
   assertInboxSyncAuthority(authorization)
   const owner = getCommerceInbox(principal)
-  // Each explicit discovery resumes one durable page per declared source.
+  // Each explicit discovery resumes one durable page per permitted read source.
   // General inbox history uses the same cursor and original encrypted wrappers.
   await owner.loadOlder({
     includeLegacy: false,
@@ -10164,19 +10211,23 @@ export interface MerchantCheckoutSparkRecoveryPrivateAdapter {
     latest: CheckoutSparkSettledRecoveryProgressPayload,
     assertCurrent: () => void
   ): Promise<void>
-  /** Merchant progress is distinct from the buyer's original wallet authority. */
+  /**
+   * Historical callback name denotes the receiving Merchant, not the author.
+   * Exact Merchant/Organizer type and attribution remain intact. Neither
+   * snapshot replaces the original Buyer order/wallet authority or provider proof.
+   */
   consumeMerchantProgress?(
     initial: CheckoutSparkSettledRecoveryPayload,
     latestBuyer:
       | CheckoutSparkSettledRecoveryPayload
       | CheckoutSparkSettledRecoveryProgressPayload,
-    progress: CheckoutSparkMerchantProgressPayload,
+    progress: CheckoutSparkRecoveryActorProgress,
     assertCurrent: () => void
   ): Promise<void>
 }
 
 /**
- * An exact signed event is positive evidence from a declared inbox. A timeout
+ * An exact signed event is positive evidence from a permitted inbox. A timeout
  * at a sibling inbox cannot revoke it. Keep malformed/conflicting observations
  * separate, and never use partial emptiness as evidence that a wrap is absent.
  */
@@ -10209,7 +10260,7 @@ function hasExactMerchantRecoveryWrap(
 
 /**
  * Re-fetch one selected, signed recovery wrap by its full ID from the current
- * merchant's declared inbox relays. Bounded discovery retains observed conflicts;
+ * merchant's permitted inbox read plan. Bounded discovery retains observed conflicts;
  * strict exact-wrap validation authorizes opening the selected material.
  * Nothing decrypted is returned to UI/query state or ordinary order caches.
  * Consuming this package is not a merchant application ACK or a funding gate.
@@ -10289,9 +10340,12 @@ export async function withMerchantCheckoutSparkRecovery(
     authorization
   )
   assertInboxSyncAuthority(authorization)
-  const relayUrls = normalizeOwnerSelectedRelayUrls(
-    declaration.state === "declared" ? declaration.relayUrls : []
+  const readPlan = await merchantCheckoutSparkRecoveryReadPlan(
+    principal,
+    declaration,
+    authorization
   )
+  const relayUrls = readPlan.relayUrls
   if (relayUrls.length === 0) {
     return {
       status: "incomplete",
@@ -10304,11 +10358,7 @@ export async function withMerchantCheckoutSparkRecovery(
   const read = await (testOverrides.readProtectedInbox ?? readProtectedInbox)({
     principalPubkey: principal,
     relayUrls,
-    relayTargets: relayTargetsFromUrls(relayUrls, {
-      kind: "owner_nip17",
-      operation: "read",
-      ownerPubkey: principal,
-    }),
+    relayTargets: readPlan.relayTargets,
     eventId: wrapId,
     limit: 2,
     authorization,
@@ -10433,6 +10483,148 @@ export async function withMerchantCheckoutSparkRecovery(
     return incomplete("partial")
   }
   const assertCurrent = () => assertInboxSyncAuthority(authorization)
+  const consumeActorState = async (
+    initial: CheckoutSparkSettledRecoveryPayload,
+    latestBuyer:
+      | CheckoutSparkSettledRecoveryPayload
+      | CheckoutSparkSettledRecoveryProgressPayload,
+    merchantSnapshot?: CheckoutSparkMerchantProgressPayload
+  ) => {
+    let progress: CheckoutSparkRecoveryActorProgress | undefined =
+      merchantSnapshot
+    if (
+      initial.plan.schemaVersion === 5 &&
+      initial.plan.eventMarket?.mode === "organizer_handoff"
+    ) {
+      const owner = getCommerceInbox(principal)
+      await owner.initialize()
+      await owner.waitForDecode()
+      assertCurrent()
+      const descriptors = (
+        await owner.checkoutRecoveryDescriptors(relayUrls)
+      ).filter(
+        (row) =>
+          row.checkoutId === initial.plan.checkoutId &&
+          row.organizerMessage === "execution" &&
+          row.recipientRole !== "organizer"
+      )
+      assertCurrent()
+      if (descriptors.length > CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT)
+        throw new Error("Organizer recovery evidence requires reconciliation.")
+      if (descriptors.length) {
+        const wrappers = new Map(
+          (await owner.store.wrappers()).map((row) => [row.event.id, row.event])
+        )
+        assertCurrent()
+        const repository = new DexieCheckoutSparkSettledRepository(
+          owner.store.database
+        )
+        const witness = await repository.loadMerchantOrderWitness(
+          principal,
+          initial.plan.checkoutId,
+          initial.plan.planDigest
+        )
+        assertCurrent()
+        // The organizer's order hashes never create or replace this original
+        // seal-authenticated Buyer-to-Merchant witness.
+        if (
+          witness?.schemaVersion !== 2 ||
+          !witness.organizerOrderBinding ||
+          witness.buyerPubkey !== initial.senderPubkey
+        )
+          throw new Error(
+            "Organizer progress requires its original Buyer order."
+          )
+        const entries = []
+        const deadline =
+          Date.now() + CHECKOUT_SPARK_RECOVERY_INSPECTION_BUDGET_MS
+        let bytes = 0
+        for (const descriptor of descriptors) {
+          const exact = wrappers.get(descriptor.wrapId)
+          if (!exact) throw new Error("Organizer recovery wrap is unavailable.")
+          bytes += JSON.stringify(exact).length
+          if (
+            bytes > CHECKOUT_SPARK_RECOVERY_RETAINED_CHAR_LIMIT ||
+            Date.now() >= deadline
+          )
+            throw new Error("Organizer recovery inspection requires retry.")
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const opened = await Promise.race([
+              openCheckoutSparkOrganizerExecutionProgress({
+                signedRecipientWrap: exact,
+                signer,
+                shouldContinue: () => {
+                  assertCurrent()
+                  return true
+                },
+              }),
+              new Promise<typeof CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT>(
+                (resolve) => {
+                  timer = setTimeout(
+                    () => resolve(CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT),
+                    Math.min(
+                      CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS,
+                      deadline - Date.now()
+                    )
+                  )
+                }
+              ),
+            ])
+            assertCurrent()
+            if (
+              opened === CHECKOUT_SPARK_RECOVERY_INSPECTION_TIMEOUT ||
+              opened.snapshotId !== descriptor.payloadDigest ||
+              opened.state.plan.checkoutId !== descriptor.checkoutId
+            )
+              throw new Error("Organizer recovery evidence changed.")
+            entries.push(opened)
+          } finally {
+            if (timer !== undefined) clearTimeout(timer)
+          }
+        }
+        const selection = selectCheckoutSparkOrganizerProgressForMerchant({
+          initial,
+          latestState: merchantSnapshot?.state ?? latestBuyer.state,
+          orderBinding: witness.organizerOrderBinding,
+          entries,
+        })
+        if (selection.status === "conflict")
+          throw new Error(
+            "Organizer recovery progress conflicts with this order."
+          )
+        if (selection.status === "selected") {
+          // Preserve every exact potentially submitted intent before the app
+          // opens a provider. Existing CAS/progression rejects forks or rollback;
+          // paid labels remain untrusted until provider/recipient re-verification.
+          await repository.importMerchantOrderRecovery(
+            selection.progress.state,
+            witness,
+            assertCurrent
+          )
+          assertCurrent()
+          progress = selection.progress
+        }
+      }
+    }
+    assertCurrent()
+    if (progress) {
+      if (!privateAdapter.consumeMerchantProgress)
+        throw new Error(
+          "Authenticated actor progress requires its recovery owner."
+        )
+      await privateAdapter.consumeMerchantProgress(
+        initial,
+        latestBuyer,
+        progress,
+        assertCurrent
+      )
+    } else if (latestBuyer.schemaVersion === 3) {
+      if (!privateAdapter.consumeSettled)
+        throw new Error("Buyer progress requires its recovery owner.")
+      await privateAdapter.consumeSettled(initial, latestBuyer, assertCurrent)
+    } else await privateAdapter.consume(initial, assertCurrent)
+  }
   // A Merchant progress pointer never changes the original buyer authority.
   // Reopen its exact authenticated self-wrap separately and require all known
   // snapshots to advance monotonically before passing either to a private app.
@@ -10449,11 +10641,7 @@ export async function withMerchantCheckoutSparkRecovery(
     )({
       principalPubkey: principal,
       relayUrls,
-      relayTargets: relayTargetsFromUrls(relayUrls, {
-        kind: "owner_nip17",
-        operation: "read",
-        ownerPubkey: principal,
-      }),
+      relayTargets: readPlan.relayTargets,
       eventId: merchantProgress.wrapId,
       limit: 2,
       authorization,
@@ -10576,11 +10764,7 @@ export async function withMerchantCheckoutSparkRecovery(
       )({
         principalPubkey: principal,
         relayUrls,
-        relayTargets: relayTargetsFromUrls(relayUrls, {
-          kind: "owner_nip17",
-          operation: "read",
-          ownerPubkey: principal,
-        }),
+        relayTargets: readPlan.relayTargets,
         eventId: initialWrapId,
         limit: 2,
         authorization,
@@ -10657,18 +10841,9 @@ export async function withMerchantCheckoutSparkRecovery(
         assertCurrent()
         if (!progress || !privateAdapter.consumeMerchantProgress)
           return incomplete("partial")
-        await privateAdapter.consumeMerchantProgress(
-          initialOpened.payload,
-          payload,
-          progress,
-          assertCurrent
-        )
+        await consumeActorState(initialOpened.payload, payload, progress)
       } else {
-        await privateAdapter.consumeSettled!(
-          initialOpened.payload,
-          payload,
-          assertCurrent
-        )
+        await consumeActorState(initialOpened.payload, payload)
       }
     } else if (merchantProgress) {
       if (payload.schemaVersion !== 2) return incomplete("partial")
@@ -10678,18 +10853,14 @@ export async function withMerchantCheckoutSparkRecovery(
       assertCurrent()
       if (!progress || !privateAdapter.consumeMerchantProgress)
         return incomplete("partial")
-      await privateAdapter.consumeMerchantProgress(
-        payload,
-        payload,
-        progress,
-        assertCurrent
-      )
+      await consumeActorState(payload, payload, progress)
     } else {
       if (payload.schemaVersion === 2) {
         sources = await verifyInitialSources(payload)
         if (sources.status === "unresolved") return incomplete(sources.coverage)
       }
-      await privateAdapter.consume(payload, assertCurrent)
+      if (payload.schemaVersion === 2) await consumeActorState(payload, payload)
+      else await privateAdapter.consume(payload, assertCurrent)
     }
     if (sources && payload.schemaVersion !== 1) {
       // Explicit import can create the binding inside the private callback.

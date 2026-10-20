@@ -55,6 +55,18 @@ export * from "./checkout-spark-commerce-pricing-authority"
 export * from "./checkout-spark-pricing-config"
 export * from "./checkout-spark-router-obligations"
 export * from "./checkout-spark-settled-allocation"
+export * from "./checkout-spark-event-market"
+export * from "./checkout-spark-event-market-sources"
+export * from "./checkout-spark-organizer-recovery"
+export * from "./checkout-spark-organizer-commerce"
+export * from "./checkout-spark-organizer-execution"
+export * from "./checkout-spark-organizer-progress"
+export * from "./checkout-spark-organizer-discovery"
+export * from "./event-market-stock-checkpoint"
+export * from "./event-market-free-purchase"
+export * from "./event-market-organizer-purchase"
+export * from "./event-market-order-handoff-policy"
+export * from "./event-market-stock-merchant-inbox"
 export * from "./checkout-spark-settled-router"
 export * from "./checkout-spark-treasury-finalization"
 export * from "./checkout-spark-treasury-sdk"
@@ -94,6 +106,7 @@ export * from "./checkout-spark-invoice-expiry"
 export * from "./checkout-spark-recipient-profile"
 export * from "./checkout-spark-recovery"
 export * from "./checkout-spark-merchant-progress"
+export * from "./checkout-spark-merchant-event-progress"
 export * from "./checkout-spark-merchant-progress-delivery"
 export * from "./checkout-spark-merchant-progress-repository"
 export * from "./checkout-spark-supplier-notification"
@@ -148,7 +161,10 @@ export type {
   ProtectedReadAuthPolicy,
   ProtectedReadOperation,
 } from "./protected-read-authorization"
-export { clearProtectedReadAuthenticationSuppression } from "./protected-read-authorization"
+export {
+  clearProtectedReadAuthenticationSuppression,
+  getProtectedReadAuthorization,
+} from "./protected-read-authorization"
 export * from "./protected-read-session-lifecycle"
 export * from "./relay-executor"
 export * from "./protected-inbox-read"
@@ -270,6 +286,7 @@ export {
 } from "./event-market"
 export * from "./event-market-enrollment"
 export * from "./event-market-roster"
+export * from "./event-market-organizer-fee"
 export {
   type ParsedEventMarketSeries,
   type EventMarketSeriesResolution,
@@ -296,6 +313,7 @@ export * from "./event-market-order-evidence"
 export * from "./future-market-handoff"
 export * from "./future-market-merchandise"
 export * from "./event-market-roster-read"
+export * from "./event-market-write-readiness"
 export * from "./event-market-roster-publish"
 export * from "./event-market-discovery"
 export * from "./event-market-handoff"
@@ -329,6 +347,18 @@ export type {
 } from "./relay-reader"
 export * from "./event-market-calendar-retry"
 
+export * from "./event-market-assignment"
+export * from "./event-market-stock-authority"
+export * from "./event-market-stock-journal"
+export * from "./event-market-stock-writer-handover"
+export * from "./event-market-stock-workflow"
+export * from "./event-market-stock-import"
+export * from "./event-market-stock-handout"
+export * from "./merchant-order-acceptance-bindings"
+export * from "./merchant-inventory"
+export * from "./merchant-occurrence-workflow"
+
+export * from "./merchant-inventory-recovery"
 export {
   admitPublicEvent,
   isVerifiedNostrEvent,

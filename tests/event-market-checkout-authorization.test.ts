@@ -8,6 +8,7 @@ import {
 } from "nostr-tools/pure"
 import {
   buildEventMarketAuthorizationDraft,
+  buildEventMarketAssignmentDraft,
   buildEventMarketRosterDraft,
   buildEventMarketSeriesDraft,
   createEventMarketPickupSnapshot,
@@ -24,6 +25,7 @@ import {
   createCartItemFromProduct,
   type CartItem,
 } from "../apps/market/src/lib/cart-model"
+import { cartItemInputFromProductSelection } from "../apps/market/src/lib/productVariations"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -103,12 +105,25 @@ function product(createdAt = 100, price = "100") {
       ["title", "Handmade soap"],
       ["price", price, "SAT"],
       ["type", "simple", "physical"],
-      ["a", marketCoordinate],
+      ["stock", "6"],
     ],
     createdAt,
     merchantSecret,
     "Soap"
   )
+}
+
+function assignment(occurrenceCoordinate = calendarCoordinate) {
+  const draft = buildEventMarketAssignmentDraft({
+    marketCoordinate,
+    occurrenceCoordinate,
+    productCoordinate,
+    merchantPubkey: merchant,
+    state: "active",
+    inventory: { mode: "tracked", quantity: 6 },
+    fulfillmentMethods: ["pickup"],
+  })
+  return signed(draft.kind, draft.tags, 101, merchantSecret)
 }
 
 function grant(
@@ -132,8 +147,14 @@ async function fixture(series = false) {
     calendar(),
     grant(),
     product(),
+    assignment(),
   ]
-  if (series) live.push(schedule(), calendar("second", 100, 1_900_086_400))
+  if (series)
+    live.push(
+      schedule(),
+      calendar("second", 100, 1_900_086_400),
+      assignment(secondCalendarCoordinate)
+    )
   const retained = new Map<string, SignedPublicNostrEvent>()
   const dependencies: NonNullable<Parameters<typeof readEventMarketRoster>[1]> =
     {
@@ -162,7 +183,11 @@ async function fixture(series = false) {
   const readProduct = (query: Parameters<typeof readEventMarketProduct>[0]) =>
     readEventMarketProduct(query, dependencies)
   const marketRead = await readMarket({ reference: marketCoordinate })
-  const productRead = await readProduct({ marketRead, productCoordinate })
+  const productRead = await readProduct({
+    marketRead,
+    productCoordinate,
+    selectedOccurrenceCoordinate: calendarCoordinate,
+  })
   expect(productRead.actionable).toBe(true)
   const accepted = createEventMarketPickupSnapshot({
     marketRead,
@@ -178,7 +203,10 @@ async function fixture(series = false) {
       sourceEventId: event.id,
     } as Product
   }
-  const item = createCartItemFromProduct(await parsedProduct(), accepted)
+  const item: CartItem = {
+    ...createCartItemFromProduct(await parsedProduct(), accepted),
+    quantity: 1,
+  }
   let handlerCalls = 0
   const submit = async (
     reviewedItems: CartItem[] = [item],
@@ -223,14 +251,119 @@ async function fixture(series = false) {
   }
 }
 
+async function directEventVariationFixture() {
+  const state = await fixture()
+  const parentCoordinate = `30402:${merchant}:soap-family`
+  const parent = signed(
+    30402,
+    [
+      ["d", "soap-family"],
+      ["title", "Soap sizes"],
+      ["type", "variable", "physical"],
+      ["price", "0.5", "USD"],
+    ],
+    100,
+    merchantSecret
+  )
+  const child = signed(
+    30402,
+    [
+      ["d", "soap"],
+      ["title", "Small soap"],
+      ["type", "variation", "physical"],
+      ["a", parentCoordinate],
+      ["spec", "Size", "Small"],
+      ["price", "0.5", "USD"],
+      ["stock", "6"],
+    ],
+    101,
+    merchantSecret
+  )
+  state.live.splice(
+    state.live.findIndex((event) => event.kind === 30402),
+    1,
+    parent,
+    child
+  )
+  const marketRead = await state.readMarket({ reference: marketCoordinate })
+  const productRead = await state.readProduct({
+    marketRead,
+    productCoordinate,
+    selectedOccurrenceCoordinate: calendarCoordinate,
+  })
+  expect(productRead.actionable).toBe(true)
+  if (productRead.resolution.state !== "eligible")
+    throw new Error("Expected current variation")
+  const fulfillment = createEventMarketPickupSnapshot({
+    marketRead,
+    productRead,
+    selectedOccurrenceCoordinate: calendarCoordinate,
+  })
+  const selected = productRead.resolution.product
+  // Direct Event catalog children are already the selected sellable product;
+  // unlike a family card, its display product is not the variable parent.
+  const item: CartItem = {
+    ...cartItemInputFromProductSelection(selected, selected, fulfillment),
+    quantity: 1,
+  }
+  return { state, item, child, parent, selected }
+}
+
 describe("composed Event Market submit authorization", () => {
-  it("keeps an open single-date market purchasable after its calendar ends", async () => {
+  it("submits an unchanged fiat variation added directly from its Event catalog card", async () => {
+    const { state, item, selected, parent } =
+      await directEventVariationFixture()
+    const result = await state.submit([item], [item])
+    expect(result.status).toBe("ok")
+    expect(item.familyProductId === selected.parentProductId).toBe(true)
+    const ordinaryFamilySelection = cartItemInputFromProductSelection(
+      parseProductEvent(await admitFixture(parent)),
+      selected,
+      item.fulfillment
+    )
+    expect(
+      ordinaryFamilySelection.familyProductId === item.familyProductId
+    ).toBe(true)
+    expect(state.handlerCalls()).toBe(1)
+  })
+
+  it.each(["price", "pickup assignment"] as const)(
+    "still blocks a material %s change after direct Event variation selection",
+    async (change) => {
+      const { state, item, child } = await directEventVariationFixture()
+      expect((await state.submit([item], [item])).status).toBe("ok")
+      if (change === "price") {
+        state.live.splice(
+          state.live.indexOf(child),
+          1,
+          signed(
+            30402,
+            child.tags.map((tag) =>
+              tag[0] === "price" ? ["price", "1", "USD"] : tag
+            ),
+            102,
+            merchantSecret
+          )
+        )
+      } else {
+        const previous = state.live.find((event) => event.kind === 30409)!
+        state.replace(
+          30409,
+          roster([{ ...row, assignment: "Booth 99" }], 102, previous.id)
+        )
+      }
+      expect((await state.submit([item], [item])).status).toBe("changed")
+      expect(state.handlerCalls()).toBe(1)
+    }
+  )
+
+  it("blocks a single-date market after its occurrence ends", async () => {
+    const state = await fixture(false)
     const originalNow = Date.now
     Date.now = () => 1_900_004_000_000
     try {
-      const state = await fixture(false)
-      expect((await state.submit()).status).toBe("ok")
-      expect(state.handlerCalls()).toBe(1)
+      expect((await state.submit()).status).toBe("changed")
+      expect(state.handlerCalls()).toBe(0)
     } finally {
       Date.now = originalNow
     }
@@ -241,15 +374,13 @@ describe("composed Event Market submit authorization", () => {
     const originalNow = Date.now
     Date.now = () => 1_900_004_000_000
     try {
-      await expect(fixture(true)).rejects.toThrow(
-        "Current signed Event Market participation is required"
-      )
       expect((await state.submit()).status).not.toBe("ok")
       expect(state.handlerCalls()).toBe(0)
       const marketRead = await state.readMarket({ reference: marketCoordinate })
       const productRead = await state.readProduct({
         marketRead,
         productCoordinate,
+        selectedOccurrenceCoordinate: secondCalendarCoordinate,
       })
       expect(
         createEventMarketPickupSnapshot({
@@ -321,7 +452,11 @@ describe("composed Event Market submit authorization", () => {
         }
       }
       const marketRead = await state.readMarket({ reference: marketCoordinate })
-      const exact = await state.readProduct({ marketRead, productCoordinate })
+      const exact = await state.readProduct({
+        marketRead,
+        productCoordinate,
+        selectedOccurrenceCoordinate: calendarCoordinate,
+      })
       expect(marketRead.coverage).toBe("partial")
       expect(marketRead.calendarCoverage).toBe("partial")
       expect(exact.coverage).toBe("partial")
@@ -334,6 +469,7 @@ describe("composed Event Market submit authorization", () => {
   for (const change of [
     "mode",
     "assignment",
+    "venue",
     "date",
     "product",
     "price",

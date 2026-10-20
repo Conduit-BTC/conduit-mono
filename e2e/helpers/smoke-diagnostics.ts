@@ -480,9 +480,9 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         routeFetchStarts: "number",
         routeFetchCompletes: "number",
         routeFetchStartNavigations: "number",
-        routeFetchStartNavigationRequests: "number",
-        routeFetchFailureNavigationRequests: "number",
-        routeFetchNewNavigationRequested: "boolean",
+        routeFetchStartNavRequests: "number",
+        routeFetchFailureNavRequests: "number",
+        routeFetchNewNavRequested: "boolean",
       },
     },
     "wallet-foreground-open": {

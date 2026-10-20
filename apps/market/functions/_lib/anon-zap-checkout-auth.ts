@@ -561,9 +561,26 @@ async function readRequestJson(request: Request): Promise<unknown> {
   if (Number.isFinite(length) && length > MAX_REQUEST_BYTES) {
     throw new Error("Request body is too large.")
   }
-  const body = await request.text()
-  if (new TextEncoder().encode(body).byteLength > MAX_REQUEST_BYTES) {
-    throw new Error("Request body is too large.")
+  let body = ""
+  if (request.body) {
+    const reader = request.body.getReader()
+    const decoder = new TextDecoder()
+    let bytesRead = 0
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        bytesRead += chunk.value.byteLength
+        if (bytesRead > MAX_REQUEST_BYTES) {
+          await reader.cancel("Request body exceeded the byte limit")
+          throw new Error("Request body is too large.")
+        }
+        body += decoder.decode(chunk.value, { stream: true })
+      }
+      body += decoder.decode()
+    } finally {
+      reader.releaseLock()
+    }
   }
   return JSON.parse(body)
 }

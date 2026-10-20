@@ -35,6 +35,7 @@ import {
   PrivacySafeSmokeReporter,
   safePlaywrightSmokeId,
   safePlaywrightRunnerError,
+  serializeSmokeEvidence,
 } from "../scripts/ci/playwright_smoke_reporter"
 
 describe("privacy-safe Playwright smoke reporter", () => {
@@ -1888,6 +1889,105 @@ describe("bounded smoke failure diagnostics", () => {
 })
 
 describe("wallet balance route diagnostics", () => {
+  it("retains wallet route failures through the final evidence artifact writer", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-wallet-evidence-"))
+    try {
+      const sourceDirectory = join(directory, "e2e")
+      mkdirSync(sourceDirectory)
+      const evidenceFile = join(directory, "evidence.json")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile: join(directory, "results.json"),
+        evidenceFile,
+      })
+      const privateValue = "private-" + crypto.randomUUID()
+      const values = {
+        routeFetchCategory: "closed",
+        routeFetchStartNavRequests: 2,
+        routeFetchFailureNavRequests: 2,
+        routeFetchNewNavRequested: false,
+      }
+      const cases = [
+        {
+          file: "wallet-balances",
+          values: {
+            ...values,
+            unknownField: privateValue,
+            walletId: privateValue,
+          },
+          expected: [{ kind: "wallet-balances", ...values }],
+        },
+        { file: "wallet-cross-app", values, expected: undefined },
+        {
+          file: "wallet-balances",
+          values: {
+            routeFetchCategory: privateValue,
+            routeFetchStartNavRequests: privateValue,
+            routeFetchFailureNavRequests: 32_769,
+            routeFetchNewNavRequested: privateValue,
+          },
+          expected: undefined,
+        },
+      ]
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => cases } as unknown as Suite
+      )
+      for (const [index, sample] of cases.entries()) {
+        const title = "wallet route failure @market"
+        const sourceFile = join(sourceDirectory, `${sample.file}.playwright.ts`)
+        writeFileSync(
+          sourceFile,
+          `test(${JSON.stringify(title)}, async () => {})`
+        )
+        reporter.onTestEnd(
+          {
+            id: `wallet-evidence-${index}`,
+            title,
+            location: { file: sourceFile, line: 1, column: 1 },
+            parent: { project: () => ({ name: "mobile-webkit" }) },
+            tags: ["@market"],
+            expectedStatus: "passed",
+            outcome: () => "unexpected",
+            ok: () => false,
+          } as unknown as TestCase,
+          {
+            status: "failed",
+            duration: 12,
+            retry: 0,
+            annotations: [
+              {
+                type: "smoke:wallet-balances",
+                description: JSON.stringify(sample.values),
+              },
+            ],
+          } as TestResult
+        )
+      }
+      reporter.onEnd({ status: "failed" } as FullResult)
+      const serialized = readFileSync(evidenceFile, "utf8")
+      const artifact = JSON.parse(serialized)
+      expect(artifact.status).toBe("failed")
+      expect(artifact.timing.completedAttempts).toBe(3)
+      for (const [index, sample] of cases.entries()) {
+        const attempt = artifact.tests[index].tests[0].results[0]
+        expect(attempt.status).toBe("failed")
+        expect(attempt.retry).toBe(0)
+        expect(attempt.diagnostics).toEqual(sample.expected)
+      }
+      expect(serialized).not.toContain(privateValue)
+      expect(serialized).not.toContain("walletId")
+      expect(serialized).not.toContain("unknownField")
+      expect(() => serializeSmokeEvidence({ value: "a".repeat(32) })).toThrow(
+        "content-safety"
+      )
+      expect(() =>
+        serializeSmokeEvidence({ ["unknown".repeat(5)]: true })
+      ).toThrow("content-safety")
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("retains only bounded wallet route observations for its owning balance file", () => {
     const privateValue = "private-" + crypto.randomUUID()
     const values = {
@@ -1898,9 +1998,9 @@ describe("wallet balance route diagnostics", () => {
       routeFetchStarts: 1,
       routeFetchCompletes: 0,
       routeFetchStartNavigations: 2,
-      routeFetchStartNavigationRequests: 2,
-      routeFetchFailureNavigationRequests: 2,
-      routeFetchNewNavigationRequested: false,
+      routeFetchStartNavRequests: 2,
+      routeFetchFailureNavRequests: 2,
+      routeFetchNewNavRequested: false,
       walletBalance: privateValue,
       walletId: privateValue,
       errorMessage: privateValue,
