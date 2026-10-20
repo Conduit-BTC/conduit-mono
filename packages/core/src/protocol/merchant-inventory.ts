@@ -30,6 +30,7 @@ import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
 } from "./signed-event"
+import { reconcileKnownOccurrenceLifecycle } from "./merchant-occurrence-lifecycle"
 
 const MAX_STOCK = 2_147_483_647
 const HEX_ID = /^[0-9a-f]{64}$/
@@ -657,6 +658,7 @@ export async function acceptMerchantInventoryOrder(input: {
       db.localProductStockCheckpoints,
       db.eventMarketOrganizerStockPools,
       db.eventMarketOrganizerStockEntries,
+      db.eventMarketRosterEvidence,
     ],
     async () => {
       delegated?.checkSession()
@@ -924,6 +926,14 @@ export async function acceptMerchantInventoryOrder(input: {
             throw new Error(
               "The product changed during acceptance. Review it and try again."
             )
+          // Retained postponements and stock debits must share one transaction.
+          // Encryption and other admission work may have yielded since the
+          // workflow last reconciled the occurrence frontier.
+          await reconcileKnownOccurrenceLifecycle(
+            merchantPubkey,
+            item.productCoordinate,
+            db
+          )
           products.set(item.productCoordinate, product)
         }
         const siblings = await listMerchantInventoryAssignments(

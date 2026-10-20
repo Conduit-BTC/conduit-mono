@@ -1433,3 +1433,124 @@ it("failed legacy repair remains retryable and cannot debit the accepted order a
   )
   expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
 })
+
+for (const quantity of [3, 2]) {
+  it(`a postponement retained during encryption protects reserved stock when accepting ${quantity} units`, async () => {
+    const { CommerceInboxStore } =
+      await import("../packages/core/src/protocol/commerce-inbox-store")
+    const { reconcileKnownOccurrenceLifecycle } =
+      await import("../packages/core/src/protocol/merchant-occurrence-lifecycle")
+    const { readMerchantInventoryAvailability } =
+      await import("../packages/core/src/protocol/merchant-inventory")
+    const initial = listing("review-postponement", 6)
+    const product = await setup(initial)
+    const organizerSecret = generateSecretKey()
+    const organizer = getPublicKey(organizerSecret)
+    const now = Math.floor(Date.now() / 1000)
+    const oldEnd = (now + 100) * 1000
+    const newEnd = (now + 7200) * 1000
+    const marketCoordinate = `30409:${organizer}:review-postponement`
+    const occurrenceCoordinate = `31923:${organizer}:review-postponement`
+    const assignmentCoordinate = `30410:${merchant}:${computeEventMarketAssignmentDTag({ marketCoordinate, occurrenceCoordinate, productCoordinate: product.id })}`
+    await commitMerchantInventoryAssignment({
+      db,
+      productCoordinate: product.id,
+      assignmentCoordinate,
+      marketCoordinate,
+      occurrenceCoordinate,
+      inventory: { mode: "tracked", quantity: 4 },
+      state: "active",
+      fulfillmentMethods: ["pickup"],
+      expectedRevision: null,
+      mutationId: "review-allocate",
+      context: {
+        kind: "validated-event-market-assignment",
+        productEventId: initial.id,
+        marketEventId: "a".repeat(64),
+        occurrenceEventId: "b".repeat(64),
+        grantEventId: "c".repeat(64),
+        occurrenceEndMs: oldEnd,
+        terminal: false,
+      },
+    })
+    const calendar = finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: 31923,
+          dTag: "review-postponement",
+          title: "Review fixture",
+          start: now + 1000,
+          end: newEnd / 1000,
+          locations: ["Public hall"],
+        }),
+        created_at: now + 101,
+      },
+      organizerSecret
+    )
+    const purchase = order([product], "review-concurrent-postponement")
+    purchase.items[0]!.quantity = quantity
+    purchase.subtotal = quantity * 10
+    const clock = spyOn(Date, "now").mockReturnValue(oldEnd + 1000)
+    const original = CommerceInboxStore.prototype.seal
+    const seal = spyOn(CommerceInboxStore.prototype, "seal").mockImplementation(
+      async function (
+        this: InstanceType<typeof CommerceInboxStore>,
+        ...args: Parameters<typeof original>
+      ) {
+        const cipher = await original.apply(this, args)
+        await retainEventMarketCommerceEvidence(marketCoordinate, [calendar])
+        return cipher
+      }
+    )
+    try {
+      const before = await db.merchantInventoryProducts.get(product.id)
+      const accept = () =>
+        acceptMerchantOccurrenceOrder({
+          ...session,
+          order: purchase,
+          products: [product],
+        })
+      if (quantity === 3) {
+        await expect(accept()).rejects.toThrow("Insufficient ordinary stock")
+        expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+        expect(await db.merchantInventoryProducts.get(product.id)).toEqual(
+          before
+        )
+      } else {
+        const accepted = await accept()
+        expect(
+          (await db.merchantInventoryAssignments.get(assignmentCoordinate))
+            ?.occurrenceEndMs
+        ).toBe(newEnd)
+        expect(accepted.replayed).toBe(false)
+        expect((await accept()).replayed).toBe(true)
+        expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+        expect(await openMerchantAcceptanceEvidence(accepted.order)).toBe(
+          JSON.stringify(purchase)
+        )
+        await expect(
+          acceptMerchantOccurrenceOrder({
+            ...session,
+            order: { ...purchase, buyerPubkey: "b".repeat(64) },
+            products: [product],
+          })
+        ).rejects.toThrow()
+      }
+      await reconcileKnownOccurrenceLifecycle(merchant)
+      const assignment =
+        await db.merchantInventoryAssignments.get(assignmentCoordinate)
+      expect(assignment?.occurrenceEndMs).toBe(newEnd)
+      expect(assignment?.inventory).toEqual({ mode: "tracked", quantity: 4 })
+      expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(
+        quantity === 3 ? 6 : 4
+      )
+      expect(
+        (await readMerchantInventoryAvailability(db, product.id))
+          .ordinaryAvailable
+      ).toBe(quantity === 3 ? 2 : 0)
+    } finally {
+      seal.mockRestore()
+      clock.mockRestore()
+    }
+  })
+}
