@@ -75,6 +75,15 @@ conflicting terms, known withdrawal/cancellation/deletion and delegated-writer
 restrictions still require reconciliation; expiry alone is not a rejection.
 This is manual settlement recording, not a new payment execution path.
 
+Acceptance rechecks retained signed occurrence dates inside the stock transaction,
+including ordinary purchases that share stock with an event allocation. A
+postponement retained while an order snapshot is encrypted must protect its
+allocation before the debit. The evidence read, assignment reconciliation and
+stock decision share the same database transaction; a rejected order adds no
+acceptance or publication job. Exact accepted-order retries return the saved
+decision without another debit. This protects known retained evidence, not
+unseen future organizer revisions.
+
 Merchant-present assignment pickup is supported. New organizer acceptance is
 gated on advance delegation, writer handover and order-ID reconciliation.
 Historical authenticated organizer handoff remains inspectable. Organizer

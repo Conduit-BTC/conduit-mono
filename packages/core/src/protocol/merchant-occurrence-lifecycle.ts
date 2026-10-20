@@ -1,10 +1,11 @@
 import Dexie from "dexie"
-import { db } from "../db"
+import { db as defaultDb, type ConduitDB } from "../db"
 import {
   parseEventMarketCalendarEvent,
+  parseAddressableCoordinate,
   isEventMarketAddressableRevisionDeleted,
 } from "./event-market"
-import { loadRetainedSignedEventMarketEvidence } from "./event-market-roster-read"
+import { createEventMarketEvidenceStore } from "./event-market-evidence-store"
 import { verifySignedEventBatches } from "./relay-reader"
 import {
   compareReplaceableEventFrontiers,
@@ -43,7 +44,8 @@ export function newestAddressableEvidence(
 /** Current dates govern unused allocations; accepted order snapshots stay intact. */
 export async function reconcileKnownOccurrenceLifecycle(
   merchantPubkey: string,
-  productCoordinate?: string
+  productCoordinate?: string,
+  db: ConduitDB = defaultDb
 ) {
   const assignments = await db.merchantInventoryAssignments
     .where(productCoordinate ? "productCoordinate" : "merchantPubkey")
@@ -60,9 +62,14 @@ export async function reconcileKnownOccurrenceLifecycle(
           assignment.coordinate
         )
         if (!current || current.terminal) return
+        const market = parseAddressableCoordinate(
+          current.marketCoordinate,
+          [30409]
+        )
+        if (!market || market.coordinate !== current.marketCoordinate) return
         // Serialize the known calendar frontier and the allocation deadline together.
         const evidence = await Dexie.waitFor(
-          loadRetainedSignedEventMarketEvidence(current.marketCoordinate)
+          createEventMarketEvidenceStore(db).load(current.marketCoordinate)
         )
         const occurrence = newestAddressableEvidence(
           evidence,
