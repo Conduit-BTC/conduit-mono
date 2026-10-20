@@ -1,5 +1,3 @@
-import { sha256 } from "@noble/hashes/sha2.js"
-import { bytesToHex } from "@noble/hashes/utils.js"
 import type {
   ConduitDB,
   EventMarketOrganizerStockPool,
@@ -24,7 +22,16 @@ import {
   outstandingOrganizerStockHold,
   type MerchantInventoryOrderItem,
 } from "./merchant-inventory"
-import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
+import {
+  getOrganizerStockOrderBindings,
+  merchantOccurrenceAcceptanceBindings,
+} from "./merchant-order-acceptance-bindings"
+import {
+  merchantAcceptanceStore,
+  openMerchantAcceptanceEvidence,
+  protectMerchantAcceptanceHistory,
+  sealMerchantAcceptanceEvidence,
+} from "./merchant-acceptance-privacy"
 export { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
 import type { AccountSigner } from "./nostr-event-signer"
 import { parseOrderMessageRumorEvent } from "./orders"
@@ -36,8 +43,6 @@ import {
 import type { SignedPublicNostrEvent } from "./signed-event"
 
 const MAX_STOCK = 2_147_483_647
-const hash = (text: string) =>
-  bytesToHex(sha256(new TextEncoder().encode(text)))
 const clone = <T>(value: T): T => structuredClone(value)
 
 function session(input: {
@@ -100,6 +105,10 @@ export async function importMerchantOrganizerStockOrder(input: {
   if (!Number.isSafeInteger(nowMs) || nowMs < 0)
     throw new Error("Invalid stock import time")
   await authority.authenticate()
+  const store = merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  if (store.authorization.signer !== input.signer)
+    throw new Error("Organizer stock import session changed")
+  await protectMerchantAcceptanceHistory(store)
   const original = await unwrap(input.originalOrderEnvelope, input.signer)
   authority.check()
   const message = parseOrderMessageRumorEvent(original)
@@ -257,23 +266,32 @@ export async function importMerchantOrganizerStockOrder(input: {
       throw new Error("Committed Merchant product unavailable")
     item.admission.productTermsEventId = product.sourceProductEvent.id
   }
+  const localBindings = merchantOccurrenceAcceptanceBindings(order)
+  const sealed = await sealMerchantAcceptanceEvidence(
+    store,
+    order.id,
+    bindings.termsBinding
+  )
+  const checkSession = () => {
+    authority.check()
+    store.assertCurrent()
+  }
   const context = createVerifiedOrganizerStockImport({
     orderId: order.id,
     merchantPubkey: order.merchantPubkey,
-    identityBinding: bindings.identityBinding,
-    termsBinding: bindings.termsBinding,
+    ...localBindings,
     attribution,
     entries,
-    checkSession: authority.check,
+    checkSession,
   })
   authority.check()
   return acceptMerchantInventoryOrder({
     db: input.db,
     orderId: order.id,
     merchantPubkey: order.merchantPubkey,
-    identityBinding: bindings.identityBinding,
-    termsBinding: bindings.termsBinding,
-    evidence: bindings.termsBinding,
+    ...localBindings,
+    ...sealed,
+    assertCurrent: checkSession,
     items,
     organizerImport: context,
     acceptedAt: nowMs,
@@ -292,6 +310,10 @@ export async function reconcileMerchantOrganizerStockClose(input: {
   input = { ...input, closingEnvelope: clone(input.closingEnvelope) }
   const authority = session(input)
   await authority.authenticate()
+  const store = merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  if (store.authorization.signer !== input.signer)
+    throw new Error("Organizer stock import session changed")
+  await protectMerchantAcceptanceHistory(store)
   const rumor = await unwrap(input.closingEnvelope, input.signer)
   authority.check()
   const close = parseEventMarketStockAuthorityRumor(rumor)
@@ -370,6 +392,30 @@ export async function reconcileMerchantOrganizerStockClose(input: {
   if (rumor.created_at * 1000 > nowMs)
     throw new Error("Organizer close is future dated")
   authority.check()
+  const acceptedOrders = new Map<string, MerchantInventoryAcceptedOrder>()
+  for (const entry of saved) {
+    const accepted = await input.db.merchantInventoryAcceptedOrders.get(
+      entry.orderId
+    )
+    if (!accepted)
+      throw new Error("Imported order attribution requires reconciliation")
+    const order = orderSchema.parse(
+      JSON.parse(await openMerchantAcceptanceEvidence(accepted, store))
+    )
+    const wire = getOrganizerStockOrderBindings(order)
+    const local = merchantOccurrenceAcceptanceBindings(order)
+    const payload = parseEventMarketStockAuthorityRumor(entry.rumor)
+    if (
+      payload.type !== "accepted" ||
+      accepted.identityBinding !== local.identityBinding ||
+      accepted.termsBinding !== local.termsBinding ||
+      payload.identityBinding !== wire.identityHash ||
+      payload.termsBinding !== wire.termsHash
+    )
+      throw new Error("Imported order attribution requires reconciliation")
+    acceptedOrders.set(entry.orderId, accepted)
+  }
+  store.assertCurrent()
   return input.db.transaction(
     "rw",
     [
@@ -380,6 +426,7 @@ export async function reconcileMerchantOrganizerStockClose(input: {
     ],
     async () => {
       authority.check()
+      store.assertCurrent()
       const pool = await input.db.eventMarketOrganizerStockPools.get(id)
       const currentEntries = await input.db.eventMarketOrganizerStockEntries
         .where("[accountPubkey+poolId]")
@@ -401,9 +448,9 @@ export async function reconcileMerchantOrganizerStockClose(input: {
           payload.type !== "accepted" ||
           !accepted ||
           accepted.merchantPubkey !== input.authenticatedPubkey ||
-          accepted.evidence !== entry.evidence ||
-          hash(accepted.identityBinding) !== payload.identityBinding ||
-          hash(accepted.termsBinding) !== payload.termsBinding ||
+          accepted.evidenceBinding !== entry.evidence ||
+          JSON.stringify(accepted) !==
+            JSON.stringify(acceptedOrders.get(entry.orderId)) ||
           accepted.organizerImport?.organizerPubkey !== close.organizerPubkey ||
           accepted.organizerImport.claimRef !== payload.claimRef ||
           !accepted?.organizerImport?.entries.some(
@@ -422,6 +469,7 @@ export async function reconcileMerchantOrganizerStockClose(input: {
           !sameOrganizerStockRumor(pool.closingRumor, rumor)
         )
           throw new Error("Stock close identity conflict")
+        store.assertCurrent()
         return { replayed: true, pool }
       }
       if (
@@ -462,6 +510,7 @@ export async function reconcileMerchantOrganizerStockClose(input: {
       authority.check()
       await input.db.merchantInventoryAssignments.put(assignment)
       await input.db.eventMarketOrganizerStockPools.put(pool)
+      store.assertCurrent()
       return { replayed: false, pool }
     }
   )

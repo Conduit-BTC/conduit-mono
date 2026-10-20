@@ -18,6 +18,7 @@ import {
   type MerchantStockCheckpointDelivery,
 } from "./event-market-stock-checkpoint"
 import type { AccountSigner } from "./nostr-event-signer"
+import { merchantAcceptanceBinding } from "./merchant-acceptance-privacy"
 import {
   buildEventMarketAssignmentDraft,
   computeEventMarketAssignmentDTag,
@@ -549,6 +550,10 @@ export async function acceptMerchantInventoryOrder(input: {
   identityBinding: string
   termsBinding: string
   evidence: string
+  evidenceFormat?: MerchantInventoryAcceptedOrder["evidenceFormat"]
+  evidenceBinding?: string
+  /** Live account fence for private acceptance commits. */
+  assertCurrent?: () => void
   items: MerchantInventoryOrderItem[]
   priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
   organizerImport?: VerifiedOrganizerStockImport
@@ -563,6 +568,7 @@ export async function acceptMerchantInventoryOrder(input: {
     evidence,
     items,
   } = input
+  input.assertCurrent?.()
   const acceptedAt = input.acceptedAt ?? Date.now()
   const delegated = input.organizerImport
     ? readVerifiedOrganizerStockImport(input.organizerImport)
@@ -584,7 +590,7 @@ export async function acceptMerchantInventoryOrder(input: {
       delegated.merchantPubkey !== merchantPubkey ||
       delegated.identityBinding !== identityBinding ||
       delegated.termsBinding !== termsBinding ||
-      evidence !== termsBinding ||
+      input.evidenceFormat !== "device-encrypted-v1" ||
       input.priorStockAdjustments?.length)
   )
     throw new Error("Organizer import does not match the stock decision")
@@ -594,6 +600,11 @@ export async function acceptMerchantInventoryOrder(input: {
     !identityBinding ||
     !termsBinding ||
     !evidence ||
+    (input.evidenceFormat !== undefined &&
+      (input.evidenceFormat !== "device-encrypted-v1" ||
+        ![identityBinding, termsBinding, input.evidenceBinding].every(
+          (binding) => binding && /^sha256:[0-9a-f]{64}$/.test(binding)
+        ))) ||
     !Number.isSafeInteger(acceptedAt) ||
     !items.length
   )
@@ -651,7 +662,9 @@ export async function acceptMerchantInventoryOrder(input: {
           prior.merchantPubkey !== merchantPubkey ||
           prior.identityBinding !== identityBinding ||
           prior.termsBinding !== termsBinding ||
-          prior.evidence !== evidence ||
+          prior.evidenceFormat !== input.evidenceFormat ||
+          (prior.evidenceBinding ?? prior.evidence) !==
+            (input.evidenceBinding ?? evidence) ||
           ((!delegated || prior.organizerImport) &&
             JSON.stringify(
               prior.items.map(
@@ -685,6 +698,7 @@ export async function acceptMerchantInventoryOrder(input: {
               ))
         )
           throw new Error("Order ID is bound to different identity or terms")
+        input.assertCurrent?.()
         if (!delegated) return { replayed: true, order: prior }
         if (prior.organizerImport) {
           if (
@@ -710,7 +724,7 @@ export async function acceptMerchantInventoryOrder(input: {
               saved.quantity !== entry.payload.quantity ||
               saved.orderId !== orderId ||
               saved.claimRef !== entry.payload.claimRef ||
-              saved.evidence !== evidence ||
+              saved.evidence !== input.evidenceBinding ||
               (saved.orderPoolBinding !== undefined &&
                 saved.orderPoolBinding !== orderPoolBinding) ||
               !sameOrganizerStockRumor(saved.rumor, entry.rumor) ||
@@ -830,7 +844,10 @@ export async function acceptMerchantInventoryOrder(input: {
               staged.quantity !== entry.payload.quantity ||
               staged.claimRef !== entry.payload.claimRef ||
               staged.orderId !== orderId ||
-              staged.evidence !== evidence ||
+              (staged.evidence !== input.evidenceBinding &&
+                staged.evidence !== entry.payload.termsBinding &&
+                merchantAcceptanceBinding("evidence", staged.evidence) !==
+                  input.evidenceBinding) ||
               (staged.orderPoolBinding !== undefined &&
                 staged.orderPoolBinding !== orderPoolBinding) ||
               !sameOrganizerStockRumor(staged.rumor, entry.rumor))
@@ -1080,7 +1097,7 @@ export async function acceptMerchantInventoryOrder(input: {
             claimRef: entry.payload.claimRef,
             rumor: structuredClone(entry.rumor),
             quantity: entry.payload.quantity,
-            evidence,
+            evidence: input.evidenceBinding!,
             orderPoolBinding,
             receivedEnvelope: structuredClone(entry.envelope),
             imported: true,
@@ -1135,12 +1152,19 @@ export async function acceptMerchantInventoryOrder(input: {
           await db.merchantInventoryAssignments.put(assignment)
         }
       }
+      input.assertCurrent?.()
       const order: MerchantInventoryAcceptedOrder = {
         orderId,
         merchantPubkey,
         identityBinding,
         termsBinding,
         evidence,
+        ...(input.evidenceFormat
+          ? {
+              evidenceFormat: input.evidenceFormat,
+              evidenceBinding: input.evidenceBinding,
+            }
+          : {}),
         items: output,
         acceptedAt,
         ...(delegated
@@ -1150,6 +1174,7 @@ export async function acceptMerchantInventoryOrder(input: {
       delegated?.checkSession()
       if (prior) await db.merchantInventoryAcceptedOrders.put(order)
       else await db.merchantInventoryAcceptedOrders.add(order)
+      input.assertCurrent?.()
       return { replayed: Boolean(prior), order }
     }
   )

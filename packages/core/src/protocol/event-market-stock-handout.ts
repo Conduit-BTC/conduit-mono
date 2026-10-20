@@ -25,7 +25,15 @@ import { retryPrivateMessageWraps } from "./private-message-delivery"
 import { wrapPrivateMessage } from "./private-message-primitives"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { orderSchema, type OrderSchema } from "../schemas"
-import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
+import {
+  getOrganizerStockOrderBindings,
+  merchantOccurrenceAcceptanceBindings,
+} from "./merchant-order-acceptance-bindings"
+import {
+  merchantAcceptanceStore,
+  openMerchantAcceptanceEvidence,
+  protectMerchantAcceptanceHistory,
+} from "./merchant-acceptance-privacy"
 import { classifyEventMarketOrderHandoff } from "./event-market-order-handoff-policy"
 
 type Session = {
@@ -489,25 +497,32 @@ export async function assertMerchantOrganizerStockOrderHandout(
   input = { ...input, order: orderSchema.parse(clone(input.order)) }
   const authority = session(input)
   await authority.authenticate()
+  const store = merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  if (store.authorization.signer !== input.signer)
+    throw new Error("Organizer handout session changed.")
+  await protectMerchantAcceptanceHistory(store)
   if (
     input.order.merchantPubkey !== input.authenticatedPubkey ||
     classifyEventMarketOrderHandoff(input.order) !== "reserved_organizer_stock"
   )
     throw new Error("Exact reserved organizer pickup required.")
   const bindings = getOrganizerStockOrderBindings(input.order)
+  const local = merchantOccurrenceAcceptanceBindings(input.order)
   const accepted = await input.db.merchantInventoryAcceptedOrders.get(
     input.order.id
   )
   authority.check()
+  store.assertCurrent()
   const imported = accepted?.organizerImport
   if (
     !accepted ||
     !imported ||
     !imported.entries.length ||
     accepted.merchantPubkey !== input.authenticatedPubkey ||
-    accepted.identityBinding !== bindings.identityBinding ||
-    accepted.termsBinding !== bindings.termsBinding ||
-    accepted.evidence !== bindings.termsBinding
+    accepted.identityBinding !== local.identityBinding ||
+    accepted.termsBinding !== local.termsBinding ||
+    (await openMerchantAcceptanceEvidence(accepted, store)) !==
+      bindings.termsBinding
   )
     throw new Error(
       "Import the organizer's exact accepted stock history before completion."
@@ -516,6 +531,7 @@ export async function assertMerchantOrganizerStockOrderHandout(
     imported.entries.map((row) => `${input.authenticatedPubkey}:${row.entryId}`)
   )
   authority.check()
+  store.assertCurrent()
   if (
     entries.some((entry, index) => {
       const expected = imported.entries[index]!
@@ -550,6 +566,7 @@ export async function assertMerchantOrganizerStockOrderHandout(
     envelope: handout.receivedEnvelope!,
   })
   authority.check()
+  store.assertCurrent()
   if (
     !packet ||
     packet.payload.type !== "handed_out" ||
@@ -578,6 +595,7 @@ export async function assertMerchantOrganizerStockOrderHandout(
     ),
   ])
   authority.check()
+  store.assertCurrent()
   if (
     JSON.stringify(freshAccepted) !== JSON.stringify(accepted) ||
     JSON.stringify(freshEntries) !== JSON.stringify(entries)

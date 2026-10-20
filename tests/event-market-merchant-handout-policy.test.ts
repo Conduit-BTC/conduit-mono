@@ -10,9 +10,14 @@ import { formatEventMarketPickupClaimCode } from "@conduit/core/protocol/event-m
 import { getOrganizerStockOrderBindings } from "@conduit/core/protocol/merchant-order-acceptance-bindings"
 import { SessionSigner } from "@conduit/core/protocol/session-signer"
 import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purchase-fixture"
+import {
+  installProtectedReadSigner,
+  __resetProtectedReadSigner,
+} from "@conduit/core/protocol/protected-read-authorization"
 
 const databases: ConduitDB[] = []
 afterEach(async () => {
+  __resetProtectedReadSigner()
   for (const database of databases.splice(0)) await database.delete()
 })
 const offline = {
@@ -49,6 +54,11 @@ it("requires exact imported stock and the organizer's authenticated physical han
     shouldContinue: () => f.clock.active,
     order: f.order,
   }
+  installProtectedReadSigner(
+    merchantSigner,
+    f.merchantPubkey,
+    () => f.clock.active
+  )
   await expect(
     assertMerchantOrganizerStockOrderHandout(merchant)
   ).rejects.toThrow("Import")
@@ -111,12 +121,17 @@ it("requires exact imported stock and the organizer's authenticated physical han
     id: `${f.merchantPubkey}:${row.rumor.id}`,
     accountPubkey: f.merchantPubkey,
     imported: true,
+    evidence: bindings.termsBinding,
     receivedEnvelope: row.wraps!.recipient,
   }))
   await f.database.eventMarketOrganizerStockEntries.bulkPut(imported)
   await expect(
     assertMerchantOrganizerStockOrderHandout(merchant)
   ).rejects.toThrow("handout")
+  expect(
+    (await f.database.merchantInventoryAcceptedOrders.get(f.order.id))!
+      .evidenceFormat
+  ).toBe("device-encrypted-v1")
   await retain(
     confirmOrganizerStockOrderHandout({
       ...organizer,

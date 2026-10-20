@@ -1,3 +1,6 @@
+import { installMerchantAcceptanceTestSession } from "./helpers/merchant-acceptance-session"
+import { __resetProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
+import { openMerchantAcceptanceEvidence } from "../packages/core/src/protocol/merchant-acceptance-privacy"
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { db } from "../packages/core/src/db"
@@ -25,7 +28,10 @@ beforeEach(async () => {
   }
   await db.open()
 })
-afterEach(() => restore())
+afterEach(() => {
+  restore()
+  __resetProtectedReadSigner()
+})
 
 it("expired merchant payment cannot consume an unreconciled organizer hold", async () => {
   const f = await setup()
@@ -72,6 +78,7 @@ async function setup() {
     mode: "merchant_present",
     newAssignment: true,
   })
+  installMerchantAcceptanceTestSession(f.merchant)
   const signed = await admitFixtureEvent(f.fulfillment.product.signedEvent)
   const product = parseProductEvent(signed)
   const assignmentCoordinate = f.fulfillment.occurrenceAssignment!.coordinate
@@ -180,7 +187,7 @@ for (const rescheduled of [false, true]) {
       )
       expect(f.publications()).toBe(0)
       const saved = await db.merchantInventoryAcceptedOrders.get(f.order.id)
-      expect(saved!.termsBinding).toBe(
+      expect(await openMerchantAcceptanceEvidence(saved!)).toBe(
         JSON.stringify(orderSchema.parse(f.order))
       )
       expect(

@@ -252,3 +252,37 @@ Public references: [NIP-17](https://github.com/nostr-protocol/nips/blob/master/1
 [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md),
 [NIP-42](https://github.com/nostr-protocol/nips/blob/master/42.md), and the
 [Open Markets specification](https://github.com/OpenMarketsFoundation/specification/blob/main/README.md).
+
+## Merchant inventory acceptance privacy
+
+Merchant acceptance retains its exact validated order snapshot through the same
+account-fenced, device-local AES-GCM owner. Identity, terms and evidence comparisons
+use domain-separated SHA-256 bindings; private notes, shipping addresses and guest
+contacts are not copied into plaintext acceptance fields. Ciphertext is bound to
+the merchant account and order ID. Random encryption nonces do not change the
+stable replay decision, so concurrent retries still debit inventory once.
+
+On an authenticated acceptance read or write, legacy preview rows for that account
+are repaired one at a time with compare-and-replace transactions. The repair
+retains the original evidence bytes, acceptance time, inventory result and pending
+publication jobs. It does not delete rows or repeat stock debits. Encryption or
+storage failure leaves the original decision available for a later repair and
+blocks the dependent action; a disconnected or different account cannot perform
+the repair. Rows belonging to another account remain pending until that account
+accesses acceptance. This is local persistence protection, not a change to NIP-44
+wire encryption or signer authority.
+
+Delegated stock imports use that same account/DB-fenced owner. Imported journal
+entries retain stable evidence commitments rather than another plaintext copy of
+the buyer order. Legacy acceptance and related entry repairs commit together;
+partial repair, changed rows, lost authority or failed persistence leave the
+once-only stock decision intact and block the dependent operation.
+
+Merchant stock checkpoints keep their original portable order bytes and wire
+hashes inside the authenticated private envelope. Local checkpoint drafts are
+device-encrypted too. A fresh device authenticates the original checkpoint and
+frontiers, then reseals acceptance evidence using its own device key before the
+atomic stock restore. Device ciphertext and randomized nonces never become wire
+commitments, replay identities or inventory frontiers. Historical checkpoint
+payloads remain readable, and interrupted delivery retries the exact saved rumor
+and envelope rather than signing another stock decision.

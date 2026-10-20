@@ -21,7 +21,10 @@ import {
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import { EVENT_KINDS } from "./kinds"
 import { readCurrentProductWriteRevision } from "./local-product-coordinate-lock"
-import { parseEventMarketStockCheckpointRumor } from "./event-market-stock-checkpoint"
+import {
+  parseEventMarketStockCheckpointRumor,
+  openMerchantOrganizerStockCheckpoint,
+} from "./event-market-stock-checkpoint"
 import {
   getConfiguredIsolatedE2eRelayUrl,
   tryNormalizeRelayUrl,
@@ -1029,7 +1032,17 @@ async function deliverProductListingJobUnlocked(
             address
         )!
         const payload =
-          checkpoint && parseEventMarketStockCheckpointRumor(checkpoint.rumor)
+          checkpoint &&
+          parseEventMarketStockCheckpointRumor(
+            (
+              await openMerchantOrganizerStockCheckpoint({
+                db: inventory,
+                authenticatedPubkey: stored.merchantPubkey,
+                productCoordinate: address,
+                checkpoint,
+              })
+            ).rumor
+          )
         return Boolean(
           product &&
           product.merchantPubkey === stored.merchantPubkey &&

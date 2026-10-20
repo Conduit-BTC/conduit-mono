@@ -17,7 +17,19 @@ import {
   sameOrganizerStockRumor,
   validateMerchantOrganizerStockPool,
 } from "./event-market-stock-import-authority"
-import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
+import {
+  getOrganizerStockOrderBindings,
+  merchantOccurrenceAcceptanceBindings,
+} from "./merchant-order-acceptance-bindings"
+import {
+  merchantAcceptanceStore,
+  openMerchantAcceptanceEvidence,
+  protectMerchantAcceptanceHistory,
+  sealMerchantAcceptanceEvidence,
+  merchantStockCheckpointKey,
+  encodeMerchantPrivateCipher,
+  decodeMerchantPrivateCipher,
+} from "./merchant-acceptance-privacy"
 import type { AccountSigner } from "./nostr-event-signer"
 import { retryPrivateMessageWraps } from "./private-message-delivery"
 import {
@@ -73,6 +85,52 @@ interface StockSnapshot {
   }>
   entries: EventMarketOrganizerStockEntry[]
   orders: MerchantInventoryAcceptedOrder[]
+}
+type StoredCheckpoint = NonNullable<
+  MerchantInventoryProduct["organizerStockCheckpoint"]
+>
+type OpenCheckpoint = StoredCheckpoint & { rumor: PrivateMessageRumor }
+const checkpointId = (checkpoint: StoredCheckpoint) => {
+  const id = checkpoint.rumorId ?? checkpoint.rumor?.id
+  if (!id) fail()
+  return id
+}
+
+/** Device ciphertext is never transported as portable recovery authority. */
+export async function openMerchantOrganizerStockCheckpoint(input: {
+  db: ConduitDB
+  authenticatedPubkey: string
+  productCoordinate: string
+  checkpoint: StoredCheckpoint
+}): Promise<OpenCheckpoint> {
+  const store = merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  let saved = input.checkpoint
+  if (saved.rumor) {
+    await protectMerchantAcceptanceHistory(store)
+    const repaired = (
+      await input.db.merchantInventoryProducts.get(input.productCoordinate)
+    )?.organizerStockCheckpoint
+    if (!repaired || checkpointId(repaired) !== checkpointId(saved)) fail()
+    saved = repaired
+  }
+  const rumor = saved.privateRumor
+    ? await store.open<PrivateMessageRumor>(
+        decodeMerchantPrivateCipher(saved.privateRumor),
+        merchantStockCheckpointKey(input.productCoordinate, checkpointId(saved))
+      )
+    : clone(saved.rumor)
+  if (!rumor || rumor.id !== checkpointId(saved)) fail()
+  const payload = parseEventMarketStockCheckpointRumor(rumor)
+  if (
+    payload.merchantPubkey !== store.principal ||
+    payload.snapshot.product.coordinate !== input.productCoordinate ||
+    payload.snapshotKey !== saved.snapshotKey ||
+    payload.sequence !== saved.sequence ||
+    payload.previousId !== saved.previousId
+  )
+    fail()
+  store.assertCurrent()
+  return { ...clone(saved), rumor }
 }
 export interface EventMarketStockCheckpointPayload {
   version: 1
@@ -627,7 +685,7 @@ function validateSnapshot(snapshot: StockSnapshot, merchant: string): void {
   if (snapshot.entries.some((entry) => !pools.has(entry.poolId))) fail()
 }
 
-async function snapshot(
+async function readSnapshot(
   db: ConduitDB,
   merchant: string,
   address: string
@@ -741,8 +799,61 @@ async function snapshot(
       a.orderId.localeCompare(b.orderId)
     ),
   }
-  validateSnapshot(result, merchant)
   return result
+}
+
+/** Read one atomic DB view, then decrypt outside Dexie's transaction lifetime. */
+async function captureSnapshot(
+  db: ConduitDB,
+  merchant: string,
+  address: string
+) {
+  const store = merchantAcceptanceStore(merchant, db)
+  const raw = await db.transaction("r", inventoryTables(db), () =>
+    readSnapshot(db, merchant, address)
+  )
+  const portable = clone(raw)
+  const originals = new Map<string, string>()
+  portable.orders = await Promise.all(
+    raw.orders.map(async (accepted) => {
+      const evidence = await openMerchantAcceptanceEvidence(accepted, store)
+      const parsed = orderSchema.parse(JSON.parse(evidence))
+      const local = merchantOccurrenceAcceptanceBindings(parsed)
+      if (
+        accepted.orderId !== parsed.id ||
+        accepted.merchantPubkey !== merchant ||
+        accepted.identityBinding !== local.identityBinding ||
+        accepted.termsBinding !== local.termsBinding
+      )
+        fail()
+      originals.set(accepted.orderId, evidence)
+      const {
+        evidenceFormat: _format,
+        evidenceBinding: _binding,
+        ...decision
+      } = accepted
+      void _format
+      void _binding
+      const wire = getOrganizerStockOrderBindings(parsed)
+      return {
+        ...decision,
+        identityBinding: wire.identityBinding,
+        termsBinding: wire.termsBinding,
+        evidence,
+      }
+    })
+  )
+  portable.entries = raw.entries.map((entry) => {
+    if (!entry.imported) return clone(entry)
+    const accepted = raw.orders.find((order) => order.orderId === entry.orderId)
+    const evidence = originals.get(entry.orderId)
+    if (!accepted || !evidence || entry.evidence !== accepted.evidenceBinding)
+      fail()
+    return { ...clone(entry), evidence }
+  })
+  validateSnapshot(portable, merchant)
+  store.assertCurrent()
+  return { snapshot: portable, rawKey: digest(raw) }
 }
 
 const inventoryTables = (db: ConduitDB) => [
@@ -769,13 +880,23 @@ export function publishMerchantOrganizerStockCheckpoint(
 async function publishCheckpoint(
   input: PublishCheckpointInput,
   attempt: number
-): Promise<NonNullable<MerchantInventoryProduct["organizerStockCheckpoint"]>> {
+): Promise<OpenCheckpoint> {
   input = {
     ...input,
     delivery: input.delivery ? { ...input.delivery } : undefined,
   }
   const authority = session(input)
   await authority.authenticate()
+  const store = merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  if (store.authorization.signer !== input.signer) fail()
+  if (
+    input.delivery?.deliveryStore &&
+    (input.delivery.deliveryStore.database !== input.db ||
+      input.delivery.deliveryStore.principal !== input.authenticatedPubkey ||
+      input.delivery.deliveryStore.authorization.signer !== input.signer)
+  )
+    fail()
+  await protectMerchantAcceptanceHistory(store)
   let product = await input.db.merchantInventoryProducts.get(
     input.productCoordinate
   )
@@ -783,21 +904,25 @@ async function publishCheckpoint(
   let saved = product.organizerStockCheckpoint
   // An interrupted older checkpoint is delivered byte-for-byte before advancing.
   if (!saved || saved.acknowledgedRelayUrls.length) {
-    const current = await input.db.transaction(
-      "r",
-      inventoryTables(input.db),
-      () =>
-        snapshot(input.db, input.authenticatedPubkey, input.productCoordinate)
+    const captured = await captureSnapshot(
+      input.db,
+      input.authenticatedPubkey,
+      input.productCoordinate
     )
+    const current = captured.snapshot
     authority.check()
     const snapshotKey = digest(current)
-    if (saved?.snapshotKey === snapshotKey) return clone(saved)
+    if (saved?.snapshotKey === snapshotKey)
+      return openMerchantOrganizerStockCheckpoint({
+        ...input,
+        checkpoint: saved,
+      })
     const payload: EventMarketStockCheckpointPayload = {
       version: 1,
       type: "merchant_checkpoint",
       merchantPubkey: input.authenticatedPubkey,
       sequence: (saved?.sequence ?? 0) + 1,
-      previousId: saved?.rumor.id ?? null,
+      previousId: saved ? checkpointId(saved) : null,
       snapshotKey,
       snapshot: current,
     }
@@ -814,6 +939,13 @@ async function publishCheckpoint(
     })
     parseEventMarketStockCheckpointRumor(rumor)
     assertPrivateMessageFitsTransport(rumor)
+    const privateRumor = encodeMerchantPrivateCipher(
+      await store.seal(
+        rumor,
+        merchantStockCheckpointKey(input.productCoordinate, rumor.id)
+      )
+    )
+    authority.check()
     saved = await input.db.transaction(
       "rw",
       inventoryTables(input.db),
@@ -829,19 +961,20 @@ async function publishCheckpoint(
             product!.organizerStockCheckpoint
           ) ||
           digest(
-            await snapshot(
+            await readSnapshot(
               input.db,
               input.authenticatedPubkey,
               input.productCoordinate
             )
-          ) !== snapshotKey
+          ) !== captured.rawKey
         )
           fail()
         row.organizerStockCheckpoint = {
           sequence: payload.sequence,
           previousId: payload.previousId,
           snapshotKey,
-          rumor,
+          rumorId: rumor.id,
+          privateRumor,
           acknowledgedRelayUrls: [],
         }
         await input.db.merchantInventoryProducts.put(row)
@@ -851,8 +984,12 @@ async function publishCheckpoint(
     )
   }
   if (!saved.selfEnvelope) {
+    const opened = await openMerchantOrganizerStockCheckpoint({
+      ...input,
+      checkpoint: saved,
+    })
     const selfEnvelope = await wrapPrivateMessage(
-      saved.rumor,
+      opened.rumor,
       { pubkey: input.authenticatedPubkey },
       input.signer
     )
@@ -867,7 +1004,7 @@ async function publishCheckpoint(
         )
         if (
           !row?.organizerStockCheckpoint ||
-          row.organizerStockCheckpoint.rumor.id !== saved!.rumor.id
+          checkpointId(row.organizerStockCheckpoint) !== checkpointId(saved!)
         )
           fail()
         row.organizerStockCheckpoint.selfEnvelope ??= selfEnvelope
@@ -879,7 +1016,8 @@ async function publishCheckpoint(
   }
   const result = await retryPrivateMessageWraps({
     ...input.delivery,
-    rumorId: saved.rumor.id,
+    deliveryStore: input.delivery?.deliveryStore ?? store,
+    rumorId: checkpointId(saved),
     senderPubkey: input.authenticatedPubkey,
     recipientPubkey: input.authenticatedPubkey,
     accountPubkey: input.authenticatedPubkey,
@@ -905,7 +1043,7 @@ async function publishCheckpoint(
       )
       if (
         !product?.organizerStockCheckpoint ||
-        product.organizerStockCheckpoint.rumor.id !== saved!.rumor.id
+        checkpointId(product.organizerStockCheckpoint) !== checkpointId(saved!)
       )
         fail()
       product.organizerStockCheckpoint.acknowledgedRelayUrls = [
@@ -920,11 +1058,13 @@ async function publishCheckpoint(
   )
   // A sale may have committed during encryption/delivery. Never publish its
   // newer projections under the previous checkpoint's acknowledgement.
-  const current = await input.db.transaction(
-    "r",
-    inventoryTables(input.db),
-    () => snapshot(input.db, input.authenticatedPubkey, input.productCoordinate)
-  )
+  const current = (
+    await captureSnapshot(
+      input.db,
+      input.authenticatedPubkey,
+      input.productCoordinate
+    )
+  ).snapshot
   authority.check()
   if (digest(current) !== saved.snapshotKey) {
     if (attempt >= 3)
@@ -933,7 +1073,10 @@ async function publishCheckpoint(
       )
     return publishCheckpoint(input, attempt + 1)
   }
-  return clone(product!.organizerStockCheckpoint!)
+  return openMerchantOrganizerStockCheckpoint({
+    ...input,
+    checkpoint: product!.organizerStockCheckpoint!,
+  })
 }
 
 /** Positive exact self-copy + projections restore one existing inventory owner. */
@@ -968,6 +1111,8 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       fail()
   }
   await authority.authenticate()
+  check()
+  await protectMerchantAcceptanceHistory(input.store)
   check()
   const retained = await observeMerchantOrganizerStockCheckpoint(input)
   check()
@@ -1029,6 +1174,45 @@ export async function restoreMerchantOrganizerStockCheckpoint(
         fail()
     }
   }
+  // Portable checkpoint rows retain their original canonical terms. Device
+  // encryption must be renewed here, never copied from the source device.
+  const localOrders = new Map<string, MerchantInventoryAcceptedOrder>()
+  for (const order of state.orders) {
+    const parsed = orderSchema.parse(JSON.parse(order.evidence))
+    localOrders.set(order.orderId, {
+      ...clone(order),
+      ...merchantOccurrenceAcceptanceBindings(parsed),
+      ...(await sealMerchantAcceptanceEvidence(
+        input.store,
+        order.orderId,
+        order.evidence
+      )),
+    })
+    check()
+  }
+  const localEntries = state.entries.map((entry) => ({
+    ...clone(entry),
+    evidence: entry.imported
+      ? localOrders.get(entry.orderId)!.evidenceBinding!
+      : entry.evidence,
+  }))
+  const privateRumor = encodeMerchantPrivateCipher(
+    await input.store.seal(
+      rumor,
+      merchantStockCheckpointKey(state.product.coordinate, rumor.id)
+    )
+  )
+  check()
+  const beforeCapture = (await input.db.merchantInventoryProducts.get(
+    state.product.coordinate
+  ))
+    ? await captureSnapshot(
+        input.db,
+        input.authenticatedPubkey,
+        state.product.coordinate
+      )
+    : undefined
+  check()
   return input.db.transaction("rw", inventoryTables(input.db), async () => {
     check()
     const observation = await input.db.commerceInboxDeliveries.get(
@@ -1043,9 +1227,10 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     if (
       prior &&
       (prior.sequence > payload.sequence ||
-        (prior.sequence === payload.sequence && prior.rumor.id !== rumor.id) ||
+        (prior.sequence === payload.sequence &&
+          checkpointId(prior) !== rumor.id) ||
         (prior.sequence + 1 === payload.sequence &&
-          payload.previousId !== prior.rumor.id))
+          payload.previousId !== checkpointId(prior)))
     )
       fail()
     // Retained later public observations or local decisions prevent rollback.
@@ -1088,23 +1273,25 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       )
         fail()
     }
+    if (Boolean(before) !== Boolean(beforeCapture)) fail()
     if (before) {
       if (
         !prior ||
+        digest(beforeCapture!.snapshot) !== prior.snapshotKey ||
         digest(
-          await snapshot(
+          await readSnapshot(
             input.db,
             input.authenticatedPubkey,
             state.product.coordinate
           )
-        ) !== prior.snapshotKey
+        ) !== beforeCapture!.rawKey
       )
         fail()
-      if (prior.rumor.id === rumor.id)
+      if (checkpointId(prior) === rumor.id)
         return { product: before, replayed: true }
       if (
         prior.sequence + 1 !== payload.sequence ||
-        payload.previousId !== prior.rumor.id
+        payload.previousId !== checkpointId(prior)
       )
         fail()
     }
@@ -1184,8 +1371,19 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       const existing = await input.db.merchantInventoryAcceptedOrders.get(
         order.orderId
       )
-      if (existing && !exact(existing, order)) fail()
-      await input.db.merchantInventoryAcceptedOrders.put(clone(order))
+      if (
+        existing &&
+        !exact(
+          beforeCapture?.snapshot.orders.find(
+            (saved) => saved.orderId === order.orderId
+          ),
+          order
+        )
+      )
+        fail()
+      await input.db.merchantInventoryAcceptedOrders.put(
+        existing ?? localOrders.get(order.orderId)!
+      )
     }
     await input.db.merchantInventoryAssignments.bulkPut(
       state.assignments.map((row) => ({
@@ -1204,9 +1402,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     await input.db.eventMarketOrganizerStockPools.bulkPut(
       state.pools.map(({ pool }) => clone(pool))
     )
-    await input.db.eventMarketOrganizerStockEntries.bulkPut(
-      clone(state.entries)
-    )
+    await input.db.eventMarketOrganizerStockEntries.bulkPut(localEntries)
     const product: MerchantInventoryProduct = {
       ...clone(state.product),
       publicationJobs: [
@@ -1222,7 +1418,8 @@ export async function restoreMerchantOrganizerStockCheckpoint(
         sequence: payload.sequence,
         previousId: payload.previousId,
         snapshotKey: payload.snapshotKey,
-        rumor,
+        rumorId: rumor.id,
+        privateRumor,
         selfEnvelope: clone(input.envelope),
         acknowledgedRelayUrls: retained.sources,
       },

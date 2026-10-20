@@ -1,3 +1,5 @@
+import { installMerchantAcceptanceTestSession } from "./helpers/merchant-acceptance-session"
+import { __resetProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
 import { admitFixtureEvent } from "./helpers/admit-event"
 import { afterAll, describe, expect, it } from "bun:test"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
@@ -8,7 +10,10 @@ import {
 } from "nostr-tools/pure"
 
 let restoreDatabaseDependencies: (() => void) | undefined
-afterAll(() => restoreDatabaseDependencies?.())
+afterAll(() => {
+  restoreDatabaseDependencies?.()
+  __resetProtectedReadSigner()
+})
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -70,6 +75,7 @@ describe("merchant occurrence acceptance composed with signed evidence and durab
       db.eventMarketRosterEvidence.clear(),
     ])
 
+    installMerchantAcceptanceTestSession(merchant)
     const nowSeconds = Math.floor(Date.now() / 1000)
     const marketCoordinate = "30409:" + organizer + ":composed-fair"
     const occurrenceCoordinate = "31923:" + organizer + ":composed-day"

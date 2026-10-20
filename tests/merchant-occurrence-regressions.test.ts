@@ -1,3 +1,6 @@
+import { installMerchantAcceptanceTestSession } from "./helpers/merchant-acceptance-session"
+import { __resetProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
+import { openMerchantAcceptanceEvidence } from "../packages/core/src/protocol/merchant-acceptance-privacy"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
 import { beforeEach, afterEach, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
@@ -31,12 +34,21 @@ import {
   readEventMarketCatalog,
   retainEventMarketCommerceEvidence,
 } from "../packages/core/src/protocol/event-market-roster-read"
-import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
+import { createEventMarketOrderFixture as createSignedFixture } from "./helpers/event-market-order-fixture"
+
+function createEventMarketOrderFixture(
+  options: Parameters<typeof createSignedFixture>[0]
+) {
+  const fixture = createSignedFixture(options)
+  installMerchantAcceptanceTestSession(fixture.merchant)
+  return fixture
+}
 
 const secret = generateSecretKey()
 const merchant = getPublicKey(secret)
 let restore: () => void
 beforeEach(async () => {
+  installMerchantAcceptanceTestSession(merchant)
   const deps = (db as unknown as { _deps: Record<string, unknown> })._deps
   const previous = { ...deps }
   const navigator = Object.getOwnPropertyDescriptor(globalThis, "navigator")
@@ -61,7 +73,10 @@ beforeEach(async () => {
   }
   await db.open()
 })
-afterEach(() => restore())
+afterEach(() => {
+  restore()
+  __resetProtectedReadSigner()
+})
 function listing(
   d: string,
   stock = 10,
@@ -946,7 +961,7 @@ it("explicit acceptance retains the original order price after a later committed
     products: [],
   })
   expect(accepted.replayed).toBe(false)
-  expect(accepted.order.termsBinding).toBe(
+  expect(await openMerchantAcceptanceEvidence(accepted.order)).toBe(
     JSON.stringify(orderSchema.parse(purchase))
   )
   expect(purchase.items[0]?.priceAtPurchase).toBe(100)
@@ -1010,4 +1025,375 @@ it("reads saved acceptance only for the exact original identity and terms", asyn
   await expect(read(null)).rejects.toThrow("conflicting accepted terms")
   expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
   expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+})
+
+for (const hidden of [false, true]) {
+  for (const reverse of [false, true]) {
+    it(`strongest signed ${hidden ? "hidden" : "sold-out"} revision must deny first acceptance (reverse=${reverse})`, async () => {
+      const stale = await admitFixtureEvent(listing("review-revision", 6))
+      const fresh = await admitFixtureEvent(
+        finalizeEvent(
+          {
+            kind: 30402,
+            created_at: 101,
+            content: "",
+            tags: [
+              ["d", "review-revision"],
+              ["title", "Synthetic product"],
+              ["type", "simple", "digital"],
+              ["price", "10", "SATS"],
+              ["stock", hidden ? "6" : "0"],
+              ...(hidden ? [["visibility", "hidden"]] : []),
+            ],
+          },
+          secret
+        )
+      )
+      const staleProduct = parseProductEvent(stale)
+      await expect(
+        acceptMerchantOccurrenceOrder({
+          ...session,
+          order: order([staleProduct]),
+          products: reverse
+            ? [parseProductEvent(fresh), staleProduct]
+            : [staleProduct, parseProductEvent(fresh)],
+        })
+      ).rejects.toThrow()
+    })
+  }
+}
+
+for (const reverse of [false, true]) {
+  it(`duplicate observations cannot hide an independent stock revision (reverse=${reverse})`, async () => {
+    const stale = await setup(listing("committed-freshness", 6))
+    const fresh = parseProductEvent(
+      await admitFixtureEvent(
+        listing("committed-freshness", 0, 10, "SATS", 101)
+      )
+    )
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: order([stale]),
+        products: reverse ? [fresh, stale] : [stale, fresh],
+      })
+    ).rejects.toThrow("newer independent product revision")
+    expect((await db.merchantInventoryProducts.get(stale.id))?.stock).toBe(6)
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  })
+}
+
+it("duplicate observations use the signed tie-break and ignore forged or unrelated coordinates", async () => {
+  const events = [listing("same-time", 6), listing("same-time", 0)].sort(
+    (a, b) => a.id.localeCompare(b.id)
+  )
+  const winner = parseProductEvent(await admitFixtureEvent(events[0]!))
+  const loser = parseProductEvent(await admitFixtureEvent(events[1]!))
+  const unrelated = parseProductEvent(
+    await admitFixtureEvent(listing("unrelated", 0, 10, "SATS", 200))
+  )
+  const forged = {
+    ...winner,
+    signedProductEvent: { ...events[0]!, created_at: 300 },
+  }
+  for (const products of [
+    [loser, winner],
+    [winner, loser],
+  ]) {
+    await db.merchantInventoryProducts.clear()
+    await db.merchantInventoryAcceptedOrders.clear()
+    const accept = acceptMerchantOccurrenceOrder({
+      ...session,
+      order: order([winner]),
+      products: [forged, { ...unrelated, id: winner.id }, ...products],
+    })
+    if (winner.stock === 0)
+      await expect(accept).rejects.toThrow("Insufficient ordinary stock")
+    else {
+      await accept
+      expect((await db.merchantInventoryProducts.get(winner.id))?.stock).toBe(5)
+    }
+  }
+})
+
+it("encrypts private acceptance bytes and preserves exact replay after reload", async () => {
+  const product = await setup(listing("private-order"))
+  const purchase = orderSchema.parse({
+    ...order([product]),
+    note: "SYNTHETIC_PRIVATE_NOTE",
+    buyerIdentityKind: "guest_ephemeral",
+    guestContact: {
+      email: "synthetic-private@example.test",
+      phone: "+15555550123",
+    },
+    shippingAddress: {
+      name: "Synthetic Buyer",
+      street: "123 Private Lane",
+      city: "Test",
+      postalCode: "12345",
+      country: "US",
+    },
+  })
+  const accepted = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const saved = (await db.merchantInventoryAcceptedOrders.get(purchase.id))!
+  for (const privateValue of [
+    purchase.note!,
+    purchase.shippingAddress!.street,
+    purchase.buyerPubkey,
+    purchase.guestContact!.email!,
+    purchase.guestContact!.phone!,
+  ])
+    expect(JSON.stringify(saved)).not.toContain(privateValue)
+  expect(saved.evidenceFormat).toBe("device-encrypted-v1")
+  expect(saved.termsBinding).toMatch(/^sha256:[a-f0-9]{64}$/)
+  expect(await openMerchantAcceptanceEvidence(saved)).toBe(
+    JSON.stringify(purchase)
+  )
+  db.close({ disableAutoOpen: false })
+  await db.open()
+  expect(
+    (
+      await acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [],
+      })
+    ).replayed
+  ).toBe(true)
+  for (const changed of [
+    { ...purchase, note: "other" },
+    {
+      ...purchase,
+      shippingAddress: {
+        ...purchase.shippingAddress!,
+        street: "456 Elsewhere",
+      },
+    },
+  ])
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: changed,
+        products: [],
+      })
+    ).rejects.toThrow("conflicting accepted terms")
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+  expect(
+    (await db.merchantInventoryAcceptedOrders.get(purchase.id))?.evidence
+  ).toBe(accepted.order.evidence)
+})
+
+it("concurrent encrypted acceptance reuses one decision despite randomized nonces", async () => {
+  const product = await setup(listing("private-concurrent"))
+  const purchase = order([product])
+  const results = await Promise.all(
+    [1, 2].map(() =>
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [product],
+      })
+    )
+  )
+  expect(results.filter((result) => !result.replayed)).toHaveLength(1)
+  expect(results[0]!.order.evidence).toBe(results[1]!.order.evidence)
+  expect(await openMerchantAcceptanceEvidence(results[0]!.order)).toBe(
+    JSON.stringify(purchase)
+  )
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+})
+
+it("repairs legacy plaintext records without changing stock or original acceptance", async () => {
+  const product = await setup(listing("legacy-private"))
+  const purchase = orderSchema.parse({
+    ...order([product]),
+    note: "LEGACY_SYNTHETIC_NOTE",
+  })
+  const accepted = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const legacy = { ...accepted.order }
+  delete legacy.evidenceFormat
+  delete legacy.evidenceBinding
+  await db.merchantInventoryAcceptedOrders.put({
+    ...legacy,
+    identityBinding: JSON.stringify([
+      purchase.id,
+      purchase.buyerPubkey,
+      purchase.merchantPubkey,
+    ]),
+    termsBinding: JSON.stringify(purchase),
+    evidence: JSON.stringify(purchase),
+  })
+  const before = await db.merchantInventoryProducts.get(product.id)
+  db.close({ disableAutoOpen: false })
+  await db.open()
+  const { readMerchantOccurrenceAcceptedOrder } =
+    await import("../packages/core/src/protocol/merchant-occurrence-workflow")
+  const saved = (await readMerchantOccurrenceAcceptedOrder({
+    merchantPubkey: merchant,
+    orderId: purchase.id,
+    order: purchase,
+  }))!
+  expect(JSON.stringify(saved)).not.toContain(purchase.note!)
+  expect(saved.acceptedAt).toBe(accepted.order.acceptedAt)
+  expect(saved.items).toEqual(accepted.order.items)
+  expect(await openMerchantAcceptanceEvidence(saved)).toBe(
+    JSON.stringify(purchase)
+  )
+  expect(
+    (
+      await acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [],
+      })
+    ).replayed
+  ).toBe(true)
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...session,
+      order: { ...purchase, note: "changed" },
+      products: [],
+    })
+  ).rejects.toThrow("conflicting accepted terms")
+  expect(await db.merchantInventoryProducts.get(product.id)).toEqual(before)
+})
+
+it("encrypted evidence rejects swapped order identity, tampering and another account", async () => {
+  const product = await setup(listing("private-account-fence"))
+  const purchase = order([product])
+  const { order: saved } = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  await expect(
+    openMerchantAcceptanceEvidence({ ...saved, orderId: "different-order" })
+  ).rejects.toThrow()
+  const cipher = JSON.parse(saved.evidence)
+  cipher.bytes =
+    (cipher.bytes.startsWith("00") ? "01" : "00") + cipher.bytes.slice(2)
+  await expect(
+    openMerchantAcceptanceEvidence({
+      ...saved,
+      evidence: JSON.stringify(cipher),
+    })
+  ).rejects.toThrow()
+  installMerchantAcceptanceTestSession("b".repeat(64))
+  await expect(openMerchantAcceptanceEvidence(saved)).rejects.toThrow(
+    "Reconnect"
+  )
+  await expect(
+    acceptMerchantOccurrenceOrder({ ...session, order: purchase, products: [] })
+  ).rejects.toThrow("Reconnect")
+  installMerchantAcceptanceTestSession(merchant)
+  expect(await openMerchantAcceptanceEvidence(saved)).toBe(
+    JSON.stringify(purchase)
+  )
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+})
+
+it("failed encryption or a revoked lease never commits an acceptance debit", async () => {
+  const { CommerceInboxStore } =
+    await import("../packages/core/src/protocol/commerce-inbox-store")
+  const product = await setup(listing("private-failed-seal"))
+  const purchase = order([product])
+  const original = CommerceInboxStore.prototype.seal
+  const seal = spyOn(CommerceInboxStore.prototype, "seal").mockRejectedValue(
+    new Error("Synthetic storage failure")
+  )
+  try {
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [product],
+      })
+    ).rejects.toThrow("Synthetic storage failure")
+    seal.mockImplementation(async function (
+      this: InstanceType<typeof CommerceInboxStore>,
+      ...args: Parameters<typeof original>
+    ) {
+      const cipher = await original.apply(this, args)
+      __resetProtectedReadSigner()
+      return cipher
+    })
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [product],
+      })
+    ).rejects.toThrow("authority is unavailable")
+  } finally {
+    seal.mockRestore()
+  }
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(10)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+})
+
+it("failed legacy repair remains retryable and cannot debit the accepted order again", async () => {
+  const { CommerceInboxStore } =
+    await import("../packages/core/src/protocol/commerce-inbox-store")
+  const product = await setup(listing("legacy-repair-retry"))
+  const purchase = orderSchema.parse({
+    ...order([product]),
+    note: "LEGACY_REPAIR_NOTE",
+  })
+  const accepted = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const legacy = { ...accepted.order }
+  delete legacy.evidenceFormat
+  delete legacy.evidenceBinding
+  const original = {
+    ...legacy,
+    identityBinding: JSON.stringify([
+      purchase.id,
+      purchase.buyerPubkey,
+      merchant,
+    ]),
+    termsBinding: JSON.stringify(purchase),
+    evidence: JSON.stringify(purchase),
+  }
+  await db.merchantInventoryAcceptedOrders.put(original)
+  const seal = spyOn(CommerceInboxStore.prototype, "seal").mockRejectedValue(
+    new Error("Synthetic repair failure")
+  )
+  try {
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [],
+      })
+    ).rejects.toThrow("Synthetic repair failure")
+    expect(await db.merchantInventoryAcceptedOrders.get(purchase.id)).toEqual(
+      original
+    )
+    expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+  } finally {
+    seal.mockRestore()
+  }
+  const replay = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [],
+  })
+  expect(replay.replayed).toBe(true)
+  expect(JSON.stringify(replay.order)).not.toContain(purchase.note!)
+  expect(await openMerchantAcceptanceEvidence(replay.order)).toBe(
+    JSON.stringify(purchase)
+  )
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
 })

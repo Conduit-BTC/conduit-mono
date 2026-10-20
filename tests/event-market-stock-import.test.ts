@@ -87,6 +87,7 @@ import {
   observeMerchantOrganizerStockCheckpoint,
   publishMerchantOrganizerStockCheckpoint,
   restoreMerchantOrganizerStockCheckpoint,
+  openMerchantOrganizerStockCheckpoint,
 } from "@conduit/core/protocol/event-market-stock-checkpoint"
 import { recoverMerchantOrganizerStockFromInbox } from "@conduit/core/protocol/merchant-inventory-recovery"
 import { decodeCommerceMessageRumor } from "@conduit/core/protocol/commerce-message-codec"
@@ -98,6 +99,11 @@ import {
 import { deliverQueuedProductListings } from "../apps/merchant/src/lib/product-listing-delivery"
 import { createEventMarketEvidenceStore } from "@conduit/core/protocol/event-market-evidence-store"
 import { reserveMerchantOrganizerStockForAssignment } from "../apps/merchant/src/lib/event-market-stock-handover"
+import { merchantOccurrenceAcceptanceBindings } from "@conduit/core/protocol/merchant-order-acceptance-bindings"
+import {
+  openMerchantAcceptanceEvidence,
+  merchantAcceptanceStore,
+} from "@conduit/core/protocol/merchant-acceptance-privacy"
 
 const databases: ConduitDB[] = []
 const originalCommerceRelayUrls = [...config.commerceRelayUrls]
@@ -161,6 +167,7 @@ async function fixture(count = 1) {
   const merchantSigner = signer(merchantSecret),
     organizerSigner = signer(organizerSecret),
     buyerSigner = signer(buyerSecret)
+  installProtectedReadSigner(merchantSigner, merchant, () => true)
   const writerId = crypto.randomUUID()
   const marketCoordinate = `30409:${organizer}:market`,
     occurrenceCoordinate = `31923:${organizer}:day`
@@ -538,7 +545,7 @@ it("imports the authenticated original order once using the shared stock owner",
   expect(result.replayed).toBe(false)
   expect(result.order.organizerImport?.entries).toHaveLength(1)
   expect(result.order.identityBinding).toBe(
-    getOrganizerStockOrderBindings(order).identityBinding
+    merchantOccurrenceAcceptanceBindings(order).identityBinding
   )
   expect(
     (await f.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!.stock
@@ -558,6 +565,234 @@ it("imports the authenticated original order once using the shared stock owner",
       .equals(f.merchant)
       .count()
   ).toBe(1)
+})
+
+it("protects imported private order evidence while preserving exact replay and closing", async () => {
+  const f = await fixture()
+  const order = orderSchema.parse({
+    ...f.order(),
+    note: "SYNTHETIC_IMPORT_PRIVATE_NOTE",
+    buyerIdentityKind: "guest_ephemeral",
+    guestContact: { email: "synthetic-import@example.test" },
+  })
+  const envelopes = await f.accept(order)
+  const accepted = await f.importOrder(order, envelopes)
+  const entries = await f.db.eventMarketOrganizerStockEntries
+    .where("accountPubkey")
+    .equals(f.merchant)
+    .toArray()
+  for (const value of [
+    order.note!,
+    order.guestContact!.email!,
+    order.buyerPubkey,
+  ])
+    expect(JSON.stringify([accepted.order, entries]).includes(value)).toBe(
+      false
+    )
+  expect(accepted.order.evidenceFormat).toBe("device-encrypted-v1")
+  expect(accepted.order.termsBinding).toMatch(/^sha256:[a-f0-9]{64}$/)
+  f.db.close({ disableAutoOpen: false })
+  await f.db.open()
+  expect((await f.importOrder(order, envelopes)).replayed).toBe(true)
+  await reconcileMerchantOrganizerStockClose({
+    db: f.db,
+    signer: f.merchantSigner,
+    authenticatedPubkey: f.merchant,
+    shouldContinue: () => true,
+    closingEnvelope: await f.close(),
+    nowMs: 500_000,
+  })
+  expect(
+    (await f.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!.stock
+  ).toBe(18)
+})
+
+for (const acceptedAlreadyEncrypted of [false, true]) {
+  it(`repairs legacy imported entries atomically without changing stock (accepted encrypted=${acceptedAlreadyEncrypted})`, async () => {
+    const f = await fixture()
+    const order = orderSchema.parse({
+      ...f.order(),
+      note: "SYNTHETIC_LEGACY_IMPORT_NOTE",
+    })
+    const envelopes = await f.accept(order)
+    const encrypted = (await f.importOrder(order, envelopes)).order
+    const bindings = getOrganizerStockOrderBindings(order)
+    const {
+      evidenceFormat: _format,
+      evidenceBinding: _binding,
+      ...decision
+    } = encrypted
+    void _format
+    void _binding
+    const legacy = {
+      ...decision,
+      identityBinding: bindings.identityBinding,
+      termsBinding: bindings.termsBinding,
+      evidence: bindings.termsBinding,
+    }
+    if (!acceptedAlreadyEncrypted)
+      await f.db.merchantInventoryAcceptedOrders.put(legacy)
+    const entry = (await f.db.eventMarketOrganizerStockEntries
+      .where("accountPubkey")
+      .equals(f.merchant)
+      .first())!
+    await f.db.eventMarketOrganizerStockEntries.update(entry.id, {
+      evidence: bindings.termsBinding,
+    })
+    const before = await f.db.merchantInventoryAcceptedOrders.get(order.id)
+    const failWrite = spyOn(
+      f.db.eventMarketOrganizerStockEntries,
+      "put"
+    ).mockRejectedValue(new Error("Synthetic entry repair persistence failure"))
+    try {
+      await fails(
+        f.importOrder(order, envelopes),
+        "Synthetic entry repair persistence failure"
+      )
+      expect(
+        JSON.stringify(
+          await f.db.merchantInventoryAcceptedOrders.get(order.id)
+        ) === JSON.stringify(before)
+      ).toBe(true)
+      expect(
+        (await f.db.eventMarketOrganizerStockEntries.get(entry.id))!
+          .evidence === bindings.termsBinding
+      ).toBe(true)
+    } finally {
+      failWrite.mockRestore()
+    }
+    const replay = await f.importOrder(order, envelopes)
+    expect(replay.replayed).toBe(true)
+    expect(replay.order.acceptedAt).toBe(encrypted.acceptedAt)
+    expect(
+      (await f.db.eventMarketOrganizerStockEntries.get(entry.id))!.evidence
+    ).toBe(replay.order.evidenceBinding!)
+    expect(JSON.stringify(replay.order).includes(order.note!)).toBe(false)
+    expect(
+      (await f.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!
+        .stock
+    ).toBe(18)
+  })
+}
+
+it("does not report a concurrent partial privacy repair complete while imported evidence remains plaintext", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    envelopes = await f.accept(order)
+  const encrypted = (await f.importOrder(order, envelopes)).order
+  const wire = getOrganizerStockOrderBindings(order)
+  const {
+    evidenceFormat: _format,
+    evidenceBinding: _binding,
+    ...decision
+  } = encrypted
+  void _format
+  void _binding
+  await f.db.merchantInventoryAcceptedOrders.put({
+    ...decision,
+    identityBinding: wire.identityBinding,
+    termsBinding: wire.termsBinding,
+    evidence: wire.termsBinding,
+  })
+  const entry = (await f.db.eventMarketOrganizerStockEntries
+    .where("accountPubkey")
+    .equals(f.merchant)
+    .first())!
+  await f.db.eventMarketOrganizerStockEntries.update(entry.id, {
+    evidence: wire.termsBinding,
+  })
+  const originalSeal = CommerceInboxStore.prototype.seal
+  const concurrent = spyOn(
+    CommerceInboxStore.prototype,
+    "seal"
+  ).mockImplementation(async function (
+    this: CommerceInboxStore,
+    ...args: Parameters<typeof originalSeal>
+  ) {
+    const cipher = await originalSeal.apply(this, args)
+    await f.db.merchantInventoryAcceptedOrders.put(encrypted)
+    return cipher
+  })
+  try {
+    await fails(
+      f.importOrder(order, envelopes),
+      "changed during privacy migration"
+    )
+  } finally {
+    concurrent.mockRestore()
+  }
+  expect(
+    (await f.db.eventMarketOrganizerStockEntries.get(entry.id))!.evidence ===
+      wire.termsBinding
+  ).toBe(true)
+  const replay = await f.importOrder(order, envelopes)
+  expect(replay.replayed).toBe(true)
+  expect(
+    (await f.db.eventMarketOrganizerStockEntries.get(entry.id))!.evidence
+  ).toBe(replay.order.evidenceBinding!)
+  expect(
+    (await f.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!.stock
+  ).toBe(18)
+})
+
+it("requires the exact connected Merchant signer and DB key before importing private evidence", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    envelopes = await f.accept(order)
+  const replacement = signer(f.merchantSecret)
+  installProtectedReadSigner(replacement, f.merchant, () => true)
+  await fails(f.importOrder(order, envelopes), "session changed")
+  expect(await f.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  installProtectedReadSigner(f.merchantSigner, f.merchant, () => true)
+  const accepted = (await f.importOrder(order, envelopes)).order
+  const otherDb = new ConduitDB(
+    `private-evidence-other-${crypto.randomUUID()}`,
+    { indexedDB, IDBKeyRange }
+  )
+  databases.push(otherDb)
+  await expect(
+    openMerchantAcceptanceEvidence(
+      accepted,
+      merchantAcceptanceStore(f.merchant, otherDb)
+    )
+  ).rejects.toThrow()
+  expect(
+    await openMerchantAcceptanceEvidence(
+      accepted,
+      merchantAcceptanceStore(f.merchant, f.db)
+    )
+  ).toBe(JSON.stringify(order))
+})
+
+it("does not debit stock when the protected Merchant lease is revoked during privacy preparation", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    envelopes = await f.accept(order)
+  const originalSeal = CommerceInboxStore.prototype.seal
+  const revoke = spyOn(CommerceInboxStore.prototype, "seal").mockImplementation(
+    async function (
+      this: CommerceInboxStore,
+      ...args: Parameters<typeof originalSeal>
+    ) {
+      const cipher = await originalSeal.apply(this, args)
+      __resetProtectedReadSigner()
+      return cipher
+    }
+  )
+  try {
+    await fails(f.importOrder(order, envelopes), "authority is unavailable")
+  } finally {
+    revoke.mockRestore()
+  }
+  expect(await f.db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  expect(
+    (await f.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!.stock
+  ).toBe(20)
+  expect(
+    (await f.db.eventMarketOrganizerStockPools.get(
+      `${f.merchant}:${f.products[0]!.poolId}`
+    ))!.importedQuantity
+  ).toBe(0)
 })
 
 it("imports every product pool in one order atomically and replays independently of envelope order", async () => {
@@ -2779,6 +3014,18 @@ it("rejects partial or differently timed legacy pool decisions instead of preten
   await fails(commitOrganizerStockOrder(input), "acceptance times")
 })
 
+async function merchantCheckpoint(f: Fixture) {
+  const product = (await f.db.merchantInventoryProducts.get(
+    f.products[0]!.coordinate
+  ))!
+  return openMerchantOrganizerStockCheckpoint({
+    db: f.db,
+    authenticatedPubkey: f.merchant,
+    productCoordinate: product.coordinate,
+    checkpoint: product.organizerStockCheckpoint!,
+  })
+}
+
 async function coldMerchantCheckpoint(f: Fixture) {
   const db = new ConduitDB(`stock-cold-merchant-${crypto.randomUUID()}`, {
     indexedDB,
@@ -2786,10 +3033,7 @@ async function coldMerchantCheckpoint(f: Fixture) {
   })
   databases.push(db)
   const auth = protectedStore({ ...f, db }, "merchant")
-  const product = (await f.db.merchantInventoryProducts.get(
-    f.products[0]!.coordinate
-  ))!
-  const checkpoint = product.organizerStockCheckpoint!
+  const checkpoint = await merchantCheckpoint(f)
   const payload = parseEventMarketStockCheckpointRumor(checkpoint.rumor)
   return {
     db,
@@ -2867,6 +3111,93 @@ it("restores fresh Merchant stock and imported replay evidence before importing 
     (await cold.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!
       .stock
   ).toBe(18)
+})
+
+it("keeps private imported orders encrypted through checkpoint publication and fresh-device recovery", async () => {
+  const f = await fixture()
+  const order = orderSchema.parse({
+    ...f.order(),
+    note: "SYNTHETIC_CHECKPOINT_PRIVATE_NOTE",
+  })
+  const entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  expect((await f.publish()).pending).toBe(0)
+  const product = await f.db.merchantInventoryProducts.get(
+    f.products[0]!.coordinate
+  )
+  expect(JSON.stringify(product).includes(order.note!)).toBe(false)
+  const cold = await coldMerchantCheckpoint(f)
+  await cold.auth.store.receive(cold.checkpoint.selfEnvelope!, [
+    "wss://relay.conduit.market",
+  ])
+  await restoreMerchantOrganizerStockCheckpoint(cold.input)
+  const accepted = (await cold.db.merchantInventoryAcceptedOrders.get(
+    order.id
+  ))!
+  expect(accepted.evidenceFormat).toBe("device-encrypted-v1")
+  const source = (await f.db.merchantInventoryAcceptedOrders.get(order.id))!
+  expect(accepted.evidence === source.evidence).toBe(false)
+  expect(await openMerchantAcceptanceEvidence(accepted, cold.auth.store)).toBe(
+    JSON.stringify(order)
+  )
+  await expect(
+    openMerchantAcceptanceEvidence(source, cold.auth.store)
+  ).rejects.toThrow()
+  const rows = await cold.db.eventMarketOrganizerStockEntries.toArray()
+  for (const value of [order.note!, order.buyerPubkey])
+    expect(
+      JSON.stringify([
+        accepted,
+        rows,
+        await cold.db.merchantInventoryProducts.toArray(),
+      ]).includes(value)
+    ).toBe(false)
+  expect(
+    (
+      await importMerchantOrganizerStockOrder({
+        ...cold.input,
+        originalOrderEnvelope: await f.original(order),
+        acceptedEnvelopes: entries,
+        nowMs: 500_000,
+      })
+    ).replayed
+  ).toBe(true)
+  expect(
+    (await cold.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!
+      .stock
+  ).toBe(18)
+})
+
+it("repairs a legacy plaintext checkpoint without changing its portable bytes or exact acknowledged envelope", async () => {
+  const f = await fixture(),
+    order = orderSchema.parse({
+      ...f.order(),
+      note: "SYNTHETIC_OLD_CHECKPOINT_NOTE",
+    }),
+    envelopes = await f.accept(order)
+  await f.importOrder(order, envelopes)
+  expect((await f.publish()).pending).toBe(0)
+  const opened = await merchantCheckpoint(f)
+  const { privateRumor: _private, rumorId: _id, ...legacy } = opened
+  void _private
+  void _id
+  await f.db.merchantInventoryProducts.update(f.products[0]!.coordinate, {
+    organizerStockCheckpoint: legacy,
+  })
+  expect((await f.publish()).pending).toBe(0)
+  const repaired = (await f.db.merchantInventoryProducts.get(
+    f.products[0]!.coordinate
+  ))!.organizerStockCheckpoint!
+  expect(repaired.rumor).toBeUndefined()
+  expect(repaired.rumorId).toBe(opened.rumor.id)
+  expect(repaired.snapshotKey).toBe(opened.snapshotKey)
+  expect(
+    JSON.stringify(repaired.selfEnvelope) ===
+      JSON.stringify(opened.selfEnvelope)
+  ).toBe(true)
+  expect(JSON.stringify(repaired).includes(order.note!)).toBe(false)
+  expect((await merchantCheckpoint(f)).rumor.content).toBe(opened.rumor.content)
+  expect((await f.importOrder(order, envelopes)).replayed).toBe(true)
 })
 
 it("requires a positively observed checkpoint and exact public projections, not an empty inbox", async () => {
@@ -3023,9 +3354,7 @@ it("retains a newer authenticated Merchant checkpoint before any stock reconstru
     entries = await f.accept(value)
   await f.importOrder(value, entries)
   expect((await f.publish()).pending).toBe(0)
-  const newer = (await f.db.merchantInventoryProducts.get(
-    f.products[0]!.coordinate
-  ))!.organizerStockCheckpoint!
+  const newer = await merchantCheckpoint(f)
   await cold.auth.store.receive(newer.selfEnvelope!, [
     "wss://relay.conduit.market",
   ])
@@ -3141,7 +3470,8 @@ it("quarantines Merchant stock checkpoints and unknown versions from generic con
     product = (await f.db.merchantInventoryProducts.get(
       f.products[0]!.coordinate
     ))!
-  const rumor = product.organizerStockCheckpoint!.rumor
+  const rumor = (await merchantCheckpoint(f)).rumor
+  expect(product.organizerStockCheckpoint!.rumor).toBeUndefined()
   expect(decodeCommerceMessageRumor(rumor).category).toBe("machine")
   const unknown = createPrivateMessageRumor({
     ...rumor,
@@ -3161,9 +3491,7 @@ it("refuses a higher checkpoint that drops a positively retained imported fronti
     entries = await f.accept(order)
   await f.importOrder(order, entries)
   expect((await f.publish()).pending).toBe(0)
-  const current = (await f.db.merchantInventoryProducts.get(
-    f.products[0]!.coordinate
-  ))!.organizerStockCheckpoint!
+  const current = await merchantCheckpoint(f)
   await cold.auth.store.receive(current.selfEnvelope!, [
     "wss://relay.conduit.market",
   ])
@@ -3294,15 +3622,12 @@ it("requeues exact public projections after cold recovery without signing anothe
 
 it("keeps only the strongest authenticated checkpoint per product during bounded discovery", async () => {
   const f = await fixture(),
-    old = (await f.db.merchantInventoryProducts.get(f.products[0]!.coordinate))!
-      .organizerStockCheckpoint!
+    old = await merchantCheckpoint(f)
   const order = f.order(),
     entries = await f.accept(order)
   await f.importOrder(order, entries)
   await f.publish()
-  const current = (await f.db.merchantInventoryProducts.get(
-    f.products[0]!.coordinate
-  ))!.organizerStockCheckpoint!
+  const current = await merchantCheckpoint(f)
   const cold = await coldMerchantCheckpoint(f)
   const scan = await createEventMarketStockDiscovery({
     db: cold.db,
