@@ -48,6 +48,7 @@ import {
   resumeMerchantInventoryPublication,
   type MerchantInventoryOrderItem,
   type MerchantInventoryPriorStockAdjustment,
+  type MerchantStockCheckpointOutcome,
 } from "./merchant-inventory"
 
 import {
@@ -416,6 +417,7 @@ export async function saveMerchantOccurrenceAssignment(
 /** Resume immutable public projections. Delivery never decides whether the sale happened. */
 export async function resumeMerchantOccurrencePublication(
   input: MerchantOccurrenceSession & {
+    onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
     publishProduct: (
       event: SignedPublicNostrEvent
     ) => Promise<boolean | "superseded">
@@ -426,6 +428,7 @@ export async function resumeMerchantOccurrencePublication(
   return resumeMerchantInventoryPublication({
     db,
     merchantPubkey: input.merchantPubkey,
+    onStockCheckpoint: input.onStockCheckpoint,
     stockCheckpoint: checkpointSigner
       ? {
           signer: checkpointSigner,

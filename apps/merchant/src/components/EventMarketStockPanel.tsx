@@ -37,6 +37,7 @@ import {
   type EventMarketStockDiscoveryPage,
   type MerchantInventoryAssignment,
   type MerchantOrganizerStockImportSelection,
+  type MerchantStockCheckpointOutcome,
   type ParsedEventMarketCalendar,
   type ParsedEventMarketRoster,
 } from "@conduit/core"
@@ -68,7 +69,10 @@ import {
   type OrganizerStockDevice,
 } from "../lib/event-market-stock-handover"
 import { EventMarketOrganizerRecoveryQueue } from "./EventMarketOrganizerPickupCard"
-import { resumeMerchantOccurrencePublication } from "../lib/merchant-occurrence-publication"
+import {
+  merchantStockCheckpointNotice,
+  resumeMerchantOccurrencePublication,
+} from "../lib/merchant-occurrence-publication"
 
 type StockAction = "retry" | "close" | "reconcile"
 export function EventMarketStockPoolList(props: {
@@ -563,6 +567,21 @@ export function EventMarketStockPanel(props: {
         "Reserved stock received on this device. Payment verification is still required before each physical handout."
       )
   }
+  async function resumeStockPublication(): Promise<string> {
+    const outcomes: MerchantStockCheckpointOutcome[] = []
+    await resumeMerchantOccurrencePublication({
+      merchantPubkey: account,
+      authenticatedPubkey: account,
+      shouldContinue,
+      onStockCheckpoint: (outcome) => {
+        outcomes.push(outcome)
+      },
+    })
+    return merchantStockCheckpointNotice(
+      pools.map((pool) => pool.productCoordinate),
+      outcomes
+    )
+  }
   async function poolAction(
     pool: EventMarketOrganizerStockPool,
     action: StockAction
@@ -594,14 +613,15 @@ export function EventMarketStockPanel(props: {
         ...current,
         closingEnvelope: closing.envelope,
       })
-      await resumeMerchantOccurrencePublication({
-        merchantPubkey: account,
-        authenticatedPubkey: account,
-        shouldContinue,
-      })
+      const checkpointNotice = await resumeStockPublication()
       if (shouldContinue())
         setNotice(
-          "The complete closing history is reconciled; unused stock is released and its public update was attempted."
+          [
+            "The complete closing history is reconciled; unused stock is released and its public update was attempted.",
+            checkpointNotice,
+          ]
+            .filter(Boolean)
+            .join(" ")
         )
     } else if (organizer) {
       await publishEventMarketStockWork({
@@ -723,18 +743,19 @@ export function EventMarketStockPanel(props: {
         ...current,
         envelope: packet.envelope,
       })
-    await resumeMerchantOccurrencePublication({
-      merchantPubkey: account,
-      authenticatedPubkey: account,
-      shouldContinue,
-    })
+    const checkpointNotice = await resumeStockPublication()
     if (shouldContinue())
       setNotice(
-        result.replayed
-          ? "This order was already reconciled. No stock was deducted again."
-          : handouts.length
-            ? "The organizer's exact accepted order and handout are reconciled once. Payment remains separately verified."
-            : "The organizer's exact accepted order is reconciled once. Payment and physical handout remain separately verified."
+        [
+          result.replayed
+            ? "This order was already reconciled. No stock was deducted again."
+            : handouts.length
+              ? "The organizer's exact accepted order and handout are reconciled once. Payment remains separately verified."
+              : "The organizer's exact accepted order is reconciled once. Payment and physical handout remain separately verified.",
+          checkpointNotice,
+        ]
+          .filter(Boolean)
+          .join(" ")
       )
   }
   return (
@@ -1051,14 +1072,15 @@ export function EventMarketStockPanel(props: {
               disabled={busy}
               onClick={() =>
                 void run(async () => {
-                  await resumeMerchantOccurrencePublication({
-                    merchantPubkey: account,
-                    authenticatedPubkey: account,
-                    shouldContinue,
-                  })
+                  const checkpointNotice = await resumeStockPublication()
                   if (shouldContinue())
                     setNotice(
-                      "Retried the exact saved stock updates; no stock decision was repeated."
+                      [
+                        "Retried the exact saved stock updates; no stock decision was repeated.",
+                        checkpointNotice,
+                      ]
+                        .filter(Boolean)
+                        .join(" ")
                     )
                 })
               }

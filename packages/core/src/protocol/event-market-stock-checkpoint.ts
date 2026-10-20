@@ -849,9 +849,25 @@ const inventoryTables = (db: ConduitDB) => [
 ]
 
 /** Retain exact self ciphertext and obtain an inbox ACK before public projection. */
+export type MerchantStockCheckpointPhase =
+  "snapshot" | "wrapping" | "delivery_ack" | "freshness"
+
 type PublishCheckpointInput = CheckpointSession & {
   productCoordinate: string
   delivery?: MerchantStockCheckpointDelivery
+  /** Transient observation only; never part of a checkpoint or its authority. */
+  onPhase?: (phase: MerchantStockCheckpointPhase) => void
+}
+
+function observeCheckpointPhase(
+  input: PublishCheckpointInput,
+  phase: MerchantStockCheckpointPhase
+): void {
+  try {
+    void Promise.resolve(input.onPhase?.(phase)).catch(() => {})
+  } catch {
+    // An observer cannot change the original checkpoint result.
+  }
 }
 export function publishMerchantOrganizerStockCheckpoint(
   input: PublishCheckpointInput
@@ -866,6 +882,7 @@ async function publishCheckpoint(
     ...input,
     delivery: input.delivery ? { ...input.delivery } : undefined,
   }
+  observeCheckpointPhase(input, "snapshot")
   const authority = session(input)
   await authority.authenticate()
   const store = merchantAcceptanceStore(input.authenticatedPubkey, input.db)
@@ -963,6 +980,7 @@ async function publishCheckpoint(
       ...input,
       checkpoint: saved,
     })
+    observeCheckpointPhase(input, "wrapping")
     const selfEnvelope = await wrapPrivateMessage(
       opened.rumor,
       { pubkey: input.authenticatedPubkey },
@@ -989,6 +1007,7 @@ async function publishCheckpoint(
       }
     )
   }
+  observeCheckpointPhase(input, "delivery_ack")
   const result = await retryPrivateMessageWraps({
     ...input.delivery,
     deliveryStore: input.delivery?.deliveryStore ?? store,
@@ -1033,6 +1052,7 @@ async function publishCheckpoint(
   )
   // A sale may have committed during encryption/delivery. Never publish its
   // newer projections under the previous checkpoint's acknowledgement.
+  observeCheckpointPhase(input, "freshness")
   const current = (
     await captureSnapshot(
       input.db,

@@ -8,6 +8,7 @@ import {
   readCurrentProductWriteRevision,
   resumeMerchantOccurrencePublication as resumeCoreOccurrencePublication,
   type SignedPublicNostrEvent,
+  type MerchantStockCheckpointOutcome,
 } from "@conduit/core"
 import { db } from "@conduit/core/db"
 import {
@@ -125,7 +126,47 @@ export async function publishMerchantInventoryProduct(
   return hasCommonAcknowledgedRelay(delivered)
 }
 
-export function resumeMerchantOccurrencePublication(input: Session) {
+/** Fixed, transient UI copy only; coordinates are used solely for local scope. */
+export function merchantStockCheckpointNotice(
+  productCoordinates: readonly string[],
+  outcomes: readonly MerchantStockCheckpointOutcome[]
+): string {
+  const products = new Set(productCoordinates)
+  const scoped = new Map(
+    outcomes
+      .filter((outcome) => products.has(outcome.productCoordinate))
+      .map((outcome) => [outcome.productCoordinate, outcome])
+  )
+  if (!scoped.size) return ""
+  const pending = [...scoped.values()].filter(
+    (outcome) => outcome.status !== "acknowledged"
+  )
+  if (pending.length) {
+    const phases = new Set(pending.map((outcome) => outcome.phase))
+    const copy = {
+      snapshot:
+        "Stock recovery checkpoint pending: local snapshot preparation.",
+      wrapping: "Stock recovery checkpoint pending: private message wrapping.",
+      delivery_ack: "Stock recovery checkpoint pending: inbox acknowledgement.",
+      freshness: "Stock recovery checkpoint pending: current stock recheck.",
+    } as const
+    return (
+      (Object.keys(copy) as (keyof typeof copy)[])
+        .filter((phase) => phases.has(phase))
+        .map((phase) => copy[phase])
+        .join(" ") || "Stock recovery checkpoint status is not confirmed."
+    )
+  }
+  return scoped.size === products.size
+    ? "This Event's stock recovery checkpoints were acknowledged."
+    : "Stock recovery checkpoint status is not confirmed for all current Event stock."
+}
+
+export function resumeMerchantOccurrencePublication(
+  input: Session & {
+    onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
+  }
+) {
   return resumeCoreOccurrencePublication({
     ...input,
     publishProduct: (event) => publishMerchantInventoryProduct(input, event),

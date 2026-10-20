@@ -16,6 +16,7 @@ import { parseEventMarketStockAuthorityRumor } from "./event-market-stock-author
 import {
   publishMerchantOrganizerStockCheckpoint,
   type MerchantStockCheckpointDelivery,
+  type MerchantStockCheckpointPhase,
 } from "./event-market-stock-checkpoint"
 import type { AccountSigner } from "./nostr-event-signer"
 import { merchantAcceptanceBinding } from "./merchant-acceptance-privacy"
@@ -1362,6 +1363,13 @@ async function markDelivered(
   })
 }
 
+export type MerchantStockCheckpointOutcome = {
+  /** Internal correlation only; never render or log this coordinate. */
+  productCoordinate: string
+  status: "acknowledged" | "pending"
+  phase: MerchantStockCheckpointPhase
+}
+
 /** Delivery may fail; the durable order decision and later acceptances remain intact. */
 export async function resumeMerchantInventoryPublication(input: {
   db: ConduitDB
@@ -1373,6 +1381,8 @@ export async function resumeMerchantInventoryPublication(input: {
     shouldContinue(): boolean
     delivery?: MerchantStockCheckpointDelivery
   }
+  /** Optional transient observation; queue counts and retry behavior are unchanged. */
+  onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
   sign(draft: Draft): Promise<SignedPublicNostrEvent>
   publish(signed: SignedPublicNostrEvent): Promise<boolean | "superseded">
 }): Promise<{ signed: number; delivered: number; pending: number }> {
@@ -1434,6 +1444,22 @@ export async function resumeMerchantInventoryPublication(input: {
   for (const coordinate of new Set(
     pools.map((pool) => pool.productCoordinate)
   )) {
+    const observation: { phase: MerchantStockCheckpointPhase } = {
+      phase: "snapshot",
+    }
+    const observe = (status: MerchantStockCheckpointOutcome["status"]) => {
+      try {
+        void Promise.resolve(
+          input.onStockCheckpoint?.({
+            productCoordinate: coordinate,
+            status,
+            phase: observation.phase,
+          })
+        ).catch(() => {})
+      } catch {
+        // Observation must not change signing, delivery or retained failures.
+      }
+    }
     try {
       if (!input.stockCheckpoint)
         throw new Error("Stock checkpoint signer required")
@@ -1442,6 +1468,9 @@ export async function resumeMerchantInventoryPublication(input: {
         authenticatedPubkey: merchantPubkey,
         productCoordinate: coordinate,
         ...input.stockCheckpoint,
+        onPhase: (phase) => {
+          observation.phase = phase
+        },
       })
       const state = JSON.parse(checkpoint.rumor.content).snapshot
       checkpointEvents.set(
@@ -1458,8 +1487,10 @@ export async function resumeMerchantInventoryPublication(input: {
           ),
         ])
       )
+      observe("acknowledged")
     } catch {
       blockedProducts.add(coordinate)
+      observe("pending")
     }
   }
   for (const record of records) {

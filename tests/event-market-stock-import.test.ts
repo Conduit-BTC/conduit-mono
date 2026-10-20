@@ -3267,6 +3267,259 @@ it("keeps older or incomplete checkpoints read-only after stronger public or loc
   ).toBe(19)
 })
 
+it("reports the blocked checkpoint stage without publishing unacknowledged stock", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  const observed: {
+    productCoordinate: string
+    status: "pending" | "acknowledged"
+    phase: string
+  }[] = []
+  const calls = { public: 0, private: 0 }
+  const result = await resumeMerchantInventoryPublication({
+    db: f.db,
+    merchantPubkey: f.merchant,
+    stockCheckpoint: {
+      signer: f.merchantSigner,
+      shouldContinue: () => true,
+      delivery: {
+        deliveryStore: new CommerceInboxStore(
+          getProtectedReadAuthorization(f.merchant)!,
+          f.db
+        ),
+        resolveInboxRelays: async () => ["wss://relay.conduit.market"],
+        publishFn: async () => {
+          calls.private++
+          throw new Error("controlled relay failure")
+        },
+      },
+    },
+    sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+    publish: async () => {
+      calls.public++
+      return true
+    },
+    onStockCheckpoint: (outcome: (typeof observed)[number]) => {
+      observed.push(outcome)
+    },
+  })
+  expect(calls).toEqual({ public: 0, private: 1 })
+  expect(result.delivered).toBe(0)
+  expect(result.pending).toBeGreaterThan(0)
+  expect(Object.keys(result).sort()).toEqual(["delivered", "pending", "signed"])
+  expect(observed).toHaveLength(1)
+  expect(observed[0]!.productCoordinate === f.products[0]!.coordinate).toBe(
+    true
+  )
+  expect({ status: observed[0]!.status, phase: observed[0]!.phase }).toEqual({
+    status: "pending",
+    phase: "delivery_ack",
+  })
+  const retained = (await f.db.merchantInventoryProducts.get(
+    f.products[0]!.coordinate
+  ))!.organizerStockCheckpoint!
+  expect(retained.acknowledgedRelayUrls).toHaveLength(0)
+  expect(retained.selfEnvelope).toBeDefined()
+})
+
+it("keeps checkpoint observers separate from failed ACKs and successful retries", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  const calls = { public: 0, private: 0, observer: 0 }
+  const state = { acknowledge: false }
+  const input = {
+    db: f.db,
+    merchantPubkey: f.merchant,
+    stockCheckpoint: {
+      signer: f.merchantSigner,
+      shouldContinue: () => true,
+      delivery: {
+        deliveryStore: new CommerceInboxStore(
+          getProtectedReadAuthorization(f.merchant)!,
+          f.db
+        ),
+        resolveInboxRelays: async () => ["wss://relay.conduit.market"],
+        publishFn: async () => {
+          calls.private++
+          if (!state.acknowledge) throw new Error("controlled relay failure")
+          return ack("wss://relay.conduit.market")
+        },
+      },
+    },
+    sign: async (draft: Parameters<typeof finalizeEvent>[0]) =>
+      finalizeEvent(draft, f.merchantSecret),
+    publish: async () => {
+      calls.public++
+      return true
+    },
+    onStockCheckpoint: () => {
+      calls.observer++
+      throw new Error("controlled observer failure")
+    },
+  }
+  const held = await resumeMerchantInventoryPublication(input)
+  expect(held.delivered).toBe(0)
+  expect(held.pending).toBeGreaterThan(0)
+  expect(calls).toEqual({ public: 0, private: 1, observer: 1 })
+  const retained = (await f.db.merchantInventoryProducts.get(
+    f.products[0]!.coordinate
+  ))!.organizerStockCheckpoint!
+  expect(retained.acknowledgedRelayUrls).toHaveLength(0)
+  expect(retained.selfEnvelope).toBeDefined()
+  state.acknowledge = true
+  const resumed = await resumeMerchantInventoryPublication({
+    ...input,
+    onStockCheckpoint: async () => {
+      calls.observer++
+      throw new Error("controlled async observer failure")
+    },
+  })
+  expect(resumed.pending).toBe(0)
+  expect(resumed.delivered).toBeGreaterThan(0)
+  expect(calls.public).toBe(resumed.delivered)
+  expect(calls.private).toBe(2)
+  expect(calls.observer).toBe(2)
+  const delivered = (await f.db.merchantInventoryProducts.get(
+    f.products[0]!.coordinate
+  ))!.organizerStockCheckpoint!
+  expect(
+    JSON.stringify(delivered.selfEnvelope) ===
+      JSON.stringify(retained.selfEnvelope)
+  ).toBe(true)
+  expect(delivered.acknowledgedRelayUrls).toHaveLength(1)
+  const phases: string[] = []
+  const unchanged = await publishMerchantOrganizerStockCheckpoint({
+    db: f.db,
+    signer: f.merchantSigner,
+    authenticatedPubkey: f.merchant,
+    productCoordinate: f.products[0]!.coordinate,
+    shouldContinue: () => true,
+    onPhase: async (phase) => {
+      phases.push(phase)
+      throw new Error("controlled async phase observer failure")
+    },
+  })
+  expect(unchanged.acknowledgedRelayUrls).toHaveLength(1)
+  expect(phases).toEqual(["snapshot"])
+  expect(calls.private).toBe(2)
+})
+
+it("reports snapshot and wrapping phases without replacing the checkpoint failure", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  const phases: string[] = []
+  const input = {
+    db: f.db,
+    signer: f.merchantSigner,
+    authenticatedPubkey: f.merchant,
+    productCoordinate: f.products[0]!.coordinate,
+    shouldContinue: () => true,
+    onPhase: (phase: string) => {
+      phases.push(phase)
+      throw new Error("controlled phase observer failure")
+    },
+  }
+  await fails(
+    publishMerchantOrganizerStockCheckpoint(input),
+    "Sign every stock projection before checkpointing"
+  )
+  expect(phases).toEqual(["snapshot"])
+  await resumeMerchantInventoryPublication({
+    db: f.db,
+    merchantPubkey: f.merchant,
+    sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+    publish: async () => false,
+  })
+  phases.length = 0
+  const encryption = spyOn(
+    f.merchantSigner,
+    "encryptNip44"
+  ).mockRejectedValueOnce(new Error("controlled wrapping failure"))
+  try {
+    await fails(
+      publishMerchantOrganizerStockCheckpoint({
+        ...input,
+        onPhase: async (phase) => {
+          phases.push(phase)
+          throw new Error("controlled async phase observer failure")
+        },
+      }),
+      "controlled wrapping failure"
+    )
+    expect(phases).toEqual(["snapshot", "wrapping"])
+    expect(encryption).toHaveBeenCalledTimes(1)
+    const retained = (await f.db.merchantInventoryProducts.get(
+      f.products[0]!.coordinate
+    ))!.organizerStockCheckpoint!
+    expect(retained.acknowledgedRelayUrls).toHaveLength(0)
+    expect(retained.selfEnvelope).toBeUndefined()
+  } finally {
+    encryption.mockRestore()
+  }
+})
+
+it("reports a failed stock freshness recheck without losing its retained ACK", async () => {
+  const f = await fixture(),
+    order = f.order(),
+    entries = await f.accept(order)
+  await f.importOrder(order, entries)
+  const state = { failRead: false, private: 0, public: 0 }
+  const observed: { status: string; phase: string }[] = []
+  const table = f.db.eventMarketOrganizerStockEntries
+  const originalWhere = table.where.bind(table)
+  const read = spyOn(table, "where").mockImplementation((...args) => {
+    if (state.failRead) throw new Error("controlled freshness read failure")
+    return originalWhere(...args)
+  })
+  try {
+    const result = await resumeMerchantInventoryPublication({
+      db: f.db,
+      merchantPubkey: f.merchant,
+      stockCheckpoint: {
+        signer: f.merchantSigner,
+        shouldContinue: () => true,
+        delivery: {
+          deliveryStore: new CommerceInboxStore(
+            getProtectedReadAuthorization(f.merchant)!,
+            f.db
+          ),
+          resolveInboxRelays: async () => ["wss://relay.conduit.market"],
+          publishFn: async () => {
+            state.private++
+            state.failRead = true
+            return ack("wss://relay.conduit.market")
+          },
+        },
+      },
+      sign: async (draft) => finalizeEvent(draft, f.merchantSecret),
+      publish: async () => {
+        state.public++
+        return true
+      },
+      onStockCheckpoint: (outcome) => {
+        observed.push({ status: outcome.status, phase: outcome.phase })
+      },
+    })
+    expect(observed).toEqual([{ status: "pending", phase: "freshness" }])
+    expect(state.private).toBe(1)
+    expect(state.public).toBe(0)
+    expect(result.delivered).toBe(0)
+    expect(result.pending).toBeGreaterThan(0)
+    const retained = (await f.db.merchantInventoryProducts.get(
+      f.products[0]!.coordinate
+    ))!.organizerStockCheckpoint!
+    expect(retained.acknowledgedRelayUrls).toHaveLength(1)
+  } finally {
+    read.mockRestore()
+  }
+})
+
 it("retries the identical durable Merchant checkpoint ciphertext after relay failure", async () => {
   const f = await fixture(),
     order = f.order(),
