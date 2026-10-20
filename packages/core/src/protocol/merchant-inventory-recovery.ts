@@ -19,6 +19,7 @@ import { readEventMarketAssignment } from "./event-market-roster-read"
 import { parseProductEvent } from "./products"
 import {
   observeMerchantOrganizerStockCheckpoint,
+  readMerchantStockCheckpointPredecessors,
   restoreMerchantOrganizerStockCheckpoint,
 } from "./event-market-stock-checkpoint"
 import { createEventMarketEvidenceStore } from "./event-market-evidence-store"
@@ -58,7 +59,7 @@ const MAX_OCCURRENCE_REVISIONS = 64
 export async function recoverMerchantOrganizerStockFromInbox(
   input: Omit<
     Parameters<typeof restoreMerchantOrganizerStockCheckpoint>[0],
-    "signedProductEvent" | "signedAssignmentEvents"
+    "signedProductEvent" | "signedAssignmentEvents" | "predecessorEnvelopes"
   > & { signal?: AbortSignal },
   dependencies: {
     products?: typeof getProductsByIds
@@ -135,6 +136,14 @@ export async function recoverMerchantOrganizerStockFromInbox(
       resolved.assignment?.signedEvent ?? assignment.signedAssignmentEvent!
     )
   }
+  const predecessorEnvelopes = await readMerchantStockCheckpointPredecessors({
+    ...input,
+    shouldContinue: () => {
+      check()
+      return true
+    },
+  })
+  check()
   const result = await recoverMerchantInventoryProduct({
     db: input.db,
     merchantPubkey: input.authenticatedPubkey,
@@ -149,6 +158,7 @@ export async function recoverMerchantOrganizerStockFromInbox(
       store: input.store,
       envelope: input.envelope,
       signedAssignmentEvents,
+      predecessorEnvelopes,
     },
   })
   check()

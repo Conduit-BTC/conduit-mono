@@ -51,6 +51,8 @@ export const EVENT_MARKET_STOCK_CHECKPOINT_SUBJECT =
 const MARKER = ["conduit", "event-stock-checkpoint", "1"]
 const MAX_BYTES = 240_000
 const MAX_ROWS = 128
+const MAX_CATCH_UP_WRAPPERS = 512
+const MAX_CATCH_UP_BYTES = 4 * 1024 * 1024
 const sameSigned = (a: SignedPublicNostrEvent, b: SignedPublicNostrEvent) => {
   const fields = (event: SignedPublicNostrEvent) => [
     event.id,
@@ -144,6 +146,11 @@ type CheckpointSession = {
   authenticatedPubkey: string
   shouldContinue(): boolean
 }
+type ObservedCheckpointInput = CheckpointSession & {
+  authorization: ProtectedReadAuthorization
+  store: CommerceInboxStore
+  envelope: SignedPublicNostrEvent
+}
 export type MerchantStockCheckpointDelivery = Pick<
   Parameters<typeof retryPrivateMessageWraps>[0],
   | "deliveryStore"
@@ -223,11 +230,7 @@ const sameCipher = (a: { nonce: Uint8Array }, b: { nonce: Uint8Array }) =>
 
 /** Durable encrypted high-water evidence, never a resumable transport job. */
 export async function observeMerchantOrganizerStockCheckpoint(
-  input: CheckpointSession & {
-    authorization: ProtectedReadAuthorization
-    store: CommerceInboxStore
-    envelope: SignedPublicNostrEvent
-  }
+  input: ObservedCheckpointInput
 ) {
   input = { ...input, envelope: clone(input.envelope) }
   const authority = session(input)
@@ -372,6 +375,210 @@ export async function observeMerchantOrganizerStockCheckpoint(
   }
   throw new Error(
     "Merchant stock checkpoint observation changed; retry saved work"
+  )
+}
+
+/** Select positive retained ancestry without installing an intermediate snapshot. */
+export async function readMerchantStockCheckpointPredecessors(
+  input: ObservedCheckpointInput
+): Promise<SignedPublicNostrEvent[]> {
+  input = { ...input, envelope: clone(input.envelope) }
+  const authority = session(input)
+  const check = () => {
+    authority.check()
+    assertProtectedReadAuthorization(
+      input.authorization,
+      input.authenticatedPubkey
+    )
+    input.store.assertCurrent()
+    if (
+      input.authorization.signer !== input.signer ||
+      input.store.database !== input.db ||
+      input.store.principal !== input.authenticatedPubkey
+    )
+      fail()
+  }
+  await authority.authenticate()
+  check()
+  const target = await observeMerchantOrganizerStockCheckpoint(input)
+  check()
+  if (target.observation.rumorId !== target.rumor.id) fail()
+  const productCoordinate = target.payload.snapshot.product.coordinate
+  const prior = (
+    await input.db.merchantInventoryProducts.get(productCoordinate)
+  )?.organizerStockCheckpoint
+  check()
+  if (!prior || target.payload.sequence <= prior.sequence + 1) return []
+  if (target.payload.sequence - prior.sequence > MAX_ROWS) fail()
+  const candidates = new Map<
+    string,
+    {
+      envelope: SignedPublicNostrEvent
+      rumor: PrivateMessageRumor
+      payload: EventMarketStockCheckpointPayload
+    }
+  >()
+  const sequences = new Map<number, string>([
+    [prior.sequence, checkpointId(prior)],
+  ])
+  const progress: { afterId?: string; count: number; bytes: number } = {
+    count: 0,
+    bytes: 0,
+  }
+  while (true) {
+    const page = await input.store.wrappersPage({
+      afterId: progress.afterId,
+      limit: 128,
+    })
+    check()
+    for (const row of page.rows) {
+      if (++progress.count > MAX_CATCH_UP_WRAPPERS) fail()
+      progress.bytes += new TextEncoder().encode(
+        JSON.stringify(row.event)
+      ).length
+      if (progress.bytes > MAX_CATCH_UP_BYTES) fail()
+      if (
+        !row.sources.length ||
+        ["deleted", "expired", "invalid_envelope"].includes(row.state) ||
+        row.event.id === input.envelope.id
+      )
+        continue
+      let candidate: {
+        rumor: PrivateMessageRumor
+        payload: EventMarketStockCheckpointPayload
+      }
+      try {
+        const rumor = completePrivateMessageEvent(
+          await unwrapPrivateMessageEnvelope(row.event, input.signer)
+        )
+        check()
+        if (!isEventMarketStockCheckpointRumor(rumor)) continue
+        candidate = {
+          rumor,
+          payload: parseEventMarketStockCheckpointRumor(rumor),
+        }
+      } catch {
+        check()
+        // Unrelated or unusable inbox packets cannot supply a predecessor.
+        continue
+      }
+      const { rumor, payload } = candidate
+      if (
+        payload.merchantPubkey !== input.authenticatedPubkey ||
+        payload.snapshot.product.coordinate !== productCoordinate ||
+        payload.sequence < prior.sequence
+      )
+        continue
+      if (payload.sequence >= target.payload.sequence) {
+        await observeMerchantOrganizerStockCheckpoint({
+          ...input,
+          envelope: row.event,
+        })
+        check()
+        if (rumor.id !== target.rumor.id) fail()
+        continue
+      }
+      const known = sequences.get(payload.sequence)
+      if (known && known !== rumor.id) fail()
+      sequences.set(payload.sequence, rumor.id)
+      candidates.set(rumor.id, { ...candidate, envelope: clone(row.event) })
+    }
+    if (!page.hasMore) break
+    if (!page.rows.length || progress.count >= MAX_CATCH_UP_WRAPPERS) fail()
+    progress.afterId = page.rows.at(-1)!.id
+  }
+  const result: SignedPublicNostrEvent[] = []
+  const next = {
+    sequence: target.payload.sequence,
+    previousId: target.payload.previousId,
+  }
+  while (next.sequence > prior.sequence + 1) {
+    const predecessor = next.previousId && candidates.get(next.previousId)
+    if (!predecessor || predecessor.payload.sequence !== next.sequence - 1)
+      fail()
+    result.push(predecessor.envelope)
+    next.sequence = predecessor.payload.sequence
+    next.previousId = predecessor.payload.previousId
+  }
+  if (next.previousId !== checkpointId(prior)) fail()
+  check()
+  return result.reverse()
+}
+
+async function authenticateCheckpointPredecessor(
+  input: ObservedCheckpointInput,
+  envelope: SignedPublicNostrEvent,
+  check: () => void
+) {
+  const row = await input.db.commerceInboxWrappers.get(
+    input.store.key(envelope.id)
+  )
+  check()
+  if (
+    !row?.sources.length ||
+    row.accountPubkey !== input.authenticatedPubkey ||
+    !exact(row.event, envelope) ||
+    ["deleted", "expired", "invalid_envelope"].includes(row.state)
+  )
+    fail()
+  const rumor = completePrivateMessageEvent(
+    await unwrapPrivateMessageEnvelope(envelope, input.signer)
+  )
+  check()
+  const payload = parseEventMarketStockCheckpointRumor(rumor)
+  if (payload.merchantPubkey !== input.authenticatedPubkey) fail()
+  return { rumor, payload, row }
+}
+
+function preservesSignedFrontier(
+  next: SignedPublicNostrEvent,
+  before: SignedPublicNostrEvent
+) {
+  return (
+    next.created_at > before.created_at ||
+    (next.created_at === before.created_at && next.id === before.id)
+  )
+}
+
+function preservesCheckpointHistory(
+  next: StockSnapshot,
+  before: StockSnapshot
+) {
+  return (
+    preservesFrontiers(next, before) &&
+    preservesSignedFrontier(
+      next.product.signedProductEvent,
+      before.product.signedProductEvent
+    ) &&
+    next.product.revision >= before.product.revision &&
+    (next.product.revision !== before.product.revision ||
+      sameSigned(
+        next.product.signedProductEvent,
+        before.product.signedProductEvent
+      )) &&
+    before.assignments.every((row) =>
+      next.assignments.some(
+        (saved) =>
+          saved.coordinate === row.coordinate &&
+          row.revision <= saved.revision &&
+          preservesSignedFrontier(
+            saved.signedAssignmentEvent!,
+            row.signedAssignmentEvent!
+          ) &&
+          (row.revision !== saved.revision ||
+            sameSigned(
+              row.signedAssignmentEvent!,
+              saved.signedAssignmentEvent!
+            )) &&
+          (!row.organizerStockHold ||
+            (row.organizerStockHold.poolId ===
+              saved.organizerStockHold?.poolId &&
+              row.organizerStockHold.importedQuantity <=
+                saved.organizerStockHold.importedQuantity &&
+              (!row.organizerStockHold.closed ||
+                saved.organizerStockHold.closed)))
+      )
+    )
   )
 }
 function bounded(value: number) {
@@ -1076,12 +1283,11 @@ async function publishCheckpoint(
 
 /** Positive exact self-copy + projections restore one existing inventory owner. */
 export async function restoreMerchantOrganizerStockCheckpoint(
-  input: CheckpointSession & {
-    authorization: ProtectedReadAuthorization
-    store: CommerceInboxStore
-    envelope: SignedPublicNostrEvent
+  input: ObservedCheckpointInput & {
     signedProductEvent: SignedPublicNostrEvent
     signedAssignmentEvents: readonly SignedPublicNostrEvent[]
+    /** Positive retained ancestry only; a gap without every exact link rejects. */
+    predecessorEnvelopes?: readonly SignedPublicNostrEvent[]
   }
 ) {
   input = {
@@ -1089,6 +1295,9 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     envelope: clone(input.envelope),
     signedProductEvent: clone(input.signedProductEvent),
     signedAssignmentEvents: clone([...input.signedAssignmentEvents]),
+    predecessorEnvelopes: input.predecessorEnvelopes
+      ? clone([...input.predecessorEnvelopes])
+      : undefined,
   }
   const authority = session(input)
   const check = () => {
@@ -1195,9 +1404,10 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     acknowledgedRelayUrls: retained.sources,
   })
   check()
-  const beforeCapture = (await input.db.merchantInventoryProducts.get(
+  const beforeProduct = await input.db.merchantInventoryProducts.get(
     state.product.coordinate
-  ))
+  )
+  const beforeCapture = beforeProduct
     ? await captureSnapshot(
         input.db,
         input.authenticatedPubkey,
@@ -1205,8 +1415,67 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       )
     : undefined
   check()
-  return input.db.transaction("rw", inventoryTables(input.db), async () => {
+  const ancestryBase = beforeProduct?.organizerStockCheckpoint
+  const checkedPredecessors: { id: string; event: SignedPublicNostrEvent }[] =
+    []
+  const gap = ancestryBase && payload.sequence > ancestryBase.sequence + 1
+  if ((input.predecessorEnvelopes?.length ?? 0) > MAX_ROWS) fail()
+  if (gap) {
+    if (
+      !input.predecessorEnvelopes?.length ||
+      !beforeCapture ||
+      payload.sequence - ancestryBase.sequence > MAX_ROWS
+    )
+      fail()
+    const previous = {
+      sequence: ancestryBase.sequence,
+      rumorId: checkpointId(ancestryBase),
+      snapshot: beforeCapture.snapshot,
+    }
+    for (const envelope of input.predecessorEnvelopes) {
+      const predecessor = await authenticateCheckpointPredecessor(
+        input,
+        envelope,
+        check
+      )
+      if (
+        predecessor.payload.sequence !== previous.sequence + 1 ||
+        predecessor.payload.previousId !== previous.rumorId ||
+        !preservesCheckpointHistory(
+          predecessor.payload.snapshot,
+          previous.snapshot
+        )
+      )
+        fail()
+      checkedPredecessors.push({
+        id: predecessor.row.id,
+        event: clone(envelope),
+      })
+      previous.sequence = predecessor.payload.sequence
+      previous.rumorId = predecessor.rumor.id
+      previous.snapshot = predecessor.payload.snapshot
+    }
+    if (
+      payload.sequence !== previous.sequence + 1 ||
+      payload.previousId !== previous.rumorId ||
+      !preservesCheckpointHistory(state, previous.snapshot)
+    )
+      fail()
+  } else if (input.predecessorEnvelopes?.length) fail()
+  check()
+  const tables = [...inventoryTables(input.db), input.db.commerceInboxWrappers]
+  return input.db.transaction("rw", tables, async () => {
     check()
+    for (const predecessor of checkedPredecessors) {
+      const row = await input.db.commerceInboxWrappers.get(predecessor.id)
+      if (
+        !row?.sources.length ||
+        row.accountPubkey !== input.authenticatedPubkey ||
+        !exact(row.event, predecessor.event) ||
+        ["deleted", "expired", "invalid_envelope"].includes(row.state)
+      )
+        fail()
+    }
     const observation = await input.db.commerceInboxDeliveries.get(
       retained.row!.id
     )
@@ -1282,8 +1551,10 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       if (checkpointId(prior) === rumor.id)
         return { product: before, replayed: true }
       if (
-        prior.sequence + 1 !== payload.sequence ||
-        payload.previousId !== checkpointId(prior)
+        gap
+          ? !exact(prior, ancestryBase)
+          : prior.sequence + 1 !== payload.sequence ||
+            payload.previousId !== checkpointId(prior)
       )
         fail()
     }
