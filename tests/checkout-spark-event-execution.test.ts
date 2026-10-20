@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
 import { randomBytes } from "node:crypto"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { getEventHash, matchFilter } from "nostr-tools"
@@ -11,6 +11,12 @@ import {
   UUID,
 } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.browser.js"
 import { ConduitDB } from "@conduit/core/db"
+import {
+  installProtectedReadSigner,
+  getProtectedReadAuthorization,
+  __resetProtectedReadSigner,
+} from "@conduit/core/protocol/protected-read-authorization"
+import { CommerceInboxStore } from "@conduit/core/protocol/commerce-inbox-store"
 import {
   DexieCheckoutSparkSettledRepository,
   DexieMerchantCheckoutSparkProgressRepository,
@@ -107,6 +113,8 @@ import {
   qualifiedReceiverMetadataFixture,
 } from "./support/checkout-spark-qualified-receiver-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+
+afterEach(() => __resetProtectedReadSigner())
 
 // Only the external wallet, receiver and relay surfaces are deterministic.
 // Signed-source admission, preparation, local persistence and runners are real.
@@ -514,7 +522,13 @@ it("composes interrupted Buyer checkout, cold Organizer routing, one physical cl
       stockCheckpoint: {
         signer: f.merchantSessionSigner,
         shouldContinue: () => f.stockClock.active,
-        delivery: f.stockDelivery,
+        delivery: {
+          ...f.stockDelivery,
+          deliveryStore: new CommerceInboxStore(
+            getProtectedReadAuthorization(f.merchantPubkey)!,
+            f.database
+          ),
+        },
       },
     })
     expect(publishedInventoryIds.length).toBeGreaterThan(0)
@@ -621,6 +635,11 @@ async function fixture(
     }),
   }
   if (options.realStockGrant) {
+    installProtectedReadSigner(
+      merchantSessionSigner,
+      graph.merchantPubkey,
+      () => stockClock.active
+    )
     for (const [pubkey, sign] of [
       [graph.merchantPubkey, graph.signMerchant],
       [graph.organizerPubkey, graph.signOrganizer],
@@ -679,7 +698,13 @@ async function fixture(
       admissionEvidence: preGrantSources,
       nowMs: graph.stockGrant!.created_at * 1000,
       publishPublic: async () => true,
-      delivery: stockDelivery,
+      delivery: {
+        ...stockDelivery,
+        deliveryStore: new CommerceInboxStore(
+          getProtectedReadAuthorization(graph.merchantPubkey)!,
+          database
+        ),
+      },
     })
     const eventMarket = {
       ...graph.eventMarket,

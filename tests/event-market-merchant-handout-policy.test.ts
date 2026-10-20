@@ -1,4 +1,8 @@
 import { afterEach, expect, it } from "bun:test"
+import {
+  installProtectedReadSigner,
+  __resetProtectedReadSigner,
+} from "@conduit/core/protocol/protected-read-authorization"
 import type { ConduitDB } from "@conduit/core/db"
 import {
   acceptCheckoutSparkOrganizerStockOrder,
@@ -10,10 +14,6 @@ import { formatEventMarketPickupClaimCode } from "@conduit/core/protocol/event-m
 import { getOrganizerStockOrderBindings } from "@conduit/core/protocol/merchant-order-acceptance-bindings"
 import { SessionSigner } from "@conduit/core/protocol/session-signer"
 import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purchase-fixture"
-import {
-  installProtectedReadSigner,
-  __resetProtectedReadSigner,
-} from "@conduit/core/protocol/protected-read-authorization"
 
 const databases: ConduitDB[] = []
 afterEach(async () => {
@@ -47,6 +47,11 @@ it("requires exact imported stock and the organizer's authenticated physical han
     }),
     hasAuthority: () => f.clock.active,
   })
+  installProtectedReadSigner(
+    merchantSigner,
+    f.merchantPubkey,
+    () => f.clock.active
+  )
   const merchant = {
     db: f.database,
     signer: merchantSigner,
@@ -54,11 +59,6 @@ it("requires exact imported stock and the organizer's authenticated physical han
     shouldContinue: () => f.clock.active,
     order: f.order,
   }
-  installProtectedReadSigner(
-    merchantSigner,
-    f.merchantPubkey,
-    () => f.clock.active
-  )
   await expect(
     assertMerchantOrganizerStockOrderHandout(merchant)
   ).rejects.toThrow("Import")

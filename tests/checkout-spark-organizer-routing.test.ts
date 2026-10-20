@@ -521,17 +521,22 @@ describe("designated organizer automatic routing", () => {
     const f = await fixture(0)
     try {
       const openedAt = f.clock.now
-      let paused = false
-      let changed: "identity" | "revision" | "method" | "capability" | null =
-        null
+      // Keep mutable controls in fields: the pinned Bun runtime can stale-fold
+      // reassigned captured lets across async work (oven-sh/bun#26534).
+      const controls = {
+        paused: false,
+        changed: null as
+          "identity" | "revision" | "method" | "capability" | null,
+      }
       const signer = new Proxy(f.organizerSigner, {
         get(target, property) {
-          if (property === "pubkey" && changed === "identity")
+          if (property === "pubkey" && controls.changed === "identity")
             return f.merchantPubkey
-          if (property === "revision" && changed === "revision")
+          if (property === "revision" && controls.changed === "revision")
             return "changed-session"
-          if (property === "authMethod" && changed === "method") return "nip46"
-          if (property === "capabilities" && changed === "capability")
+          if (property === "authMethod" && controls.changed === "method")
+            return "nip46"
+          if (property === "capabilities" && controls.changed === "capability")
             return { ...target.capabilities, nip44: false }
           const value = Reflect.get(target, property, target)
           return typeof value === "function" ? value.bind(target) : value
@@ -541,7 +546,7 @@ describe("designated organizer automatic routing", () => {
         {
           ...f.session,
           signer,
-          shouldContinue: () => !paused && f.clock.active,
+          shouldContinue: () => !controls.paused && f.clock.active,
         },
         f.dependencies
       )
@@ -555,18 +560,18 @@ describe("designated organizer automatic routing", () => {
         })
       f.clock.now = openedAt + 2 * 60_000 + 1
       expect(assertProof).not.toThrow()
-      paused = true
+      controls.paused = true
       expect(assertProof).toThrow()
-      paused = false
+      controls.paused = false
       for (const boundary of [
         "identity",
         "revision",
         "method",
         "capability",
       ] as const) {
-        changed = boundary
+        controls.changed = boundary
         expect(assertProof).toThrow()
-        changed = null
+        controls.changed = null
         expect(assertProof).not.toThrow()
       }
       f.clock.now = openedAt - 1
@@ -607,14 +612,14 @@ describe("designated organizer automatic routing", () => {
   it("retains the commerce proof's own expiry even with an independently current authority clock", async () => {
     const f = await fixture(0)
     try {
-      let verificationClockOffset = 0
+      const verificationClock = { offset: 0 }
       const result = await routeCheckoutSparkOrganizerOrder(f.session, {
         ...f.dependencies,
-        now: () => f.dependencies.now() + verificationClockOffset,
+        now: () => f.dependencies.now() + verificationClock.offset,
       })
       expect(result.status).toBe("complete")
       expect(result.commerceProof).not.toBeNull()
-      verificationClockOffset = 5 * 60_000
+      verificationClock.offset = 5 * 60_000
       expect(() =>
         assertCheckoutSparkOrganizerRecoveryAuthority(f.authority)
       ).not.toThrow()
