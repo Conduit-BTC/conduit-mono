@@ -229,12 +229,26 @@ test("Cash App expiry and account replacement cannot reuse stale funding control
     await expect(
       page.getByRole("link", { name: "Open Cash App", exact: true })
     ).toBeVisible()
-    await page.clock.setFixedTime(new Date(Date.now() + 3_601_000))
-    // A native click must revalidate even before the scheduled expiry render.
-    await page.getByRole("link", { name: "Open Cash App", exact: true }).click()
+    // Cross the boundary and dispatch in one task, before React can remove the
+    // expired link. Native handoff gestures are covered by the funding journey.
     expect(
-      await page.evaluate(() => (window as any).__fundingCaptures.links.at(-1))
+      await page.evaluate(() => {
+        const link = document.querySelector<HTMLAnchorElement>(
+          'a[href^="https://cash.app/launch/lightning/"]'
+        )
+        if (!link) throw new Error("Funding link missing before expiry")
+        const originalNow = Date.now
+        const expiredNow = originalNow() + 3_601_000
+        Date.now = () => expiredNow
+        try {
+          link.click()
+          return (window as any).__fundingCaptures.links.at(-1)
+        } finally {
+          Date.now = originalNow
+        }
+      })
     ).toBe(true)
+    await page.clock.setFixedTime(new Date(Date.now() + 3_601_000))
     await page
       .getByRole("button", { name: "Check deposit status", exact: true })
       .click()
