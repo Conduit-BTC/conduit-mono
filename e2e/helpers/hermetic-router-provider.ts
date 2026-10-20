@@ -22,24 +22,33 @@ import {
 import { createHermeticSparkNative } from "./hermetic-spark-native"
 import { createHermeticSparkTransport } from "./hermetic-spark-transport"
 
-function fundingInvoice(amountSats: number, expirySeconds: number): string {
+function fundingInvoice(
+  amountSats: number,
+  expirySeconds: number,
+  onIssued?: (issued: { paymentRequest: string; preimage: string }) => void
+): string {
   const preimage = randomBytes(32)
-  const paymentHash = createHash("sha256").update(preimage).digest()
-  preimage.fill(0)
-  const expiryWords: number[] = []
-  for (let value = expirySeconds; value > 0; value = Math.floor(value / 32)) {
-    expiryWords.unshift(value % 32)
+  try {
+    const paymentHash = createHash("sha256").update(preimage).digest()
+    const expiryWords: number[] = []
+    for (let value = expirySeconds; value > 0; value = Math.floor(value / 32)) {
+      expiryWords.unshift(value % 32)
+    }
+    const paymentRequest = makeSignedBolt11Fixture({
+      hrp: `lnbcrt${BigInt(amountSats) * 10n}n`,
+      createdAt: Math.floor(Date.now() / 1_000),
+      fields: [
+        bolt11PaymentHashField(paymentHash),
+        bolt11PaymentSecretField(),
+        bolt11PlainDescriptionField("Offline router funding"),
+        { tag: "x", words: expiryWords },
+      ],
+    })
+    onIssued?.({ paymentRequest, preimage: preimage.toString("hex") })
+    return paymentRequest
+  } finally {
+    preimage.fill(0)
   }
-  return makeSignedBolt11Fixture({
-    hrp: `lnbcrt${BigInt(amountSats) * 10n}n`,
-    createdAt: Math.floor(Date.now() / 1_000),
-    fields: [
-      bolt11PaymentHashField(paymentHash),
-      bolt11PaymentSecretField(),
-      bolt11PlainDescriptionField("Offline router funding"),
-      { tag: "x", words: expiryWords },
-    ],
-  })
 }
 
 /** External provider facts only; the unchanged application derives all authority. */
@@ -52,6 +61,13 @@ export function createHermeticRouterProvider(input: {
   onFundingInvoice?: (request: {
     identityPublicKey: string
     amountSats: number
+  }) => void
+  /** Private test-runner proof; never exposed through the application bridge. */
+  onFundingInvoiceIssued?: (issued: {
+    identityPublicKey: string
+    amountSats: number
+    paymentRequest: string
+    preimage: string
   }) => void
 }) {
   let identity: string | undefined
@@ -81,7 +97,18 @@ export function createHermeticRouterProvider(input: {
       input.onFundingInvoice?.(request)
       for (const invoice of issued.values())
         native.control.forIdentity(identity).registerPayout(invoice)
-      return fundingInvoice(request.amountSats, request.expirySeconds)
+      return fundingInvoice(
+        request.amountSats,
+        request.expirySeconds,
+        input.onFundingInvoiceIssued
+          ? (issued) =>
+              input.onFundingInvoiceIssued?.({
+                identityPublicKey: request.identityPublicKey,
+                amountSats: request.amountSats,
+                ...issued,
+              })
+          : undefined
+      )
     },
   })
   const control = () => {

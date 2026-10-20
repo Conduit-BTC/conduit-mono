@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import {
   expect,
@@ -12,6 +13,10 @@ import { buildEventMarketCalendarDraft } from "../packages/core/src/protocol/eve
 import { getFutureMarketClaimRef } from "../packages/core/src/protocol/future-market-handoff"
 import { formatEventMarketPickupClaimCode } from "../packages/core/src/protocol/event-market-handoff"
 import { CANONICAL_COMMERCE_DISCOVERY_RELAYS } from "../packages/core/src/config"
+import {
+  decodeLightningInvoicePaymentHash,
+  validateLightningInvoiceForPayment,
+} from "../packages/core/src/protocol/lightning"
 import { openPlaywrightRouterClock } from "../scripts/dev/playwright_router_clock"
 import {
   createRouterSmokeRecorder,
@@ -29,6 +34,8 @@ import {
   type HermeticNetworkFailureDiagnostic,
 } from "./helpers/hermetic-network"
 import { createHermeticRouterProvider } from "./helpers/hermetic-router-provider"
+import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
 import { viteFileModuleUrl } from "./helpers/vite-file-module-url"
 import { installHermeticSparkTransport } from "./helpers/hermetic-spark-transport"
@@ -2457,7 +2464,8 @@ async function rehearseEventRouter(
   browser: Browser,
   continuation:
     "buyer" | "organizer" | "organizer-merchant" | "organizer-replacement",
-  buyerMode: "signed-in" | "guest" = "signed-in"
+  buyerMode: "signed-in" | "guest" = "signed-in",
+  buyerFunding: "qr" | "nwc" = "qr"
 ) {
   test.setTimeout(300_000)
   const sharedClock = openPlaywrightRouterClock()
@@ -2469,10 +2477,73 @@ async function rehearseEventRouter(
   const merchantAddress = "event-merchant@wallet.conduit.market"
   const supplierAddress = "event-supplier@wallet.conduit.market"
   const organizerAddress = "event-organizer@wallet.conduit.market"
+  const nwcFunding: {
+    proof: {
+      identityPublicKey: string
+      amountSats: number
+      paymentRequest: string
+      preimage: string
+    } | null
+    authorized: boolean
+  } = { proof: null, authorized: false }
   const provider = createHermeticRouterProvider({
     recipients: [merchantAddress, supplierAddress, organizerAddress],
     nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
+    ...(buyerFunding === "nwc"
+      ? {
+          onFundingInvoiceIssued(issued: NonNullable<typeof nwcFunding.proof>) {
+            if (nwcFunding.proof)
+              throw new Error("Expected one native funding invoice.")
+            nwcFunding.proof = issued
+          },
+        }
+      : {}),
   })
+  const nwc =
+    buyerFunding === "nwc"
+      ? createDeterministicNwcWallet({
+          relayUrl: TEST_RELAY_URL,
+          network: "regtest",
+          nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
+          methods: ["get_info", "get_balance", "pay_invoice"],
+          authorizeExternalInvoice(request) {
+            const proof = nwcFunding.proof
+            if (
+              !proof ||
+              nwcFunding.authorized ||
+              request.invoice !== proof.paymentRequest ||
+              (request.amount !== undefined &&
+                request.amount !== proof.amountSats * 1_000) ||
+              !validateLightningInvoiceForPayment({
+                invoice: request.invoice,
+                expectedAmountMsats: proof.amountSats * 1_000,
+                expectedNetwork: "regtest",
+                nowSeconds: Math.floor(sharedClock.nowMs() / 1_000),
+              }).ok ||
+              createHash("sha256")
+                .update(proof.preimage, "hex")
+                .digest("hex") !==
+                decodeLightningInvoicePaymentHash(request.invoice)
+            )
+              return null
+            const funding = provider.native.control.forIdentity(
+              proof.identityPublicKey
+            )
+            if (funding.snapshot().fundingInvoiceCount !== 1) return null
+            funding.completeFunding()
+            nwcFunding.authorized = true
+            return { preimage: proof.preimage, fees_paid: 0 }
+          },
+        })
+      : null
+  const closeProviders = async () => {
+    const closed = await Promise.allSettled([
+      provider.transport.close(),
+      nwc?.close() ?? Promise.resolve(),
+    ])
+    const failedClose = closed.find((result) => result.status === "rejected")
+    if (failedClose?.status === "rejected") throw failedClose.reason
+  }
   const contexts: BrowserContext[] = []
   const teardowns: Array<() => void> = []
   const recorder = createRouterSmokeRecorder(test.info().annotations)
@@ -2706,6 +2777,28 @@ async function rehearseEventRouter(
       buyer,
       marketUrl
     )
+    if (nwc) {
+      await nwc.start()
+      await buyerPage.goto(`${marketUrl}/wallet`)
+      await nwc.configureMerchantConnection(async (connectionString) => {
+        await openWalletSetup(buyerPage, "Connect wallet")
+        await buyerPage
+          .getByLabel("Wallet label", { exact: true })
+          .fill("Event Buyer NWC")
+        await buyerPage
+          .getByLabel("NWC connection string", { exact: true })
+          .fill(connectionString)
+        await buyerPage
+          .getByRole("button", { name: "Connect", exact: true })
+          .click()
+      })
+      await expect(
+        buyerPage.getByRole("article", {
+          name: "Event Buyer NWC wallet",
+          exact: true,
+        })
+      ).toBeVisible()
+    }
     await buyerPage.goto(`${marketUrl}${eventPath}`)
     setStage("event buyer catalog admission")
     const product = buyerPage
@@ -2782,23 +2875,36 @@ async function rehearseEventRouter(
       sendInvocationCount: 0,
     })
     setStage("event buyer funding authorization")
-    await buyerPage
-      .getByRole("button", { name: "Show QR code", exact: true })
-      .click()
-    await expect(
-      buyerPage.getByText(/Pay once, then return here to check progress/)
-    ).toBeVisible()
-    if (buyerMode === "guest")
-      expect(
-        await buyerPage.evaluate(
-          () => document.documentElement.scrollWidth <= innerWidth + 1
-        )
-      ).toBe(true)
-    provider.control().setNativeCompletion(false)
-    provider.control().setNativeSenderCommitment(true)
+    if (nwc) {
+      provider.control().setNativeCompletion(false)
+      provider.control().setNativeSenderCommitment(true)
+      await buyerPage.getByLabel("Pay with", { exact: true }).click()
+      await buyerPage.getByRole("option", { name: /Event Buyer NWC/ }).click()
+      const pay = buyerPage.getByRole("button", {
+        name: "Pay for order",
+        exact: true,
+      })
+      await expect(pay).toBeEnabled()
+      await pay.click()
+    } else {
+      await buyerPage
+        .getByRole("button", { name: "Show QR code", exact: true })
+        .click()
+      await expect(
+        buyerPage.getByText(/Pay once, then return here to check progress/)
+      ).toBeVisible()
+      if (buyerMode === "guest")
+        expect(
+          await buyerPage.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth + 1
+          )
+        ).toBe(true)
+      provider.control().setNativeCompletion(false)
+      provider.control().setNativeSenderCommitment(true)
+    }
     if (continuation === "buyer") {
       setStage("event buyer automatic payment routing")
-      provider.control().completeFunding()
+      if (!nwc) provider.control().completeFunding()
       await expect(
         buyerPage.getByText("Payment recorded", { exact: true })
       ).toBeVisible({ timeout: 60_000 })
@@ -2811,6 +2917,17 @@ async function rehearseEventRouter(
       expect(
         provider.control().nativeSnapshot().nativeSendInvocationCount
       ).toBe(1)
+      if (nwc) {
+        await expect(
+          buyerPage.getByText(/active buyer session stopped/)
+        ).toHaveCount(0)
+        expect(nwcFunding.authorized).toBe(true)
+        expect(nwc.snapshot().counters).toMatchObject({
+          payInvoice: 1,
+          makeInvoice: 0,
+        })
+        expect(nwc.snapshot().invoiceState).toBe("none")
+      }
     }
     // Closing never creates another payment. Organizer reconciles the same
     // exact attempts, whether Buyer already sent them or disappeared before credit.
@@ -3259,6 +3376,11 @@ async function rehearseEventRouter(
       1
     )
     expect((await readTestRelayEvents({ kinds: [9734, 9735] })).length).toBe(0)
+    if (nwc)
+      expect(nwc.snapshot().counters).toMatchObject({
+        payInvoice: 1,
+        makeInvoice: 0,
+      })
     bodyCompleted = true
   } catch {
     recorder.failed()
@@ -3275,10 +3397,14 @@ async function rehearseEventRouter(
       })
     )
     sharedClock.reset()
-    await provider.transport.close()
-    for (const identity of [organizer, merchant, supplier, buyer])
-      disposeRuntimeSignerIdentity(identity)
-    recorder.complete()
+    try {
+      await closeProviders()
+    } finally {
+      nwcFunding.proof = null
+      for (const identity of [organizer, merchant, supplier, buyer])
+        disposeRuntimeSignerIdentity(identity)
+      recorder.complete()
+    }
   }
 }
 
@@ -3289,6 +3415,10 @@ test("native router Event Market checkout hands funded routing to the organizer 
 test("native router Event Market Buyer completes all payments before organizer pickup without replaying any transfer @commerce", async ({
   browser,
 }) => rehearseEventRouter(browser, "buyer"))
+
+test("native router Event Market Buyer funds once through its connected NWC wallet and completes all payments before organizer pickup @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "buyer", "signed-in", "nwc"))
 
 test("native router Event Market Merchant finishes an interrupted Organizer payout and returns exact progress for one handout @commerce", async ({
   browser,
