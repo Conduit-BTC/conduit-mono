@@ -1753,8 +1753,13 @@ test("Merchant assigns an approved shop product to one date without changing its
   const { productPath, order } = await createAssignedPickupOrder(page)
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  // This control exists only after the exact acceptance is read from storage.
+  // Publication can replace the transient notice before the next render.
   await expect(
-    page.getByText(/Accepted and inventory saved on this device/)
+    page.getByRole("button", {
+      name: "Retry acceptance publication",
+      exact: true,
+    })
   ).toBeVisible()
   await page.reload()
   await expect(
@@ -6423,12 +6428,38 @@ async function rescheduleSameEvent(
   return Number(updates()[0]!.tags.find((tag) => tag[0] === "end")![1]) * 1000
 }
 
-async function acceptPickupOrder(page: Page, orderId: string) {
+async function acceptPickupOrder(
+  page: Page,
+  orderId: string,
+  interruptSigning = false
+) {
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: orderId })
+  if (interruptSigning)
+    await page.evaluate(
+      (key) => localStorage.setItem(key, "1"),
+      SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+    )
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  if (interruptSigning)
+    await expect(
+      page.getByText(
+        "Accepted locally. The buyer notification and inventory publication can be retried.",
+        { exact: true }
+      )
+    ).toBeVisible()
+  // This control exists only after the exact acceptance is read from storage.
+  // Publication can replace the transient notice before the next render.
   await expect(
-    page.getByText(/Accepted and inventory saved on this device/)
+    page.getByRole("button", {
+      name: "Retry acceptance publication",
+      exact: true,
+    })
   ).toBeVisible()
+  if (interruptSigning)
+    await page.evaluate(
+      (key) => localStorage.removeItem(key),
+      SYNTHETIC_SIGNER_UNAVAILABLE_KEY
+    )
   await page.reload()
   await expect(
     page.getByText(/Accepted inventory is saved on this device/)
@@ -7121,6 +7152,22 @@ test("conflicting same-ID zero-cost order cannot inherit saved acceptance @merch
       hasText: "Saved inventory could not be verified for this order",
     })
   ).toBeVisible()
+  expect(
+    await occurrenceInventory(page, eventCoordinate(product), order.id)
+  ).toMatchObject({
+    stock: 8,
+    allocation: 1,
+    acceptedOrders: 1,
+    savedOrder: true,
+  })
+})
+
+test("local acceptance survives a replaced notice after interrupted signing @market @merchant @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const { product, order } = await createAssignedPickupOrder(page)
+  await acceptPickupOrder(page, order.id, true)
   expect(
     await occurrenceInventory(page, eventCoordinate(product), order.id)
   ).toMatchObject({
