@@ -5,6 +5,8 @@
 import { openMarketsStatus } from "./open-markets-orders"
 import { decodeLightningInvoiceMetadata } from "./lightning"
 
+export const MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH = 32_768
+
 const numericTypes: Record<string, string> = {
   order: "1",
   payment_request: "2",
@@ -30,7 +32,7 @@ export function decodeConduitCommerceExtension<T extends WireRumor>(
     extension[1] !== "1" ||
     !type ||
     numericTypes[type] !== rumor.tags.find((tag) => tag[0] === "type")?.[1] ||
-    extension[3]!.length > 32_768
+    extension[3]!.length > MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH
   )
     throw new Error("Unsupported or conflicting commerce extension")
   const payload = JSON.parse(extension[3]!) as Record<string, unknown>
@@ -165,7 +167,8 @@ export function encodeOpenMarketsMerchantReply<T extends WireRumor>(
       tags.push(["tracking", payload.trackingNumber])
   }
   const extension = JSON.stringify({ ...payload, orderId: wireOrderId })
-  if (extension.length > 32_768) throw new Error("Commerce reply is too large")
+  if (extension.length > MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH)
+    throw new Error("Commerce reply is too large")
   tags.push(["conduit", "1", type, extension])
   return { ...rumor, tags, content: note }
 }
@@ -314,7 +317,8 @@ export function encodeOpenMarketsBuyerMessage<
     if (typeof contact?.[field] === "string" && contact[field])
       tags.push([field, contact[field]])
   const extension = JSON.stringify(payload)
-  if (extension.length > 32_768) throw new Error("Commerce order is too large")
+  if (extension.length > MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH)
+    throw new Error("Commerce order is too large")
   tags.push(["conduit", "1", "order", extension])
   return { ...rumor, kind: 16, tags, content: note }
 }

@@ -1,5 +1,6 @@
 import {
   EVENT_KINDS,
+  MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH,
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
   appendConduitClientTag,
   appendOmfZapoutMarker,
@@ -74,16 +75,18 @@ export type CheckoutPricingItem = {
   fulfillment?: CartItem["fulfillment"]
 }
 
-/** The numeric order contract has one delivery coordinate for the whole order. */
+/** Check format limits; final submission also supplies the exact serialized snapshot. */
 export function requiresConduitOrderCompatibility(
   items: readonly Pick<
     CheckoutPricingItem,
     "shippingOptionId" | "fulfillment"
   >[],
-  routerCheckout = false
+  routerCheckout = false,
+  serializedOrder = ""
 ): boolean {
   return (
     routerCheckout ||
+    serializedOrder.length > MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH ||
     items.some((item) => item.fulfillment?.type === "event_market_pickup") ||
     new Set(
       items.flatMap((item) =>

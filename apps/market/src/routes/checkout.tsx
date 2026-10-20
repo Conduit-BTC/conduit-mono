@@ -3664,7 +3664,8 @@ function CheckoutPage() {
         orderId,
         orderWireFormat: requiresConduitOrderCompatibility(
           checkoutPricing.items,
-          routerBranchTargetCheckout
+          routerBranchTargetCheckout,
+          rumor.content
         )
           ? "conduit"
           : orderWireFormat,
@@ -4383,7 +4384,8 @@ function CheckoutPage() {
         orderId,
         orderWireFormat: requiresConduitOrderCompatibility(
           checkoutPricing.items,
-          routerBranchTargetCheckout
+          routerBranchTargetCheckout,
+          orderRumor.content
         )
           ? "conduit"
           : orderWireFormat,

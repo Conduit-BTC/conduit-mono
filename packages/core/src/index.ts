@@ -394,7 +394,10 @@ export {
   type OrderWireFormat,
 } from "./protocol/order-format"
 export { openMarketsLocalOrderId } from "./protocol/open-markets-orders"
-export { encodeOpenMarketsBuyerMessage } from "./protocol/commerce-wire"
+export {
+  encodeOpenMarketsBuyerMessage,
+  MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH,
+} from "./protocol/commerce-wire"
 
 export {
   observeCheckoutSparkOperation,

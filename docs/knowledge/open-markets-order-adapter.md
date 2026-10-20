@@ -39,7 +39,10 @@ Neither a `client` tag, kind-10050 inbox declaration, relay response nor empty
 lookup establishes commerce-format support. There is no probe order or second
 representation. Private router checkout, event pickup and carts with multiple
 distinct shipping coordinates require their existing Conduit contract. The locked
-selector explains that requirement; submission checks it before wallet preparation. Manual invoice/payment behavior remains
+selector explains that requirement; submission checks it before wallet preparation.
+The final serialized order also uses Conduit when its complete shipping evidence
+exceeds the numeric extension's existing size limit. Both checkout paths choose
+that format before pinning it; signed quotes are preserved without truncation. Manual invoice/payment behavior remains
 unchanged; no automatic payment preference is advertised by this adapter.
 
 Before wrapping or staging a new order, save its order ID, buyer, merchant and

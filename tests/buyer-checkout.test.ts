@@ -4237,5 +4237,19 @@ describe("checkout commerce format requirements", () => {
     expect(requiresConduitOrderCompatibility([first, first, {}])).toBe(false)
     expect(requiresConduitOrderCompatibility([first, second])).toBe(true)
     expect(requiresConduitOrderCompatibility([first], true)).toBe(true)
+    expect(
+      requiresConduitOrderCompatibility(
+        [first, first],
+        false,
+        JSON.stringify({ note: "x".repeat(32_757) })
+      )
+    ).toBe(false)
+    expect(
+      requiresConduitOrderCompatibility(
+        [first, first],
+        false,
+        JSON.stringify({ note: "x".repeat(32_758) })
+      )
+    ).toBe(true)
   })
 })

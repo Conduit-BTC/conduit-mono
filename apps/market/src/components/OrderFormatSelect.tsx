@@ -43,7 +43,8 @@ export function OrderFormatSelect({
         className="text-pretty text-sm text-[var(--text-muted)]"
       >
         This choice is saved for this order and its replies. Choose Conduit if
-        the seller requests it.
+        the seller requests it. Orders with larger shipping records use Conduit
+        automatically to preserve all shipping details.
       </p>
     </div>
   )
