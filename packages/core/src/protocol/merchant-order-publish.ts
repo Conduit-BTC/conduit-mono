@@ -53,6 +53,8 @@ export interface PublishMerchantOrderMessageInput {
   signerInteraction?: "external" | "background_external"
   /** Local replay binding after independent exact invoice settlement verification. */
   paidInvoiceConfirmation?: { invoice: string; amountMsats: number }
+  /** The durable inventory decision fixes the accepted notification's identity. */
+  inventoryAcceptanceAt?: number
 }
 
 type PreparedMerchantOrderMessageInput = PublishMerchantOrderMessageInput & {
@@ -147,8 +149,17 @@ export function getMerchantOrderPublishTarget(
 
 function buildMerchantOrderRumor(
   input: PreparedMerchantOrderMessageInput,
-  createdAt = Date.now()
+  createdAt = input.inventoryAcceptanceAt ?? Date.now()
 ): PrivateMessageEvent {
+  if (
+    input.inventoryAcceptanceAt !== undefined &&
+    (!Number.isSafeInteger(createdAt) ||
+      createdAt < 0 ||
+      input.type !== "status_update" ||
+      input.payload.status !== "accepted" ||
+      !input.tags?.some((tag) => tag[0] === "status" && tag[1] === "accepted"))
+  )
+    throw new Error("Invalid inventory acceptance notification")
   let rumor = {
     id: "",
     pubkey: input.merchantPubkey,

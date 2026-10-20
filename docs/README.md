@@ -40,6 +40,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/open-markets-order-adapter.md`: supported numeric order/reply
   and Lightning receipt adapter; proposed compatibility lane, review/removal
   gates, incomplete terms, exact identity and recovery
+- `docs/knowledge/central-relay-policy.md`: central relay ownership, installed
+  delivery-plan migration, finite caller ledger and CI enforcement
+
 - `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
   frozen payment authority, isolated-wallet Merchant recovery and historical
   order compatibility
@@ -71,6 +74,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
   combined-weight calculation, fixed-option compatibility, and order evidence
 
 ### QA Runbooks
+
+- `docs/knowledge/event-market-router-acceptance.md`: event router evidence
+  boundaries, organizer stock/recovery and final funded/device acceptance
 
 - `docs/knowledge/checkout-spark-native-treasury.md`: one final native Spark
   collection, exact residual accounting, recovery and funded-validation boundary

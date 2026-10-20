@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test"
+import { resolve } from "node:path"
+import { viteFileModuleUrl } from "./helpers/vite-file-module-url"
 import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
 import { buildEventMarketRosterDraft } from "@conduit/core/protocol/event-market-roster"
 import frozenDatabaseHistories from "../tests/fixtures/event-market-db-histories.json" with { type: "json" }
@@ -126,7 +128,7 @@ for (const audience of ["guest", "following"] as const) {
             }
           })
       )
-      expect(cache.schemaVersion).toBe(280)
+      expect(cache.schemaVersion).toBe(300)
       expect(cache.records).toBeGreaterThanOrEqual(2)
       expect(cache.records).toBeLessThanOrEqual(2_048)
       expect(cache.bytes).toBeLessThanOrEqual(8 * 1_024 * 1_024)
@@ -242,11 +244,19 @@ for (const history of databaseHistories) {
       await page.goto(marketUrl + "/privacy-policy")
       await seedHistoricalEventMarketDatabase(page, history, rows)
       const expected = {
-        nativeVersion: 280,
+        nativeVersion: 300,
         preservedTables: Object.keys(history.stores).length,
         discoveryIndex: true,
         deleted: true,
         inventoryStores: true,
+        organizerStockStores: true,
+        organizerStockWriterIndexes: [
+          "accountPubkey",
+          "[accountPubkey+marketCoordinate]",
+        ].sort(),
+        organizerStockWriterMarketUnique: true,
+        organizerStockWriterCount:
+          rows.eventMarketOrganizerStockWriters?.length ?? 0,
       }
       expect(
         await inspectUpgradedEventMarketDatabase(
@@ -381,7 +391,7 @@ test("native full discovery cache retains an exact-event deletion through reload
         calendar,
         deletion,
         filler,
-        root: `/@fs${process.cwd()}/packages/core/src`,
+        root: viteFileModuleUrl(resolve("packages/core/src")),
       }
     )
     expect(retained.before).toBe(2048)
@@ -396,7 +406,13 @@ test("native full discovery cache retains an exact-event deletion through reload
       coordinate
     )
     expect(restored.deleted).toBe(true)
-    expect(restored.nativeVersion).toBe(280)
+    expect(restored.nativeVersion).toBe(300)
+    expect(restored.organizerStockStores).toBe(true)
+    expect(restored.organizerStockWriterIndexes).toEqual(
+      ["accountPubkey", "[accountPubkey+marketCoordinate]"].sort()
+    )
+    expect(restored.organizerStockWriterMarketUnique).toBe(true)
+    expect(restored.organizerStockWriterCount).toBe(0)
   } finally {
     disposeRuntimeSignerIdentity(organizer)
   }

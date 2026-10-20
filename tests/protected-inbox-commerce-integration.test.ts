@@ -4,7 +4,12 @@ import {
 } from "@conduit/core/protocol/future-market-handoff"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
-import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+  getPublicKey,
+} from "nostr-tools"
 import {
   encrypt as encryptNip04,
   decrypt as decryptNip04,
@@ -21,6 +26,9 @@ import {
   closeAllProtectedRelayConnections,
   createInMemoryAccountNetworkLocalStateRepository,
   getBuyerConversationList,
+  getCachedMerchantConversationList,
+  getConversationDetail,
+  projectCommerceInbox,
   getDirectMessageConversationList,
   getMerchantConversationList,
   createInMemoryInboxDeclarationEvidenceRepository,
@@ -434,6 +442,79 @@ describe("Market and Merchant protected inbox integration", () => {
     ).toBeGreaterThanOrEqual(2)
     expect(await merchant.database.commerceInboxRecords.count()).toBe(1)
     expect(await buyer.database.commerceInboxRecords.count()).toBe(1)
+  })
+
+  it("keeps colliding authenticated orders separate in live, cached and owner projections", async () => {
+    const otherBuyerKey = generateSecretKey()
+    const otherBuyer = getPublicKey(otherBuyerKey)
+    const original = orderRumor()
+    const second = {
+      ...original,
+      pubkey: otherBuyer,
+      created_at: original.created_at + 1,
+      content: JSON.stringify({
+        ...JSON.parse(original.content),
+        buyerPubkey: otherBuyer,
+      }),
+    }
+    second.id = getEventHash(second)
+    paginatedWraps = [
+      wraps.get(MERCHANT)!,
+      wrapEvent(second, otherBuyerKey, MERCHANT),
+    ]
+    const { owner, database } = installAccount(MERCHANT_KEY)
+    const live = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(live.data).toHaveLength(2)
+    expect(new Set(live.data.map((row) => row.id)).size).toBe(2)
+    expect(
+      live.data.every(
+        (row) => row.orderId === original.tags[2]![1] && row.messageCount === 1
+      )
+    ).toBe(true)
+    expect(
+      live.data
+        .find((row) => row.buyerPubkey === BUYER)
+        ?.messages?.map((message) => message.id)
+    ).toEqual([original.id])
+    expect(
+      live.data
+        .find((row) => row.buyerPubkey === otherBuyer)
+        ?.messages?.map((message) => message.id)
+    ).toEqual([second.id])
+    const filtered = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      counterpartyPubkey: BUYER,
+    })
+    expect(filtered.data).toHaveLength(1)
+    expect(filtered.data[0]?.messages?.[0]?.id).toBe(original.id)
+    const query = {
+      principalPubkey: MERCHANT,
+      orderId: "synthetic-order",
+      role: "merchant" as const,
+    }
+    expect((await getConversationDetail(query)).data).toBeNull()
+    for (const [counterpartyPubkey, id] of [
+      [BUYER, original.id],
+      [otherBuyer, second.id],
+    ]) {
+      expect(
+        (
+          await getConversationDetail({ ...query, counterpartyPubkey })
+        ).data?.messages.map((message) => message.id)
+      ).toEqual([id])
+    }
+    // Reload the view from encrypted storage; grouping is not only a live-read property.
+    await owner.refresh()
+    const cached = await getCachedMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(cached.data).toEqual(live.data)
+    expect(
+      projectCommerceInbox(owner.getSnapshot(), MERCHANT).merchant.data
+    ).toEqual(live.data)
+    expect(await database.commerceInboxRecords.count()).toBe(2)
   })
 
   it("authenticates socket reads and persists only encrypted projections", async () => {

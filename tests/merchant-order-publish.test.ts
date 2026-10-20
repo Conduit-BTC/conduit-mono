@@ -898,3 +898,50 @@ it.each([
     }
   }
 )
+
+it("retries the original inventory acceptance rumor after an interrupted notification", async () => {
+  const account = await createMerchantOwner()
+  const getOwner = spyOn(commerceInbox, "getCommerceInbox").mockReturnValue(
+    account.owner
+  )
+  const captured: string[] = []
+  const acceptedAt = Date.now() - 60_000
+  const publish = spyOn(messaging, "publishPrivateMessage").mockImplementation(
+    async (input) => {
+      captured.push(JSON.stringify(input.rumor))
+      if (captured.length === 1)
+        throw new Error("Recipient delivery interrupted")
+      await input.onRecipientAccepted?.({
+        successfulRelayUrls: ["wss://merchant-send.example"],
+      } as never)
+      return {
+        deliveryRoute: "declared_inbox",
+        selfDeliveryStatus: "full_success",
+      } as never
+    }
+  )
+  const input = {
+    ...statusInput(account.pubkey),
+    inventoryAcceptanceAt: acceptedAt,
+  }
+  let clock: ReturnType<typeof spyOn> | undefined
+  try {
+    await expect(publishMerchantOrderMessage(input)).rejects.toThrow(
+      "Recipient delivery interrupted"
+    )
+    clock = spyOn(Date, "now").mockReturnValue(Date.now() + 120_000)
+    await publishMerchantOrderMessage(input)
+    expect(captured.length).toBe(2)
+    expect(captured[0] === captured[1]).toBe(true)
+    const rumor = JSON.parse(captured[1]!)
+    expect(rumor.created_at).toBe(Math.floor(acceptedAt / 1000))
+    expect(JSON.parse(rumor.content).createdAt).toBe(acceptedAt)
+    await expect(
+      publishMerchantOrderMessage({ ...input, payload: { status: "paid" } })
+    ).rejects.toThrow("Invalid inventory acceptance notification")
+  } finally {
+    clock?.mockRestore()
+    publish.mockRestore()
+    getOwner.mockRestore()
+  }
+})

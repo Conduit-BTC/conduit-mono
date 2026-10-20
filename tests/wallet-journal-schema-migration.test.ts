@@ -133,7 +133,16 @@ for (const priorVersion of [24, 25]) {
     const upgraded = new ConduitDB(databaseName, dependencies)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(28)
+      expect(upgraded.verno).toBe(30)
+      expect(upgraded.backendDB().version).toBe(300)
+      expect(upgraded.tables.map((table) => table.name)).toEqual(
+        expect.arrayContaining([
+          "eventMarketOrganizerStockPools",
+          "eventMarketOrganizerStockEntries",
+          "eventMarketOrganizerStockWriters",
+        ])
+      )
+      expect(await upgraded.eventMarketOrganizerStockWriters.count()).toBe(0)
       // Compare privately so failed assertions cannot dump encrypted fixtures.
       const equal = (left: unknown, right: unknown) =>
         isDeepStrictEqual(

@@ -137,11 +137,18 @@ external choices. Routed public Zapout is not enabled by this contract.
 
 Guest external-wallet checkout is the bounded exception: a per-order
 `guest_ephemeral` key submits the encrypted order and payment report, while
-phone/email are required for all merchant follow-up. Guest Orders state is
+ordinary guest pickup requires both phone and email and shipping retains its
+contact/address contract. Eligible Event Market pickup supports the contact-free
+receipt/claim path in `event-markets.md`; it does not require a separate Merchant
+opt-in. Guest Orders state is
 local, payment-only, and retained for at most 24 hours; it does not create a
 guest inbox or durable order history. See `docs/specs/protocol.md`.
-Its separately bounded, Merchant-only encrypted router recovery envelope does
-not extend the guest signing lifetime or introduce a guest reply channel.
+Its separately bounded encrypted router recovery includes a distinct organizer
+package only for the organizer frozen in the exact authorized event binding.
+A zero-commerce, zero-fee organizer purchase instead uses the separate minimal
+purchase packet, without a financial plan, wallet or invoice. Neither exception
+permits stock records, generic messages, another order or recipient, a longer
+guest signing lifetime or a guest reply channel.
 
 ### Messaging
 

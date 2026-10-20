@@ -89,7 +89,11 @@ describe("guest order UI contracts", () => {
 
     expect(buyerPublisher).toContain("publishPrivateMessage")
     expect(buyerPublisher).not.toContain("giftWrap(")
-    expect(ordersRoute).toContain("publishBuyerOrderMessage(")
+    expect(ordersRoute).toContain("publishBuyerOrderReply(")
+    const replyPublisher = await Bun.file(
+      "apps/market/src/lib/order-reply.ts"
+    ).text()
+    expect(replyPublisher).toContain("publishBuyerOrderMessage(")
     expect(ordersRoute).not.toContain("giftWrap(")
   })
 

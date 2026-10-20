@@ -129,7 +129,12 @@ export function createEventMarketEvidenceStore(database: ConduitDB) {
             const row: CachedEventMarketRosterEvidence = {
               id: ids[index]!,
               marketCoordinate: coordinate,
-              signedEvent: event,
+              // Retained checkpoint digests bind this representation too.
+              // Re-observing identical signed fields must not reorder it.
+              signedEvent:
+                previous && sameSignedPublicEvent(event, previous.signedEvent)
+                  ? previous.signedEvent
+                  : event,
               cachedAt: Date.now(),
             }
             // Discovery can never demote durable or unclassified legacy evidence.

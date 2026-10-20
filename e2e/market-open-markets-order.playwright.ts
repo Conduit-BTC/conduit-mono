@@ -24,7 +24,7 @@ test.use({ trace: "off", screenshot: "off", video: "off" })
 // and src/orders/orders.ts. The peer here is a runner-owned simulation, not Nostrich.
 test("Market defaults to one numeric order and completes the external merchant lifecycle after reload @commerce", async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(180_000)
   page.setDefaultTimeout(30_000)
   const buyer = createRuntimeSignerIdentity()
@@ -297,6 +297,67 @@ test("Market defaults to one numeric order and completes the external merchant l
       )
       .toBe(true)
     await page.keyboard.press("Escape")
+    await page.goto(
+      `${marketUrl}/messages?tab=merchants&merchant=${merchant.pubkey}`
+    )
+    const threadReply = page.getByRole("textbox", {
+      name: "Reply to merchant",
+      exact: true,
+    })
+    await expect(threadReply).toBeVisible()
+    await threadReply.fill("Reply from Market Messages")
+    await page
+      .getByRole("button", { name: "Send message", exact: true })
+      .click()
+    try {
+      await expect(threadReply).toHaveValue("")
+    } catch (error) {
+      const pageState = await page.evaluate(() => {
+        const text = document.body.textContent ?? ""
+        return {
+          sending: [...document.querySelectorAll("button")].some(
+            (button) => button.textContent?.trim() === "Sending..."
+          ),
+          sessionError:
+            text.includes("session ended") ||
+            text.includes("Reconnect your signer"),
+          scopeError:
+            text.includes("another buyer or merchant") ||
+            text.includes("conflicting") ||
+            text.includes("saved commerce format"),
+          documentVisible: document.visibilityState === "visible",
+        }
+      })
+      await testInfo.attach("numeric-reply-state", {
+        body: JSON.stringify({
+          ...pageState,
+          peerAccepted: (await peerRead(14)).some(
+            (rumor) => rumor.content === "Reply from Market Messages"
+          ),
+        }),
+        contentType: "application/json",
+      })
+      throw error
+    }
+    await expect
+      .poll(async () =>
+        (await peerRead(14)).some(
+          (rumor) =>
+            rumor.content === "Reply from Market Messages" &&
+            rumor.tags.some((tag) => tag[0] === "subject" && tag[1] === orderId)
+        )
+      )
+      .toBe(true)
+    await page.reload()
+    await expect(
+      page
+        .locator("section")
+        .filter({ has: threadReply })
+        .getByText("Reply from Market Messages", { exact: true })
+    ).toBeVisible()
+    await page.goto(
+      `${marketUrl}/orders?order=${encodeURIComponent(orderId)}&counterparty=${merchant.pubkey}`
+    )
     await peerSend(
       16,
       [

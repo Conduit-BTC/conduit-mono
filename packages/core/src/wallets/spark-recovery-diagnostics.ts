@@ -2,6 +2,7 @@ import {
   accountRegistryReadiness,
   hasFreshReadback,
   recoveryReadiness,
+  currentRecoveryDelivery,
   type SparkRecoveryRecord,
   type SparkRecoveryWriteStatus,
 } from "./spark-recovery-service"
@@ -60,9 +61,10 @@ export function diagnoseRecoveryDelivery(
       ? accountRegistryReadiness(record)
       : recoveryReadiness(record)
   const issues = new Set<RecoveryDeliveryIssue>()
+  const active = currentRecoveryDelivery(record)
   let confirmedTargets = 0
-  for (const target of record.targets) {
-    const evidence = record.delivery.find((item) => item.url === target.url)
+  for (const target of active.targets) {
+    const evidence = active.delivery.find((item) => item.url === target.url)
     if (hasFreshReadback(evidence)) {
       confirmedTargets++
       continue
@@ -82,7 +84,7 @@ export function diagnoseRecoveryDelivery(
   return {
     ready: readiness.ready,
     confirmedTargets,
-    targetCount: record.targets.length,
+    targetCount: active.targets.length,
     independentCopies: readiness.independentCopies,
     issues: readiness.ready ? [] : [...issues],
   }

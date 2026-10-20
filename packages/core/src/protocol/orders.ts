@@ -1,3 +1,7 @@
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 import { decodeConduitCommerceExtension } from "./commerce-wire"
 import {
   openMarketsLocalOrderId,
@@ -8,6 +12,11 @@ import { z } from "zod"
 import { isSatsLikeCurrency } from "../pricing"
 import { matchesCheckoutSparkOrderPrice } from "./checkout-spark-commerce-pricing"
 import { EVENT_KINDS } from "./kinds"
+import {
+  assertCurrentEventMarketOrganizerFeeTerms,
+  calculateEventMarketOrganizerFeeSats,
+  parseEventMarketOrganizerFeeTerms,
+} from "./event-market-organizer-fee"
 import {
   hasSameShippingPolicyQuote,
   type ShippingPolicyQuote,
@@ -82,6 +91,69 @@ export function serializeOrderRumorContent(order: OrderSchema): string {
   })
 }
 
+/** Standard encrypted kind-16 tags for a new occurrence-scoped pickup order. */
+export function buildEventMarketOrderRumorTags(order: OrderSchema): string[][] {
+  const parsed = orderSchema.parse(order)
+  const pickup = parsed.items.filter(
+    (item) =>
+      item.fulfillment?.type === "event_market_pickup" &&
+      !!item.fulfillment.occurrenceAssignment
+  )
+  if (!pickup.length) return []
+  if (pickup.length !== parsed.items.length)
+    throw new Error("Occurrence pickup items require a separate order.")
+  const first = pickup[0]!.fulfillment!
+  if (first.type !== "event_market_pickup")
+    throw new Error("Invalid pickup order.")
+  const tags: string[][] = [
+    ["openmarkets", "event-market-order", "1"],
+    ["event_market", first.market.coordinate, first.market.eventId],
+    ["event_occurrence", first.calendar.coordinate, first.calendar.eventId],
+    ...(first.schedule
+      ? [["event_schedule", first.schedule.coordinate, first.schedule.eventId]]
+      : []),
+    ["event_auth", first.grant.eventId],
+    ["fulfillment", "pickup"],
+  ]
+  const evidence = new Map<string, SignedPublicNostrEvent>()
+  const add = (event: SignedPublicNostrEvent) => {
+    if (!isValidSignedPublicNostrEvent(event))
+      throw new Error("Occurrence order requires valid signed public evidence.")
+    evidence.set(event.id, event)
+  }
+  add(first.market.signedEvent)
+  add(first.calendar.signedEvent)
+  if (first.schedule) add(first.schedule.signedEvent)
+  for (const event of first.grant.signedEvidence.ancestry) add(event)
+  for (const event of first.grant.signedEvidence.deletions) add(event)
+  const products = new Set<string>()
+  for (const item of pickup) {
+    const fulfillment = item.fulfillment!
+    if (
+      fulfillment.type !== "event_market_pickup" ||
+      !fulfillment.occurrenceAssignment
+    )
+      throw new Error("Occurrence assignment evidence is required.")
+    if (!products.has(item.productId)) {
+      products.add(item.productId)
+      tags.push([
+        "event_assignment",
+        item.productId,
+        fulfillment.occurrenceAssignment.coordinate,
+        fulfillment.occurrenceAssignment.eventId,
+      ])
+    }
+    add(fulfillment.product.signedEvent)
+    if (fulfillment.parentProduct) add(fulfillment.parentProduct.signedEvent)
+    add(fulfillment.occurrenceAssignment.signedEvent)
+  }
+  // Preserve complete supported histories. The shared private-message owner
+  // bounds the complete encrypted transport before signing or publication.
+  for (const event of evidence.values())
+    tags.push(["evidence", event.id, JSON.stringify(event)])
+  return tags
+}
+
 function expandOrderShippingPolicyQuotes(input: unknown): unknown {
   const order = parseObject(input)
   if (!order) return input
@@ -149,6 +221,14 @@ export const CHECKOUT_SPARK_ROUTER_ORDER_TAG = [
   "conduit_checkout_payment",
   "spark_router",
   "1",
+] as const
+
+/** V5 event orders only; the marker never replaces signed-source validation. */
+export const CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG = [
+  "conduit_checkout_payment",
+  "spark_router",
+  "2",
+  "event_market",
 ] as const
 
 export type CheckoutOrderPaymentRoute = "spark_router_v1"
@@ -414,8 +494,27 @@ function messageBase<TType extends OrderMessageTypeSchema>(
 function hasCheckoutRouterFulfillmentShape(
   item: OrderSchema["items"][number],
   merchantPubkey: string,
-  pricing?: OrderSchema["checkoutSparkPricing"]
+  pricing?: OrderSchema["checkoutSparkPricing"],
+  eventRouter = false
 ): boolean {
+  if (item.fulfillment?.type === "event_market_pickup") {
+    const pickup = item.fulfillment
+    return (
+      eventRouter &&
+      item.format === "physical" &&
+      pickup.merchantPubkey === merchantPubkey &&
+      pickup.payeePubkey === merchantPubkey &&
+      pickup.product.coordinate === item.productId &&
+      pickup.occurrenceAssignment !== undefined &&
+      item.shippingOptionId === undefined &&
+      item.shippingOptionDTag === undefined &&
+      item.sourceShippingCost === undefined &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.shippingPolicyQuote === undefined &&
+      item.shippingAllocatedCostSats === undefined
+    )
+  }
+  if (eventRouter) return false
   if (item.format === "digital") {
     return (
       (item.fulfillment === undefined || item.fulfillment.type === "digital") &&
@@ -476,6 +575,53 @@ function parseCheckoutOrderPaymentRoute(
     (tag) => tag[0] === CHECKOUT_SPARK_ROUTER_ORDER_TAG[0]
   )
   if (markers.length === 0) return undefined
+  const eventRouter =
+    markers[0]?.length === CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG.length &&
+    markers[0]?.every(
+      (value, index) => value === CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG[index]
+    )
+  const marker = eventRouter
+    ? CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG
+    : CHECKOUT_SPARK_ROUTER_ORDER_TAG
+  if (eventRouter) {
+    const expectedTags = buildEventMarketOrderRumorTags(payload)
+    const names = new Set([
+      "openmarkets",
+      "event_market",
+      "event_occurrence",
+      "event_schedule",
+      "event_auth",
+      "fulfillment",
+      "event_assignment",
+      "evidence",
+    ])
+    const observedTags = tags.filter((tag) => names.has(tag[0] ?? ""))
+    if (
+      expectedTags.length === 0 ||
+      JSON.stringify(observedTags) !== JSON.stringify(expectedTags)
+    )
+      throw new Error("Invalid event checkout payment marker")
+    const pickup = payload.items[0]?.fulfillment
+    if (pickup?.type !== "event_market_pickup")
+      throw new Error("Invalid event checkout payment marker")
+    const fee = assertCurrentEventMarketOrganizerFeeTerms(
+      parseEventMarketOrganizerFeeTerms({
+        event: pickup.market.signedEvent,
+        marketCoordinate: pickup.market.coordinate,
+      }),
+      payload.createdAt
+    )
+    if (
+      payload.subtotal === 0 &&
+      (fee.state !== "active" ||
+        calculateEventMarketOrganizerFeeSats({
+          commerceTotalSats: 0,
+          basisPoints: fee.basisPoints,
+          minimumSats: fee.minimumSats,
+        }) <= 0)
+    )
+      throw new Error("A free event order does not require router funding")
+  }
 
   const exactlyOne = (name: string, value: string) => {
     const matches = tags.filter((tag) => tag[0] === name)
@@ -501,14 +647,12 @@ function parseCheckoutOrderPaymentRoute(
   const itemTags = tags.filter((tag) => tag[0] === "item")
   const shippingTags = tags.filter((tag) => tag[0] === "shipping")
   const shippingItems = payload.items.filter(
-    (item) => item.format === "physical"
+    (item) => item.format === "physical" && !eventRouter
   )
   if (
     markers.length !== 1 ||
-    markers[0]?.length !== CHECKOUT_SPARK_ROUTER_ORDER_TAG.length ||
-    markers[0]?.some(
-      (value, index) => value !== CHECKOUT_SPARK_ROUTER_ORDER_TAG[index]
-    ) ||
+    markers[0]?.length !== marker.length ||
+    markers[0]?.some((value, index) => value !== marker[index]) ||
     event.kind !== EVENT_KINDS.ORDER ||
     !/^[0-9a-f]{64}$/.test(event.id) ||
     !/^[0-9a-f]{64}$/.test(buyer) ||
@@ -523,7 +667,7 @@ function parseCheckoutOrderPaymentRoute(
     !exactlyOne("currency", "SATS") ||
     payload.currency !== "SATS" ||
     !Number.isSafeInteger(payload.subtotal) ||
-    payload.subtotal <= 0 ||
+    (eventRouter ? payload.subtotal < 0 : payload.subtotal <= 0) ||
     !Number.isSafeInteger(itemTotal) ||
     !Number.isSafeInteger(shippingTotal) ||
     itemTotal + shippingTotal !== payload.subtotal ||
@@ -542,11 +686,16 @@ function parseCheckoutOrderPaymentRoute(
         !hasCheckoutRouterFulfillmentShape(
           item,
           merchant,
-          payload.checkoutSparkPricing
+          payload.checkoutSparkPricing,
+          eventRouter
         ) ||
         (item.familyProductId !== undefined &&
           !item.familyProductId.startsWith(`30402:${merchant}:`)) ||
-        !matchesCheckoutSparkOrderPrice(item, payload.checkoutSparkPricing) ||
+        !matchesCheckoutSparkOrderPrice(
+          item,
+          payload.checkoutSparkPricing,
+          eventRouter
+        ) ||
         item.currency !== "SATS" ||
         !Number.isSafeInteger(item.quantity) ||
         !Number.isSafeInteger(item.priceAtPurchase) ||

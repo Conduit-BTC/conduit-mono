@@ -1,3 +1,5 @@
+import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
+import { createInMemoryAccountNetworkLocalStateRepository } from "../packages/core/src/protocol/account-network-local-state"
 import { afterEach, describe, expect, it } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import Dexie from "dexie"
@@ -34,6 +36,8 @@ import {
   makeBolt11Fixture,
 } from "./support/bolt11-fixture"
 import { admitFixture } from "./helpers/public-event"
+import { getOrderConversationId } from "../packages/core/src/protocol/order-conversation"
+import { publishBuyerOrderReply } from "../apps/market/src/lib/order-reply"
 import { publishBuyerOrderMessage } from "../apps/market/src/lib/order-publish"
 import { publishPrivateMessage } from "../packages/core/src/protocol/private-message-delivery"
 import {
@@ -579,18 +583,137 @@ describe("explicit order-format selection and the numeric peer contract", () => 
     expect(await f.database.orderLifecycles.count()).toBe(1)
   })
 
-  it.each(["main", "adapter"] as const)(
-    "upgrades the installed %s v27 lineage to the complete additive union",
-    async (lineage) => {
+  it("replies using the authenticated numeric original after local lifecycle loss, with exact wire identity", async () => {
+    const f = fixture()
+    signerLeases.push(
+      setTestAccountSigner(
+        new NDKPrivateKeySigner(Buffer.from(f.buyerKey).toString("hex"))
+      )
+    )
+    const original = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor(
+        encodeOpenMarketsBuyerMessage(f.canonical, f.scope)
+      )
+    )
+    const scope = { ...f.scope, orderId: original.orderId }
+    const conversation = {
+      id: getOrderConversationId(scope),
+      orderId: original.orderId,
+      merchantPubkey: f.merchantPubkey,
+      messages: [original],
+      latestAt: Date.now(),
+      latestType: "order" as const,
+      status: null,
+      totalSummary: null,
+      preview: "",
+      messageCount: 1,
+      context: "complete" as const,
+    }
+    let sends = 0
+    const dependencies = {
+      loadOrderContextFn: async () => undefined,
+      cacheBuyerOrderRumorFn: async () => null,
+      publishPrivateMessageFn: async (
+        input: Parameters<typeof publishPrivateMessage>[0]
+      ) => {
+        sends++
+        const peer = unwrapEvent(
+          wrapEvent(input.rumor, f.buyerKey, f.merchantPubkey),
+          f.merchantKey
+        )
+        expect(peer.kind).toBe(14)
+        expect(peer.content).toBe("Reply after recovery")
+        expect(peer.tags).toContainEqual(["order", f.orderId])
+        expect(peer.tags).toContainEqual(["subject", f.orderId])
+        expect(peer.tags).toContainEqual(["p", f.merchantPubkey])
+        return { deliveryRoute: "declared_inbox", selfCopyError: null } as never
+      },
+    }
+    const input = { ...scope, note: "Reply after recovery", conversation }
+    await publishBuyerOrderReply(input, dependencies)
+    expect(sends).toBe(1)
+    await expect(
+      publishBuyerOrderReply(
+        { ...input, merchantPubkey: getPublicKey(generateSecretKey()) },
+        dependencies
+      )
+    ).rejects.toThrow("another buyer or merchant")
+    await expect(
+      publishBuyerOrderReply(input, {
+        ...dependencies,
+        orderContext: {
+          ...f.lifecycle,
+          merchantPubkey: getPublicKey(generateSecretKey()),
+        },
+      })
+    ).rejects.toThrow("another buyer or merchant")
+    await expect(
+      publishBuyerOrderReply(input, {
+        ...dependencies,
+        loadOrderContextFn: async () => ({
+          ...f.lifecycle,
+          orderWireFormat: "conduit",
+        }),
+      })
+    ).rejects.toThrow("saved commerce format")
+    expect(sends).toBe(1)
+    // A saved immutable choice can recover replies even before the original is rehydrated.
+    await publishBuyerOrderReply(
+      { ...f.scope, note: input.note },
+      { ...dependencies, loadOrderContextFn: async () => f.lifecycle }
+    )
+    expect(sends).toBe(2)
+    let current = true
+    await expect(
+      publishBuyerOrderReply(input, {
+        ...dependencies,
+        shouldContinue: () => current,
+        loadOrderContextFn: async () => {
+          current = false
+          return f.lifecycle
+        },
+      })
+    ).rejects.toThrow("session ended")
+    expect(sends).toBe(2)
+    // An unrelated saved order with the same raw ID cannot veto this authenticated pair.
+    await publishBuyerOrderReply(input, {
+      ...dependencies,
+      loadOrderContextFn: async () => ({
+        ...f.lifecycle,
+        merchantPubkey: getPublicKey(generateSecretKey()),
+      }),
+    })
+    expect(sends).toBe(3)
+  })
+
+  it.each([
+    { lineage: "main", version: 27 },
+    { lineage: "adapter", version: 27 },
+    { lineage: "main", version: 28 },
+    { lineage: "adapter", version: 28 },
+    { lineage: "main", version: 29 },
+  ] as const)(
+    "upgrades the installed $lineage v$version lineage without changing retained records",
+    async ({ lineage, version }) => {
       const f = fixture()
       const dependencies = { indexedDB: new IDBFactory(), IDBKeyRange }
-      const name = `installed-v27-${lineage}-${crypto.randomUUID()}`
+      const name = `installed-v${version}-${lineage}-${crypto.randomUUID()}`
       const legacy = new Dexie(name, dependencies)
-      legacy.version(27).stores({
+      const stockStores = {
+        eventMarketOrganizerStockPools:
+          "id, accountPubkey, &[accountPubkey+poolId], [accountPubkey+assignmentCoordinate]",
+        eventMarketOrganizerStockEntries:
+          "id, accountPubkey, [accountPubkey+poolId], &[accountPubkey+poolId+sequence], &[accountPubkey+poolId+orderId], &[accountPubkey+poolId+claimRef]",
+      }
+      const writerStore = {
+        eventMarketOrganizerStockWriters:
+          "id, accountPubkey, &[accountPubkey+marketCoordinate]",
+      }
+      legacy.version(version).stores({
         orderLifecycles:
           "orderId, buyerPubkey, merchantPubkey, phase, createdAt",
         eventMarketRosterEvidence:
-          lineage === "main"
+          lineage === "main" || version >= 28
             ? "id, marketCoordinate, cachedAt, discoveryBytes"
             : "id, marketCoordinate, cachedAt",
         ...(lineage === "adapter"
@@ -599,11 +722,18 @@ describe("explicit order-format selection and the numeric peer contract", () => 
                 "orderId, buyerPubkey, merchantPubkey, createdAt",
             }
           : {}),
+        ...(lineage === "main" && version >= 28 ? stockStores : {}),
+        ...(version >= 29 ? writerStore : {}),
       })
+      const retainedWrap = JSON.parse(
+        JSON.stringify(wrapEvent(f.canonical, f.buyerKey, f.merchantPubkey))
+      )
+      const retainedBytes = JSON.stringify(retainedWrap)
       const order = {
         ...f.lifecycle,
         orderWireFormat:
           lineage === "adapter" ? ("open_markets" as const) : undefined,
+        orderRelayDelivery: { signedRecipientWrap: retainedWrap },
       }
       const evidence = {
         id: "retained-roster",
@@ -611,8 +741,35 @@ describe("explicit order-format selection and the numeric peer contract", () => 
         cachedAt: Date.now(),
         discoveryBytes: 17,
       }
+      const stockRows = {
+        eventMarketOrganizerStockPools: {
+          id: "pool",
+          accountPubkey: f.merchantPubkey,
+          poolId: "pool",
+          assignmentCoordinate: "assignment",
+          acceptedQuantity: 2,
+        },
+        eventMarketOrganizerStockEntries: {
+          id: "entry",
+          accountPubkey: f.merchantPubkey,
+          poolId: "pool",
+          sequence: 1,
+          orderId: f.orderId,
+          claimRef: "claim",
+          signedRecipientWrap: retainedWrap,
+        },
+        eventMarketOrganizerStockWriters: {
+          id: "writer",
+          accountPubkey: f.merchantPubkey,
+          marketCoordinate: "market",
+          writerId: "retained-writer",
+        },
+      }
       await legacy.table("orderLifecycles").put(order)
       await legacy.table("eventMarketRosterEvidence").put(evidence)
+      const retainedTables = legacy.tables.map((table) => table.name)
+      for (const [table, row] of Object.entries(stockRows))
+        if (retainedTables.includes(table)) await legacy.table(table).put(row)
       if (lineage === "adapter")
         await legacy.table("orderWireFormats").put({
           orderId: f.orderId,
@@ -624,7 +781,11 @@ describe("explicit order-format selection and the numeric peer contract", () => 
       legacy.close()
       const upgraded = new ConduitDB(name, dependencies)
       databases.push(upgraded)
-      expect(await upgraded.orderLifecycles.get(f.orderId)).toEqual(order)
+      const saved = await upgraded.orderLifecycles.get(f.orderId)
+      expect(saved).toEqual(order)
+      expect(
+        JSON.stringify(saved?.orderRelayDelivery?.signedRecipientWrap)
+      ).toBe(retainedBytes)
       expect(await upgraded.eventMarketRosterEvidence.get(evidence.id)).toEqual(
         evidence
       )
@@ -636,11 +797,111 @@ describe("explicit order-format selection and the numeric peer contract", () => 
       expect(await upgraded.orderWireFormats.count()).toBe(
         lineage === "adapter" ? 1 : 0
       )
-      expect(
-        getOrderWireFormat((await upgraded.orderLifecycles.get(f.orderId))!)
-      ).toBe(lineage === "adapter" ? "open_markets" : "conduit")
+      expect(getOrderWireFormat(saved!)).toBe(
+        lineage === "adapter" ? "open_markets" : "conduit"
+      )
+      for (const [table, row] of Object.entries(stockRows)) {
+        expect(upgraded.tables.some((value) => value.name === table)).toBe(true)
+        expect(await upgraded.table(table).toArray()).toEqual(
+          retainedTables.includes(table) ? [row] : []
+        )
+        expect(
+          upgraded.table(table).schema.indexes.some((index) => index.unique)
+        ).toBe(true)
+      }
+      expect(upgraded.verno).toBe(30)
+      expect(upgraded.backendDB().version).toBe(300)
     }
   )
+
+  it("delivers a signed-in numeric payment report without requiring a sender inbox", async () => {
+    const f = fixture()
+    const signer = setTestAccountSigner(
+      new NDKPrivateKeySigner(Buffer.from(f.buyerKey).toString("hex"))
+    )
+    signerLeases.push(signer)
+    const invoice = makeBolt11Fixture({
+      hrp: "lnbc2000n",
+      fields: [
+        bolt11PaymentHashField(),
+        bolt11PlainDescriptionField("Receipt"),
+      ],
+    })
+    const named = {
+      ...f.canonical,
+      id: "",
+      tags: [
+        ["p", f.merchantPubkey],
+        ["type", "payment_proof"],
+        ["order", f.orderId],
+      ],
+      content: JSON.stringify({
+        orderId: f.orderId,
+        invoice,
+        amountMsats: 200_000,
+      }),
+    }
+    const rumor = createPrivateMessageRumor(
+      encodeOpenMarketsBuyerMessage(named, f.scope)
+    )
+    const inboxEvidence = await createInboxDeclarationFixtureEvidence(
+      finalizeEvent(
+        {
+          kind: 10050,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["relay", "wss://peer-inbox.conduit.market"]],
+          content: "",
+        },
+        f.merchantKey
+      ),
+      { prime: true }
+    )
+    let readinessChecks = 0
+    const delivered: NDKEvent[] = []
+    await publishPrivateMessage({
+      rumor,
+      rumorKind: 17,
+      signer,
+      signerInteraction: "external",
+      senderPubkey: f.buyerPubkey,
+      recipientPubkey: f.merchantPubkey,
+      accountPubkey: f.buyerPubkey,
+      authenticatedPubkey: f.buyerPubkey,
+      shouldContinue: () => true,
+      selfCopy: false,
+      inboxDeclarationEvidenceRepository: inboxEvidence,
+      accountNetworkLocalStateRepository:
+        createInMemoryAccountNetworkLocalStateRepository(),
+      validatedOrderScope: createValidatedOrderRouteScope({
+        rumor,
+        orderId: f.orderId,
+        senderPubkey: f.buyerPubkey,
+        recipientPubkey: f.merchantPubkey,
+      }),
+      recipientInboxRelays: ["wss://peer-inbox.conduit.market"],
+      inspectOwnInboxReadiness: async () => {
+        readinessChecks++
+        return { state: "lookup_unavailable" }
+      },
+      giftWrapFn: (async (value, recipient) =>
+        new NDKEvent(
+          undefined,
+          wrapEvent(value, f.buyerKey, recipient.pubkey)
+        )) as never,
+      publishFn: (async (event, options) => {
+        delivered.push(event)
+        return {
+          successfulRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
+          failedRelayUrls: [],
+        }
+      }) as never,
+    })
+    expect(readinessChecks).toBe(0)
+    expect(delivered).toHaveLength(1)
+    expect(
+      unwrapEvent(delivered[0]!.rawEvent() as never, f.merchantKey).kind
+    ).toBe(17)
+  })
 
   it("encrypts a guest numeric payment report only to the declared merchant, without a guest inbox or self-copy", async () => {
     const f = fixture()

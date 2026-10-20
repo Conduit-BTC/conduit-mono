@@ -136,7 +136,8 @@ const SIGNED_IN_ORDER_COMPANION_COPY =
   "A new order was sent to you through Conduit Market."
 
 export function getOrderCompanionNotificationContentOrderId(
-  content: string
+  content: string,
+  expectedBuyerPubkey?: string
 ): string | null {
   for (const copy of [
     GUEST_ORDER_COMPANION_COPY,
@@ -150,8 +151,22 @@ export function getOrderCompanionNotificationContentOrderId(
       const parsed = new URL(reviewUrl)
       const orderIds = parsed.searchParams.getAll("order")
       const orderId = orderIds.length === 1 ? orderIds[0]?.trim() : null
-      if (!orderId) return null
-      return buildMerchantOrderReviewUrl(parsed.origin, orderId) === reviewUrl
+      const counterparties = parsed.searchParams.getAll("counterparty")
+      if (!orderId || counterparties.length > 1) return null
+      const counterparty = counterparties[0]
+      if (
+        counterparty !== undefined &&
+        (!counterparty ||
+          (expectedBuyerPubkey &&
+            counterparty !== expectedBuyerPubkey.trim().toLowerCase()))
+      )
+        return null
+      // Retained canonical order-only notifications remain recognizable.
+      return buildMerchantOrderReviewUrl(
+        parsed.origin,
+        orderId,
+        counterparty
+      ) === reviewUrl
         ? orderId
         : null
     } catch {
@@ -195,7 +210,7 @@ export function getOrderCompanionNotificationIdentity(
     markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION &&
     Boolean(markers[0]?.[3]?.trim()) &&
     clients.length === 1 &&
-    getOrderCompanionNotificationContentOrderId(rumor.content) ===
+    getOrderCompanionNotificationContentOrderId(rumor.content, rumor.pubkey) ===
       orders[0]?.[1]?.trim()
   if (!isCanonical) return null
 
@@ -277,7 +292,7 @@ export function createOrderCompanionNotificationRumor(input: {
       : SIGNED_IN_ORDER_COMPANION_COPY
   companion.content =
     `${copy}\n` +
-    `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId)}`
+    `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId, input.senderPubkey)}`
   companion.id = getEventHash(completePrivateMessageEvent(companion))
   return companion
 }
@@ -429,7 +444,7 @@ export type UnwrapOutcome =
   | {
       status: "deferred_machine"
       wrapId: string
-      kind: typeof EVENT_KINDS.ORDER
+      kind: number
     }
   | { status: "decrypt_failed"; wrapId: string; reason: DecryptFailureReason }
 
@@ -508,14 +523,41 @@ export function assertPrivateMessageFitsTransport(
   }
 }
 
+export type PrivateMessageWrappingOperation =
+  | "identity"
+  | "preparation"
+  | "encryption"
+  | "seal_signing"
+  | "seal_validation"
+  | "local_wrap"
+
 /** NIP-59 construction with plain key operations, independent of relay clients. */
 export async function wrapPrivateMessage(
   event: PrivateMessageEvent,
   recipient: { pubkey: string },
   signer: NostrKeySigner,
-  params: { rumorKind?: number } = {}
+  params: {
+    rumorKind?: number
+    /** Fixed transient observation only; never part of the private envelope. */
+    onOperation?: (operation: PrivateMessageWrappingOperation) => void
+  } = {}
 ): Promise<SignedPublicNostrEvent> {
+  // Pass values through synchronously to preserve nested signer evaluation.
+  const observe = <T>(
+    operation: PrivateMessageWrappingOperation,
+    value: T
+  ): T => {
+    try {
+      const observer = params.onOperation
+      if (observer) void Promise.resolve(observer(operation)).catch(() => {})
+    } catch {
+      // Observers cannot replace a signer result or the original failure.
+    }
+    return value
+  }
+  observe("identity", undefined)
   const pubkey = await signer.getPublicKey()
+  observe("preparation", undefined)
   if (event.pubkey && event.pubkey !== pubkey)
     throw new NostrSignerError("authority_changed")
   const rumor: UnsignedNostrEvent = {
@@ -531,13 +573,21 @@ export async function wrapPrivateMessage(
     kind: EVENT_KINDS.SEAL,
     created_at: Math.round(Date.now() / 1000 - Math.random() * 100_000),
     tags: [],
-    content: await signer.encryptNip44(
-      recipient.pubkey,
-      JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+    content: observe(
+      "seal_signing",
+      await signer.encryptNip44(
+        recipient.pubkey,
+        observe(
+          "encryption",
+          JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+        )
+      )
     ),
   })
+  observe("seal_validation", undefined)
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
+  observe("local_wrap", undefined)
   return createWrap(
     { ...seal, tags: seal.tags.map((tag) => [...tag]) },
     recipient.pubkey
@@ -677,7 +727,7 @@ export async function unwrapGiftWrap(
         // Invalid recovery never gains generic rendering or domain authority.
       }
     }
-    return { status: "deferred_machine", wrapId, kind: EVENT_KINDS.ORDER }
+    return { status: "deferred_machine", wrapId, kind: rumor.kind }
   }
   if (decodedRecord.category === "commerce") {
     if (decodedRecord.parsedOrderMessage)

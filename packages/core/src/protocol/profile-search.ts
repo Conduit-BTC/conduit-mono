@@ -3,7 +3,10 @@ import type { Filter } from "nostr-tools"
 import { config } from "../config"
 import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
-import { filterEligibleAccountRelayTargets } from "./account-network-local-state"
+import {
+  filterEligibleAccountRelayTargets,
+  configuredRelayTargets,
+} from "./account-network-local-state"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -401,7 +404,7 @@ async function defaultPlanSearchRelayTargets(
     Number.MAX_SAFE_INTEGER
   )
   const candidateTargets = mergeRelayTargets(
-    relayTargetsFromUrls(config.searchIndexRelayUrls, {
+    configuredRelayTargets({
       kind: "app",
       operation: "read",
       bucket: "search_index",

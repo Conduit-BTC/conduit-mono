@@ -53,6 +53,9 @@ export function isCheckoutSparkSettledCart(
   >[]
 ): boolean {
   const merchantPubkey = items[0]?.merchantPubkey
+  const firstEvent = items[0]?.fulfillment
+  const eventGroup =
+    firstEvent?.type === "event_market_pickup" ? firstEvent : null
   return (
     !!merchantPubkey &&
     HEX_PUBKEY.test(merchantPubkey) &&
@@ -66,6 +69,31 @@ export function isCheckoutSparkSettledCart(
             !/^30402:[0-9a-f]{64}:.+$/.test(item.familyProductId)))
       )
         return false
+      if (item.fulfillment?.type === "event_market_pickup") {
+        const event = item.fulfillment
+        return (
+          !!eventGroup &&
+          item.format === "physical" &&
+          event.merchantPubkey === merchantPubkey &&
+          event.payeePubkey === merchantPubkey &&
+          event.market.coordinate === eventGroup.market.coordinate &&
+          event.market.eventId === eventGroup.market.eventId &&
+          event.calendar.coordinate === eventGroup.calendar.coordinate &&
+          event.calendar.eventId === eventGroup.calendar.eventId &&
+          event.grant.eventId === eventGroup.grant.eventId &&
+          event.schedule?.eventId === eventGroup.schedule?.eventId &&
+          event.organizerPubkey === eventGroup.organizerPubkey &&
+          event.mode === eventGroup.mode &&
+          event.assignment === eventGroup.assignment &&
+          !!event.occurrenceAssignment &&
+          event.occurrenceAssignment.coordinate.startsWith(
+            `30410:${merchantPubkey}:`
+          ) &&
+          event.product.coordinate.startsWith(`30402:${merchantPubkey}:`) &&
+          item.shippingOptionId === undefined
+        )
+      }
+      if (eventGroup) return false
       if (item.format === "digital")
         return (
           item.fulfillment === undefined || item.fulfillment.type === "digital"

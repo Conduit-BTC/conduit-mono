@@ -2,6 +2,8 @@ import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
   EVENT_KINDS,
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
+  CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG,
+  buildEventMarketOrderRumorTags,
   DexieCheckoutSparkSettledRepository,
   appendConduitClientTag,
   getNdk,
@@ -18,6 +20,7 @@ import {
   resolveCheckoutSparkSignedPickup,
   validateAddressConsistency,
   orderSchema,
+  isContactFreeEventHandoff,
   type OrderLifecycle,
   type OrderSchema,
   type StagedOrderLifecycleInput,
@@ -25,6 +28,8 @@ import {
   type ParsedShippingOption,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import { matchesCheckoutSparkOrderEventMarketSnapshot } from "@conduit/core/protocol/checkout-spark-event-market"
+import { assertCheckoutSparkSignedEventMarketSources } from "@conduit/core/protocol/checkout-spark-event-market-sources"
 
 import {
   getCheckoutSparkSettledPreparation,
@@ -87,6 +92,10 @@ export async function publishCheckoutSparkSettledBoundOrder(
   // Keep historical one-contact pickup readable, but never emit it anew.
   if (
     buyer.kind === "guest_ephemeral" &&
+    !(
+      order.contactFreePickup &&
+      isContactFreeEventHandoff(order.items, order.createdAt)
+    ) &&
     (!order.guestContact?.email?.trim() || !order.guestContact.phone?.trim())
   ) {
     throw new Error("Guest orders require both email and phone.")
@@ -202,6 +211,7 @@ async function publishBoundOrderFromFrozenPlan(
     order.currency !== "SATS" ||
     order.createdAt < plan.createdAt ||
     order.createdAt > now ||
+    (plan.schemaVersion === 5 && order.createdAt !== plan.createdAt) ||
     (!guest && order.guestContact !== undefined) ||
     order.subtotal !== plan.commerceQuote.commerceTotalSats ||
     JSON.stringify(
@@ -221,6 +231,22 @@ async function publishBoundOrderFromFrozenPlan(
     plan.commerceQuote,
     plan.createdAt
   )
+  if (plan.schemaVersion === 5) {
+    assertCheckoutSparkSignedEventMarketSources({
+      eventMarket: plan.eventMarket!,
+      commerceQuote: plan.commerceQuote,
+      merchantPubkey: plan.merchantPubkey,
+      sourceEvents: input.sourceEvents ?? [],
+      acceptedAtMs: plan.createdAt,
+    })
+    assertCheckoutSparkSignedEventMarketSources({
+      eventMarket: plan.eventMarket!,
+      commerceQuote: plan.commerceQuote,
+      merchantPubkey: plan.merchantPubkey,
+      sourceEvents: input.sourceEvents ?? [],
+      acceptedAtMs: now,
+    })
+  }
   const quoteLines = new Map(
     plan.commerceQuote.lines.map((line) => [line.productCoordinate, line])
   )
@@ -263,9 +289,28 @@ async function publishBoundOrderFromFrozenPlan(
           line,
           pricing: plan.commerceQuote.pricing,
           acceptedAtMs: plan.createdAt,
+          ...(plan.schemaVersion === 5 ? { allowZero: true as const } : {}),
         })
       }
-      if (line?.pickup) {
+      if (plan.schemaVersion === 5) {
+        if (
+          !line ||
+          item.format !== "physical" ||
+          !matchesCheckoutSparkOrderEventMarketSnapshot(
+            item.fulfillment,
+            plan.eventMarket!,
+            line.productCoordinate
+          ) ||
+          item.sourceShippingCost !== undefined ||
+          item.shippingOptionId !== undefined ||
+          item.shippingOptionDTag !== undefined ||
+          item.shippingPolicyQuote !== undefined ||
+          (item.shippingCountries?.length ?? 0) !== 0 ||
+          (item.shippingCountryRules?.length ?? 0) !== 0 ||
+          (item.shippingCostSats ?? 0) !== 0
+        )
+          return true
+      } else if (line?.pickup) {
         const productEvent = input.sourceEvents?.find(
           (event) => event.id === line.productEventId
         )
@@ -426,7 +471,14 @@ async function publishBoundOrderFromFrozenPlan(
       ["order", order.id],
       ["amount", String(order.subtotal)],
       ["currency", "SATS"],
-      [...CHECKOUT_SPARK_ROUTER_ORDER_TAG],
+      [
+        ...(plan.schemaVersion === 5
+          ? CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG
+          : CHECKOUT_SPARK_ROUTER_ORDER_TAG),
+      ],
+      ...(plan.schemaVersion === 5
+        ? buildEventMarketOrderRumorTags(order)
+        : []),
       ...order.items.flatMap((item) => [
         ["item", item.productId, String(item.quantity)],
         ...(item.shippingOptionId ? [["shipping", item.shippingOptionId]] : []),
@@ -448,6 +500,14 @@ async function publishBoundOrderFromFrozenPlan(
         currentTime >= plan.funding.expiresAt
       )
         return false
+      if (plan.schemaVersion === 5)
+        assertCheckoutSparkSignedEventMarketSources({
+          eventMarket: plan.eventMarket!,
+          commerceQuote: plan.commerceQuote,
+          merchantPubkey: plan.merchantPubkey,
+          sourceEvents: input.sourceEvents ?? [],
+          acceptedAtMs: currentTime,
+        })
       for (const line of plan.commerceQuote.lines) {
         if (!line.pickup) continue
         resolveCheckoutSparkSignedPickup({

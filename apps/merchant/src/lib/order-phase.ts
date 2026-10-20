@@ -1,3 +1,4 @@
+import { findOrderConversation } from "@conduit/core"
 import {
   extractOrderSummary,
   formatNpub,
@@ -519,14 +520,25 @@ function compareOrderIds(
 
 /** Reordering never changes an existing selection or the action target. */
 export function getMerchantOrderSelection(
-  conversations: readonly Pick<MerchantConversationSummary, "id" | "orderId">[],
+  conversations: readonly Pick<
+    MerchantConversationSummary,
+    "id" | "orderId" | "messages"
+  >[],
   selectedId: string | null,
-  requestedOrderId?: string
+  requestedOrderId?: string,
+  requestedConversationId?: string,
+  allConversations = conversations
 ): string | null {
-  const requested = requestedOrderId
-    ? conversations.find((item) => item.orderId === requestedOrderId)
-    : null
-  if (requested) return requested.id
+  if (requestedOrderId) {
+    const requested = findOrderConversation(
+      allConversations,
+      requestedOrderId,
+      requestedConversationId
+    )
+    return requested && conversations.some((item) => item.id === requested.id)
+      ? requested.id
+      : null
+  }
   if (selectedId && conversations.some((item) => item.id === selectedId)) {
     return selectedId
   }

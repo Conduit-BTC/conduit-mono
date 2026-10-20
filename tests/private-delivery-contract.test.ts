@@ -47,6 +47,7 @@ import {
   __setRelayPublishTestOverrides,
 } from "../packages/core/src/protocol/relay-publish"
 import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
+import type { SignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 import { admitFixture } from "./helpers/public-event"
 import {
   createMerchantInvoiceModule,
@@ -1184,6 +1185,147 @@ describe("private delivery composed contract", () => {
     for (const row of await fixture.database.commerceInboxDeliveries.toArray())
       expect(row.state).toBe("accepted")
   })
+
+  it.each(["fresh", "saved"] as const)(
+    "preserves foreground AUTH for %s exact domain wraps without signing a new message",
+    async (mode) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 16)
+      let wrap: SignedPublicNostrEvent
+      if (mode === "saved") {
+        input.selfCopy = false
+        input.publishFn = async () => {
+          throw new Error("Controlled unavailable relay")
+        }
+        await expect(publishPrivateMessage(input)).rejects.toThrow()
+        const row = (
+          await fixture.database.commerceInboxDeliveries.toArray()
+        )[0]!
+        const job = await fixture.store.open<PrivateDeliveryJob>(
+          row.value,
+          row.id.slice(fixture.sender.length + 1)
+        )
+        wrap = job.legs[0]!.event
+      } else {
+        wrap = await wrapPrivateMessage(
+          input.rumor,
+          { pubkey: fixture.recipient },
+          fixture.signer,
+          { rumorKind: 16 }
+        )
+      }
+      const signs = fixture.signCalls()
+      let publications = 0
+      let visible = 0
+      const result = await retryPrivateMessageWraps({
+        rumorId: input.rumor.id,
+        senderPubkey: fixture.sender,
+        recipientPubkey: fixture.recipient,
+        accountPubkey: fixture.sender,
+        authenticatedPubkey: fixture.sender,
+        wrappedToRecipient: wrap,
+        deliveryStore: fixture.store,
+        accountNetworkLocalStateRepository:
+          fixture.accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository:
+          fixture.inboxDeclarationEvidenceRepository,
+        recipientInboxRelays: [RECIPIENT_RELAY],
+        resolveInboxRelays: async () => [RECIPIENT_RELAY],
+        foregroundRelayAuthentication: {
+          signer: fixture.signer,
+          method: fixture.signer.authMethod,
+          waitForSignerVisibility: async () => {
+            visible++
+          },
+        },
+        publishFn: async (event, options) => {
+          publications++
+          expect(event.id).toBe(wrap.id)
+          expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
+          expect(options.relayAuthentication?.signer).toBe(fixture.signer)
+          expect(options.relayAuthentication?.expectedPubkey).toBe(
+            fixture.sender
+          )
+          await options.relayAuthentication?.waitForSignerVisibility?.()
+          return acknowledged(RECIPIENT_RELAY)
+        },
+      })
+      expect(result.recipientDelivery?.successfulRelayUrls).toEqual([
+        RECIPIENT_RELAY,
+      ])
+      expect(publications).toBe(1)
+      expect(visible).toBe(1)
+      expect(fixture.signCalls()).toBe(signs)
+    }
+  )
+
+  it.each(["account", "domain"] as const)(
+    "fences wrong-method and revoked %s foreground AUTH on exact domain replay",
+    async (revocation) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 16)
+      const wrap = await wrapPrivateMessage(
+        input.rumor,
+        { pubkey: fixture.recipient },
+        fixture.signer,
+        { rumorKind: 16 }
+      )
+      let publications = 0
+      let current = true
+      const replay = {
+        rumorId: input.rumor.id,
+        senderPubkey: fixture.sender,
+        recipientPubkey: fixture.recipient,
+        accountPubkey: fixture.sender,
+        authenticatedPubkey: fixture.sender,
+        wrappedToRecipient: wrap,
+        deliveryStore: fixture.store,
+        recipientInboxRelays: [RECIPIENT_RELAY],
+        accountNetworkLocalStateRepository:
+          fixture.accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository:
+          fixture.inboxDeclarationEvidenceRepository,
+        resolveInboxRelays: async () => [RECIPIENT_RELAY],
+        shouldContinue: () => current,
+        publishFn: async (
+          _event: SignedPublicNostrEvent,
+          options: Parameters<
+            NonNullable<PublishPrivateMessageInput["publishFn"]>
+          >[1]
+        ) => {
+          publications++
+          await options.relayAuthentication?.waitForSignerVisibility?.()
+          throw new Error("Revoked signer must not authorize delivery")
+        },
+      }
+      await expect(
+        retryPrivateMessageWraps({
+          ...replay,
+          foregroundRelayAuthentication: {
+            signer: fixture.signer,
+            method: "nip46",
+          },
+        })
+      ).rejects.toThrow(/active account signer/)
+      expect(publications).toBe(0)
+      const signs = fixture.signCalls()
+      await expect(
+        retryPrivateMessageWraps({
+          ...replay,
+          foregroundRelayAuthentication: {
+            signer: fixture.signer,
+            method: "nip07",
+            waitForSignerVisibility: async () => {
+              if (revocation === "account") __resetProtectedReadSigner()
+              else current = false
+            },
+          },
+        })
+      ).rejects.toThrow()
+      expect(publications).toBe(1)
+      expect(fixture.signCalls()).toBe(signs)
+    }
+  )
 
   it("uses the conversation adapter for an ordinary reply and kind-15 file", async () => {
     const fixture = await setup()

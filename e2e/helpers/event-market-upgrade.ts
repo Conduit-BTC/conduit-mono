@@ -1,4 +1,6 @@
 import type { Page } from "@playwright/test"
+import { resolve } from "node:path"
+import { viteFileModuleUrl } from "./vite-file-module-url"
 
 export type EventMarketDatabaseHistory = {
   name: string
@@ -149,6 +151,28 @@ export async function inspectUpgradedEventMarketDatabase(
               (table: { name: string }) => table.name === name
             )
           ),
+          organizerStockStores: [
+            "eventMarketOrganizerStockPools",
+            "eventMarketOrganizerStockEntries",
+            "eventMarketOrganizerStockWriters",
+          ].every((name) =>
+            database.tables.some(
+              (table: { name: string }) => table.name === name
+            )
+          ),
+          organizerStockWriterIndexes: Array.from(
+            database
+              .backendDB()
+              .transaction("eventMarketOrganizerStockWriters")
+              .objectStore("eventMarketOrganizerStockWriters").indexNames
+          ).sort(),
+          organizerStockWriterMarketUnique: database
+            .backendDB()
+            .transaction("eventMarketOrganizerStockWriters")
+            .objectStore("eventMarketOrganizerStockWriters")
+            .index("[accountPubkey+marketCoordinate]").unique,
+          organizerStockWriterCount:
+            await database.eventMarketOrganizerStockWriters.count(),
         }
       } finally {
         database.close()
@@ -158,7 +182,7 @@ export async function inspectUpgradedEventMarketDatabase(
       history,
       rows,
       coordinate,
-      root: `/@fs${process.cwd()}/packages/core/src`,
+      root: viteFileModuleUrl(resolve("packages/core/src")),
     }
   )
 }

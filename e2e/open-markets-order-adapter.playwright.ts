@@ -147,7 +147,9 @@ test("independent numeric order retains invoice, shipping and accepted conversat
     console.info("Adapter fixture published")
     await installRealTestSigner(page, merchant, TEST_RELAY_URL)
     const url = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/orders`
-    await page.goto(url)
+    await page.goto(
+      `${url}?order=${encodeURIComponent(wireOrderId)}&counterparty=${buyer.pubkey}`
+    )
     await expect(
       page
         .getByText("Requested total", { exact: true })
@@ -176,6 +178,25 @@ test("independent numeric order retains invoice, shipping and accepted conversat
       .poll(() => peerObserved("3", "pending"), { timeout: 30_000 })
       .toBe(true)
     console.info("Adapter acceptance observed")
+    const readInventory = () =>
+      page.evaluate(
+        async ({ root, product }) => {
+          const { db } = await import(root + "/db/index.ts")
+          const saved = await db.merchantInventoryAcceptedOrders.toArray()
+          return {
+            stock: (await db.merchantInventoryProducts.get(product))?.stock,
+            accepted: saved.length,
+            encrypted: saved.every(
+              (order: { evidenceFormat: string }) =>
+                order.evidenceFormat === "device-encrypted-v1"
+            ),
+          }
+        },
+        { root: `/@fs${process.cwd()}/packages/core/src`, product }
+      )
+    await expect
+      .poll(readInventory)
+      .toEqual({ stock: 8, accepted: 1, encrypted: true })
     await expect(
       page.getByText("Status update sent to buyer", { exact: true })
     ).toBeVisible()
@@ -233,6 +254,9 @@ test("independent numeric order retains invoice, shipping and accepted conversat
       .poll(() => peerObserved("3", "confirmed"), { timeout: 30_000 })
       .toBe(true)
     console.info("Adapter explicit payment confirmation observed")
+    await expect
+      .poll(readInventory)
+      .toEqual({ stock: 8, accepted: 1, encrypted: true })
     await page.locator("#shipping-tracking-code").fill("SYNTHETIC-TRACKING")
     await page.locator("#shipping-carrier").fill("Synthetic carrier")
     await page

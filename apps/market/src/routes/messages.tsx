@@ -32,19 +32,13 @@ import {
 } from "@conduit/ui"
 import { MessageCircleMore, Search, Store } from "lucide-react"
 import {
-  EVENT_KINDS,
-  appendConduitClientTag,
   createParticipantMessageRumor,
   sendAccountInboxRumor,
-  createAcceptedInboxSendCheckpoint,
-  cacheOrderMessageRumor,
   clearProtectedReadAuthenticationSuppression,
-  createValidatedOrderRouteScope,
   deriveProtectedReadPresentationState,
   formatNpub,
   getAccountSigner,
   formatPubkey,
-  getCommerceInbox,
   markDirectMessageConversationRead,
   normalizePubkey,
   PrivateMessageRelayReadinessError,
@@ -55,7 +49,6 @@ import {
   type PrivateMessageEvent,
   type AccountInboxSendResult,
   type ParsedDirectMessage,
-  createPrivateMessageRumor,
   useConduitSession,
   useInboxDeclaration,
   useProfile,
@@ -63,6 +56,7 @@ import {
 } from "@conduit/core"
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
+import { publishBuyerOrderReply } from "../lib/order-reply"
 import { CopyButton } from "../components/CopyButton"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
 import { getMerchantDisplayName } from "../components/MerchantIdentity"
@@ -87,8 +81,10 @@ type OptimisticDirectMessageSend = {
 }
 
 type BuyerOrderReplySend = {
+  conversation: BuyerConversation
   accountPubkey: string
   authGeneration: number
+  conversationId: string
   content: string
   merchantPubkey: string
   orderId: string
@@ -474,7 +470,7 @@ function MessagesWorkspace() {
   useEffect(() => {
     if (!search.thread) return
     const element = document.querySelector<HTMLElement>(
-      `[data-thread-id="${search.thread}"]`
+      `[data-thread-id="${CSS.escape(search.thread)}"]`
     )
     element?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [search.thread])
@@ -525,77 +521,36 @@ function MessagesWorkspace() {
         throw new Error("Reconnect your signer, then send this message again.")
       }
 
-      const signer = getAccountSigner()
-      if (!signer) throw new Error("Signer not connected")
-      let accountOwner: ReturnType<typeof getCommerceInbox> | null = null
-      try {
-        accountOwner = getCommerceInbox(input.accountPubkey)
-      } catch {
-        // The recipient send can proceed; report missing local history after ACK.
-      }
-
-      const rumor = createPrivateMessageRumor({
-        pubkey: input.accountPubkey,
-        kind: EVENT_KINDS.ORDER,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: appendConduitClientTag(
-          [
-            ["p", input.merchantPubkey],
-            ["type", "message"],
-            ["order", input.orderId],
-          ],
-          "market"
-        ),
-        content: JSON.stringify({
-          note: input.content,
-          orderId: input.orderId,
-          merchantPubkey: input.merchantPubkey,
+      const delivery = await publishBuyerOrderReply(
+        {
           buyerPubkey: input.accountPubkey,
-          createdAt: Date.now(),
-        }),
-      })
-
-      // Reply inside an existing validated order thread: order identity and
-      // counterparty match the parsed conversation, so the compatibility lane
-      // may carry it when the merchant has no usable declaration.
-      const checkpoint = createAcceptedInboxSendCheckpoint(async () => {
-        if (!accountOwner) throw new Error("Local order history unavailable")
-        await cacheOrderMessageRumor(rumor, accountOwner)
-      })
-      const sent = await publishPrivateMessage({
-        rumor,
-        senderPubkey: input.accountPubkey,
-        accountPubkey: input.accountPubkey,
-        authenticatedPubkey: input.accountPubkey,
-        recipientPubkey: input.merchantPubkey,
-        signer,
-        rumorKind: EVENT_KINDS.ORDER,
-        signerInteraction: "external",
-        shouldContinue: () =>
-          isCurrentMessagingAuthority(
-            input.accountPubkey,
-            input.authGeneration
-          ),
-        validatedOrderScope: createValidatedOrderRouteScope({
-          rumor,
+          merchantPubkey: input.merchantPubkey,
           orderId: input.orderId,
-          senderPubkey: input.accountPubkey,
-          recipientPubkey: input.merchantPubkey,
-        }),
-        telemetryApp: "market",
-        onRecipientAccepted: checkpoint.onRecipientAccepted,
-      })
-      if (sent.selfCopyError) {
-        console.warn("Buyer message self-copy publish failed")
-      }
-
-      return await checkpoint.complete(sent)
+          conversation: input.conversation,
+          note: input.content,
+        },
+        {
+          accountPubkey: input.accountPubkey,
+          authenticatedPubkey: input.accountPubkey,
+          shouldContinue: () =>
+            isCurrentMessagingAuthority(
+              input.accountPubkey,
+              input.authGeneration
+            ),
+        }
+      )
+      return {
+        recipient: "accepted",
+        localHistory: delivery.localCacheError ? "unavailable" : "saved",
+        selfCopy: delivery.buyerSelfCopyError ? "pending" : "complete",
+        ...(delivery.checkpointFailure ? { checkpointFailure: true } : {}),
+      } satisfies AccountInboxSendResult
     },
     onSuccess: async (_, input) => {
       const current = orderReplyContextRef.current
       if (
         current.accountPubkey !== input.accountPubkey ||
-        current.conversationId !== input.orderId ||
+        current.conversationId !== input.conversationId ||
         current.merchantPubkey !== input.merchantPubkey
       )
         return
@@ -1629,7 +1584,10 @@ function MessagesWorkspace() {
                         </div>
                         <Link
                           to="/orders"
-                          search={{ order: selectedConversation.orderId }}
+                          search={{
+                            order: selectedConversation.orderId,
+                            counterparty: selectedConversation.merchantPubkey,
+                          }}
                           className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-elevated)]"
                         >
                           View order
@@ -1668,8 +1626,10 @@ function MessagesWorkspace() {
                           onClick={() => {
                             if (!accountPubkey || !selectedConversation) return
                             replyMutation.mutate({
+                              conversation: selectedConversation,
                               accountPubkey,
                               authGeneration,
+                              conversationId: selectedConversation.id,
                               content: replyText.trim(),
                               merchantPubkey:
                                 selectedConversation.merchantPubkey,
@@ -1692,8 +1652,8 @@ function MessagesWorkspace() {
                       {replyMutation.data &&
                         replyMutation.variables?.accountPubkey ===
                           accountPubkey &&
-                        replyMutation.variables.orderId ===
-                          selectedConversation.orderId &&
+                        replyMutation.variables.conversationId ===
+                          selectedConversation.id &&
                         replyMutation.variables.merchantPubkey ===
                           selectedConversation.merchantPubkey && (
                           <PrivateSendNotice

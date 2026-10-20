@@ -25,7 +25,7 @@ import {
 
 describe("event candidate discovery paging", () => {
   it.each([0, 2])(
-    "bounds distinct admitted discovery relays across pages and continuation with %i suppressed candidates",
+    "drains additive discovery relays across pages and continuation with %i suppressed candidates",
     async (suppressedCount) => {
       const state = fixture(1)
       const relays = Array.from(
@@ -61,7 +61,7 @@ describe("event candidate discovery paging", () => {
         assertCurrent: () => {},
       }
       const first = await scanEventMarketCandidates(input)
-      const selected = relays.slice(suppressedCount, suppressedCount + 8)
+      const selected = relays.slice(suppressedCount)
       expect([...contacted].sort()).toEqual([...selected].sort())
       expect(first.pages.length).toBeGreaterThan(0)
       suppress = false
@@ -69,7 +69,7 @@ describe("event candidate discovery paging", () => {
         JSON.stringify({ ...first, pendingCoordinates: [] })
       ) as EventMarketDiscoveryContinuation
       const next = await scanEventMarketCandidates({ ...input, continuation })
-      expect([...contacted].sort()).toEqual([...selected].sort())
+      expect([...contacted].sort()).toEqual([...relays].sort())
       expect(next.pages).toEqual([])
       expect(next.incomplete).toBe(false)
     }
@@ -140,7 +140,7 @@ describe("event candidate discovery paging", () => {
       observe: async () => {},
       assertCurrent: () => {},
     })
-    expect([...contacted].sort()).toEqual(relays.slice(2, 10).sort())
+    expect([...contacted].sort()).toEqual(relays.slice(2).sort())
     expect(scan.admittedRelayUrls.sort()).toEqual([...contacted].sort())
     expect(scan.incomplete).toBe(false)
   })

@@ -70,6 +70,7 @@ const mobileTestFiles = [
 const responsiveCoverageFiles = [
   "**/market-open-markets-order.playwright.ts",
   "**/open-markets-order-adapter.playwright.ts",
+  "**/event-market.playwright.ts",
   "**/event-market-discovery.playwright.ts",
   "**/wallet-recovery-repair.playwright.ts",
   "**/shared-ui-composition.playwright.ts",
@@ -85,6 +86,10 @@ const responsiveCoverageFiles = [
   "**/merchant-product-image-preview.playwright.ts",
   "**/external-payment-preparation.playwright.ts",
 ]
+// Add the tagged order flows to mobile coverage without changing the older
+// Event Market cases' existing desktop-only coverage.
+const occurrenceOrdersMobileExclusion =
+  /event-market\.playwright\.ts(?!.*@occurrence-orders)/
 
 if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
@@ -171,6 +176,7 @@ export default defineConfig({
     },
     {
       name: "mobile-chromium",
+      grepInvert: occurrenceOrdersMobileExclusion,
       testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
         (pattern) =>
           !smokeFiles ||
@@ -180,6 +186,7 @@ export default defineConfig({
     },
     {
       name: "mobile-webkit",
+      grepInvert: occurrenceOrdersMobileExclusion,
       testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
         (pattern) =>
           !smokeFiles ||

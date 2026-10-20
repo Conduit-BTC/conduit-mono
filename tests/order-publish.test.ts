@@ -874,7 +874,7 @@ describe("buyer order publishing", () => {
     ])
     expect(companion.content).toBe(
       "A new order was sent to you through Conduit Market.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=guest-order"
+        "Review it at: https://sell.conduit.market/orders?order=guest-order&counterparty=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
     expect(companion.content).not.toContain("[")
     expect(companion.content).not.toContain("](")
@@ -1201,7 +1201,7 @@ describe("buyer order publishing", () => {
     const companion = calls[1]?.rumor
     expect(companion?.content).toBe(
       "A new order was sent to you through Conduit Market.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=order+%2F%3F%26%3D%E2%9C%93"
+        "Review it at: https://sell.conduit.market/orders?order=order+%2F%3F%26%3D%E2%9C%93&counterparty=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
     expect(companion?.tags?.map((tag) => tag[0])).toEqual([
       "p",
@@ -1305,7 +1305,7 @@ describe("buyer order publishing", () => {
     expect(companion.content).toBe(
       "A new guest order was sent to you through Conduit Market.\n" +
         "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=guest-order"
+        "Review it at: https://sell.conduit.market/orders?order=guest-order&counterparty=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     )
     expect(companion.content).not.toContain("guest-private@example.com")
     expect(companion.content).not.toContain("+1-555-0100")

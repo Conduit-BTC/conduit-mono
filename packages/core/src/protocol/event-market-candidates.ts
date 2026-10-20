@@ -98,7 +98,7 @@ export async function scanEventMarketCandidates(input: {
   const admittedRelays = new Set(prior?.admittedRelayUrls ?? [])
   const suppressedRelays = new Set<string>()
   const selecting = new Map<string, Promise<void>>()
-  const maxRelays = input.plan.maxRelayAttempts ?? Infinity
+  const concurrency = Math.max(1, Math.min(4, input.plan.maxRelayAttempts ?? 4))
   let requests = 0
   let incomplete =
     input.plan.relayHintTruncated ||
@@ -108,7 +108,7 @@ export async function scanEventMarketCandidates(input: {
     (batches.length > 0 && relays.length === 0)
   let available = false
   await Promise.all(
-    Array.from({ length: 4 }, async () => {
+    Array.from({ length: concurrency }, async () => {
       while (queue.length && requests < 128) {
         input.assertCurrent()
         const page = queue.shift()!
@@ -121,7 +121,7 @@ export async function scanEventMarketCandidates(input: {
         ) {
           const selection = selecting.get(page.relayUrl)
           if (selection) await selection
-          else if (admittedRelays.size + selecting.size < maxRelays) {
+          else {
             selecting.set(
               page.relayUrl,
               new Promise<void>((resolve) => {
@@ -129,8 +129,7 @@ export async function scanEventMarketCandidates(input: {
               })
             )
             break
-          } else if (selecting.size) await Promise.race(selecting.values())
-          else break
+          }
           input.assertCurrent()
         }
         if (

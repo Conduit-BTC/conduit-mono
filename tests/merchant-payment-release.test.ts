@@ -40,6 +40,31 @@ describe("merchant settlement confirmation", () => {
     expect(attempts).toBe(1)
   })
 
+  it("retains partial numeric terms for the exact captured payment confirmation", async () => {
+    const numeric = {
+      ...order,
+      id: `open-markets:${"d".repeat(64)}`,
+      currency: "SATS",
+      items: [
+        {
+          productId: `30402:${order.merchantPubkey}:book`,
+          quantity: 1,
+          currency: "SATS",
+        },
+      ],
+      openMarkets: {},
+    }
+    await confirmMerchantPayment(
+      { ...input, orderId: numeric.id, order: numeric },
+      {
+        publishPaid: async (target) => {
+          expect(target.order).toEqual(numeric)
+          expect(target.order?.items[0]?.priceAtPurchase).toBeUndefined()
+        },
+      }
+    )
+  })
+
   it("publishes only the paid transition", async () => {
     let paid = 0
     expect(

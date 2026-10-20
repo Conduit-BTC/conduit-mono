@@ -80,7 +80,7 @@ ordinary adapters, cache, expiry checks and signer remain in use.
 
 Response diagnostics contain only fixed provider identifiers, outcomes, durations
 and cache state. They do not enable request, body, header or trace logging. All
-requests remain rate-only, with exact allowed origins and service-level limiting
+requests remain rate-only, with approved origins and service-level limiting
 without visitor identity. The dedicated pricing key stays in runtime secret
 storage; public trust and historical keys remain separate from anonymous-zap and
 wallet signing.
@@ -92,12 +92,43 @@ exhausted admission cannot authorize new collection/signing; a previously signed
 snapshot remains usable only within its original freshness. Repeated public
 requests cannot spend refresh capacity while that common snapshot is fresh.
 
-Exact CORS is a browser boundary, not caller authentication: a non-browser caller
+CORS is a browser boundary, not caller authentication: a non-browser caller
 can forge an allowed Origin. This resource ceiling does not claim caller-isolated
 edge abuse protection or DDoS immunity. Adding visitor-based controls requires a
 separately reviewed privacy boundary; no visitor key is introduced here.
 
+## Preview origin policy
+
+The preview Wrangler environment selects `src/checkout-pricing-preview.ts`.
+Alongside every existing exact origin in
+`CHECKOUT_SPARK_PRICING_ALLOWED_ORIGINS`, it accepts canonical HTTPS origins
+with a single branch-alias or deployment-hash label under these Pages projects:
+
+- `conduit-market-coo.pages.dev`
+- `conduit-merchant-33n.pages.dev`
+
+This includes retained deployment URLs as well as current branch aliases; it
+does not attest that a deployment is current or reviewed. The project apex,
+other projects, nested subdomains, lookalike suffixes, non-HTTPS schemes,
+non-default ports and malformed origins are not implicitly allowed. Explicit
+origin entries retain their existing behavior. The explicit list must still be
+nonempty and valid; missing or malformed configuration fails closed.
+
+The default/production entry remains exact-origin-only. No request field or
+runtime variable enables the preview policy. Both entries reflect only the
+accepted exact origin, send `Vary: Origin`, and share the same credential-free
+request validation, signing, cache and rate-limit behavior.
+
+Source changes do not deploy the Worker. A separately authorized preview rollout
+must select the preview entry while preserving the deployed explicit origins,
+existing runtime secret, public trust ring and limiter. Reverting the preview
+entry to `src/checkout-pricing-authority.ts` restores exact-origin-only behavior.
+Production configuration and activation remain separate.
+
 ## Source references
+
+- [Cloudflare Pages preview URLs and branch aliases](https://developers.cloudflare.com/pages/configuration/preview-deployments/)
+- [CORS origin reflection and Vary](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Access-Control-Allow-Origin)
 
 - [Mempool updater](https://github.com/mempool/mempool/blob/master/backend/src/tasks/price-updater.ts)
 - [Coinbase prices](https://docs.cdp.coinbase.com/coinbase-app/track-apis/prices)

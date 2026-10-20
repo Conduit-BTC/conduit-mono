@@ -8,10 +8,11 @@ import { matchFilter, type Filter } from "nostr-tools"
 import {
   buildEventMarketRosterDraft,
   buildEventMarketAuthorizationDraft,
+  buildEventMarketAssignmentDraft,
+  parseEventMarketAssignmentEvent,
   resolveEventMarketAuthorization,
   getEventMarketCandidateFilters,
   parseEventMarketRosterEvent,
-  parseEventMarketAuthorizationEvent,
   parseEventMarketCalendarEvent,
   resolveEventMarketCalendar,
   resolveEventMarketProduct,
@@ -97,12 +98,37 @@ function product(
       ["title", "Handmade soap"],
       ["price", "12", "USD"],
       ["type", "simple", "physical"],
+      ["stock", "6"],
       ...(tagged ? [["a", marketCoordinate]] : []),
       ...(hidden ? [["visibility", "hidden"]] : []),
     ],
     createdAt,
     "Handmade soap"
   )
+}
+
+function assignmentFor(
+  coordinate: string,
+  secret = merchantSecret,
+  createdAt = 101,
+  previousEventId?: string,
+  state: "active" | "removed" = "active"
+): SignedPublicNostrEvent {
+  const draft = buildEventMarketAssignmentDraft({
+    marketCoordinate,
+    occurrenceCoordinate: calendarCoordinate,
+    productCoordinate: coordinate,
+    merchantPubkey: getPublicKey(secret),
+    state,
+    inventory: { mode: "tracked", quantity: 6 },
+    fulfillmentMethods: ["pickup"],
+    previousEventId,
+  })
+  return sign(secret, draft.kind, draft.tags, createdAt)
+}
+
+function assignment(createdAt = 101): SignedPublicNostrEvent {
+  return assignmentFor(productCoordinate, merchantSecret, createdAt)
 }
 
 async function admitted(
@@ -144,7 +170,7 @@ const authorizationRead = {
   coverage: "complete" as const,
   retained: true,
   actionable: true,
-  observedEvidence: [],
+  observedEvidence: [grantEvent],
 }
 
 describe("experimental Event Market roster", () => {
@@ -171,6 +197,9 @@ describe("experimental Event Market roster", () => {
       product(organizerSecret, organizer, "soap", 100)
     )
     const selfCoordinate = `30402:${organizer}:soap`
+    const selfAssignment = parseEventMarketAssignmentEvent(
+      assignmentFor(selfCoordinate, organizerSecret)
+    )!
     const selfGrantDraft = buildEventMarketAuthorizationDraft({
       marketCoordinate,
       merchantPubkey: organizer,
@@ -196,6 +225,7 @@ describe("experimental Event Market roster", () => {
         productCoordinate: selfCoordinate,
         revisions: [selfProduct],
         authorization: selfAuthorization,
+        assignment: selfAssignment,
       }).state
     ).toBe("malformed")
     const boothMarket = parseEventMarketRosterEvent(booth)!
@@ -204,6 +234,7 @@ describe("experimental Event Market roster", () => {
       productCoordinate: selfCoordinate,
       revisions: [selfProduct],
       authorization: selfAuthorization,
+      assignment: selfAssignment,
     })
     expect(eligible.state).toBe("eligible")
     if (eligible.state !== "eligible")
@@ -214,8 +245,9 @@ describe("experimental Event Market roster", () => {
       [
         ["d", "fair"],
         ["title", "Fair"],
-        ["start", "1790000000"],
-        ["D", "20717"],
+        ["start", "1900000000"],
+        ["end", "1900003600"],
+        ["D", String(Math.floor(1_900_000_000 / 86_400))],
       ],
       100
     )
@@ -243,7 +275,11 @@ describe("experimental Event Market roster", () => {
       },
     }
     expect(
-      createEventMarketPickupSnapshot({ marketRead, productRead }).mode
+      createEventMarketPickupSnapshot({
+        marketRead,
+        productRead,
+        selectedOccurrenceCoordinate: calendarCoordinate,
+      }).mode
     ).toBe("merchant_present")
     expect(() =>
       createEventMarketPickupSnapshot({
@@ -255,6 +291,7 @@ describe("experimental Event Market roster", () => {
             merchant: { ...selfRow, mode: "organizer_handoff" },
           },
         },
+        selectedOccurrenceCoordinate: calendarCoordinate,
       })
     ).toThrow("Current signed Event Market participation is required")
   })
@@ -269,7 +306,7 @@ describe("experimental Event Market roster", () => {
       merchants: [merchantRow],
     })
     expect(getEventMarketCandidateFilters(parsed!)).toEqual([
-      { kinds: [30402], authors: [merchant], "#a": [marketCoordinate] },
+      { kinds: [30410], authors: [merchant], "#a": [marketCoordinate] },
     ])
   })
 
@@ -408,17 +445,19 @@ describe("experimental Event Market roster", () => {
     ).toBeNull()
   })
 
-  it("admits approved tagged products but not spam, hidden, untagged, or deleted revisions", async () => {
+  it("admits assigned products despite product market hints, but rejects spam, hidden, or deleted revisions", async () => {
     const market = parseEventMarketRosterEvent(
       await admitted(roster([merchantRow]))
     )!
     const first = await admitted(product(merchantSecret, merchant, "soap", 100))
+    const parsedAssignment = parseEventMarketAssignmentEvent(assignment())!
     expect(
       resolveEventMarketProduct({
         authorization,
         market,
         productCoordinate,
         revisions: [first],
+        assignment: parsedAssignment,
       }).state
     ).toBe("eligible")
     const spam = await admitted(product(spammerSecret, spammer, "spam", 100))
@@ -428,6 +467,7 @@ describe("experimental Event Market roster", () => {
         market,
         productCoordinate: `30402:${spammer}:spam`,
         revisions: [spam],
+        assignment: parsedAssignment,
       }).state
     ).toBe("unapproved")
     const hidden = await admitted(
@@ -439,6 +479,7 @@ describe("experimental Event Market roster", () => {
         market,
         productCoordinate,
         revisions: [first, hidden],
+        assignment: parsedAssignment,
       }).state
     ).toBe("hidden")
     const untagged = await admitted(
@@ -450,8 +491,9 @@ describe("experimental Event Market roster", () => {
         market,
         productCoordinate,
         revisions: [first, untagged],
+        assignment: parsedAssignment,
       }).state
-    ).toBe("untagged")
+    ).toBe("eligible")
     let deleted = sign(
       merchantSecret,
       5,
@@ -469,6 +511,7 @@ describe("experimental Event Market roster", () => {
         productCoordinate,
         revisions: [first],
         deletions: [deleted],
+        assignment: parsedAssignment,
       }).state
     ).toBe("deleted")
     const revoked = parseEventMarketRosterEvent(
@@ -480,6 +523,7 @@ describe("experimental Event Market roster", () => {
         market: revoked,
         productCoordinate,
         revisions: [first],
+        assignment: parsedAssignment,
       }).state
     ).toBe("unapproved")
     const reapproved = parseEventMarketRosterEvent(
@@ -491,6 +535,7 @@ describe("experimental Event Market roster", () => {
         market: reapproved,
         productCoordinate,
         revisions: [first],
+        assignment: parsedAssignment,
       }).state
     ).toBe("eligible")
   })
@@ -530,7 +575,7 @@ describe("experimental Event Market roster", () => {
     )
   })
 
-  it("uses the exact latest product revision when a lagging relay offers an old market tag", async () => {
+  it("uses the exact latest product revision when a lagging relay offers an old market hint", async () => {
     const approved = parseEventMarketRosterEvent(
       await admitted(roster([merchantRow]))
     )!
@@ -552,8 +597,9 @@ describe("experimental Event Market roster", () => {
                 [
                   ["d", "fair"],
                   ["title", "Fair"],
-                  ["start", "1790000000"],
-                  ["D", "20717"],
+                  ["start", "1900000000"],
+                  ["end", "1900003600"],
+                  ["D", String(Math.floor(1_900_000_000 / 86_400))],
                 ],
                 100
               )
@@ -562,6 +608,7 @@ describe("experimental Event Market roster", () => {
           calendarCoverage: "complete",
         },
         productCoordinate,
+        selectedOccurrenceCoordinate: calendarCoordinate,
       },
       {
         plan: async () => ({
@@ -578,9 +625,11 @@ describe("experimental Event Market roster", () => {
         fetch: async (filter) => ({
           events: filter.kinds?.includes(30402 as never)
             ? [tagged]
-            : filter.kinds?.includes(3841 as never)
-              ? [grant()]
-              : [],
+            : filter.kinds?.includes(30410 as never)
+              ? [assignment()]
+              : filter.kinds?.includes(3841 as never)
+                ? [grant()]
+                : [],
           relays: [{ relayUrl: "wss://example.com", status: "success" }],
         }),
         load: async () => [untagged],
@@ -588,12 +637,12 @@ describe("experimental Event Market roster", () => {
         authorization: async () => authorizationRead,
       }
     )
-    expect(read.resolution.state).toBe("untagged")
+    expect(read.resolution.state).toBe("eligible")
     expect(read.coverage).toBe("stale")
     expect(read.actionable).toBe(false)
   })
 
-  it("filters discovered candidates by the signed roster and known newer untagged evidence", async () => {
+  it("discovers signed assignments then reads exact products without authorizing cards", async () => {
     const approved = roster([merchantRow])
     const calendar = sign(
       organizerSecret,
@@ -637,6 +686,7 @@ describe("experimental Event Market roster", () => {
           let events: SignedPublicNostrEvent[] = []
           if (filter.kinds?.includes(30409 as never)) events = [approved]
           if (filter.kinds?.includes(31923 as never)) events = [calendar]
+          if (filter.kinds?.includes(30410 as never)) events = [assignment()]
           if (filter.kinds?.includes(30402 as never)) events = [tagged, spam]
           if (filter.kinds?.includes(3841 as never)) events = [grant()]
           return {
@@ -651,11 +701,11 @@ describe("experimental Event Market roster", () => {
     expect(read.marketRead.resolution.state).toBe("current")
     expect(read.marketRead.calendarSignedEvent?.id).toBe(calendar.id)
     expect(read.candidateCount).toBe(1)
-    expect(read.products).toHaveLength(0)
+    expect(read.products).toHaveLength(1)
     expect(read.coverage).toBe("partial")
     const candidateCall = calls.find(
       (call) =>
-        call.kinds.includes(30402) && call.eventTag?.includes(marketCoordinate)
+        call.kinds.includes(30410) && call.eventTag?.includes(marketCoordinate)
     )
     expect(candidateCall?.authors).toEqual([merchant])
     expect(calls.filter((call) => call.kinds.includes(30402))).toHaveLength(1)
@@ -701,9 +751,11 @@ describe("experimental Event Market roster", () => {
               ? [calendar]
               : filter.kinds?.includes(30402 as never)
                 ? [tagged]
-                : filter.kinds?.includes(3841 as never)
-                  ? [active]
-                  : [],
+                : filter.kinds?.includes(30410 as never)
+                  ? [assignment()]
+                  : filter.kinds?.includes(3841 as never)
+                    ? [active]
+                    : [],
           relays: [
             { relayUrl: "wss://example.com", status: "success" },
             ...(filter.kinds?.includes(3841 as never)
@@ -750,8 +802,9 @@ describe("experimental Event Market roster", () => {
         [
           ["d", "fair"],
           ["title", "Fair"],
-          ["start", "1790000000"],
-          ["D", "20717"],
+          ["start", "1900000000"],
+          ["end", "1900003600"],
+          ["D", String(Math.floor(1_900_000_000 / 86_400))],
         ],
         100
       )
@@ -779,13 +832,15 @@ describe("experimental Event Market roster", () => {
               ? [calendar]
               : filter.kinds?.includes(30402 as never)
                 ? [tagged]
-                : filter.kinds?.includes(3841 as never)
-                  ? filter.ids
-                    ? filter.ids.flatMap((id) =>
-                        byId.has(id) ? [byId.get(id)!] : []
-                      )
-                    : [history.at(-1)!]
-                  : []
+                : filter.kinds?.includes(30410 as never)
+                  ? [assignment()]
+                  : filter.kinds?.includes(3841 as never)
+                    ? filter.ids
+                      ? filter.ids.flatMap((id) =>
+                          byId.has(id) ? [byId.get(id)!] : []
+                        )
+                      : [history.at(-1)!]
+                    : []
           return {
             events,
             relays: [{ relayUrl: "wss://example.com", status: "success" }],
@@ -813,33 +868,40 @@ describe("experimental Event Market roster", () => {
       expect(catalog.products).toHaveLength(1)
       expect(catalog.products[0]?.actionable).toBe(false)
       const exact = await readEventMarketProduct(
-        { marketRead: catalog.marketRead, productCoordinate },
+        {
+          marketRead: catalog.marketRead,
+          productCoordinate,
+          selectedOccurrenceCoordinate: calendarCoordinate,
+        },
         dependencies
       )
       expect(exact.actionable).toBe(transitions === 128)
     })
   }
 
-  it("freezes the signed roster row and product revision with the merchant as payee", async () => {
+  it("freezes the signed roster row, assignment, and product revision with the merchant as payee", async () => {
     const currentMarket = parseEventMarketRosterEvent(
       await admitted(roster([merchantRow]))
     )!
     const signedProduct = product(merchantSecret, merchant, "soap", 100)
     const admittedProduct = await admitted(signedProduct)
+    const signedAssignment = assignment()
     const currentProduct = resolveEventMarketProduct({
       authorization,
       market: currentMarket,
       productCoordinate,
       revisions: [admittedProduct],
+      assignment: parseEventMarketAssignmentEvent(signedAssignment)!,
     })
-    let signedCalendar = sign(
+    const signedCalendar = sign(
       organizerSecret,
       31923,
       [
         ["d", "fair"],
         ["title", "Fair"],
-        ["start", "1790000000"],
-        ["D", "20717"],
+        ["start", "1900000000"],
+        ["end", "1900003600"],
+        ["D", String(Math.floor(1_900_000_000 / 86_400))],
       ],
       100
     )
@@ -866,6 +928,7 @@ describe("experimental Event Market roster", () => {
     const snapshot = createEventMarketPickupSnapshot({
       marketRead,
       productRead,
+      selectedOccurrenceCoordinate: calendarCoordinate,
     })
     expect(snapshot).toMatchObject({
       type: "event_market_pickup",
@@ -880,6 +943,7 @@ describe("experimental Event Market roster", () => {
       createEventMarketPickupSnapshot({
         marketRead,
         productRead: { ...productRead, actionable: false },
+        selectedOccurrenceCoordinate: calendarCoordinate,
       })
     ).toThrow()
   })
@@ -968,12 +1032,14 @@ describe("retained future Event Market evidence", () => {
         [
           ["d", "fair"],
           ["title", "Fair"],
-          ["start", "1790000000"],
-          ["D", "20717"],
+          ["start", "1900000000"],
+          ["end", "1900003600"],
+          ["D", String(Math.floor(1_900_000_000 / 86_400))],
         ],
         100
       ),
       grant(),
+      assignment(),
     ]
     const retained = new Map<string, SignedPublicNostrEvent>()
     const dependencies: NonNullable<
@@ -1079,7 +1145,11 @@ describe("retained future Event Market evidence", () => {
       state.dependencies
     )
     const exact = await readEventMarketProduct(
-      { marketRead, productCoordinate },
+      {
+        marketRead,
+        productCoordinate,
+        selectedOccurrenceCoordinate: calendarCoordinate,
+      },
       state.dependencies
     )
     return { marketRead, exact }
@@ -1164,7 +1234,7 @@ describe("retained future Event Market evidence", () => {
         { reference: marketCoordinate },
         state.dependencies
       )
-      expect(catalog.products).toHaveLength(scope === "calendar" ? 1 : 0)
+      expect(catalog.products).toHaveLength(0)
       expect(catalog.products.every((entry) => !entry.actionable)).toBe(true)
     })
   }
@@ -1505,15 +1575,16 @@ describe("retained future Event Market evidence", () => {
     })
   })
 
-  it("marks cache-only discovery partial without an exact product refresh", async () => {
+  it("marks cache-only assignment discovery partial without a live assignment refresh", async () => {
     const state = fixture()
     const tagged = product(merchantSecret, merchant, "soap", 100)
     state.live.push(tagged)
     state.retained.set(tagged.id, tagged)
+    state.retained.set(assignment().id, assignment())
     const fetch = state.dependencies.fetch
     state.dependencies.fetch = async (filter, options) => {
       const result = await fetch(filter, options)
-      return filter.kinds?.includes(30402 as never) && filter["#a"]
+      return filter.kinds?.includes(30410 as never) && filter["#a"]
         ? { ...result, events: [] }
         : result
     }
@@ -1543,7 +1614,7 @@ describe("retained future Event Market evidence", () => {
   })
 
   for (const change of ["untagged", "deleted"] as const) {
-    it(`does not restore a retained tagged product after known signed ${change} evidence`, async () => {
+    it(`applies known signed ${change} product evidence independently of old market hints`, async () => {
       const state = fixture()
       const tagged = product(merchantSecret, merchant, "soap", 100)
       state.live.push(tagged)
@@ -1565,12 +1636,18 @@ describe("retained future Event Market evidence", () => {
       )
       expect(later.candidateCount).toBe(1)
       expect(later.coverage).toBe("partial")
-      expect(later.products).toHaveLength(0)
+      expect(later.products).toHaveLength(change === "deleted" ? 0 : 1)
       const exact = await readEventMarketProduct(
-        { marketRead: later.marketRead, productCoordinate },
+        {
+          marketRead: later.marketRead,
+          productCoordinate,
+          selectedOccurrenceCoordinate: calendarCoordinate,
+        },
         state.dependencies
       )
-      expect(exact.resolution.state).toBe(change)
+      expect(exact.resolution.state).toBe(
+        change === "deleted" ? "deleted" : "eligible"
+      )
       expect(exact.actionable).toBe(false)
     })
   }
@@ -1604,13 +1681,16 @@ describe("retained future Event Market evidence", () => {
       state.dependencies
     )
     expect(authors).toEqual([organizer])
-    expect(queries.filter((filter) => filter.kinds?.includes(30402))).toEqual([
+    expect(queries.filter((filter) => filter.kinds?.includes(30410))).toEqual([
       {
-        kinds: [30402],
+        kinds: [30410],
         authors: rows.map((row) => row.pubkey),
         "#a": [marketCoordinate],
         limit: 48,
       },
+    ])
+    expect(queries.filter((filter) => filter.kinds?.includes(30402))).toEqual([
+      { kinds: [30402], authors: [merchant], "#d": ["soap"], limit: 256 },
     ])
     expect(queries.some((filter) => filter.kinds?.includes(3841))).toBe(false)
     expect(catalog.products[0]?.resolution.state).toBe("candidate")
@@ -1659,7 +1739,7 @@ describe("retained future Event Market evidence", () => {
     await read
   })
 
-  it("preserves live result order, filters authors locally, then fills from cache", async () => {
+  it("preserves signed assignment result order, filters authors, then fills from cache", async () => {
     const state = fixture()
     const first = product(merchantSecret, merchant, "first", 100)
     const second = product(merchantSecret, merchant, "second", 101)
@@ -1670,9 +1750,17 @@ describe("retained future Event Market evidence", () => {
     const forged = { ...malformed, content: "forged content" }
     const untagged = product(merchantSecret, merchant, "untagged", 104, false)
     state.retained.set(cached.id, cached)
+    state.retained.set(
+      assignmentFor(`30402:${merchant}:cached`).id,
+      assignmentFor(`30402:${merchant}:cached`)
+    )
+    const firstAssignment = assignmentFor(`30402:${merchant}:first`)
+    const secondAssignment = assignmentFor(`30402:${merchant}:second`)
     const fetch = state.dependencies.fetch
     state.dependencies.fetch = async (filter, options) => {
       const result = await fetch(filter, options)
+      if (filter.kinds?.includes(30410 as never) && filter["#a"])
+        return { ...result, events: [secondAssignment, firstAssignment] }
       return filter.kinds?.includes(30402 as never)
         ? { ...result, events: [spam, second, hidden, forged, untagged, first] }
         : result
@@ -1695,7 +1783,7 @@ describe("retained future Event Market evidence", () => {
     expect(state.retained.has(spam.id)).toBe(false)
   })
 
-  it("preserves semantic live matches and only fills search gaps with matching cache", async () => {
+  it("filters both live and retained signed assignment products by the search term", async () => {
     const state = fixture()
     const live = sign(
       merchantSecret,
@@ -1726,9 +1814,12 @@ describe("retained future Event Market evidence", () => {
     )
     state.retained.set(matchingCache.id, matchingCache)
     state.retained.set(otherCache.id, otherCache)
+    const liveAssignment = assignmentFor(`30402:${merchant}:candle`)
     const fetch = state.dependencies.fetch
     state.dependencies.fetch = async (filter, options) => {
       const result = await fetch(filter, options)
+      if (filter.kinds?.includes(30410 as never) && filter["#a"])
+        return { ...result, events: [liveAssignment, assignment()] }
       return filter.kinds?.includes(30402 as never)
         ? { ...result, events: [live] }
         : result
@@ -1738,19 +1829,18 @@ describe("retained future Event Market evidence", () => {
       state.dependencies
     )
     expect(catalog.products.map((entry) => entry.productCoordinate)).toEqual([
-      `30402:${merchant}:candle`,
       `30402:${merchant}:soap`,
     ])
   })
 
   it("bounds lazy requests and reports more raw candidates despite whitelist underfill", async () => {
     const state = fixture()
-    const spam = product(spammerSecret, spammer, "spam", 100)
+    const spam = assignmentFor(`30402:${spammer}:spam`, spammerSecret)
     const filters: Filter[] = []
     const fetch = state.dependencies.fetch
     state.dependencies.fetch = async (filter, options) => {
       const result = await fetch(filter, options)
-      if (!filter.kinds?.includes(30402 as never)) return result
+      if (!filter.kinds?.includes(30410 as never)) return result
       filters.push(filter as Filter)
       return { ...result, events: Array(filter.limit).fill(spam) }
     }
@@ -1759,11 +1849,10 @@ describe("retained future Event Market evidence", () => {
       state.dependencies
     )
     expect(filters[0]).toEqual({
-      kinds: [30402],
+      kinds: [30410],
       authors: [merchant],
       "#a": [marketCoordinate],
       limit: 2,
-      search: "soap",
     })
     expect(catalog.products).toHaveLength(0)
     expect(catalog.hasMore).toBe(true)
@@ -1876,7 +1965,7 @@ describe("retained future Event Market evidence", () => {
         { reference: marketCoordinate },
         state.dependencies
       )
-      expect(catalog.products).toHaveLength(0)
+      expect(catalog.products).toHaveLength(change === "untagged" ? 1 : 0)
     })
   }
 

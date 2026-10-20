@@ -205,8 +205,7 @@ function findCandidate(
     matchingMerchantInvoice?.type === "payment_request"
   if (
     evidence?.wireFormat === "open_markets" &&
-    (!matchesMerchantInvoice ||
-      evidence.type !== "payment_proof" ||
+    (evidence.type !== "payment_proof" ||
       evidence.payload.amountMsats !== decoded.msats)
   )
     return null
@@ -253,7 +252,7 @@ export function getMerchantPaymentVerificationCandidates(
       }
       const invoice = message.payload.invoice.trim().toLowerCase()
       const orders = invoiceOrders.get(invoice) ?? new Set<string>()
-      orders.add(conversation.orderId)
+      orders.add(conversation.id)
       invoiceOrders.set(invoice, orders)
     }
   }

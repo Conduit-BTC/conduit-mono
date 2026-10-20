@@ -10,6 +10,7 @@ import {
   isMerchantOrderPaid,
   normalizeLightningInvoice,
   orderFlowFromCheckoutMode,
+  parseEventMarketAssignmentEvent,
   validateLightningInvoiceForPayment,
   type BuyerConversationSummary,
   type OrderFlow,
@@ -533,7 +534,7 @@ function deriveMerchantInvoiceAction({
 export function buildOrderViewModel(
   input: BuildOrderViewModelInput
 ): OrderViewModel {
-  const { lifecycle, conversation, paymentAttempt } = input
+  const { lifecycle, conversation } = input
   const messages = input.messages ?? conversation?.messages ?? undefined
   const summary: OrderSummary | null = messages
     ? extractOrderSummary(
@@ -561,6 +562,13 @@ export function buildOrderViewModel(
         message.senderPubkey === merchantPubkey
     )?.recipientPubkey ??
     ""
+
+  const paymentAttempt =
+    input.paymentAttempt?.orderId === input.orderId &&
+    input.paymentAttempt.buyerPubkey === buyerPubkey &&
+    input.paymentAttempt.merchantPubkey === merchantPubkey
+      ? input.paymentAttempt
+      : null
 
   // --- Items / totals -----------------------------------------------------
   const items: OrderViewItem[] = lifecycle
@@ -1105,6 +1113,44 @@ export function getOrderFilterPhase(
   return "pending"
 }
 
+/** Display the saved handover workflow, never infer acceptance or settlement. */
+function hasFiniteOrganizerStockHandover(vm: OrderViewModel): boolean {
+  return (
+    vm.items.length > 0 &&
+    vm.items.every((item) => {
+      const fulfillment = item.fulfillment
+      if (
+        fulfillment?.type !== "event_market_pickup" ||
+        fulfillment.mode !== "organizer_handoff" ||
+        fulfillment.merchantPubkey !== vm.merchantPubkey ||
+        fulfillment.payeePubkey !== fulfillment.merchantPubkey ||
+        !fulfillment.occurrenceAssignment
+      )
+        return false
+      const assignment = parseEventMarketAssignmentEvent(
+        fulfillment.occurrenceAssignment.signedEvent
+      )
+      return (
+        assignment?.state === "active" &&
+        assignment.eventId === fulfillment.occurrenceAssignment.eventId &&
+        assignment.coordinate === fulfillment.occurrenceAssignment.coordinate &&
+        assignment.merchantPubkey === fulfillment.merchantPubkey &&
+        assignment.organizerPubkey === fulfillment.organizerPubkey &&
+        assignment.marketCoordinate === fulfillment.market.coordinate &&
+        assignment.occurrenceCoordinate === fulfillment.calendar.coordinate &&
+        assignment.productCoordinate === fulfillment.product.coordinate &&
+        assignment.productCoordinate === item.productId &&
+        assignment.inventory.mode === "tracked" &&
+        assignment.fulfillmentMethods.includes("pickup") &&
+        assignment.stockPool.state === "valid" &&
+        assignment.stockPool.pool.state === "active" &&
+        assignment.stockPool.pool.organizerPubkey ===
+          fulfillment.organizerPubkey
+      )
+    })
+  )
+}
+
 export function buildOrderTimeline(
   vm: OrderViewModel,
   formatSats: (sats: number) => string = (sats) =>
@@ -1113,6 +1159,7 @@ export function buildOrderTimeline(
   const statuses = computeOrderTimelineStatuses(vm)
   const futureHandoff = vm.futureMarketFulfillments[0]
   const organizerHandoff = futureHandoff?.mode === "organizer_handoff"
+  const finiteOrganizerHandoff = hasFiniteOrganizerStockHandover(vm)
   const rowOrder: readonly OrderTimelineRowKey[] = isZeroCostPickupOrder(vm)
     ? ["order_sent", "merchant_confirmation", "fulfillment", "complete"]
     : vm.buyerIdentityKind === "guest_ephemeral"
@@ -1120,66 +1167,72 @@ export function buildOrderTimeline(
       : vm.requiresShipping || vm.requiresPickup
         ? TIMELINE_ROW_ORDER
         : TIMELINE_ROW_ORDER.filter((key) => key !== "fulfillment")
-  return rowOrder.map((key) => {
-    const status = statuses[key]
-    const copy = copyFor(key, status)
-    let title = copy.title
-    let subtitle = copy.subtitle
-    // Funding a router is not a payment to a merchant or a merchant receipt.
-    if (key === "payment" && vm.checkoutSparkRouted) {
-      title = isBuyerOrderPaid(vm)
-        ? "Order payment verified"
-        : "Payment not yet verified"
-      subtitle = isBuyerOrderPaid(vm)
-        ? "Your order payment was verified on this device. Delivery is confirmed separately."
-        : vm.checkoutSparkRecipientUnverified
-          ? "Payment was sent, but its intended recipient has not been verified on this device. Do not pay it again."
-          : "Payment has not been verified yet. Check the saved payment status; do not start another payment."
-    } else if (key === "invoice" && vm.flow === "prepaid") {
-      title = status === "complete" ? "Paid directly" : "Direct payment"
-      subtitle =
-        "Paid the merchant directly over Lightning — no invoice needed."
-    } else if (key === "fulfillment" && vm.requiresPickup) {
-      title =
-        status === "complete"
-          ? "Pickup complete"
-          : organizerHandoff
-            ? "Pickup from event organizer"
-            : "Pickup from merchant booth"
-      subtitle =
-        status === "complete"
-          ? "The pickup order was marked complete."
-          : organizerHandoff
-            ? isZeroCostPickupOrder(vm)
-              ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
-              : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
-            : "The merchant handles pickup at the signed merchant booth location. No organizer receipt is sent."
-    } else if (
-      key === "payment" &&
-      vm.paymentStatus === "ambiguous" &&
-      !isBuyerOrderPaid(vm)
-    ) {
-      if (vm.zapReceiptStatus === "receipt_not_observed") {
-        title = "Payment not confirmed"
+  return rowOrder
+    .filter((key) => !finiteOrganizerHandoff || key !== "merchant_confirmation")
+    .map((key) => {
+      const status = statuses[key]
+      const copy = copyFor(key, status)
+      let title = copy.title
+      let subtitle = copy.subtitle
+      // Funding a router is not a payment to a merchant or a merchant receipt.
+      if (key === "payment" && vm.checkoutSparkRouted) {
+        title = isBuyerOrderPaid(vm)
+          ? "Order payment verified"
+          : "Payment not yet verified"
+        subtitle = isBuyerOrderPaid(vm)
+          ? "Your order payment was verified on this device. Delivery is confirmed separately."
+          : vm.checkoutSparkRecipientUnverified
+            ? "Payment was sent, but its intended recipient has not been verified on this device. Do not pay it again."
+            : "Payment has not been verified yet. Check the saved payment status; do not start another payment."
+      } else if (key === "invoice" && vm.flow === "prepaid") {
+        title = status === "complete" ? "Paid directly" : "Direct payment"
         subtitle =
-          "A matching receipt was not observed. If your wallet shows payment, do not pay again."
-      } else {
-        title = "Payment needs review"
+          "Paid the merchant directly over Lightning — no invoice needed."
+      } else if (key === "fulfillment" && vm.requiresPickup) {
+        title =
+          status === "complete"
+            ? "Pickup complete"
+            : organizerHandoff
+              ? "Pickup from event organizer"
+              : "Pickup from merchant booth"
         subtitle =
-          "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+          status === "complete"
+            ? "The pickup order was marked complete."
+            : organizerHandoff
+              ? finiteOrganizerHandoff
+                ? isZeroCostPickupOrder(vm)
+                  ? "Show your private pickup receipt to the organizer. They'll check reserved stock before handing over your items."
+                  : "Show your private pickup receipt to the organizer. They'll check payment and reserved stock before handing over your items."
+                : isZeroCostPickupOrder(vm)
+                  ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
+                  : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
+              : "The merchant handles pickup at the signed merchant booth location. No organizer receipt is sent."
+      } else if (
+        key === "payment" &&
+        vm.paymentStatus === "ambiguous" &&
+        !isBuyerOrderPaid(vm)
+      ) {
+        if (vm.zapReceiptStatus === "receipt_not_observed") {
+          title = "Payment not confirmed"
+          subtitle =
+            "A matching receipt was not observed. If your wallet shows payment, do not pay again."
+        } else {
+          title = "Payment needs review"
+          subtitle =
+            "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+        }
+      } else if (
+        key === "payment" &&
+        status === "complete" &&
+        typeof vm.totalSats === "number"
+      ) {
+        subtitle = `Payment of ${formatSats(vm.totalSats)} was sent over Lightning.`
       }
-    } else if (
-      key === "payment" &&
-      status === "complete" &&
-      typeof vm.totalSats === "number"
-    ) {
-      subtitle = `Payment of ${formatSats(vm.totalSats)} was sent over Lightning.`
-    }
-    if (key === "fulfillment" && vm.tracking?.number) {
-      subtitle = `Tracking: ${vm.tracking.number}`
-    }
-    return { key, title, subtitle, status }
-  })
+      if (key === "fulfillment" && vm.tracking?.number) {
+        subtitle = `Tracking: ${vm.tracking.number}`
+      }
+      return { key, title, subtitle, status }
+    })
 }
 
 // --- Header status pill ---------------------------------------------------

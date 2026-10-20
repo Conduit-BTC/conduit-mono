@@ -16,6 +16,15 @@ import {
   type CheckoutRecoveryDescriptor,
 } from "./checkout-spark-recovery"
 import { parseCheckoutSparkMerchantProgressRumor } from "./checkout-spark-merchant-progress"
+import { parseCheckoutSparkOrganizerExecutionRumor } from "./checkout-spark-organizer-progress"
+import { parseCheckoutSparkMerchantEventProgressRumor } from "./checkout-spark-merchant-event-progress"
+import { parseEventMarketFreePurchaseRumor } from "./event-market-free-purchase"
+import { EVENT_MARKET_FREE_PURCHASE_TYPE } from "./event-market-free-purchase-marker"
+import {
+  parseCheckoutSparkOrganizerRecoveryRumor,
+  parseCheckoutSparkOrganizerRecoveryProgressRumor,
+  checkoutSparkOrganizerRecoveryPayloadDigest,
+} from "./checkout-spark-organizer-recovery"
 import { sendPrivateAttachment } from "./private-file-upload"
 import { sendAccountInboxRumor } from "./inbox-send"
 import type { AccountInboxSendResult } from "./inbox-send"
@@ -80,6 +89,42 @@ import {
   type InboxDeclarationResolution,
 } from "./private-message-routing"
 import { getAccountSigner, SessionSigner } from "./session-signer"
+import type { RelayFailureCode } from "./relay-executor"
+
+const INBOX_READ_FAILURE_CODES = new Set<RelayFailureCode>([
+  "transport_unavailable",
+  "authentication_required",
+  "missing_challenge",
+  "authentication_rejected",
+  "authentication_timed_out",
+  "signer_unavailable",
+  "signer_authorization_denied",
+  "authority_changed",
+  "subscription_rejected",
+  "challenge_invalid",
+  "challenge_replayed",
+  "challenge_loop",
+  "challenge_superseded",
+  "protocol_invalid",
+  "protocol_limit_exceeded",
+  "consumer_failed",
+  "query_timed_out",
+  "aborted",
+])
+
+/** Never project raw relay text or error objects into inbox diagnostics. */
+function protectedInboxReadFailure(
+  result: ProtectedInboxReadResult
+): RelayFailureCode | undefined {
+  return [
+    ...result.relayResult.relays.map((relay) => relay.failure),
+    result.auth.failure,
+  ].find(
+    (value): value is RelayFailureCode =>
+      typeof value === "string" &&
+      INBOX_READ_FAILURE_CODES.has(value as RelayFailureCode)
+  )
+}
 
 interface InboxReadRelayPlan {
   relayTargets: RelayTarget[]
@@ -137,6 +182,8 @@ export interface CommerceInboxReadEvidence {
   received: number
   malformed: number
   unusable: number
+  /** Optional bounded category; never a raw provider/relay error. */
+  failure?: RelayFailureCode
 }
 export interface CommerceInboxDiagnostic {
   orderAdapter?: ReturnType<typeof getOrderAdapterCounts>
@@ -653,7 +700,25 @@ export class CommerceInbox {
             if (record.category === "machine") {
               state = "machine"
               const type = rumor.tags.find((tag) => tag[0] === "type")?.[1]
-              if (
+              if (type === EVENT_MARKET_FREE_PURCHASE_TYPE) {
+                const payload = parseEventMarketFreePurchaseRumor(rumor)
+                if (payload.organizerPubkey !== this.store.principal)
+                  throw new Error("Free organizer purchase recipient changed.")
+                projection = {
+                  kind: "event_free_purchase",
+                  message: {
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: payload.createdAt,
+                    wrapId: row.event.id,
+                    orderId: payload.orderId,
+                    merchantPubkey: payload.merchantPubkey,
+                    organizerPubkey: payload.organizerPubkey,
+                    marketCoordinate: payload.eventMarket.marketCoordinate,
+                    handoffId: payload.handoffId,
+                  },
+                }
+              } else if (
                 type === "checkout_spark_recovery" ||
                 type === "checkout_spark_recovery_progress"
               ) {
@@ -671,6 +736,92 @@ export class CommerceInbox {
                     takeoverAt: payload.plan.takeoverAt,
                     preparedAt: payload.preparedAt,
                     payloadDigest: checkoutRecoveryPayloadDigest(payload),
+                  },
+                }
+              } else if (
+                type === "checkout_spark_organizer_recovery" ||
+                type === "checkout_spark_organizer_recovery_progress"
+              ) {
+                const payload =
+                  type === "checkout_spark_organizer_recovery"
+                    ? parseCheckoutSparkOrganizerRecoveryRumor(rumor)
+                    : parseCheckoutSparkOrganizerRecoveryProgressRumor(rumor)
+                if (payload.organizerPubkey !== this.store.principal)
+                  throw new Error("Organizer recovery recipient changed.")
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    recipientRole: "organizer",
+                    organizerMessage:
+                      payload.schemaVersion === 4
+                        ? "initial"
+                        : "buyer_progress",
+                    marketCoordinate:
+                      payload.plan.eventMarket!.marketCoordinate,
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.plan.checkoutId,
+                    orderId: payload.plan.orderId,
+                    planDigest: payload.plan.planDigest,
+                    takeoverAt: payload.plan.takeoverAt,
+                    preparedAt: payload.preparedAt,
+                    payloadDigest:
+                      checkoutSparkOrganizerRecoveryPayloadDigest(payload),
+                  },
+                }
+              } else if (type === "checkout_spark_organizer_execution") {
+                const payload = parseCheckoutSparkOrganizerExecutionRumor(rumor)
+                if (
+                  ![payload.organizerPubkey, payload.merchantPubkey].includes(
+                    this.store.principal
+                  )
+                )
+                  throw new Error("Organizer progress recipient changed.")
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    ...(payload.organizerPubkey === this.store.principal
+                      ? { recipientRole: "organizer" as const }
+                      : {}),
+                    organizerMessage: "execution",
+                    marketCoordinate:
+                      payload.state.plan.eventMarket!.marketCoordinate,
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.state.plan.checkoutId,
+                    orderId: payload.state.plan.orderId,
+                    planDigest: payload.state.plan.planDigest,
+                    takeoverAt: payload.state.plan.takeoverAt,
+                    preparedAt: payload.recordedAt,
+                    payloadDigest: payload.snapshotId,
+                  },
+                }
+              } else if (type === "checkout_spark_merchant_event_progress") {
+                const payload =
+                  parseCheckoutSparkMerchantEventProgressRumor(rumor)
+                if (payload.organizerPubkey !== this.store.principal)
+                  throw new Error("Merchant Event progress recipient changed.")
+                projection = {
+                  kind: "checkout_recovery",
+                  message: {
+                    recipientRole: "organizer",
+                    organizerMessage: "merchant_progress",
+                    marketCoordinate:
+                      payload.state.plan.eventMarket!.marketCoordinate,
+                    id: rumor.id,
+                    senderPubkey: rumor.pubkey,
+                    createdAt: (rumor.created_at ?? 0) * 1000,
+                    wrapId: row.event.id,
+                    checkoutId: payload.state.plan.checkoutId,
+                    orderId: payload.state.plan.orderId,
+                    planDigest: payload.state.plan.planDigest,
+                    takeoverAt: payload.state.plan.takeoverAt,
+                    preparedAt: payload.recordedAt,
+                    payloadDigest: payload.snapshotId,
                   },
                 }
               } else if (type === "checkout_spark_merchant_progress") {
@@ -955,6 +1106,7 @@ export class CommerceInbox {
               (n, r) => n + r.unusableCount,
               0
             ),
+            failure: protectedInboxReadFailure(result),
           })
           this.assertCurrent()
           this.snapshot = {
@@ -987,7 +1139,11 @@ export class CommerceInbox {
           : succeededCount
             ? "authenticated"
             : "not_challenged",
-        failure: results.find((r) => r.auth.failure)?.auth.failure,
+        failure: results.find(
+          (r) =>
+            typeof r.auth.failure === "string" &&
+            INBOX_READ_FAILURE_CODES.has(r.auth.failure as RelayFailureCode)
+        )?.auth.failure,
       }
       const coverage =
         results.length &&

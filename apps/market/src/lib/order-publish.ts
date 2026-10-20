@@ -112,7 +112,7 @@ export type BuyerOrderSigningIdentity =
 
 type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
 
-type BuyerOrderPublishDependencies = {
+export type BuyerOrderPublishDependencies = {
   getCommerceInboxFn?: typeof getCommerceInbox
   pinOrderWireFormatFn?: typeof pinOrderWireFormat
   /** The already loaded owner snapshot for follow-ups; never a brand/relay hint. */

@@ -1,3 +1,7 @@
+import {
+  createOrderCompanionNotificationRumor,
+  getOrderCompanionNotificationIdentity,
+} from "../packages/core/src/protocol/private-message-primitives"
 import { afterEach, describe, expect, it } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
@@ -21,6 +25,11 @@ import { createHash } from "node:crypto"
 import { createPrivateMessageRumor } from "../packages/core/src/protocol/messaging"
 import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
 import { encodeOpenMarketsMerchantReply } from "../packages/core/src/protocol/commerce-wire"
+import {
+  findOrderConversation,
+  getOrderConversationId,
+} from "../packages/core/src/protocol/order-conversation"
+import { getMerchantOrderSelection } from "../apps/merchant/src/lib/order-phase"
 import { extractOrderSummary } from "../packages/core/src/protocol/order-summary"
 import {
   getMerchantPaymentVerificationCandidates,
@@ -133,6 +142,59 @@ async function receive(
   return projectCommerceInbox(f.owner.getSnapshot(), f.pubkey).merchant.data
 }
 
+it("resolves a qualified raw wire link to only its authenticated numeric conversation", async () => {
+  const f = fixture()
+  const rows = await receive(f, f.order)
+  const companion = createOrderCompanionNotificationRumor({
+    authoritativeOrder: createPrivateMessageRumor(f.order),
+    senderPubkey: f.buyerPubkey,
+    recipientPubkey: f.pubkey,
+    buyerIdentityKind: "signed_in",
+    merchantOrigin: "https://sell.conduit.market",
+  })
+  const url = new URL(companion.content.split("Review it at: ")[1]!)
+  expect(url.searchParams.get("order")).toBe("external-order")
+  expect(url.searchParams.get("counterparty")).toBe(f.buyerPubkey)
+  expect(getOrderCompanionNotificationIdentity(companion)?.orderId).toBe(
+    "external-order"
+  )
+  const legacy = {
+    ...companion,
+    content: companion.content.replace(`&counterparty=${f.buyerPubkey}`, ""),
+  }
+  expect(getOrderCompanionNotificationIdentity(legacy)?.orderId).toBe(
+    "external-order"
+  )
+  const foreignLink = {
+    ...companion,
+    content: companion.content.replace(
+      `counterparty=${f.buyerPubkey}`,
+      `counterparty=${getPublicKey(generateSecretKey())}`
+    ),
+  }
+  expect(getOrderCompanionNotificationIdentity(foreignLink)).toBeNull()
+  const qualified = getOrderConversationId({
+    orderId: "external-order",
+    buyerPubkey: f.buyerPubkey,
+    merchantPubkey: f.pubkey,
+  })
+  expect(findOrderConversation(rows, "external-order", qualified)?.id).toBe(
+    rows[0]!.id
+  )
+  expect(
+    getMerchantOrderSelection(rows, null, "external-order", qualified, rows)
+  ).toBe(rows[0]!.id)
+  expect(
+    getMerchantOrderSelection([], null, "external-order", qualified, rows)
+  ).toBeNull()
+  const foreign = getOrderConversationId({
+    orderId: "external-order",
+    buyerPubkey: getPublicKey(generateSecretKey()),
+    merchantPubkey: f.pubkey,
+  })
+  expect(findOrderConversation(rows, "external-order", foreign)).toBeNull()
+})
+
 it("admits an encrypted numeric order with an optional recipient relay hint", async () => {
   const f = fixture()
   await receive(f, {
@@ -149,79 +211,90 @@ it("admits an encrypted numeric order with an optional recipient relay hint", as
 })
 
 describe("Open Markets orders through the authenticated shared inbox", () => {
-  it("keeps a no-preimage receipt unverified until the exact invoice settles", async () => {
-    const f = fixture()
-    const now = Math.floor(Date.now() / 1000)
-    f.order.created_at = now - 5
-    await receive(f, f.order)
-    const hash = bytesToHex(sha256(generateSecretKey()))
-    const invoice = makeBolt11Fixture({
-      hrp: "lnbc2000n",
-      createdAt: now,
-      fields: [
-        bolt11PaymentHashField(Buffer.from(hash, "hex")),
-        bolt11PlainDescriptionField("Synthetic external-wallet report"),
-      ],
-    })
-    const report = createPrivateMessageRumor({
-      ...f.order,
-      kind: 17,
-      created_at: now + 2,
-      tags: [
-        ["p", f.pubkey],
-        ["subject", "order-receipt"],
-        ["order", "external-order"],
-        ["amount", "200"],
-        ["payment", "lightning", invoice],
-      ],
-      content: "Paid from another wallet",
-    })
-    let conversations = await receive(f, report)
-    const summary = extractOrderSummary(conversations[0]!.messages!)
-    expect(summary.paymentReportCount).toBe(1)
-    expect(summary.paymentProofCount).toBe(0)
-    expect(summary.paymentConfirmed).toBe(false)
-    expect(
-      getMerchantPaymentVerificationCandidates(conversations)
-    ).toHaveLength(0)
-    conversations = await receive(
-      f,
-      reply(f, "payment_request", { invoice, amount: 200, currency: "SATS" }),
-      f.merchant
-    )
-    const candidates = getMerchantPaymentVerificationCandidates(conversations)
-    expect(candidates).toHaveLength(1)
-    const settlement = {
-      type: "incoming" as const,
-      state: "settled" as const,
-      invoice,
-      amountMsats: 200_000,
-      paymentHash: hash,
-      settledAt: now,
+  it.each([false, true])(
+    "keeps a no-preimage receipt unverified until the receiving wallet settles (merchant request=%s)",
+    async (hasRequest) => {
+      const f = fixture()
+      const now = Math.floor(Date.now() / 1000)
+      f.order.created_at = now - 5
+      await receive(f, f.order)
+      const hash = bytesToHex(sha256(generateSecretKey()))
+      const invoice = makeBolt11Fixture({
+        hrp: "lnbc2000n",
+        createdAt: now,
+        fields: [
+          bolt11PaymentHashField(Buffer.from(hash, "hex")),
+          bolt11PlainDescriptionField("Synthetic external-wallet report"),
+        ],
+      })
+      const report = createPrivateMessageRumor({
+        ...f.order,
+        kind: 17,
+        created_at: now + 2,
+        tags: [
+          ["p", f.pubkey],
+          ["subject", "order-receipt"],
+          ["order", "external-order"],
+          ["amount", "200"],
+          ["payment", "lightning", invoice],
+        ],
+        content: "Paid from another wallet",
+      })
+      let conversations = await receive(f, report)
+      const summary = extractOrderSummary(conversations[0]!.messages!)
+      expect(summary.paymentReportCount).toBe(1)
+      expect(summary.paymentProofCount).toBe(0)
+      expect(summary.paymentConfirmed).toBe(false)
+      expect(
+        getMerchantPaymentVerificationCandidates(conversations)
+      ).toHaveLength(1)
+      if (hasRequest)
+        conversations = await receive(
+          f,
+          reply(f, "payment_request", {
+            invoice,
+            amount: 200,
+            currency: "SATS",
+          }),
+          f.merchant
+        )
+      const candidates = getMerchantPaymentVerificationCandidates(conversations)
+      expect(candidates).toHaveLength(1)
+      const settlement = {
+        type: "incoming" as const,
+        state: "settled" as const,
+        invoice,
+        amountMsats: 200_000,
+        paymentHash: hash,
+        settledAt: now,
+      }
+      let confirmations = 0
+      const dependencies = {
+        candidates,
+        confirmedEvidence: new Set<string>(),
+        lookupInvoice: async () => settlement,
+        publishConfirmation: async () => {
+          confirmations++
+        },
+      }
+      await verifyMerchantPaymentCandidates({
+        ...dependencies,
+        lookupInvoice: async () => ({
+          ...settlement,
+          state: "pending" as const,
+        }),
+      })
+      expect(confirmations).toBe(0)
+      await verifyMerchantPaymentCandidates(dependencies)
+      await verifyMerchantPaymentCandidates(dependencies)
+      expect(confirmations).toBe(1)
+      await receive(f, report)
+      expect(
+        extractOrderSummary(f.owner.getSnapshot().orderMessages)
+          .paymentReportCount
+      ).toBe(1)
     }
-    let confirmations = 0
-    const dependencies = {
-      candidates,
-      confirmedEvidence: new Set<string>(),
-      lookupInvoice: async () => settlement,
-      publishConfirmation: async () => {
-        confirmations++
-      },
-    }
-    await verifyMerchantPaymentCandidates({
-      ...dependencies,
-      lookupInvoice: async () => ({ ...settlement, state: "pending" as const }),
-    })
-    expect(confirmations).toBe(0)
-    await verifyMerchantPaymentCandidates(dependencies)
-    await verifyMerchantPaymentCandidates(dependencies)
-    expect(confirmations).toBe(1)
-    await receive(f, report)
-    expect(
-      extractOrderSummary(f.owner.getSnapshot().orderMessages)
-        .paymentReportCount
-    ).toBe(1)
-  })
+  )
 
   it("writes invoice validity and preserves a delivery-inclusive total and adjustment note", async () => {
     const f = fixture()
@@ -689,8 +762,10 @@ describe("Open Markets orders through the authenticated shared inbox", () => {
       content: "Payment sent",
     }
     let conversations = await receive(f, receipt)
+    // Upfront reports may be looked up in the receiving wallet. They do not
+    // confirm payment by themselves; any merchant request still binds exactly.
     expect(getMerchantPaymentVerificationCandidates(conversations).length).toBe(
-      0
+      1
     )
     const differentInvoice = makeBolt11Fixture({
       hrp: "lnbc2000n",

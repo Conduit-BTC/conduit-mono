@@ -265,3 +265,32 @@ snapshot, organizer handoff and completion gates, including zero-cost signed-in
 and guest orders. Checkout displays and locks that required format, even after
 an earlier numeric selection. The numeric encoder rejects event pickup before
 encryption; this adapter does not claim a numeric pickup fulfillment contract.
+
+## Converged reply, payment and storage boundaries
+
+Both buyer reply surfaces use the shared buyer publisher. The immutable saved
+format or authenticated original order selects the writer; recovered numeric
+orders keep the raw wire ID and exact buyer/merchant pair. Numeric notes remain
+kind 14 after reload or lifecycle loss. Participant-qualified advisory URLs
+resolve raw numeric IDs only through their authenticated original. Legacy
+unqualified advisory content is still recognized; ambiguous or filtered targets
+never select another conversation.
+
+A numeric upfront Lightning receipt does not require a preceding merchant invoice
+message. It remains unverified until the receiving wallet proves the exact incoming
+invoice, hash, amount and settlement. When a merchant invoice exists it must match.
+Signed-in kind-17 reports require the recipient's authenticated inbox declaration,
+not the sender's optional inbox. Guest receipt delivery stays recipient-only.
+
+Ordinary independent numeric orders can enter merchant inventory acceptance using
+their authenticated aggregate terms. Missing historical item prices and formats
+remain unknown. Encrypted acceptance and replay bindings preserve those terms,
+and a replay cannot decrement stock again. Event pickup and organizer stock
+handoff still require the complete named contract and its authenticated snapshot.
+
+Schema version 30 converges main versions 27–29 and adapter versions 27–28,
+preserving format choices, discovery indexes, organizer stock records and exact
+encrypted delivery bytes. Decode rules version 8 combines retained numeric-envelope
+reprocessing with the current machine-message and deletion safeguards. Upgrade,
+reply, payment and browser fixtures remain synthetic evidence; the external-client,
+live-signer, device and receiving-wallet acceptance gates above remain separate.

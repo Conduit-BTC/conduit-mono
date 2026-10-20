@@ -236,8 +236,10 @@ export function projectCheckoutSparkMerchantRecipientSettlement(
   records: readonly CheckoutSparkInvoiceRecipientRecord[]
 ): CheckoutSparkMerchantSettlementProjection {
   const state = restoreCheckoutSparkSettledReconciliation(stateInput)
-  const commerce = state.plan.recipients.filter(
-    (recipient) => recipient.kind !== "conduit"
+  const commerce = state.plan.recipients.filter((recipient) =>
+    state.plan.schemaVersion === 5
+      ? recipient.kind === "merchant" || recipient.kind === "supplier"
+      : recipient.kind !== "conduit"
   )
   const verified = new Set<string>()
   for (const recipient of commerce) {

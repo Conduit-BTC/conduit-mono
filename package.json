@@ -58,6 +58,7 @@
     "typecheck": "bun run --filter '*' typecheck",
     "lint": "bun run --filter '*' lint",
     "telemetry:check": "bun scripts/ci/check_telemetry_policy.ts",
+    "relay:check": "bun scripts/ci/check_relay_policy.ts",
     "smoke:anon-zap": "bun scripts/smoke/anon_zap_authorization.ts",
     "smoke:anon-zap-provider": "bun scripts/smoke/anon_zap_provider.ts",
     "smoke:nip42": "bun scripts/smoke/nip42_protected_read.ts",

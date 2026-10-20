@@ -130,9 +130,9 @@ export interface PublicRelayReadOptions {
   /** Exact, additive authority for account-scoped reads. */
   relayTargets?: readonly RelayTarget[]
   /**
-   * Bound actual relay attempts after the live account source-policy check.
-   * Policy-suppressed, throttled, and durably excluded candidates do not consume
-   * this limit, allowing a later eligible source to fill the bounded fanout.
+   * Concurrent relay attempts, not a target-count cap. Every selected candidate
+   * drains through these workers and the existing global admission queue.
+   * Each attempt retains its connection/read deadline and live authority check.
    */
   maxRelayAttempts?: number
   /**
@@ -1249,17 +1249,16 @@ async function runBoundedRelayAttempts(
     }
   }
   let results: FetchEventsFromRelayResult[]
-  if (
-    maxRelayAttempts === undefined ||
-    !Number.isSafeInteger(maxRelayAttempts) ||
-    maxRelayAttempts <= 0
-  ) {
-    results = (await Promise.all(relayUrls.map(runAttempt))).filter(
-      (result): result is FetchEventsFromRelayResult => result !== null
-    )
-  } else {
+  {
     let nextIndex = 0
-    const workerCount = Math.min(maxRelayAttempts, relayUrls.length)
+    const workerCount = Math.min(
+      maxRelayAttempts !== undefined &&
+        Number.isSafeInteger(maxRelayAttempts) &&
+        maxRelayAttempts > 0
+        ? maxRelayAttempts
+        : 8,
+      relayUrls.length
+    )
     const workers = await Promise.all(
       Array.from({ length: workerCount }, async () => {
         const observations: FetchEventsFromRelayResult[] = []
@@ -1267,16 +1266,21 @@ async function runBoundedRelayAttempts(
           const relayUrl = relayUrls[nextIndex]
           nextIndex += 1
           const result = await runAttempt(relayUrl)
-          // Only an actual attempt consumes this worker's bounded slot. Keep
-          // throttle diagnostics while backfilling from later eligible sources.
+          // Release this concurrency slot to the next selected target. A slow
+          // peer is bounded by its own deadline; it cannot drop later coverage.
           if (result === null) continue
           observations.push(result)
-          if (!result.requestSuppressed) break
         }
         return observations
       })
     )
-    results = workers.flat()
+    const selectedOrder = new Map(relayUrls.map((url, index) => [url, index]))
+    results = workers
+      .flat()
+      .sort(
+        (left, right) =>
+          selectedOrder.get(left.relayUrl)! - selectedOrder.get(right.relayUrl)!
+      )
   }
   // Preserve the first failure rather than the aborts it caused in siblings.
   if (failure) throw failure.reason

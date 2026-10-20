@@ -763,7 +763,10 @@ function MessagesWorkspace() {
                       onSelect={(order) => {
                         void navigate({
                           to: "/orders",
-                          search: { order: order.orderId },
+                          search: {
+                            order: order.orderId,
+                            counterparty: order.buyerPubkey,
+                          },
                         })
                       }}
                     />

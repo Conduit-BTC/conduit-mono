@@ -364,7 +364,12 @@ describe("kind 10063 replacement selection and evidence", () => {
     )
     expect(lookupCalls).toEqual([
       {
-        relayUrls: [ownerWsRelay, ownerWssRelay, ...generalAppRelayUrls],
+        relayUrls: [
+          ownerWsRelay,
+          generalAppRelayUrls[0]!,
+          ownerWssRelay,
+          ...generalAppRelayUrls.slice(1),
+        ],
         accountPubkey: OWNER,
         authenticatedPubkey: OWNER,
         ownerSelectedRelayUrls: [ownerWsRelay, ownerWssRelay],
@@ -391,8 +396,9 @@ describe("kind 10063 replacement selection and evidence", () => {
     expect(finalReadCalls).toHaveLength(1)
     expect(finalReadCalls[0]?.relayUrls).toEqual([
       ownerWsRelay,
+      generalAppRelayUrls[0]!,
       ownerWssRelay,
-      ...generalAppRelayUrls,
+      ...generalAppRelayUrls.slice(1),
     ])
     expect(finalReadCalls[0]?.accountPubkey).toBe(OWNER)
     expect(finalReadCalls[0]?.authenticatedPubkey).toBe(OWNER)
@@ -680,7 +686,8 @@ describe("kind 10063 replacement selection and evidence", () => {
         getRelayLists: async () => new Map(),
         planReads: (input) => {
           const plan = planRelayReads(input)
-          expect(plan.relayUrls).toEqual(blocked)
+          expect(plan.relayUrls).toEqual(expect.arrayContaining(blocked))
+          expect(plan.relayUrls).toEqual(plan.candidateRelayUrls)
           expect(plan.candidateRelayUrls.length).toBeGreaterThan(blocked.length)
           return plan
         },

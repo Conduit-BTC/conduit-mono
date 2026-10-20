@@ -1,17 +1,14 @@
 import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { config } from "../config"
+import { configuredRelayTargets } from "./account-network-local-state"
 import { db, type ConduitDB } from "../db"
 import { SHIPPING_COUNTRIES } from "./countries"
 import { EVENT_KINDS } from "./kinds"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
-import {
-  mergeRelayTargets,
-  relayTargetsFromUrls,
-  type RelayTarget,
-} from "./relay-authority"
+import { mergeRelayTargets, type RelayTarget } from "./relay-authority"
 import { fetchSignedEventsFanoutDetailed } from "./relay-reader"
 import { publishWithPlanner } from "./relay-publish"
 import {
@@ -374,12 +371,12 @@ export async function fetchMerchantShippingSettings(
     )
     relayTargets = mergeRelayTargets(
       plan.relayTargets,
-      relayTargetsFromUrls(config.appWriteRelayUrls, {
+      configuredRelayTargets({
         kind: "app",
         operation: "read",
         bucket: "author_readback",
       }),
-      relayTargetsFromUrls(config.corePublicFallbackRelayUrls, {
+      configuredRelayTargets({
         kind: "public_fallback",
         operation: "read",
         bucket: "core_public",
