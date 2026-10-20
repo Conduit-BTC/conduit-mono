@@ -1434,6 +1434,8 @@ export async function resumeMerchantInventoryPublication(input: {
     signer: AccountSigner
     shouldContinue(): boolean
     delivery?: MerchantStockCheckpointDelivery
+    /** Explicit repair scope; ordinary publication keeps acknowledged checkpoints deduplicated. */
+    replayAcknowledgedCoordinates?: readonly string[]
   }
   /** Optional transient observation; queue counts and retry behavior are unchanged. */
   onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
@@ -1534,6 +1536,10 @@ export async function resumeMerchantInventoryPublication(input: {
         authenticatedPubkey: merchantPubkey,
         productCoordinate: coordinate,
         ...input.stockCheckpoint,
+        replayAcknowledgedCheckpoint:
+          input.stockCheckpoint.replayAcknowledgedCoordinates?.includes(
+            coordinate
+          ) === true,
         onPhase: (phase) => {
           observation.phase = phase
         },

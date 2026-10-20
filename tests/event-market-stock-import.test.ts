@@ -3819,6 +3819,114 @@ it("reports a failed stock freshness recheck without losing its retained ACK", a
   }
 })
 
+it("replays only an explicitly selected acknowledged checkpoint using the saved ciphertext", async () => {
+  const f = await fixture()
+  expect((await f.publish()).pending).toBe(0)
+  const coordinate = f.products[0]!.coordinate,
+    before = (await f.db.merchantInventoryProducts.get(coordinate))!,
+    checkpoint = before.organizerStockCheckpoint!,
+    sent: string[] = [],
+    publicWrites = { count: 0 },
+    state = { acknowledge: true },
+    observed: { status: string; phase: string }[] = [],
+    signed = spyOn(f.merchantSigner, "signEvent")
+  expect(checkpoint.selfEnvelope).toBeDefined()
+  expect(checkpoint.acknowledgedRelayUrls).toEqual([
+    "wss://relay.conduit.market",
+  ])
+  const input = {
+    db: f.db,
+    merchantPubkey: f.merchant,
+    stockCheckpoint: {
+      signer: f.merchantSigner,
+      shouldContinue: () => true,
+      delivery: {
+        deliveryStore: new CommerceInboxStore(
+          getProtectedReadAuthorization(f.merchant)!,
+          f.db
+        ),
+        resolveInboxRelays: async () => ["wss://relay.conduit.market"],
+        publishFn: async (event: SignedPublicNostrEvent) => {
+          sent.push(JSON.stringify(event))
+          if (!state.acknowledge)
+            throw new Error("controlled fresh ACK failure")
+          return ack("wss://relay.conduit.market")
+        },
+      },
+    },
+    sign: async (draft: Parameters<typeof finalizeEvent>[0]) =>
+      f.merchantSigner.signEvent(draft),
+    publish: async () => {
+      publicWrites.count++
+      return true
+    },
+    onStockCheckpoint: (outcome: { status: string; phase: string }) => {
+      observed.push({ status: outcome.status, phase: outcome.phase })
+    },
+  }
+  try {
+    const ordinary = await resumeMerchantInventoryPublication(input)
+    expect(ordinary.pending).toBe(0)
+    expect(sent).toHaveLength(0)
+    const unselected = {
+      ...input,
+      stockCheckpoint: {
+        ...input.stockCheckpoint,
+        replayAcknowledgedCoordinates: [],
+      },
+    }
+    await resumeMerchantInventoryPublication(unselected)
+    expect(sent).toHaveLength(0)
+    const replayed = await resumeMerchantInventoryPublication({
+      ...input,
+      stockCheckpoint: {
+        ...input.stockCheckpoint,
+        replayAcknowledgedCoordinates: [coordinate],
+      },
+    })
+    expect(sent).toHaveLength(1)
+    expect(sent[0] === JSON.stringify(checkpoint.selfEnvelope)).toBe(true)
+    expect(replayed.pending).toBe(0)
+    expect(replayed.signed).toBe(0)
+    expect(publicWrites.count).toBe(0)
+    expect(signed).not.toHaveBeenCalled()
+    const after = (await f.db.merchantInventoryProducts.get(coordinate))!
+    expect(after.organizerStockCheckpoint!.sequence).toBe(checkpoint.sequence)
+    expect(after.organizerStockCheckpoint!.rumorId).toBe(checkpoint.rumorId)
+    expect(after.organizerStockCheckpoint!.snapshotKey).toBe(
+      checkpoint.snapshotKey
+    )
+    expect(JSON.stringify(after) === JSON.stringify(before)).toBe(true)
+    await resumeMerchantInventoryPublication(unselected)
+    expect(sent).toHaveLength(1)
+
+    state.acknowledge = false
+    observed.length = 0
+    const held = await resumeMerchantInventoryPublication({
+      ...input,
+      stockCheckpoint: {
+        ...input.stockCheckpoint,
+        replayAcknowledgedCoordinates: [coordinate],
+      },
+    })
+    expect(sent).toHaveLength(2)
+    expect(sent[1] === sent[0]).toBe(true)
+    expect(observed).toEqual([{ status: "pending", phase: "delivery_ack" }])
+    expect(held.signed).toBe(0)
+    expect(held.delivered).toBe(0)
+    expect(signed).not.toHaveBeenCalled()
+    expect(publicWrites.count).toBe(0)
+    expect(
+      JSON.stringify(await f.db.merchantInventoryProducts.get(coordinate)) ===
+        JSON.stringify(before)
+    ).toBe(true)
+    await resumeMerchantInventoryPublication(unselected)
+    expect(sent).toHaveLength(2)
+  } finally {
+    signed.mockRestore()
+  }
+})
+
 it("retries the identical durable Merchant checkpoint ciphertext after relay failure", async () => {
   const f = await fixture(),
     order = f.order(),
@@ -4539,6 +4647,68 @@ it("requeues exact public projections after cold recovery without signing anothe
   expect(sent).toContain(
     cold.payload.snapshot.assignments[0]!.signedAssignmentEvent!.id
   )
+})
+
+it("admits a retained checkpoint only after the same wrapper gains observed relay provenance", async () => {
+  const f = await fixture(),
+    cold = await coldMerchantCheckpoint(f),
+    envelope = cold.checkpoint.selfEnvelope!,
+    relays = ["wss://relay.conduit.market", "wss://second-inbox.test"],
+    reads = { count: 0 }
+  await cold.auth.store.receive(envelope, [])
+  const scan = await createEventMarketStockDiscovery({
+    db: cold.db,
+    ...cold.auth,
+    shouldContinue: () => true,
+    resolveDeclaration: async () => ({
+      pubkey: f.merchant,
+      state: "declared",
+      relayUrls: relays,
+      stale: false,
+      fetchedAt: Date.now(),
+    }),
+    read: async ({ relayUrls }) => {
+      reads.count++
+      expect(relayUrls).toEqual([relays[reads.count - 1]!])
+      return inboxResult([envelope])
+    },
+  })
+  try {
+    const retained = await scan.nextPage()
+    expect(reads.count).toBe(0)
+    expect(retained.packets).toHaveLength(0)
+    expect(retained.malformedCount).toBe(0)
+    expect(retained.decryptFailureCount).toBe(0)
+    expect(retained.hasMore).toBe(true)
+    expect((await cold.auth.store.wrappers())[0]!.sources).toEqual([])
+
+    const observed = await scan.nextPage()
+    expect(reads.count).toBe(1)
+    expect(observed.packets).toHaveLength(1)
+    expect(observed.packets[0]!.envelope.id).toBe(envelope.id)
+    expect(observed.packets[0]!.rumor.id).toBe(cold.checkpoint.rumorId)
+    expect(observed.packets[0]!.payload.type).toBe("merchant_checkpoint")
+    expect((await cold.auth.store.wrappers())[0]!.sources).toEqual([relays[0]!])
+    const frontier = await cold.db.commerceInboxDeliveries
+      .filter((row) => row.kind === "merchant_stock_recovery")
+      .first()
+    expect(frontier).toBeDefined()
+
+    const duplicate = await scan.nextPage()
+    expect(reads.count).toBe(2)
+    expect(duplicate.packets).toHaveLength(1)
+    expect(duplicate.packets[0]!.envelope.id).toBe(envelope.id)
+    expect(duplicate.packets[0]!.rumor.id).toBe(cold.checkpoint.rumorId)
+    expect(await cold.auth.store.wrappers()).toHaveLength(1)
+    const repeatedFrontier = await cold.db.commerceInboxDeliveries
+      .filter((row) => row.kind === "merchant_stock_recovery")
+      .toArray()
+    expect(repeatedFrontier).toHaveLength(1)
+    expect(repeatedFrontier[0]!.updatedAt).toBe(frontier!.updatedAt)
+    expect(await cold.db.merchantInventoryProducts.count()).toBe(0)
+  } finally {
+    scan.dispose()
+  }
 })
 
 it("keeps only the strongest authenticated checkpoint per product during bounded discovery", async () => {

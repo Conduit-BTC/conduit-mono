@@ -418,6 +418,7 @@ export async function saveMerchantOccurrenceAssignment(
 export async function resumeMerchantOccurrencePublication(
   input: MerchantOccurrenceSession & {
     onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
+    replayAcknowledgedCheckpointCoordinates?: readonly string[]
     publishProduct: (
       event: SignedPublicNostrEvent
     ) => Promise<boolean | "superseded">
@@ -432,6 +433,8 @@ export async function resumeMerchantOccurrencePublication(
     stockCheckpoint: checkpointSigner
       ? {
           signer: checkpointSigner,
+          replayAcknowledgedCoordinates:
+            input.replayAcknowledgedCheckpointCoordinates,
           shouldContinue: () => {
             assertSession(input)
             return getAccountSigner() === checkpointSigner

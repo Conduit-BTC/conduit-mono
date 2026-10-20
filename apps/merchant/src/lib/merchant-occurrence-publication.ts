@@ -230,6 +230,7 @@ export function merchantStockCheckpointNotice(
 export function resumeMerchantOccurrencePublication(
   input: Session & {
     onStockCheckpoint?: (outcome: MerchantStockCheckpointOutcome) => void
+    replayAcknowledgedCheckpointCoordinates?: readonly string[]
   }
 ) {
   return resumeCoreOccurrencePublication({

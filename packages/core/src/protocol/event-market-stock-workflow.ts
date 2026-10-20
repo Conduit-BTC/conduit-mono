@@ -723,13 +723,16 @@ export async function createEventMarketStockDiscovery(
       return
     }
     assertCurrent()
+    failed.delete(event.id)
+    // A retained self-copy is not relay observation. Leave this authenticated
+    // checkpoint eligible for the same wrapper's later positive source evidence.
+    if (packet?.payload.type === "merchant_checkpoint" && !relayUrls.length)
+      return
     visited.add(event.id)
     if (visited.size > 1024) visited.delete(visited.values().next().value!)
-    failed.delete(event.id)
     if (!packet) return
     let packetKey = packet.rumor.id
     if (packet.payload.type === "merchant_checkpoint") {
-      if (!relayUrls.length) return
       const observed = await observeMerchantOrganizerStockCheckpoint({
         ...input,
         store,

@@ -599,12 +599,21 @@ export function EventMarketStockPanel(props: {
         "Reserved stock received on this device. Payment verification is still required before each physical handout."
       )
   }
-  async function resumeStockPublication(): Promise<string> {
+  async function resumeStockPublication(
+    replayAcknowledgedCheckpoint = false
+  ): Promise<string> {
     const outcomes: MerchantStockCheckpointOutcome[] = []
     await resumeMerchantOccurrencePublication({
       merchantPubkey: account,
       authenticatedPubkey: account,
       shouldContinue,
+      ...(replayAcknowledgedCheckpoint
+        ? {
+            replayAcknowledgedCheckpointCoordinates: [
+              ...new Set(pools.map((pool) => pool.productCoordinate)),
+            ],
+          }
+        : {}),
       onStockCheckpoint: (outcome) => {
         outcomes.push(outcome)
       },
@@ -1119,7 +1128,7 @@ export function EventMarketStockPanel(props: {
               disabled={busy}
               onClick={() =>
                 void run(async () => {
-                  const checkpointNotice = await resumeStockPublication()
+                  const checkpointNotice = await resumeStockPublication(true)
                   if (shouldContinue())
                     setNotice(
                       [

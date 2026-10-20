@@ -1091,6 +1091,8 @@ export type MerchantStockCheckpointWrappingOperation =
 type PublishCheckpointInput = CheckpointSession & {
   productCoordinate: string
   delivery?: MerchantStockCheckpointDelivery
+  /** Explicit repair only: redeliver the same retained checkpoint and require a fresh ACK. */
+  replayAcknowledgedCheckpoint?: boolean
   /** Transient observation only; never part of a checkpoint or its authority. */
   onPhase?: (phase: MerchantStockCheckpointPhase) => void
   onWrappingOperation?: (
@@ -1159,70 +1161,73 @@ async function publishCheckpoint(
     const current = captured.snapshot
     authority.check()
     const snapshotKey = digest(current)
-    if (saved?.snapshotKey === snapshotKey)
-      return openMerchantOrganizerStockCheckpoint({
-        ...input,
-        checkpoint: saved,
-      })
-    const payload: EventMarketStockCheckpointPayload = {
-      version: 1,
-      type: "merchant_checkpoint",
-      merchantPubkey: input.authenticatedPubkey,
-      sequence: (saved?.sequence ?? 0) + 1,
-      previousId: saved ? checkpointId(saved) : null,
-      snapshotKey,
-      snapshot: current,
-    }
-    const rumor = createPrivateMessageRumor({
-      kind: 14,
-      pubkey: input.authenticatedPubkey,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [
-        ["p", input.authenticatedPubkey],
-        ["subject", EVENT_MARKET_STOCK_CHECKPOINT_SUBJECT],
-        MARKER,
-      ],
-      content: JSON.stringify(payload),
-    })
-    parseEventMarketStockCheckpointRumor(rumor)
-    assertPrivateMessageFitsTransport(rumor)
-    const protectedCheckpoint = await sealMerchantStockCheckpoint(store, {
-      sequence: payload.sequence,
-      previousId: payload.previousId,
-      snapshotKey,
-      rumor,
-      acknowledgedRelayUrls: [],
-    })
-    authority.check()
-    saved = await input.db.transaction(
-      "rw",
-      inventoryTables(input.db),
-      async () => {
-        authority.check()
-        const row = await input.db.merchantInventoryProducts.get(
-          input.productCoordinate
-        )
-        if (
-          !row ||
-          !exact(
-            row.organizerStockCheckpoint,
-            product!.organizerStockCheckpoint
-          ) ||
-          digest(
-            await readSnapshot(
-              input.db,
-              input.authenticatedPubkey,
-              input.productCoordinate
-            )
-          ) !== captured.rawKey
-        )
-          fail()
-        row.organizerStockCheckpoint = protectedCheckpoint
-        await input.db.merchantInventoryProducts.put(row)
-        authority.check()
-        return row.organizerStockCheckpoint
+    if (saved?.snapshotKey === snapshotKey) {
+      if (!input.replayAcknowledgedCheckpoint)
+        return openMerchantOrganizerStockCheckpoint({
+          ...input,
+          checkpoint: saved,
+        })
+    } else {
+      const payload: EventMarketStockCheckpointPayload = {
+        version: 1,
+        type: "merchant_checkpoint",
+        merchantPubkey: input.authenticatedPubkey,
+        sequence: (saved?.sequence ?? 0) + 1,
+        previousId: saved ? checkpointId(saved) : null,
+        snapshotKey,
+        snapshot: current,
       }
-    )
+      const rumor = createPrivateMessageRumor({
+        kind: 14,
+        pubkey: input.authenticatedPubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ["p", input.authenticatedPubkey],
+          ["subject", EVENT_MARKET_STOCK_CHECKPOINT_SUBJECT],
+          MARKER,
+        ],
+        content: JSON.stringify(payload),
+      })
+      parseEventMarketStockCheckpointRumor(rumor)
+      assertPrivateMessageFitsTransport(rumor)
+      const protectedCheckpoint = await sealMerchantStockCheckpoint(store, {
+        sequence: payload.sequence,
+        previousId: payload.previousId,
+        snapshotKey,
+        rumor,
+        acknowledgedRelayUrls: [],
+      })
+      authority.check()
+      saved = await input.db.transaction(
+        "rw",
+        inventoryTables(input.db),
+        async () => {
+          authority.check()
+          const row = await input.db.merchantInventoryProducts.get(
+            input.productCoordinate
+          )
+          if (
+            !row ||
+            !exact(
+              row.organizerStockCheckpoint,
+              product!.organizerStockCheckpoint
+            ) ||
+            digest(
+              await readSnapshot(
+                input.db,
+                input.authenticatedPubkey,
+                input.productCoordinate
+              )
+            ) !== captured.rawKey
+          )
+            fail()
+          row.organizerStockCheckpoint = protectedCheckpoint
+          await input.db.merchantInventoryProducts.put(row)
+          authority.check()
+          return row.organizerStockCheckpoint
+        }
+      )
+    }
   }
   if (!saved.selfEnvelope) {
     const opened = await openMerchantOrganizerStockCheckpoint({
