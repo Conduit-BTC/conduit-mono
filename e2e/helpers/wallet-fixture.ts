@@ -234,14 +234,29 @@ export async function prepareControlledWallet(page: Page) {
             registrationPending = false
             return lookup()
           },
-          async receivePayment() {
+          async lookupReceivingInvoice(_invoice: string, requestId?: string) {
+            probe.receiveChecks = (probe.receiveChecks ?? 0) + 1
+            probe.checkedRequestId = requestId
+            if (!probe.receiveObservation)
+              throw new Error("Receipt unavailable")
+            return probe.receiveObservation
+          },
+          async receivePayment(request: {
+            paymentMethod: { amountSats?: number }
+          }) {
+            probe.receiveCalls = (probe.receiveCalls ?? 0) + 1
+            probe.receiveAmount = request.paymentMethod.amountSats
             if (probe.delayReceive) {
               probe.receiveStarted = true
               await new Promise<void>((resolve) => {
                 probe.releaseReceive = resolve
               })
             }
-            return { paymentRequest: "controlled-invoice", fee: 0n }
+            return {
+              paymentRequest: probe.receiveInvoice ?? "controlled-invoice",
+              fee: BigInt(probe.receiveFee ?? 0),
+              requestId: probe.receiveRequestId,
+            }
           },
           async prepareSendPayment() {
             throw new Error("Controlled unfunded wallet")

@@ -26,6 +26,7 @@ import {
   formatBitcoinBaseUnits,
   type AuthContextValue,
   type BreezAddressState,
+  type BtcUsdRateQuote,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
   getWalletDisplayLabels,
@@ -68,6 +69,7 @@ import type {
   WalletAddressSuggestion,
 } from "@conduit/core/hooks/useWalletAddress"
 import { ProfileLightningAddressEditor } from "./ProfileLightningAddressEditor"
+import { WalletReceiveMethods } from "./WalletCashAppFunding"
 import { SparkLightningAddress } from "./SparkLightningAddress"
 import { SparkRecoveryBundleDetails } from "./SparkRecoveryBundleDetails"
 import { AddressNameRequestForm } from "./AddressNameRequestForm"
@@ -110,6 +112,7 @@ export function Wallets({
   onSuggestAddress,
   formatSats = (sats: number) => formatBitcoinBaseUnits(sats, "sats"),
   footer,
+  rateQuote = null,
 }: {
   auth: AuthContextValue
   wallets: UseWalletsReturn
@@ -117,6 +120,7 @@ export function Wallets({
   onSuggestAddress(suggestion: WalletAddressSuggestion): void
   formatSats?: (sats: number) => string
   footer?: React.ReactNode
+  rateQuote?: BtcUsdRateQuote | null
 }) {
   const [setupMode, setSetupMode] = useState<PortableWalletMode>("create")
   const [syncError, setSyncError] = useState<string | null>(null)
@@ -547,6 +551,7 @@ export function Wallets({
         wallets={wallets}
       />
       <ReceiveWalletDialog
+        rateQuote={rateQuote}
         auth={auth}
         key={`receive:${auth.accountPubkey}:${auth.authGeneration}:${receiveWallet?.id ?? "closed"}`}
         wallet={receiveWallet}
@@ -2611,11 +2616,13 @@ function useWalletDialogCurrent(
 }
 
 function ReceiveWalletDialog({
+  rateQuote,
   auth,
   wallet,
   onOpenChange,
   wallets,
 }: {
+  rateQuote: BtcUsdRateQuote | null
   auth: AuthContextValue
   wallet: WalletDescriptor | null
   onOpenChange: (open: boolean) => void
@@ -2634,7 +2641,8 @@ function ReceiveWalletDialog({
   )
   const [requestAnnouncement, setRequestAnnouncement] = useState("")
   const [error, setError] = useState<string | null>(null)
-  const pending = pendingAction !== null || addressPending
+  const [cashPending, setCashPending] = useState(false)
+  const pending = pendingAction !== null || addressPending || cashPending
 
   const clearRequest = (announceInvalidation = false) => {
     if (announceInvalidation && request) {
@@ -2676,7 +2684,7 @@ function ReceiveWalletDialog({
         wallet.id,
         amountSats
       )
-      if (current()) setRequest(nextRequest)
+      if (current()) setRequest(nextRequest.paymentRequest)
     } catch (caught) {
       if (!current()) return
       setError(getErrorMessage(caught, "Could not create invoice."))
@@ -2722,109 +2730,120 @@ function ReceiveWalletDialog({
         <DialogHeader>
           <DialogTitle>Receive to {wallet?.label}</DialogTitle>
           <DialogDescription>
-            Lightning is the interoperable default. Direct Spark addresses are
-            available as an advanced wallet-to-wallet option.
+            Add money with Cash App or receive from another wallet.
           </DialogDescription>
         </DialogHeader>
-        <SparkLightningAddress
-          key={wallet?.id ?? "closed"}
-          walletId={wallet?.id ?? null}
-          resolve={wallets.getSparkLightningAddress}
-          disabled={pendingAction !== null}
-          onPendingChange={setAddressPending}
-        />
-        <div className="grid gap-2">
-          <Label htmlFor="receive-amount">Amount in sats (optional)</Label>
-          <Input
-            id="receive-amount"
-            type="number"
-            min={1}
-            step={1}
-            value={amount}
-            aria-describedby="receive-amount-help"
-            onChange={(event) => {
-              setAmount(event.target.value)
-              clearRequest(true)
-            }}
-            disabled={pending}
+        <WalletReceiveMethods
+          wallet={wallet}
+          wallets={wallets}
+          current={current}
+          pending={pending}
+          rateQuote={rateQuote}
+          onPendingChange={setCashPending}
+        >
+          <SparkLightningAddress
+            key={wallet?.id ?? "closed"}
+            walletId={wallet?.id ?? null}
+            resolve={wallets.getSparkLightningAddress}
+            disabled={pendingAction !== null}
+            onPendingChange={setAddressPending}
           />
-          <p
-            id="receive-amount-help"
-            className="text-xs leading-5 text-[var(--text-secondary)]"
-          >
-            Amount applies to Lightning invoices. Spark addresses are
-            amountless.
-          </p>
-          <p aria-live="polite" className="sr-only">
-            {requestAnnouncement}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            onClick={() => void createLightningInvoice()}
-            disabled={pending}
-            aria-busy={pendingAction === "lightning"}
-          >
-            {pendingAction === "lightning" && (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )}
-            Create Lightning invoice
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => void createSparkAddress()}
-            disabled={pending}
-            aria-busy={pendingAction === "spark-address"}
-          >
-            {pendingAction === "spark-address" && (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )}
-            Spark address
-          </Button>
-        </div>
-        {request && (
           <div className="grid gap-2">
-            <p role="status" className="sr-only">
-              Payment request ready.
-            </p>
-            <Label htmlFor="receive-request">Payment request</Label>
-            <Textarea
-              id="receive-request"
-              value={request}
-              readOnly
-              className="font-mono text-xs"
+            <Label htmlFor="receive-amount">Amount in sats (optional)</Label>
+            <Input
+              id="receive-amount"
+              type="number"
+              min={1}
+              step={1}
+              value={amount}
+              aria-describedby="receive-amount-help"
+              onChange={(event) => {
+                setAmount(event.target.value)
+                clearRequest(true)
+              }}
+              disabled={pending}
             />
+            <p
+              id="receive-amount-help"
+              className="text-xs leading-5 text-[var(--text-secondary)]"
+            >
+              Amount applies to Lightning invoices. Spark addresses are
+              amountless.
+            </p>
+            <p aria-live="polite" className="sr-only">
+              {requestAnnouncement}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              onClick={() => void createLightningInvoice()}
+              disabled={pending}
+              aria-busy={pendingAction === "lightning"}
+            >
+              {pendingAction === "lightning" && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              Create Lightning invoice
+            </Button>
             <Button
               variant="outline"
-              onClick={() => void copyRequest()}
-              aria-label={
-                copyStatus === "copied"
-                  ? "Payment request copied"
-                  : "Copy payment request"
-              }
+              onClick={() => void createSparkAddress()}
+              disabled={pending}
+              aria-busy={pendingAction === "spark-address"}
             >
-              {copyStatus === "copied" ? (
-                <Check className="h-4 w-4" />
-              ) : (
-                <Copy className="h-4 w-4" />
+              {pendingAction === "spark-address" && (
+                <Loader2 className="h-4 w-4 animate-spin" />
               )}
-              {copyStatus === "copied" ? "Copied" : "Copy"}
+              Spark address
             </Button>
-            <p aria-live="polite" className="sr-only">
-              {copyStatus === "copied" ? "Payment request copied." : ""}
-            </p>
-            {copyStatus === "error" && (
-              <p role="alert" className="text-sm text-[var(--text-secondary)]">
-                Copy was blocked. Copy the request manually.
-              </p>
-            )}
           </div>
-        )}
-        {error && (
-          <p role="alert" className="text-sm text-[var(--text-secondary)]">
-            {error}
-          </p>
-        )}
+          {request && (
+            <div className="grid gap-2">
+              <p role="status" className="sr-only">
+                Payment request ready.
+              </p>
+              <Label htmlFor="receive-request">Payment request</Label>
+              <Textarea
+                id="receive-request"
+                value={request}
+                readOnly
+                className="font-mono text-xs"
+              />
+              <Button
+                variant="outline"
+                onClick={() => void copyRequest()}
+                aria-label={
+                  copyStatus === "copied"
+                    ? "Payment request copied"
+                    : "Copy payment request"
+                }
+              >
+                {copyStatus === "copied" ? (
+                  <Check className="h-4 w-4" />
+                ) : (
+                  <Copy className="h-4 w-4" />
+                )}
+                {copyStatus === "copied" ? "Copied" : "Copy"}
+              </Button>
+              <p aria-live="polite" className="sr-only">
+                {copyStatus === "copied" ? "Payment request copied." : ""}
+              </p>
+              {copyStatus === "error" && (
+                <p
+                  role="alert"
+                  className="text-sm text-[var(--text-secondary)]"
+                >
+                  Copy was blocked. Copy the request manually.
+                </p>
+              )}
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-[var(--text-secondary)]">
+              {error}
+            </p>
+          )}
+        </WalletReceiveMethods>
         <DialogFooter>
           <Button variant="ghost" onClick={close} disabled={pending}>
             Done

@@ -1688,6 +1688,7 @@ export function adaptFirstPartySparkWallet(input: {
           paymentRequest: result.invoice.encodedInvoice,
         }),
         fee: 0n,
+        requestId: result.id,
       }
     },
   }
