@@ -526,7 +526,7 @@ export function getMerchantOrderSelection(
   const requested = requestedOrderId
     ? conversations.find((item) => item.orderId === requestedOrderId)
     : null
-  if (requested) return requested.id
+  if (requestedOrderId) return requested?.id ?? null
   if (selectedId && conversations.some((item) => item.id === selectedId)) {
     return selectedId
   }

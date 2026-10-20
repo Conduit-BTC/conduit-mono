@@ -1276,6 +1276,79 @@ export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTo
   checkoutId: string
 }
 
+/** Durable merchant inventory, separate from the relay-scoped product cache. */
+export interface MerchantInventoryPublicationJob {
+  id: string
+  state: "awaiting_signature" | "signed" | "delivered" | "superseded"
+  /** Immutable accepted local revision; signing must follow this sequence. */
+  revision: number
+  createdAt: number
+  productStock?: number
+  assignmentSnapshot?: {
+    state: "active" | "removed"
+    inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
+    fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+  }
+  draft?: {
+    pubkey: string
+    kind: number
+    created_at: number
+    tags: string[][]
+    content: string
+  }
+  signedEvent?: SignedPublicNostrEvent
+}
+
+export interface MerchantInventoryProduct {
+  coordinate: string
+  merchantPubkey: string
+  /** Undefined means genuinely untracked, never zero or infinity. */
+  stock?: number
+  revision: number
+  sourceProductEvent: SignedPublicNostrEvent
+  signedProductEvent: SignedPublicNostrEvent
+  publicationJobs: MerchantInventoryPublicationJob[]
+}
+
+export interface MerchantInventoryAssignment {
+  coordinate: string
+  merchantPubkey: string
+  productCoordinate: string
+  marketCoordinate: string
+  occurrenceCoordinate: string
+  inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
+  state: "active" | "removed"
+  fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+  /** Exclusive end from a validated signed occurrence snapshot. */
+  occurrenceEndMs: number
+  /** Only verified terminal cancellation or applicable deletion sets this. */
+  terminal: boolean
+  revision: number
+  signedAssignmentEvent?: SignedPublicNostrEvent
+  publicationJobs: MerchantInventoryPublicationJob[]
+}
+
+export interface MerchantInventoryAcceptedOrder {
+  orderId: string
+  merchantPubkey: string
+  identityBinding: string
+  termsBinding: string
+  /** Exact validated order snapshot encrypted by the account-owned device store. */
+  evidence: string
+  /** Absent only on legacy preview records awaiting account-owned repair. */
+  evidenceFormat?: "device-encrypted-v1"
+  evidenceBinding?: string
+  items: Array<{
+    productCoordinate: string
+    assignmentCoordinate?: string
+    method: "ordinary" | "pickup" | "shipping" | "digital"
+    quantity: number
+    remainingStock?: number
+    remainingAllocation?: number
+  }>
+  acceptedAt: number
+}
+
 export class ConduitDB extends Dexie {
   sparkRecoveryEvidence!: EntityTable<SparkRecoveryState, "ownerPubkey">
   orders!: EntityTable<StoredOrder, "id">
@@ -1338,6 +1411,18 @@ export class ConduitDB extends Dexie {
   checkoutSparkRetirements!: EntityTable<
     StoredCheckoutSparkRetirement,
     "checkoutId"
+  >
+  merchantInventoryProducts!: EntityTable<
+    MerchantInventoryProduct,
+    "coordinate"
+  >
+  merchantInventoryAssignments!: EntityTable<
+    MerchantInventoryAssignment,
+    "coordinate"
+  >
+  merchantInventoryAcceptedOrders!: EntityTable<
+    MerchantInventoryAcceptedOrder,
+    "orderId"
   >
 
   constructor(databaseName = "conduit", options?: DexieOptions) {

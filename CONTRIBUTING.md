@@ -281,8 +281,9 @@ cross-app commerce Playwright shards. App-local changes keep their owning app
 shard and add commerce when they affect the shared checkout, order, product,
 messaging, relay, signer, or payment flow. Shared runtime changes and pushes to
 `main` run every critical shard; docs-only changes skip browser installation.
-Full Market areas run in three single-worker jobs. Their project-aware discovery manifests
-must combine to the complete Market selection with no missing or repeated tests.
+Full Market and Merchant areas each run in three single-worker jobs. Their
+project-aware discovery manifests must combine to each complete area selection
+with no missing or repeated tests.
 Market browser fixtures use synthetic mainnet invoices so Spark wallet setup and
 manual invoice handoff share a supported network; Commerce uses testnet.
 The local `test:e2e`, `test:e2e:mobile`, and `test:e2e:webkit` commands run

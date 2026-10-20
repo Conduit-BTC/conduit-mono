@@ -328,6 +328,11 @@ export type {
 } from "./relay-reader"
 export * from "./event-market-calendar-retry"
 
+export * from "./event-market-assignment"
+export * from "./merchant-inventory"
+export * from "./merchant-occurrence-workflow"
+
+export * from "./merchant-inventory-recovery"
 export {
   admitPublicEvent,
   isVerifiedNostrEvent,

@@ -84,14 +84,16 @@ or expose a full buyer order. Their contract remains in
 
 The current client uses dedicated kind `30409` markets linked to same-author
 NIP-52 calendars or finite schedules and immutable kind `3841` merchant grants.
-Merchant manages roster admission and product association. Market displays fast
+Merchant manages occurrence-scoped kind `30410` assignments for ordinary products. Market displays fast
 provisional catalog candidates and rechecks exact signed authority before adding
 or purchasing a selected product. Created orders retain accepted signed terms.
-Private organizer handoff conveys physical release authority only.
+The existing historical private organizer handoff conveys physical release
+authority. New organizer acceptance requires the separate advance delegation
+and reconciliation integration described below.
 
 This remains an experimental implementation of upstream PR #15, not accepted
 Open Markets default-branch behavior. The proposal head was rechecked on
-2026-09-28 at `b2c20adce43598a17d67ea450d137f820fb08570`. See the
+2026-10-05 at `8aa6d83331c750be22bf01413a1f932778e64568`. See the
 [contract](specs/event-markets.md) and [current evidence index](knowledge/event-market-validation-evidence.md).
 
 Collection-based Event Market readers, writers, pickup checkout and private
@@ -116,12 +118,12 @@ This is the single proposal-status inventory for these documents. Status was
 checked on the date above; links and exact revisions make later comparison
 possible. None of these upstream PRs is accepted default-branch text.
 
-| Upstream proposal                                                                              | Checked revision / status                                                                                                                     | Conduit relationship                                                                                                                                                                                                                                                                      |
-| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [#1: specification navigation](https://github.com/OpenMarketsFoundation/specification/pull/1)  | [`40a8d22d`](https://github.com/OpenMarketsFoundation/specification/tree/40a8d22d9bce1f8740d60bbf0dc4e25f6b7ef192), open, not draft           | Proposes `SPEC.md` and pillar navigation without changing the compatibility snapshot. Keep canonical links on default-branch `README.md` until accepted.                                                                                                                                  |
-| [#13: destination constraints](https://github.com/OpenMarketsFoundation/specification/pull/13) | [`dba6ad71`](https://github.com/OpenMarketsFoundation/specification/tree/dba6ad71889d6da56938887599ad6c597ad6badd), open draft, stacked on #1 | Proposal only. The current fixed writer does not emit `destination_schema`/`destination`; event pickup explicitly rejects those tags. Country-level shipping is not adoption of this grammar.                                                                                             |
-| [#14: offer-code commitments](https://github.com/OpenMarketsFoundation/specification/pull/14)  | [`427b1eea`](https://github.com/OpenMarketsFoundation/specification/tree/427b1eea6eab39ff1e65b996b685b11e8d2daa40), open, stacked on #1       | Proposal only. No current client offer-code commitment or redemption workflow.                                                                                                                                                                                                            |
-| [#15: Event Markets](https://github.com/OpenMarketsFoundation/specification/pull/15)           | [`b2c20adc`](https://github.com/OpenMarketsFoundation/specification/tree/b2c20adce43598a17d67ea450d137f820fb08570), open, stacked on #1       | Proposes dedicated `30409` markets, causal `3841` merchant authorization, and finite schedule linkage. The client implements current checkout and handoff on this foundation. Collection-based event commerce is retired; old events must be reposted. The proposal remains experimental. |
+| Upstream proposal                                                                              | Checked revision / status                                                                                                                     | Conduit relationship                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [#1: specification navigation](https://github.com/OpenMarketsFoundation/specification/pull/1)  | [`40a8d22d`](https://github.com/OpenMarketsFoundation/specification/tree/40a8d22d9bce1f8740d60bbf0dc4e25f6b7ef192), open, not draft           | Proposes `SPEC.md` and pillar navigation without changing the compatibility snapshot. Keep canonical links on default-branch `README.md` until accepted.                                                                                                                                                                                                       |
+| [#13: destination constraints](https://github.com/OpenMarketsFoundation/specification/pull/13) | [`dba6ad71`](https://github.com/OpenMarketsFoundation/specification/tree/dba6ad71889d6da56938887599ad6c597ad6badd), open draft, stacked on #1 | Proposal only. The current fixed writer does not emit `destination_schema`/`destination`; event pickup explicitly rejects those tags. Country-level shipping is not adoption of this grammar.                                                                                                                                                                  |
+| [#14: offer-code commitments](https://github.com/OpenMarketsFoundation/specification/pull/14)  | [`427b1eea`](https://github.com/OpenMarketsFoundation/specification/tree/427b1eea6eab39ff1e65b996b685b11e8d2daa40), open, stacked on #1       | Proposal only. No current client offer-code commitment or redemption workflow.                                                                                                                                                                                                                                                                                 |
+| [#15: Event Markets](https://github.com/OpenMarketsFoundation/specification/pull/15)           | [`8aa6d833`](https://github.com/OpenMarketsFoundation/specification/tree/8aa6d83331c750be22bf01413a1f932778e64568), open, stacked on #1       | Proposes dedicated `30409` markets, causal `3841` merchant authorization, finite schedules and merchant-owned `30410` assignments. The client implements merchant pickup and durable acceptance; new delegated organizer acceptance remains gated. Collection-based event commerce is retired; old events must be reposted. The proposal remains experimental. |
 
 Client implementation checked separately:
 
@@ -216,3 +218,9 @@ author, signature, and privacy invariants, and do not silently copy a peer's
 non-spec behavior. When discovery or external-to-Conduit checkout breaks,
 report a minimal public-safe reproduction, source expectation, observed peer
 behavior, Conduit behavior, compatibility consequence, and proposed repair.
+
+## Occurrence-scoped inventory and acceptance
+
+The current experimental merchant-owned assignment and durable acceptance path,
+its frozen proposal revision, and remaining integration limits are documented in
+[Signed event publication](knowledge/signed-event-publication.md#occurrence-scoped-inventory-and-acceptance).

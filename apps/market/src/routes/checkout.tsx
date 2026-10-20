@@ -53,6 +53,7 @@ import {
   normalizePublicMediaUrl,
   orderSchema,
   serializeOrderRumorContent,
+  buildEventMarketOrderRumorTags,
   selectCheckoutSparkTreasuryAddress,
   patchOrderLifecycle,
   pubkeyToNpub,
@@ -3371,6 +3372,7 @@ function CheckoutPage() {
           rumor.tags.push(["shipping", item.shippingOptionId])
         }
       }
+      rumor.tags.push(...buildEventMarketOrderRumorTags(validatedPayload))
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = serializeOrderRumorContent({
         ...payload,
@@ -4015,6 +4017,9 @@ function CheckoutPage() {
           orderRumor.tags.push(["shipping", item.shippingOptionId])
         }
       }
+      orderRumor.tags.push(
+        ...buildEventMarketOrderRumorTags(validatedOrderPayload)
+      )
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = serializeOrderRumorContent({
         ...orderPayload,

@@ -22,9 +22,10 @@ a roster edit never republishes their products.
 
 ## Dates and discovery
 
-Single-date market closure is explicit. A recurring market requires an
-explicitly selected current or future occurrence, with verified membership in
-the current schedule. Unresolved sibling dates do not invalidate a verified
+Market closure is explicit and separate from occurrence expiry. A new
+assignment purchase requires an unended concrete occurrence for both single-date
+and recurring markets. A recurring market additionally requires an explicitly
+selected occurrence with verified membership in the current schedule. Unresolved sibling dates do not invalidate a verified
 selected occurrence. Removed or edited dates do not rewrite an existing order.
 
 Both apps offer current/upcoming and history views. Calendar timezone and
@@ -56,8 +57,36 @@ Before creating a new order or payment, checkout rechecks selected signed
 market, grant, calendar, product and payee terms. A material change requires
 buyer review. Created orders pin the accepted signed evidence; subsequent
 organizer edits do not reinterpret their goods, date, assignment or payee.
+Rescheduling may update the same calendar coordinate. Known current signed dates
+govern unused allocations; merchants may explicitly accept or confirm payment
+for the original order without rewriting it. Merchants coordinate fulfillment
+changes and any refunds with buyers.
 
-Merchant-present pickup and organizer handoff remain supported. Organizer
+Explicit payment confirmation of a merchant-present assignment order may occur
+past the original or rescheduled end. The order must predate its original
+signed end and retain its exact identity and complete terms. Ordinary new
+acceptance still requires an unended occurrence. Expired allocations do not
+reserve goods: confirmation uses the currently unallocated stock in the same
+atomic acceptance transaction, preserving other active allocations and credit
+for that order's earlier stock decision. It reduces any remaining allocation
+without making it negative. Retry after signing/delivery failure or reload uses
+the saved acceptance and does not consume stock again. Stock shortages,
+conflicting terms, known withdrawal/cancellation/deletion and delegated-writer
+restrictions still require reconciliation; expiry alone is not a rejection.
+This is manual settlement recording, not a new payment execution path.
+
+Acceptance rechecks retained signed occurrence dates inside the stock transaction,
+including ordinary purchases that share stock with an event allocation. A
+postponement retained while an order snapshot is encrypted must protect its
+allocation before the debit. The evidence read, assignment reconciliation and
+stock decision share the same database transaction; a rejected order adds no
+acceptance or publication job. Exact accepted-order retries return the saved
+decision without another debit. This protects known retained evidence, not
+unseen future organizer revisions.
+
+Merchant-present assignment pickup is supported. New organizer acceptance is
+gated on advance delegation, writer handover and order-ID reconciliation.
+Historical authenticated organizer handoff remains inspectable. Organizer
 release requires an authenticated, order-specific merchant message and exact
 merchandise evidence. An organizer acknowledgement grants no merchant payment
 or general lifecycle authority. Private ready/revoke/acknowledgement operations

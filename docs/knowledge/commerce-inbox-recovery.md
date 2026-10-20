@@ -243,3 +243,22 @@ Public references: [NIP-17](https://github.com/nostr-protocol/nips/blob/master/1
 [NIP-44](https://github.com/nostr-protocol/nips/blob/master/44.md),
 [NIP-42](https://github.com/nostr-protocol/nips/blob/master/42.md), and the
 [Open Markets specification](https://github.com/OpenMarketsFoundation/specification/blob/main/README.md).
+
+## Merchant inventory acceptance privacy
+
+Merchant acceptance retains its exact validated order snapshot through the same
+account-fenced, device-local AES-GCM owner. Identity, terms and evidence comparisons
+use domain-separated SHA-256 bindings; private notes, shipping addresses and guest
+contacts are not copied into plaintext acceptance fields. Ciphertext is bound to
+the merchant account and order ID. Random encryption nonces do not change the
+stable replay decision, so concurrent retries still debit inventory once.
+
+On an authenticated acceptance read or write, legacy preview rows for that account
+are repaired one at a time with compare-and-replace transactions. The repair
+retains the original evidence bytes, acceptance time, inventory result and pending
+publication jobs. It does not delete rows or repeat stock debits. Encryption or
+storage failure leaves the original decision available for a later repair and
+blocks the dependent action; a disconnected or different account cannot perform
+the repair. Rows belonging to another account remain pending until that account
+accesses acceptance. This is local persistence protection, not a change to NIP-44
+wire encryption or signer authority.

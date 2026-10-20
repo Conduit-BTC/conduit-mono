@@ -107,3 +107,67 @@ publication does not restore their former recovery or fulfillment model.
 Shipping-policy creation and withdrawal use plain unsigned drafts and validated
 signer results. Their current-revision checks and signed-evidence retention remain
 owned by the shipping workflow.
+
+## Occurrence-scoped inventory and acceptance
+
+This implementation uses the experimental Open Markets PR #15 revision
+`8aa6d83331c750be22bf01413a1f932778e64568`. It is not a normative standard.
+
+Three durable records own inventory: Product (remaining total stock), Assignment
+(remaining occurrence allocation and methods), and Accepted order (order-ID
+identity, accepted terms/evidence and resulting quantities). Pending drafts and
+signed publication bytes remain attached to these records in the existing Dexie
+database, outside commerce cache pruning/reset.
+
+One local transaction commits every item debit and the accepted decision.
+Pickup consumes total stock and its occurrence allocation once; ordinary
+acceptance respects all effective reservations. Unpaid acceptance already holds
+units. Signing interruptions, retries, reload and relay failures finish the
+recorded decision. No relay ACK, self-copy or convergence gate blocks the next
+acceptance. Independent devices have no global atomicity guarantee.
+
+A merchant signs one 30410 tuple per existing sellable product, market and
+concrete occurrence. Its d is SHA-256 of compact UTF-8 JSON
+[market, occurrence, product]. Product market tags remain discovery hints only.
+Assignment operations do not rewrite ordinary shipping or product content.
+New purchase evidence retains the exact signed assignment in encrypted kind-16
+orders. Historical orders retain their original terms.
+
+The integrated writer is merchant-owned pickup. New-profile pseudonymous
+purchasing has no product opt-in; shipping contact remains separate. Approved
+organizer authority permits entrusted-goods acceptance, settlement verification
+and handout without a live merchant. Its exact advance delegation, writer
+handover and order-ID reconciliation contract remains an integration dependency;
+this slice does not invent that wire format or alter the payment executor.
+
+A same-event calendar edit updates the deadline for unused allocations without
+changing an accepted order or consuming stock again. Merchant acceptance and
+payment confirmation preserve the order's original signed terms. Merchants
+coordinate timing changes and any refunds with buyers. Known cancellation and
+applicable deletion remain terminal for unused allocations. Atomic rollover,
+shipping/digital assignment UI, complete unavailable-device order recovery and
+independent-writer repair remain follow-ups. Bounded first-use signed assignment
+reads restore observed reservations across markets; their coverage does not prove
+global absence, and intact local inventory bypasses those reads. Core arithmetic tests alone do not prove
+those composed flows. External signer/relay/device, funded payment and physical
+handout evidence remain separate maintainer validation.
+
+Ordinary product edits and inventory product projections share
+`commitLocalProductWrite` and the existing listing outbox. A stock projection
+adopts its retained signed identity into that owner rather than starting a second
+publisher. Exact older inventory projection jobs can be superseded by a later
+retained projection without discarding their signed evidence or pairing unrelated
+deletions/shipping operations. A newer ordinary product edit supplies the metadata
+for the next stock projection; its content and shipping terms must not regress.
+
+Current signed assignment assertions remain usable when relays discard older
+addressable revisions under NIP-01. Missing history is distinct from an observed
+fork; known incompatible roots or branches, removals and deletions remain
+negative evidence. Product readers durably retain variation-parent revisions
+and applicable deletion evidence too.
+
+Acceptance shares same-order stock decisions with the existing stock action,
+including local writes awaiting publication. Retrying an acceptance notification
+reuses the durable acceptance time and original rumor identity. A later paid or
+fulfillment milestone suppresses an obsolete accepted notification. Neither a
+publication retry nor payment confirmation consumes the order twice.
