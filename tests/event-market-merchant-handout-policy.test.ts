@@ -1,4 +1,8 @@
 import { afterEach, expect, it } from "bun:test"
+import {
+  installProtectedReadSigner,
+  __resetProtectedReadSigner,
+} from "@conduit/core/protocol/protected-read-authorization"
 import type { ConduitDB } from "@conduit/core/db"
 import {
   acceptCheckoutSparkOrganizerStockOrder,
@@ -13,6 +17,7 @@ import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purc
 
 const databases: ConduitDB[] = []
 afterEach(async () => {
+  __resetProtectedReadSigner()
   for (const database of databases.splice(0)) await database.delete()
 })
 const offline = {
@@ -42,6 +47,11 @@ it("requires exact imported stock and the organizer's authenticated physical han
     }),
     hasAuthority: () => f.clock.active,
   })
+  installProtectedReadSigner(
+    merchantSigner,
+    f.merchantPubkey,
+    () => f.clock.active
+  )
   const merchant = {
     db: f.database,
     signer: merchantSigner,
@@ -111,6 +121,7 @@ it("requires exact imported stock and the organizer's authenticated physical han
     id: `${f.merchantPubkey}:${row.rumor.id}`,
     accountPubkey: f.merchantPubkey,
     imported: true,
+    evidence: bindings.termsBinding,
     receivedEnvelope: row.wraps!.recipient,
   }))
   await f.database.eventMarketOrganizerStockEntries.bulkPut(imported)
