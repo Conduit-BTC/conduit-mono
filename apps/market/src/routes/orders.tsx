@@ -3981,6 +3981,7 @@ function OrdersPage() {
         filteredOrders.some((row) => row.id === requested.id)
       )
         return requested.id
+      return null
     }
     return filteredOrders[0]?.id ?? null
   }, [
