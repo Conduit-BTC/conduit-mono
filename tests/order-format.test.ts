@@ -8,7 +8,10 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { v2 } from "nostr-tools/nip44"
 import { wrapEvent, unwrapEvent } from "nostr-tools/nip59"
 import { ConduitDB, type OrderLifecycle } from "../packages/core/src/db"
-import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import {
+  CommerceInbox,
+  readRetainedCommerceInbox,
+} from "../packages/core/src/protocol/commerce-inbox"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import { encodeOpenMarketsBuyerMessage } from "../packages/core/src/protocol/commerce-wire"
 import { createPrivateMessageRumor } from "../packages/core/src/protocol/messaging"
@@ -1286,6 +1289,129 @@ describe("explicit order-format selection and the numeric peer contract", () => 
         .getSnapshot()
         .orderMessages.every((message) => message.orderId === f.orderId)
     ).toBe(true)
+    // A retained choice and then only the authenticated original must each
+    // preserve merchant status after local checkout lifecycle loss.
+    for (const removeChoice of [false, true]) {
+      await f.database.orderLifecycles.delete(f.orderId)
+      if (removeChoice) await f.database.orderWireFormats.delete(f.orderId)
+      await owner.refresh()
+      expect(
+        extractOrderSummary(owner.getSnapshot().orderMessages).paymentConfirmed
+      ).toBe(true)
+      const retained = await readRetainedCommerceInbox(
+        f.buyerPubkey,
+        () => true,
+        f.database
+      )
+      expect(extractOrderSummary(retained.orderMessages).paymentConfirmed).toBe(
+        true
+      )
+      expect(
+        owner
+          .getSnapshot()
+          .orderMessages.some(
+            (message) =>
+              message.type === "status_update" &&
+              message.payload.status === "complete"
+          )
+      ).toBe(true)
+    }
+  })
+
+  it("recovers numeric buyer statuses only from the exact saved choice or authenticated original", () => {
+    const f = fixture()
+    const original = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor({
+        ...encodeOpenMarketsBuyerMessage(f.canonical, f.scope),
+        id: "",
+      })
+    )
+    const named = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor(f.canonical)
+    )
+    const encoded = encodeOpenMarketsBuyerMessage(f.canonical, f.scope)
+    const commonOriginal = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor({
+        ...encoded,
+        id: "",
+        tags: encoded.tags.filter((tag) => tag[0] !== "conduit"),
+      })
+    )
+
+    for (const [wireStatus, status] of [
+      ["confirmed", "paid"],
+      ["completed", "complete"],
+      ["cancelled", "cancelled"],
+    ]) {
+      const reply = (sender = f.merchantPubkey, recipient = f.buyerPubkey) =>
+        parseOrderMessageRumorEvent(
+          createPrivateMessageRumor({
+            kind: 16,
+            pubkey: sender,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              ["p", recipient],
+              ["subject", "order-info"],
+              ["order", f.orderId],
+              ["type", "3"],
+              ["status", wireStatus!],
+            ],
+            content: "",
+          })
+        )
+      const update = reply()
+      for (const [history, choices] of [
+        [[original, update], []],
+        [[commonOriginal, update], []],
+        [[update], [f.lifecycle]],
+      ] as const) {
+        const recovered = projectOwnedNumericOrderMessages(
+          history,
+          choices,
+          f.buyerPubkey
+        ).at(-1)!
+        expect(recovered.orderId).toBe(f.orderId)
+        expect(
+          recovered.type === "status_update" && recovered.payload.status
+        ).toBe(status!)
+      }
+      expect(
+        projectOwnedNumericOrderMessages([update], [], f.buyerPubkey)[0]
+      ).toEqual(update)
+      expect(
+        projectOwnedNumericOrderMessages(
+          [original, update],
+          [],
+          f.merchantPubkey
+        ).at(-1)
+      ).toEqual(update)
+      expect(
+        projectOwnedNumericOrderMessages(
+          [original, update],
+          [{ ...f.lifecycle, orderWireFormat: "conduit" }],
+          f.buyerPubkey
+        ).at(-1)
+      ).toEqual(update)
+      expect(
+        projectOwnedNumericOrderMessages(
+          [original, named, update],
+          [f.lifecycle],
+          f.buyerPubkey
+        ).at(-1)
+      ).toEqual(update)
+      for (const unrelated of [
+        reply(getPublicKey(generateSecretKey())),
+        reply(f.merchantPubkey, getPublicKey(generateSecretKey())),
+      ]) {
+        expect(
+          projectOwnedNumericOrderMessages(
+            [original, unrelated],
+            [f.lifecycle],
+            f.buyerPubkey
+          ).at(-1)
+        ).toEqual(unrelated)
+      }
+    }
   })
 
   it("recovers peer conversation from the saved numeric order when its outgoing history copy is missing", async () => {
@@ -1353,5 +1479,9 @@ describe("explicit order-format selection and the numeric peer contract", () => 
     expect(owner.getSnapshot().orderMessages[0]?.orderId === f.orderId).toBe(
       true
     )
+    await f.database.orderLifecycles.delete(f.orderId)
+    await owner.refresh()
+    expect(owner.getSnapshot().orderMessages.length).toBe(1)
+    expect(owner.getSnapshot().orderMessages[0]?.orderId).toBe(f.orderId)
   })
 })

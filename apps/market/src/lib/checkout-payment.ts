@@ -74,6 +74,25 @@ export type CheckoutPricingItem = {
   fulfillment?: CartItem["fulfillment"]
 }
 
+/** The numeric order contract has one delivery coordinate for the whole order. */
+export function requiresConduitOrderCompatibility(
+  items: readonly Pick<
+    CheckoutPricingItem,
+    "shippingOptionId" | "fulfillment"
+  >[],
+  routerCheckout = false
+): boolean {
+  return (
+    routerCheckout ||
+    items.some((item) => item.fulfillment?.type === "event_market_pickup") ||
+    new Set(
+      items.flatMap((item) =>
+        item.shippingOptionId ? [item.shippingOptionId] : []
+      )
+    ).size > 1
+  )
+}
+
 export type CheckoutShippingCostStatus = ResolvedCartShippingCostStatus
 
 export type CheckoutShippingCostSummary = ResolvedCartShippingCostSummary

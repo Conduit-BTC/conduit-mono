@@ -34,6 +34,7 @@ import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
   buildCheckoutPricingIntent,
+  requiresConduitOrderCompatibility,
   applyAuthorizedAnonZapPricing,
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
@@ -4225,5 +4226,16 @@ describe("parseRelayFailureMessage", () => {
     const urls = result.failures.map((f) => f.url)
     expect(urls).not.toContain("wss://ok.relay")
     expect(urls).toContain("wss://bad.relay")
+  })
+})
+
+describe("checkout commerce format requirements", () => {
+  it("retains the numeric default for no delivery or one shared option, but preserves distinct shipping terms", () => {
+    const first = { shippingOptionId: "30406:merchant:parcel-a" }
+    const second = { shippingOptionId: "30406:merchant:parcel-b" }
+    expect(requiresConduitOrderCompatibility([{}])).toBe(false)
+    expect(requiresConduitOrderCompatibility([first, first, {}])).toBe(false)
+    expect(requiresConduitOrderCompatibility([first, second])).toBe(true)
+    expect(requiresConduitOrderCompatibility([first], true)).toBe(true)
   })
 })

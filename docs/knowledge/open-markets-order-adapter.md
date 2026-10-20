@@ -37,9 +37,9 @@ an explicit **Conduit** override for the existing named kind-16 JSON contract.
 This default is a new-order policy, not inferred merchant capability.
 Neither a `client` tag, kind-10050 inbox declaration, relay response nor empty
 lookup establishes commerce-format support. There is no probe order or second
-representation. Private router checkout and event pickup require their existing
-Conduit contract; the locked selector explains that requirement and submission
-checks it before wallet preparation. Manual invoice/payment behavior remains
+representation. Private router checkout, event pickup and carts with multiple
+distinct shipping coordinates require their existing Conduit contract. The locked
+selector explains that requirement; submission checks it before wallet preparation. Manual invoice/payment behavior remains
 unchanged; no automatic payment preference is advertised by this adapter.
 
 Before wrapping or staging a new order, save its order ID, buyer, merchant and
@@ -54,8 +54,10 @@ Numeric order `amount` is the aggregate sats total including delivery. Common
 tags carry product coordinates, quantities and optional delivery/contact fields;
 text carries the buyer's note. The bounded extension retains the already
 approved Conduit snapshot inside the same recipient's encryption. Multiple
-different shipping coordinates cannot be represented by this common contract
-and fail before delivery rather than silently dropping a line's terms.
+different shipping coordinates cannot be represented by this common contract.
+Checkout selects the named contract before pinning those orders, preserving all
+per-item shipping snapshots. The encoder still rejects an incompatible numeric
+payload; it never silently drops a line's terms.
 
 Payment reports use kind 17 with the exact Lightning invoice, its amount and
 an optional preimage. Conversation uses kind 14 with the original wire order
@@ -63,6 +65,11 @@ ID as `subject`. These follow-ups use the saved lifecycle's format and party
 pair. Numeric history without its saved outbound format cannot silently send
 a named conversation reply. Guest checkout retains its existing outbound-only
 identity and contact/recovery rules; it gains no guest inbox or conversation.
+Buyer status projection binds to the exact saved numeric format or an
+authenticated buyer-authored original, so lifecycle loss does not erase a
+merchant's confirmed, completed or cancelled state. Conflicting formats and
+unrelated participants cannot gain that authority. Merchant receipt verification
+still requires exact payment evidence; buyer reports remain unconfirmed.
 The exact saved numeric buyer order also binds incoming conversation when its
 outgoing history/self-copy is missing. Another sender using the same wire ID
 remains a separate direct message and cannot gain that order's authority.

@@ -252,7 +252,10 @@ const emptySnapshot = (): CommerceInboxSnapshot => ({
 })
 function projectRetainedInboxRecords(
   projections: Array<{ row: InboxProjectionRow; projection: InboxProjection }>,
-  ownedOrders: readonly OrderLifecycle[] = [],
+  ownedOrders: readonly Pick<
+    OrderLifecycle,
+    "orderId" | "buyerPubkey" | "merchantPubkey" | "orderWireFormat"
+  >[] = [],
   principal = ""
 ) {
   const directMessages: ParsedDirectMessage[] = []
@@ -356,9 +359,13 @@ function projectRetainedInboxRecords(
 export async function readRetainedCommerceInbox(
   ...args: Parameters<typeof readRetainedInboxProjections>
 ): Promise<CommerceInboxSnapshot> {
-  const [projections, ownedOrders] = await Promise.all([
+  const [projections, ownedOrders, choices] = await Promise.all([
     readRetainedInboxProjections(...args),
     (args[2] ?? db).orderLifecycles
+      .where("buyerPubkey")
+      .equals(args[0])
+      .toArray(),
+    (args[2] ?? db).orderWireFormats
       .where("buyerPubkey")
       .equals(args[0])
       .toArray(),
@@ -366,7 +373,11 @@ export async function readRetainedCommerceInbox(
   if (!args[1]()) throw new Error("Inbox account session ended")
   return {
     ...emptySnapshot(),
-    ...projectRetainedInboxRecords(projections, ownedOrders, args[0]),
+    ...projectRetainedInboxRecords(
+      projections,
+      [...ownedOrders, ...choices],
+      args[0]
+    ),
   }
 }
 
@@ -426,6 +437,10 @@ export class CommerceInbox {
           .equals(this.store.principal)
           .toArray(),
         this.store.database.orderLifecycles
+          .where("buyerPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderWireFormats
           .where("buyerPubkey")
           .equals(this.store.principal)
           .toArray(),
@@ -498,7 +513,7 @@ export class CommerceInbox {
   }
   private async refreshView(): Promise<void> {
     this.assertCurrent()
-    const [projections, wrappers, ranges, deliveries, ownedOrders] =
+    const [projections, wrappers, ranges, deliveries, ownedOrders, choices] =
       await Promise.all([
         this.store.projections(),
         this.store.wrappers(),
@@ -511,6 +526,10 @@ export class CommerceInbox {
           .equals(this.store.principal)
           .toArray(),
         this.store.database.orderLifecycles
+          .where("buyerPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderWireFormats
           .where("buyerPubkey")
           .equals(this.store.principal)
           .toArray(),
@@ -567,7 +586,7 @@ export class CommerceInbox {
     }))
     const retained = projectRetainedInboxRecords(
       projections,
-      ownedOrders,
+      [...ownedOrders, ...choices],
       this.store.principal
     )
     this.snapshot = {

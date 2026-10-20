@@ -137,7 +137,11 @@ export function correlateLegacyNumericOrderHistory(
   })
 }
 
-/** Bind incoming numeric evidence to a locally staged buyer order, not a brand tag. */
+/** Bind merchant status to an exact buyer-owned order, never to a brand tag.
+ * Local choices survive lifecycle loss; authenticated buyer originals support
+ * recovery on another device. This does not turn a buyer payment report into
+ * settlement evidence for the merchant.
+ */
 export function projectOwnedNumericOrderMessages(
   messages: readonly ParsedOrderMessage[],
   orders: readonly Pick<
@@ -146,25 +150,44 @@ export function projectOwnedNumericOrderMessages(
   >[],
   principal: string
 ): ParsedOrderMessage[] {
-  const bindings = new Map(
-    orders
-      .filter(
-        (order) =>
-          order.buyerPubkey === principal &&
-          order.orderWireFormat === "open_markets"
-      )
-      .map(
-        (order) =>
-          [
-            openMarketsLocalOrderId(
-              order.orderId,
-              principal,
-              order.merchantPubkey
-            ),
-            order,
-          ] as const
-      )
-  )
+  type Binding = { orderId: string; merchantPubkey: string }
+  const bindings = new Map<string, Binding | null>()
+  const bind = (order: (typeof orders)[number]) => {
+    if (order.buyerPubkey !== principal) return
+    const alias = openMarketsLocalOrderId(
+      order.orderId,
+      principal,
+      order.merchantPubkey
+    )
+    // Conflicting named/numeric evidence for this exact pair fails closed.
+    if (order.orderWireFormat !== "open_markets") bindings.set(alias, null)
+    else if (bindings.get(alias) !== null) bindings.set(alias, order)
+  }
+  for (const order of orders) bind(order)
+  for (const message of messages) {
+    if (
+      message.type !== "order" ||
+      message.senderPubkey !== principal ||
+      message.payload.buyerPubkey !== principal ||
+      message.payload.merchantPubkey !== message.recipientPubkey
+    )
+      continue
+    const numeric = message.wireFormat === "open_markets"
+    const orderId = numeric ? message.wireOrderId : message.orderId
+    if (
+      !orderId ||
+      (numeric &&
+        message.orderId !==
+          openMarketsLocalOrderId(orderId, principal, message.recipientPubkey))
+    )
+      continue
+    bind({
+      orderId,
+      buyerPubkey: principal,
+      merchantPubkey: message.recipientPubkey,
+      orderWireFormat: numeric ? "open_markets" : "conduit",
+    })
+  }
   return messages.map((message) => {
     if (message.wireFormat !== "open_markets" && !message.legacyNumericOrder)
       return message

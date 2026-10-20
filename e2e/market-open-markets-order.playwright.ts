@@ -425,6 +425,12 @@ test("Market defaults to one numeric order and completes the external merchant l
       `${marketUrl}/orders?order=${encodeURIComponent(orderId)}&counterparty=${merchant.pubkey}`
     )
     await expect(
+      page
+        .getByText(/^(Order complete|Completed|Complete)$/)
+        .filter({ visible: true })
+        .first()
+    ).toBeVisible()
+    await expect(
       page.getByRole("button", { name: "Open messages", exact: true })
     ).toBeVisible()
     await page
@@ -453,6 +459,176 @@ test("Market defaults to one numeric order and completes the external merchant l
     ).toBe(true)
     console.info(
       "Bidirectional numeric lifecycle completed with immutable order bytes after reload"
+    )
+  } finally {
+    disposeRuntimeSignerIdentity(buyer)
+    disposeRuntimeSignerIdentity(merchant)
+  }
+})
+
+test("Market preserves two product-scoped fixed shipping snapshots with required compatibility @commerce", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const buyer = createRuntimeSignerIdentity()
+  const merchant = createRuntimeSignerIdentity()
+  const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+  const now = Math.floor(Date.now() / 1000)
+  const image = "https://cdn.conduit.market/fixed-shipping-smoke.svg"
+  const lines = [
+    { d: "fixed-parcel-a", price: 21, shipping: 3 },
+    { d: "fixed-parcel-b", price: 34, shipping: 5 },
+  ]
+  try {
+    await page.route(image, (route) =>
+      route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"/>',
+      })
+    )
+    await publishTestRelayEvents([
+      ...[buyer, merchant].flatMap((identity) => [
+        signRuntimeTestEvent(identity, {
+          kind: 10002,
+          created_at: now,
+          tags: [["r", TEST_RELAY_URL]],
+          content: "",
+        }),
+        signRuntimeTestEvent(identity, {
+          kind: 10050,
+          created_at: now,
+          tags: [["relay", TEST_RELAY_URL]],
+          content: "",
+        }),
+      ]),
+      ...lines.flatMap((line) => [
+        signRuntimeTestEvent(merchant, {
+          kind: 30406,
+          created_at: now,
+          tags: [
+            ["d", `${line.d}-shipping-standard`],
+            ["title", "Standard Shipping"],
+            ["price", String(line.shipping), "SATS"],
+            ["country", "US"],
+            ["service", "standard"],
+          ],
+          content: "",
+        }),
+        signRuntimeTestEvent(merchant, {
+          kind: 30402,
+          created_at: now + 1,
+          tags: [
+            ["d", line.d],
+            ["title", line.d],
+            ["price", String(line.price), "SATS"],
+            ["type", "simple", "physical"],
+            ["stock", "3"],
+            ["image", image],
+            [
+              "shipping_option",
+              `30406:${merchant.pubkey}:${line.d}-shipping-standard`,
+            ],
+          ],
+          content: "Synthetic fixed shipping fixture",
+        }),
+      ]),
+    ])
+    await installRealTestSigner(page, buyer, TEST_RELAY_URL)
+    for (const line of lines) {
+      await page.goto(
+        `${marketUrl}/products/30402:${merchant.pubkey}:${line.d}`
+      )
+      await page
+        .getByRole("button", { name: "Add 1 to cart", exact: true })
+        .click()
+      await expect
+        .poll(() =>
+          page.evaluate(async (productId) => {
+            const path = "/src/lib/cart-repository.ts"
+            const repository = await import(/* @vite-ignore */ path)
+            await repository.initializeCartRepository()
+            const items = repository.getCartRepositorySnapshot().items
+            return items.some(
+              (item: { productId: string }) => item.productId === productId
+            )
+          }, `30402:${merchant.pubkey}:${line.d}`)
+        )
+        .toBe(true)
+    }
+    await page.goto(`${marketUrl}/checkout?merchant=${merchant.pubkey}`)
+    await page.getByLabel(/First name/i).fill("Synthetic")
+    await page.getByLabel(/Last name/i).fill("Buyer")
+    await page.getByLabel(/Street address/i).fill("1 Test Way")
+    await page.getByLabel(/^City/i).fill("Seattle")
+    await page.getByLabel(/State/i).fill("WA")
+    await page.getByLabel(/Postal\/ZIP code/i).fill("98101")
+    // Observe the whole default checkout before checking the selected format:
+    // the regression is failure to deliver, not just the selector label.
+    const send = page.getByRole("button", { name: "Send order", exact: true })
+    await expect(send).toBeEnabled()
+    await send.click()
+    await expect(page).toHaveURL(/\/orders\?order=/)
+    const orderId = new URL(page.url()).searchParams.get("order")!
+    const saved = await page.evaluate(
+      async ({ root, orderId }) => {
+        const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
+        return {
+          lifecycle: await db.orderLifecycles.get(orderId),
+          choice: await db.orderWireFormats.get(orderId),
+        }
+      },
+      { root: `/@fs${process.cwd()}/packages/core/src`, orderId }
+    )
+    expect(saved.choice.orderWireFormat).toBe("conduit")
+    expect(saved.lifecycle.orderWireFormat).toBe("conduit")
+    expect(saved.lifecycle.totalSats).toBe(63)
+    await expect
+      .poll(async () => {
+        const wraps = await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)
+        return wraps.flatMap((wrap) => {
+          const rumor = parseCanonicalRuntimePrivateRumor({
+            inboxOwner: merchant,
+            recipient: merchant,
+            sender: buyer,
+            rumorKind: 16,
+            wrap,
+          })
+          if (
+            !rumor ||
+            !rumor.tags.some((tag) => tag[0] === "order" && tag[1] === orderId)
+          )
+            return []
+          const payload = JSON.parse(rumor.content)
+          return payload.items
+            .map(
+              (item: {
+                productId: string
+                shippingOptionId: string
+                shippingCostSats: number
+                price: number
+                quantity: number
+              }) => ({
+                productId: item.productId,
+                shippingOptionId: item.shippingOptionId,
+                shippingCostSats: item.shippingCostSats,
+                quantity: item.quantity,
+              })
+            )
+            .sort((a: { productId: string }, b: { productId: string }) =>
+              a.productId.localeCompare(b.productId)
+            )
+        })
+      })
+      .toEqual(
+        lines.map((line) => ({
+          productId: `30402:${merchant.pubkey}:${line.d}`,
+          shippingOptionId: `30406:${merchant.pubkey}:${line.d}-shipping-standard`,
+          shippingCostSats: line.shipping,
+          quantity: 1,
+        }))
+      )
+    console.info(
+      "Two fixed shipping snapshots delivered with the saved Conduit format"
     )
   } finally {
     disposeRuntimeSignerIdentity(buyer)

@@ -207,6 +207,7 @@ import {
 } from "../lib/checkout-session"
 import {
   buildCheckoutPricingIntent,
+  requiresConduitOrderCompatibility,
   buildDefaultZapContent,
   buildZapRequestContent,
   getCheckoutPublicZapSigner,
@@ -2001,8 +2002,10 @@ function CheckoutPage() {
     fulfillment: preparedFulfillment.resolutions,
   })
   const routerBranchTargetCheckout = routerAdmission.mode === "router"
-  const requiresConduitOrderFormat =
-    routerBranchTargetCheckout || isPickupCheckout
+  const requiresConduitOrderFormat = requiresConduitOrderCompatibility(
+    checkoutItems,
+    routerBranchTargetCheckout
+  )
   const orderWireFormat: OrderWireFormat = requiresConduitOrderFormat
     ? "conduit"
     : requestedOrderWireFormat
@@ -3659,7 +3662,12 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
-        orderWireFormat,
+        orderWireFormat: requiresConduitOrderCompatibility(
+          checkoutPricing.items,
+          routerBranchTargetCheckout
+        )
+          ? "conduit"
+          : orderWireFormat,
         ...(freePurchaseDelivery
           ? { eventMarketFreePurchaseDelivery: freePurchaseDelivery }
           : {}),
@@ -4373,7 +4381,12 @@ function CheckoutPage() {
       // Orders can render it immediately, then hand payment to the service.
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
-        orderWireFormat,
+        orderWireFormat: requiresConduitOrderCompatibility(
+          checkoutPricing.items,
+          routerBranchTargetCheckout
+        )
+          ? "conduit"
+          : orderWireFormat,
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
@@ -5571,7 +5584,9 @@ function CheckoutPage() {
             <p role="status" className="text-sm text-[var(--text-secondary)]">
               {isPickupCheckout
                 ? "Event pickup requires Conduit order compatibility."
-                : "This payment option requires Conduit order compatibility."}
+                : routerBranchTargetCheckout
+                  ? "This payment option requires Conduit order compatibility."
+                  : "These products have separate shipping options and require Conduit order compatibility."}
             </p>
           )}
           {
