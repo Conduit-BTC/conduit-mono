@@ -1,3 +1,13 @@
+import Dexie from "dexie"
+import {
+  merchantAcceptanceForPrivateTransport,
+  merchantAcceptanceStore,
+  protectMerchantAcceptanceRecord,
+  protectMerchantAcceptanceHistory,
+  sealMerchantStockCheckpoint,
+  merchantStockCheckpointKey,
+  type StoredMerchantStockCheckpoint,
+} from "./merchant-acceptance-privacy"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { getEventHash } from "nostr-tools"
@@ -40,6 +50,34 @@ import {
 export const EVENT_MARKET_STOCK_CHECKPOINT_SUBJECT =
   "conduit-event-stock-checkpoint"
 const MARKER = ["conduit", "event-stock-checkpoint", "1"]
+type OpenMerchantStockCheckpoint = StoredMerchantStockCheckpoint & {
+  rumor: PrivateMessageRumor
+}
+
+export async function openMerchantOrganizerStockCheckpoint(
+  checkpoint: StoredMerchantStockCheckpoint,
+  merchant: string,
+  db: ConduitDB
+): Promise<OpenMerchantStockCheckpoint> {
+  const store = merchantAcceptanceStore(merchant, db)
+  const rumor =
+    checkpoint.rumor ??
+    (await store.open<PrivateMessageRumor>(
+      checkpoint.sealedRumor!,
+      merchantStockCheckpointKey(checkpoint.rumorId!)
+    ))
+  const payload = parseEventMarketStockCheckpointRumor(rumor)
+  if (
+    payload.merchantPubkey !== merchant ||
+    (checkpoint.rumorId && rumor.id !== checkpoint.rumorId) ||
+    payload.snapshotKey !== checkpoint.snapshotKey ||
+    payload.sequence !== checkpoint.sequence ||
+    payload.previousId !== checkpoint.previousId
+  )
+    fail()
+  return { ...checkpoint, rumor }
+}
+
 const MAX_BYTES = 240_000
 const MAX_ROWS = 128
 const sameSigned = (a: SignedPublicNostrEvent, b: SignedPublicNostrEvent) => {
@@ -443,6 +481,11 @@ function validateSnapshot(snapshot: StockSnapshot, merchant: string): void {
     assignments.size !== snapshot.assignments.length ||
     pools.size !== snapshot.pools.length ||
     orders.size !== snapshot.orders.length ||
+    snapshot.orders.some(
+      (order) =>
+        order.evidenceFormat !== undefined ||
+        order.evidenceBinding !== undefined
+    ) ||
     new Set(snapshot.entries.map((row) => row.id)).size !==
       snapshot.entries.length
   )
@@ -725,6 +768,19 @@ async function snapshot(
   } = product
   void _jobs
   void _checkpoint
+  for (const [id, order] of orders) {
+    if (!order.evidenceFormat) continue
+    const wire = await Dexie.waitFor(
+      merchantAcceptanceForPrivateTransport(order, db)
+    )
+    for (const entry of entries.filter(
+      (entry) => entry.imported && entry.orderId === id
+    )) {
+      if (entry.evidence !== order.evidenceBinding) fail()
+      entry.evidence = wire.evidence
+    }
+    orders.set(id, wire)
+  }
   const result: StockSnapshot = {
     product: productSnapshot,
     assignments: assignments
@@ -753,6 +809,7 @@ const inventoryTables = (db: ConduitDB) => [
   db.eventMarketOrganizerStockEntries,
   db.eventMarketRosterEvidence,
   db.commerceInboxDeliveries,
+  db.commerceInboxKeys,
   db.products,
 ]
 
@@ -769,18 +826,29 @@ export function publishMerchantOrganizerStockCheckpoint(
 async function publishCheckpoint(
   input: PublishCheckpointInput,
   attempt: number
-): Promise<NonNullable<MerchantInventoryProduct["organizerStockCheckpoint"]>> {
+): Promise<OpenMerchantStockCheckpoint> {
   input = {
     ...input,
     delivery: input.delivery ? { ...input.delivery } : undefined,
   }
   const authority = session(input)
   await authority.authenticate()
+  const acceptanceStore = merchantAcceptanceStore(
+    input.authenticatedPubkey,
+    input.db
+  )
+  await protectMerchantAcceptanceHistory(acceptanceStore)
   let product = await input.db.merchantInventoryProducts.get(
     input.productCoordinate
   )
   if (!product) fail()
   let saved = product.organizerStockCheckpoint
+    ? await openMerchantOrganizerStockCheckpoint(
+        product.organizerStockCheckpoint,
+        input.authenticatedPubkey,
+        input.db
+      )
+    : undefined
   // An interrupted older checkpoint is delivered byte-for-byte before advancing.
   if (!saved || saved.acknowledgedRelayUrls.length) {
     const current = await input.db.transaction(
@@ -814,6 +882,16 @@ async function publishCheckpoint(
     })
     parseEventMarketStockCheckpointRumor(rumor)
     assertPrivateMessageFitsTransport(rumor)
+    const protectedCheckpoint = await sealMerchantStockCheckpoint(
+      acceptanceStore,
+      {
+        sequence: payload.sequence,
+        previousId: payload.previousId,
+        snapshotKey,
+        rumor,
+        acknowledgedRelayUrls: [],
+      }
+    )
     saved = await input.db.transaction(
       "rw",
       inventoryTables(input.db),
@@ -837,16 +915,10 @@ async function publishCheckpoint(
           ) !== snapshotKey
         )
           fail()
-        row.organizerStockCheckpoint = {
-          sequence: payload.sequence,
-          previousId: payload.previousId,
-          snapshotKey,
-          rumor,
-          acknowledgedRelayUrls: [],
-        }
+        row.organizerStockCheckpoint = protectedCheckpoint
         await input.db.merchantInventoryProducts.put(row)
         authority.check()
-        return row.organizerStockCheckpoint
+        return { ...row.organizerStockCheckpoint, rumor }
       }
     )
   }
@@ -867,13 +939,14 @@ async function publishCheckpoint(
         )
         if (
           !row?.organizerStockCheckpoint ||
-          row.organizerStockCheckpoint.rumor.id !== saved!.rumor.id
+          (row.organizerStockCheckpoint.rumorId ??
+            row.organizerStockCheckpoint.rumor?.id) !== saved!.rumor.id
         )
           fail()
         row.organizerStockCheckpoint.selfEnvelope ??= selfEnvelope
         await input.db.merchantInventoryProducts.put(row)
         authority.check()
-        return row.organizerStockCheckpoint
+        return { ...row.organizerStockCheckpoint, rumor: saved!.rumor }
       }
     )
   }
@@ -905,7 +978,8 @@ async function publishCheckpoint(
       )
       if (
         !product?.organizerStockCheckpoint ||
-        product.organizerStockCheckpoint.rumor.id !== saved!.rumor.id
+        (product.organizerStockCheckpoint.rumorId ??
+          product.organizerStockCheckpoint.rumor?.id) !== saved!.rumor.id
       )
         fail()
       product.organizerStockCheckpoint.acknowledgedRelayUrls = [
@@ -933,7 +1007,11 @@ async function publishCheckpoint(
       )
     return publishCheckpoint(input, attempt + 1)
   }
-  return clone(product!.organizerStockCheckpoint!)
+  return openMerchantOrganizerStockCheckpoint(
+    product!.organizerStockCheckpoint!,
+    input.authenticatedPubkey,
+    input.db
+  )
 }
 
 /** Positive exact self-copy + projections restore one existing inventory owner. */
@@ -968,6 +1046,8 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       fail()
   }
   await authority.authenticate()
+  check()
+  await protectMerchantAcceptanceHistory(input.store)
   check()
   const retained = await observeMerchantOrganizerStockCheckpoint(input)
   check()
@@ -1029,6 +1109,28 @@ export async function restoreMerchantOrganizerStockCheckpoint(
         fail()
     }
   }
+  const acceptanceStore = merchantAcceptanceStore(
+    input.authenticatedPubkey,
+    input.db
+  )
+  const protectedCheckpoint = await sealMerchantStockCheckpoint(
+    acceptanceStore,
+    {
+      sequence: payload.sequence,
+      previousId: payload.previousId,
+      snapshotKey: payload.snapshotKey,
+      rumor,
+      selfEnvelope: clone(input.envelope),
+      acknowledgedRelayUrls: retained.sources,
+    }
+  )
+  const protectedOrders = new Map<string, MerchantInventoryAcceptedOrder>()
+  for (const order of state.orders)
+    protectedOrders.set(
+      order.orderId,
+      await protectMerchantAcceptanceRecord(acceptanceStore, order)
+    )
+  check()
   return input.db.transaction("rw", inventoryTables(input.db), async () => {
     check()
     const observation = await input.db.commerceInboxDeliveries.get(
@@ -1043,9 +1145,10 @@ export async function restoreMerchantOrganizerStockCheckpoint(
     if (
       prior &&
       (prior.sequence > payload.sequence ||
-        (prior.sequence === payload.sequence && prior.rumor.id !== rumor.id) ||
+        (prior.sequence === payload.sequence &&
+          (prior.rumorId ?? prior.rumor?.id) !== rumor.id) ||
         (prior.sequence + 1 === payload.sequence &&
-          payload.previousId !== prior.rumor.id))
+          payload.previousId !== (prior.rumorId ?? prior.rumor?.id)))
     )
       fail()
     // Retained later public observations or local decisions prevent rollback.
@@ -1100,11 +1203,11 @@ export async function restoreMerchantOrganizerStockCheckpoint(
         ) !== prior.snapshotKey
       )
         fail()
-      if (prior.rumor.id === rumor.id)
+      if ((prior.rumorId ?? prior.rumor?.id) === rumor.id)
         return { product: before, replayed: true }
       if (
         prior.sequence + 1 !== payload.sequence ||
-        payload.previousId !== prior.rumor.id
+        payload.previousId !== (prior.rumorId ?? prior.rumor?.id)
       )
         fail()
     }
@@ -1184,8 +1287,19 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       const existing = await input.db.merchantInventoryAcceptedOrders.get(
         order.orderId
       )
-      if (existing && !exact(existing, order)) fail()
-      await input.db.merchantInventoryAcceptedOrders.put(clone(order))
+      if (
+        existing &&
+        !exact(
+          await Dexie.waitFor(
+            merchantAcceptanceForPrivateTransport(existing, input.db)
+          ),
+          order
+        )
+      )
+        fail()
+      await input.db.merchantInventoryAcceptedOrders.put(
+        existing ?? protectedOrders.get(order.orderId)!
+      )
     }
     await input.db.merchantInventoryAssignments.bulkPut(
       state.assignments.map((row) => ({
@@ -1205,7 +1319,11 @@ export async function restoreMerchantOrganizerStockCheckpoint(
       state.pools.map(({ pool }) => clone(pool))
     )
     await input.db.eventMarketOrganizerStockEntries.bulkPut(
-      clone(state.entries)
+      state.entries.map((entry) => ({
+        ...clone(entry),
+        evidence:
+          protectedOrders.get(entry.orderId)?.evidenceBinding ?? entry.evidence,
+      }))
     )
     const product: MerchantInventoryProduct = {
       ...clone(state.product),
@@ -1218,14 +1336,7 @@ export async function restoreMerchantOrganizerStockCheckpoint(
           signedEvent: clone(state.product.signedProductEvent),
         },
       ],
-      organizerStockCheckpoint: {
-        sequence: payload.sequence,
-        previousId: payload.previousId,
-        snapshotKey: payload.snapshotKey,
-        rumor,
-        selfEnvelope: clone(input.envelope),
-        acknowledgedRelayUrls: retained.sources,
-      },
+      organizerStockCheckpoint: protectedCheckpoint,
     }
     await input.db.merchantInventoryProducts.put(product)
     for (const event of [

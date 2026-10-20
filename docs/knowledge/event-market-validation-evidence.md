@@ -232,3 +232,19 @@ rejection controls. Checkout evidence retains the complete supported signed
 authorization history; the shared encrypted transport-size limit bounds the
 whole message rather than imposing a smaller recovery-event count. The signed
 61-event ancestry control retains all 65 required evidence events.
+
+Acceptance privacy regression coverage verifies encrypted raw rows, original
+terms after reopening, conflicting identity/terms, concurrent exactly-once stock,
+account revocation, ciphertext tampering, and resumable legacy-record repair.
+Signed product duplicates are resolved by the NIP-01 frontier regardless of input
+order, including equal timestamps, sold-out/hidden revisions and unrelated or
+invalid events. The browser acceptance helper waits for the durable replay
+control, not a temporary publication notice; a synthetic signer interruption
+reproduces replacement of that notice while the acceptance remains committed.
+
+Organizer stock import coverage also inspects raw acceptance, imported-entry and
+checkpoint rows for private notes; it restores the same exact order on a fresh
+device with a new encryption key. Legacy repair retains immutable checkpoint
+rumor and envelope identities. Stock closing, whole-order manifests, concurrent
+import, handout provenance and publication retry run with the encrypted records.
+Signed organizer identity and terms commitments remain byte-compatible.

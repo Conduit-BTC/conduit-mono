@@ -1,3 +1,10 @@
+import {
+  merchantAcceptanceStore,
+  protectMerchantAcceptanceHistory,
+  sealMerchantAcceptanceEvidence,
+  merchantAcceptanceForPrivateTransport,
+} from "./merchant-acceptance-privacy"
+import { merchantOccurrenceAcceptanceBindings } from "./merchant-order-acceptance-bindings"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import type {
@@ -257,11 +264,19 @@ export async function importMerchantOrganizerStockOrder(input: {
       throw new Error("Committed Merchant product unavailable")
     item.admission.productTermsEventId = product.sourceProductEvent.id
   }
+  const store = merchantAcceptanceStore(order.merchantPubkey, input.db)
+  await protectMerchantAcceptanceHistory(store)
+  const privateBindings = merchantOccurrenceAcceptanceBindings(order)
+  const sealed = await sealMerchantAcceptanceEvidence(
+    store,
+    order.id,
+    JSON.stringify(order)
+  )
   const context = createVerifiedOrganizerStockImport({
     orderId: order.id,
     merchantPubkey: order.merchantPubkey,
-    identityBinding: bindings.identityBinding,
-    termsBinding: bindings.termsBinding,
+    ...privateBindings,
+    evidenceBinding: sealed.evidenceBinding,
     attribution,
     entries,
     checkSession: authority.check,
@@ -271,9 +286,12 @@ export async function importMerchantOrganizerStockOrder(input: {
     db: input.db,
     orderId: order.id,
     merchantPubkey: order.merchantPubkey,
-    identityBinding: bindings.identityBinding,
-    termsBinding: bindings.termsBinding,
-    evidence: bindings.termsBinding,
+    ...privateBindings,
+    ...sealed,
+    assertCurrent: () => {
+      authority.check()
+      store.assertCurrent()
+    },
     items,
     organizerImport: context,
     acceptedAt: nowMs,
@@ -292,6 +310,10 @@ export async function reconcileMerchantOrganizerStockClose(input: {
   input = { ...input, closingEnvelope: clone(input.closingEnvelope) }
   const authority = session(input)
   await authority.authenticate()
+  await protectMerchantAcceptanceHistory(
+    merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  )
+  authority.check()
   const rumor = await unwrap(input.closingEnvelope, input.signer)
   authority.check()
   const close = parseEventMarketStockAuthorityRumor(rumor)
@@ -369,6 +391,24 @@ export async function reconcileMerchantOrganizerStockClose(input: {
     throw new Error("Invalid stock closing time")
   if (rumor.created_at * 1000 > nowMs)
     throw new Error("Organizer close is future dated")
+  const privateOrders = new Map<
+    string,
+    {
+      saved: MerchantInventoryAcceptedOrder
+      wire: MerchantInventoryAcceptedOrder
+    }
+  >()
+  for (const entry of saved) {
+    const order = await input.db.merchantInventoryAcceptedOrders.get(
+      entry.orderId
+    )
+    if (!order)
+      throw new Error("Imported order attribution requires reconciliation")
+    privateOrders.set(entry.orderId, {
+      saved: order,
+      wire: await merchantAcceptanceForPrivateTransport(order, input.db),
+    })
+  }
   authority.check()
   return input.db.transaction(
     "rw",
@@ -401,9 +441,13 @@ export async function reconcileMerchantOrganizerStockClose(input: {
           payload.type !== "accepted" ||
           !accepted ||
           accepted.merchantPubkey !== input.authenticatedPubkey ||
-          accepted.evidence !== entry.evidence ||
-          hash(accepted.identityBinding) !== payload.identityBinding ||
-          hash(accepted.termsBinding) !== payload.termsBinding ||
+          JSON.stringify(accepted) !==
+            JSON.stringify(privateOrders.get(entry.orderId)?.saved) ||
+          (accepted.evidenceBinding ?? accepted.evidence) !== entry.evidence ||
+          hash(privateOrders.get(entry.orderId)!.wire.identityBinding) !==
+            payload.identityBinding ||
+          hash(privateOrders.get(entry.orderId)!.wire.termsBinding) !==
+            payload.termsBinding ||
           accepted.organizerImport?.organizerPubkey !== close.organizerPubkey ||
           accepted.organizerImport.claimRef !== payload.claimRef ||
           !accepted?.organizerImport?.entries.some(

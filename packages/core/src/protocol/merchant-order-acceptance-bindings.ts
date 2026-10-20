@@ -1,6 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { orderSchema, type OrderSchema } from "../schemas"
+import { merchantAcceptanceBinding } from "./merchant-acceptance-privacy"
 
 type OrderIdentity = Pick<OrderSchema, "id" | "buyerPubkey" | "merchantPubkey">
 const hash = (text: string) =>
@@ -10,8 +11,11 @@ const identityBinding = (order: OrderIdentity) =>
 
 export function merchantOccurrenceAcceptanceBindings(order: OrderSchema) {
   return {
-    identityBinding: identityBinding(order),
-    termsBinding: JSON.stringify(order),
+    identityBinding: merchantAcceptanceBinding(
+      "identity",
+      identityBinding(order)
+    ),
+    termsBinding: merchantAcceptanceBinding("terms", JSON.stringify(order)),
   }
 }
 
@@ -22,9 +26,12 @@ export function getOrganizerStockOrderIdentityHash(order: OrderIdentity) {
 
 /** Opaque journal commitments over the existing canonical acceptance bytes. */
 export function getOrganizerStockOrderBindings(candidate: OrderSchema) {
-  const bindings = merchantOccurrenceAcceptanceBindings(
-    orderSchema.parse(candidate)
-  )
+  const order = orderSchema.parse(candidate)
+  // Signed organizer protocol commitments retain their original canonical bytes.
+  const bindings = {
+    identityBinding: identityBinding(order),
+    termsBinding: JSON.stringify(order),
+  }
   return {
     ...bindings,
     identityHash: hash(bindings.identityBinding),

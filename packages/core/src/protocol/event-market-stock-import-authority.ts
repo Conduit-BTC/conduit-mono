@@ -83,6 +83,7 @@ interface VerifiedImportData {
   readonly merchantPubkey: string
   readonly identityBinding: string
   readonly termsBinding: string
+  readonly evidenceBinding: string
   readonly attribution: NonNullable<
     MerchantInventoryAcceptedOrder["organizerImport"]
   >

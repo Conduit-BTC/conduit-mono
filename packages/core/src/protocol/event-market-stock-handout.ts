@@ -1,3 +1,8 @@
+import {
+  merchantAcceptanceBinding,
+  merchantAcceptanceStore,
+  protectMerchantAcceptanceHistory,
+} from "./merchant-acceptance-privacy"
 import type { ConduitDB, EventMarketOrganizerStockEntry } from "../db"
 import {
   assertCheckoutSparkOrganizerCommerceProof,
@@ -489,6 +494,10 @@ export async function assertMerchantOrganizerStockOrderHandout(
   input = { ...input, order: orderSchema.parse(clone(input.order)) }
   const authority = session(input)
   await authority.authenticate()
+  await protectMerchantAcceptanceHistory(
+    merchantAcceptanceStore(input.authenticatedPubkey, input.db)
+  )
+  authority.check()
   if (
     input.order.merchantPubkey !== input.authenticatedPubkey ||
     classifyEventMarketOrderHandoff(input.order) !== "reserved_organizer_stock"
@@ -505,9 +514,12 @@ export async function assertMerchantOrganizerStockOrderHandout(
     !imported ||
     !imported.entries.length ||
     accepted.merchantPubkey !== input.authenticatedPubkey ||
-    accepted.identityBinding !== bindings.identityBinding ||
-    accepted.termsBinding !== bindings.termsBinding ||
-    accepted.evidence !== bindings.termsBinding
+    accepted.identityBinding !==
+      merchantAcceptanceBinding("identity", bindings.identityBinding) ||
+    accepted.termsBinding !==
+      merchantAcceptanceBinding("terms", bindings.termsBinding) ||
+    accepted.evidenceBinding !==
+      merchantAcceptanceBinding("evidence", bindings.termsBinding)
   )
     throw new Error(
       "Import the organizer's exact accepted stock history before completion."
