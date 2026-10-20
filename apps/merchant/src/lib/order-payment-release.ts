@@ -2,6 +2,7 @@ import {
   publishMerchantOrderMessage,
   type MerchantOrderDelivery,
   type ParsedOrderPayload,
+  type ParsedOrderMessage,
   type PublishMerchantOrderMessageResult,
 } from "@conduit/core"
 
@@ -11,6 +12,7 @@ export interface MerchantPaymentConfirmationInput {
   orderId: string
   delivery: MerchantOrderDelivery
   order: ParsedOrderPayload | null
+  orderMessage?: Extract<ParsedOrderMessage, { type: "order" }>
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
 }

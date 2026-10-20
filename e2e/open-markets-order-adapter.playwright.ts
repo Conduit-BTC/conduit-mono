@@ -62,7 +62,11 @@ test("independent numeric order retains invoice, shipping and accepted conversat
     })
     await publishTestRelayEvents([createWrap(seal, merchant.pubkey)])
   }
-  const peerObserved = async (type: string, status?: string) => {
+  const peerObserved = async (
+    type: string,
+    status?: string,
+    targetOrderId = wireOrderId
+  ) => {
     const wraps = await readAuthenticatedGiftWraps(buyer, TEST_RELAY_URL)
     return wraps.some((wrap) => {
       const rumor = parseCanonicalRuntimePrivateRumor({
@@ -74,7 +78,7 @@ test("independent numeric order retains invoice, shipping and accepted conversat
       })
       return (
         rumor?.tags.some(
-          (tag) => tag[0] === "order" && tag[1] === wireOrderId
+          (tag) => tag[0] === "order" && tag[1] === targetOrderId
         ) &&
         rumor.tags.some((tag) => tag[0] === "type" && tag[1] === type) &&
         (!status ||
@@ -427,6 +431,119 @@ test("independent numeric order retains invoice, shipping and accepted conversat
     ).toBeVisible()
     console.info(
       "Adapter conversation survives refused self-copy in Messages and Orders"
+    )
+
+    // Reproduce the installed parser's committed raw-ID decision with status
+    // delivery still pending, then recover its numeric original in the UI.
+    const legacyWireOrderId = `legacy-${crypto.randomUUID()}`
+    const legacy = await page.evaluate(
+      async ({ root, buyer, merchant, product, orderId }) => {
+        const { acceptMerchantOccurrenceOrder } = await import(
+          `${root}/protocol/merchant-occurrence-workflow.ts`
+        )
+        const { createPrivateMessageRumor } = await import(
+          `${root}/protocol/private-message-primitives.ts`
+        )
+        const { encodeOpenMarketsBuyerMessage } = await import(
+          `${root}/protocol/commerce-wire.ts`
+        )
+        const { orderSchema } = await import(`${root}/schemas/index.ts`)
+        const purchase = orderSchema.parse({
+          id: orderId,
+          buyerPubkey: buyer,
+          merchantPubkey: merchant,
+          items: [
+            {
+              productId: product,
+              format: "physical",
+              quantity: 1,
+              priceAtPurchase: 100,
+              currency: "SATS",
+            },
+          ],
+          subtotal: 100,
+          currency: "SATS",
+          createdAt: Date.now(),
+        })
+        const accepted = await acceptMerchantOccurrenceOrder({
+          merchantPubkey: merchant,
+          authenticatedPubkey: merchant,
+          shouldContinue: () => true,
+          order: purchase,
+          products: [],
+        })
+        const canonical = createPrivateMessageRumor({
+          kind: 16,
+          pubkey: buyer,
+          created_at: Math.floor(purchase.createdAt / 1000),
+          tags: [
+            ["p", merchant],
+            ["type", "order"],
+            ["order", orderId],
+            ["amount", "100"],
+            ["currency", "SATS"],
+          ],
+          content: JSON.stringify(purchase),
+        })
+        return {
+          original: JSON.stringify(accepted.order),
+          packet: encodeOpenMarketsBuyerMessage(canonical, {
+            buyerPubkey: buyer,
+            merchantPubkey: merchant,
+            orderId,
+          }),
+        }
+      },
+      {
+        root: `/@fs${process.cwd()}/packages/core/src`,
+        buyer: buyer.pubkey,
+        merchant: merchant.pubkey,
+        product,
+        orderId: legacyWireOrderId,
+      }
+    )
+    await publishBuyer(16, legacy.packet.tags, legacy.packet.content)
+    await page.goto(
+      `${url}?order=${encodeURIComponent(legacyWireOrderId)}&counterparty=${buyer.pubkey}`
+    )
+    await page
+      .getByRole("button", {
+        name: "Retry acceptance publication",
+        exact: true,
+      })
+      .click()
+    await expect
+      .poll(() => peerObserved("3", "pending", legacyWireOrderId))
+      .toBe(true)
+    await page.reload()
+    await expect(
+      page.getByRole("button", {
+        name: "Retry acceptance publication",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect
+      .poll(readInventory)
+      .toEqual({ stock: 7, accepted: 2, encrypted: true })
+    expect(
+      await page.evaluate(
+        async ({ root, orderId, original }) => {
+          const { db } = await import(`${root}/db/index.ts`)
+          return (
+            JSON.stringify(
+              await db.merchantInventoryAcceptedOrders.get(orderId)
+            ) === original
+          )
+        },
+        {
+          root: `/@fs${process.cwd()}/packages/core/src`,
+          orderId: legacyWireOrderId,
+          original: legacy.original,
+        }
+      )
+    ).toBe(true)
+    console.info(
+      "Installed numeric acceptance retries once without another stock debit or evidence rewrite"
     )
   } finally {
     disposeRuntimeSignerIdentity(buyer)

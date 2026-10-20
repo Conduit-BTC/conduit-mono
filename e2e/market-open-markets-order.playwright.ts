@@ -413,6 +413,29 @@ test("Market defaults to one numeric order and completes the external merchant l
       }
     )
     expect(unchanged).toBe(true)
+    // A fresh device has the authenticated inbox original, not this lifecycle.
+    await page.evaluate(
+      async ({ root, orderId }) => {
+        const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
+        await db.orderLifecycles.delete(orderId)
+      },
+      { root: `/@fs${process.cwd()}/packages/core/src`, orderId }
+    )
+    await page.goto(
+      `${marketUrl}/orders?order=${encodeURIComponent(orderId)}&counterparty=${merchant.pubkey}`
+    )
+    await expect(
+      page.getByRole("button", { name: "Open messages", exact: true })
+    ).toBeVisible()
+    await page
+      .getByRole("button", { name: "Open messages", exact: true })
+      .click()
+    await expect(
+      page
+        .getByRole("dialog", { name: "Messages" })
+        .getByText("Reply from Market Messages", { exact: true })
+    ).toBeVisible()
+    await page.keyboard.press("Escape")
     expect(new Set((await advisory()).map((rumor) => rumor.id)).size).toBe(1)
     expect(
       new Set(

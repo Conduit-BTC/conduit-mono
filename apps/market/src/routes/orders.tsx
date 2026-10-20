@@ -120,7 +120,7 @@ import {
 } from "../components/SparkFeeApprovalDialog"
 import {
   mergeBuyerOrderConversations,
-  type BuyerConversation,
+  type BuyerOrderEntry,
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
@@ -302,12 +302,7 @@ const TONE_VARIANT: Record<
 }
 
 /** A merged order: durable local lifecycle and/or relay conversation. */
-interface OrderRow {
-  id: string
-  orderId: string
-  merchantPubkey: string
-  lifecycle?: OrderLifecycle
-  conversation?: BuyerConversation
+interface OrderRow extends BuyerOrderEntry {
   vm: OrderViewModel
   headerStatus: OrderHeaderStatus
   receipt?: PaymentReceipt | null
@@ -3869,7 +3864,7 @@ function OrdersPage() {
       conversations
     )
     for (const entry of entries) {
-      const { id, orderId, merchantPubkey } = entry
+      const { orderId, merchantPubkey } = entry
       const settlement = entry.lifecycle
         ? buyerSettlements.get(orderId)
         : undefined
@@ -3882,11 +3877,7 @@ function OrdersPage() {
         checkoutSparkSettlement: settlement,
       })
       rows.push({
-        id,
-        orderId,
-        merchantPubkey,
-        lifecycle: entry.lifecycle,
-        conversation: entry.conversation,
+        ...entry,
         vm,
         receipt: settlement?.receipt,
         headerStatus: presentSettledRouterHeaderStatus(

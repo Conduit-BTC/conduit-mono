@@ -274,7 +274,8 @@ orders keep the raw wire ID and exact buyer/merchant pair. Numeric notes remain
 kind 14 after reload or lifecycle loss. Participant-qualified advisory URLs
 resolve raw numeric IDs only through their authenticated original. Legacy
 unqualified advisory content is still recognized; ambiguous or filtered targets
-never select another conversation.
+never select another conversation. Market order rows retain the authenticated
+conversation messages so raw checkout links also resolve without a local lifecycle.
 
 A numeric upfront Lightning receipt does not require a preceding merchant invoice
 message. It remains unverified until the receiving wallet proves the exact incoming
@@ -287,6 +288,16 @@ their authenticated aggregate terms. Missing historical item prices and formats
 remain unknown. Encrypted acceptance and replay bindings preserve those terms,
 and a replay cannot decrement stock again. Event pickup and organizer stock
 handoff still require the complete named contract and its authenticated snapshot.
+
+Installed versions stored extension-backed numeric acceptances under the raw wire
+ID. Reads and retries resolve those records only through the authenticated numeric
+original, exact participants and unchanged accepted terms. They retain the original
+record key, encrypted evidence and publication work instead of creating a second
+acceptance under the local alias. A different buyer's raw-ID record does not block
+another conversation; conflicting terms or duplicate matching decisions require
+reconciliation. Named orders cannot opt into this compatibility path by choosing
+an alias-shaped ID. Keep this bounded reader until installed raw-ID acceptances no
+longer need recovery; schema upgrades alone cannot retire it.
 
 Schema version 30 converges main versions 27–29 and adapter versions 27–28,
 preserving format choices, discovery indexes, organizer stock records and exact

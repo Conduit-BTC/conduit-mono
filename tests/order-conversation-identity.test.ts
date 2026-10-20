@@ -3,11 +3,13 @@ import {
   findOrderConversation,
   getOrderConversationId,
   groupOrderConversationMessages,
+  parseOrderMessageRumorEvent,
   type BuyerConversationSummary,
   type OrderLifecycle,
   type ParsedOrderMessage,
 } from "@conduit/core"
 import { mergeBuyerOrderConversations } from "../apps/market/src/lib/orderConversations"
+import { createPrivateMessageRumor } from "../packages/core/src/protocol/private-message-primitives"
 import { getMerchantOrderSelection } from "../apps/merchant/src/lib/order-phase"
 
 function message(
@@ -201,4 +203,52 @@ describe("participant-bound order conversation identity", () => {
       getMerchantOrderSelection(rows, rows[0]!.id, "shared-order", rows[1]!.id)
     ).toBe(rows[1]!.id)
   })
+})
+
+it("selects recovered numeric checkout links without local lifecycles across counterparty collisions", () => {
+  const buyer = "a".repeat(64)
+  const merchants = ["b".repeat(64), "c".repeat(64)]
+  const conversations = merchants.map((merchant) => {
+    const original = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor({
+        pubkey: buyer,
+        kind: 16,
+        created_at: 100,
+        tags: [
+          ["p", merchant],
+          ["type", "1"],
+          ["subject", "Order"],
+          ["order", "shared-checkout"],
+          ["amount", "100"],
+          ["item", `30402:${merchant}:product`, "1"],
+        ],
+        content: "",
+      })
+    )
+    return {
+      ...conversation(merchant),
+      id: getOrderConversationId({
+        orderId: original.orderId,
+        buyerPubkey: buyer,
+        merchantPubkey: merchant,
+      }),
+      orderId: original.orderId,
+      messages: [original],
+    }
+  })
+  const entries = mergeBuyerOrderConversations(buyer, [], conversations)
+  expect(entries.every((entry) => !entry.lifecycle)).toBe(true)
+  expect(findOrderConversation(entries, "shared-checkout")).toBeNull()
+  for (const merchant of merchants) {
+    const selected = findOrderConversation(
+      entries,
+      "shared-checkout",
+      getOrderConversationId({
+        orderId: "shared-checkout",
+        buyerPubkey: buyer,
+        merchantPubkey: merchant,
+      })
+    )
+    expect(selected?.merchantPubkey).toBe(merchant)
+  }
 })

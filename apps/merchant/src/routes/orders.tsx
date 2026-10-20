@@ -16,7 +16,6 @@ import {
   classifyEventMarketOrderHandoff,
   assertMerchantOrganizerStockOrderHandout,
   acceptMerchantOccurrenceOrder,
-  getMerchantInventoryAcceptedOrder,
   readMerchantOccurrenceAcceptedOrder,
   matchesMerchantOccurrenceAcceptance,
   buildOrderStatusTimeline,
@@ -61,6 +60,7 @@ import {
   type KnownOrderStatus,
   type Profile,
   type OrderSummary,
+  type ParsedOrderMessage,
   type SignedPublicNostrEvent,
   type LocalProductStockRecovery,
   useAuth,
@@ -322,12 +322,14 @@ type OrderActionAuthority = {
 type StockUpdateMutationPayload =
   | {
       action: "update"
+      orderMessage?: Extract<ParsedOrderMessage, { type: "order" }>
       orderId: string
       adjustment: OrderStockAdjustment
       orderItems: OrderSummary["items"]
     }
   | {
       action: "republish"
+      orderMessage?: Extract<ParsedOrderMessage, { type: "order" }>
       orderId: string
       adjustment: OrderStockAdjustment
     }
@@ -1248,6 +1250,7 @@ function OrdersWorkspace() {
         merchantPubkey: pubkey!,
         orderId: selected!.orderId,
         order: selectedOrder,
+        orderMessage: selectedOrderMessage,
       })) ?? null,
     enabled: !!pubkey && !!selected,
     retry: false,
@@ -1258,11 +1261,12 @@ function OrdersWorkspace() {
       selectedOrder &&
       matchesMerchantOccurrenceAcceptance(
         acceptedInventoryQuery.data,
-        selectedOrder
+        selectedOrder,
+        selectedOrderMessage
       )
         ? acceptedInventoryQuery.data
         : undefined,
-    [acceptedInventoryQuery.data, selectedOrder]
+    [acceptedInventoryQuery.data, selectedOrder, selectedOrderMessage]
   )
   const inventoryAcceptanceConflict =
     acceptedInventoryQuery.isError ||
@@ -1767,6 +1771,7 @@ function OrdersWorkspace() {
         merchantPubkey: pubkey,
         orderId: selected.orderId,
         order: selectedOrder,
+        orderMessage: selectedOrderMessage,
       })
       if (
         !merchantPaid &&
@@ -1788,6 +1793,7 @@ function OrdersWorkspace() {
       pubkey,
       selected,
       selectedOrder,
+      selectedOrderMessage,
     ]
   )
   async function assertCurrentPickupAuthorization(
@@ -2183,7 +2189,14 @@ function OrdersWorkspace() {
           "This stock update is already applied or awaiting delivery."
         )
       }
-      if (await getMerchantInventoryAcceptedOrder(db, pubkey, payload.orderId))
+      if (
+        await readMerchantOccurrenceAcceptedOrder({
+          merchantPubkey: pubkey,
+          orderId: payload.orderId,
+          order: payload.orderMessage?.payload ?? null,
+          orderMessage: payload.orderMessage,
+        })
+      )
         throw new Error("This order already consumed inventory at acceptance.")
       const expectedRevision = captureOrderStockRevision(record)
       const assertCurrentWriteBaseline = async () => {
@@ -2952,12 +2965,17 @@ function OrdersWorkspace() {
           !getMerchantConversationState(selected, getOrderSettlement(selected))
             .accepted
         ) {
-          await commitSelectedInventory(input.order, "payment-confirmation")
+          await commitSelectedInventory(
+            input.order,
+            "payment-confirmation",
+            input.orderMessage
+          )
         }
         await readMerchantOccurrenceAcceptedOrder({
           merchantPubkey: input.merchantPubkey,
           orderId: input.orderId,
           order: input.order,
+          orderMessage: input.orderMessage,
         })
         const result = await confirmMerchantPayment({
           ...input,
@@ -3002,7 +3020,8 @@ function OrdersWorkspace() {
 
   async function commitSelectedInventory(
     order = selectedOrder,
-    purpose?: "payment-confirmation"
+    purpose?: "payment-confirmation",
+    orderMessage = selectedOrderMessage
   ) {
     if (!pubkey || !order) throw new Error("No order selected.")
     const authority = captureFreshOrderAuthority()
@@ -3041,6 +3060,7 @@ function OrdersWorkspace() {
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
         order,
+        orderMessage,
         purpose,
         products: [
           ...(orderProductsQuery.data?.data ?? []),
@@ -3061,11 +3081,12 @@ function OrdersWorkspace() {
     mutationFn: async () => {
       if (!pubkey || !selectedOrder) throw new Error("No order selected.")
       const authority = captureFreshOrderAuthority()
-      const acceptance = await getMerchantInventoryAcceptedOrder(
-        db,
-        pubkey,
-        selectedOrder.id
-      )
+      const acceptance = await readMerchantOccurrenceAcceptedOrder({
+        merchantPubkey: pubkey,
+        orderId: selectedOrder.id,
+        order: selectedOrder,
+        orderMessage: selectedOrderMessage,
+      })
       if (!acceptance) throw new Error("The saved acceptance is unavailable.")
       // The existing-order fast path verifies the original buyer and terms;
       // retry must not retarget a saved decision to a conflicting order ID.
@@ -3074,6 +3095,7 @@ function OrdersWorkspace() {
         authenticatedPubkey,
         shouldContinue: () => isCurrentOrderAction(authority),
         order: selectedOrder,
+        orderMessage: selectedOrderMessage,
         products: [],
       })
       const result = await resumeMerchantOccurrencePublication({
@@ -3555,6 +3577,7 @@ function OrdersWorkspace() {
     if (!selected || !orderSummary) return
     stockUpdateMutation.mutate({
       action: "update",
+      orderMessage: selectedOrderMessage,
       orderId: selected.orderId,
       adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
       orderItems: orderSummary.items,
@@ -3576,6 +3599,7 @@ function OrdersWorkspace() {
     if (!selected) return
     stockUpdateMutation.mutate({
       action: "republish",
+      orderMessage: selectedOrderMessage,
       orderId: selected.orderId,
       adjustment,
     })
@@ -5290,6 +5314,7 @@ function OrdersWorkspace() {
                             orderId: paymentConfirmationSelection.orderId,
                             delivery: operationalDelivery,
                             order: selectedOrder,
+                            orderMessage: selectedOrderMessage,
                           })
                           setPaymentConfirmationTarget(null)
                         }}

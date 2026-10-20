@@ -28,7 +28,12 @@ import {
   buildEventMarketCalendarDraft,
   parseEventMarketCalendarEvent,
 } from "../packages/core/src/protocol/event-market"
-import { acceptMerchantOccurrenceOrder } from "../packages/core/src/protocol/merchant-occurrence-workflow"
+import {
+  acceptMerchantOccurrenceOrder,
+  readMerchantOccurrenceAcceptedOrder,
+  matchesMerchantOccurrenceAcceptance,
+} from "../packages/core/src/protocol/merchant-occurrence-workflow"
+import { encodeOpenMarketsBuyerMessage } from "../packages/core/src/protocol/commerce-wire"
 import { commitLocalProductWrite } from "../packages/core/src/protocol/local-product-write"
 import { prepareProductListingDeliveryJob } from "../packages/core/src/protocol/product-listing-delivery"
 import {
@@ -1613,4 +1618,150 @@ it("accepts numeric inventory without inventing line prices and preserves encryp
       },
     })
   ).rejects.toThrow("conflicting accepted terms")
+})
+
+function numericOriginal(purchase: ReturnType<typeof order>) {
+  const canonical = createPrivateMessageRumor({
+    kind: 16,
+    pubkey: purchase.buyerPubkey,
+    created_at: Math.floor(purchase.createdAt / 1000),
+    tags: [
+      ["p", purchase.merchantPubkey],
+      ["type", "order"],
+      ["order", purchase.id],
+      ["amount", String(purchase.subtotal)],
+      ["currency", purchase.currency],
+    ],
+    content: JSON.stringify(purchase),
+  })
+  const parsed = parseOrderMessageRumorEvent(
+    createPrivateMessageRumor(
+      encodeOpenMarketsBuyerMessage(canonical, {
+        orderId: purchase.id,
+        buyerPubkey: purchase.buyerPubkey,
+        merchantPubkey: purchase.merchantPubkey,
+      })
+    )
+  )
+  if (parsed.type !== "order") throw new Error("Missing numeric order")
+  return parsed
+}
+
+for (const operation of ["read", "retry"] as const) {
+  it(`preserves a base-created numeric acceptance after failed status delivery on ${operation}`, async () => {
+    const product = await setup(listing(`legacy-numeric-${operation}`))
+    const purchase = order([product])
+    // The installed parser used the extension's raw ID. Inventory commits
+    // before status delivery; leaving publication pending models that failure.
+    const accepted = await acceptMerchantOccurrenceOrder({
+      ...session,
+      order: purchase,
+      products: [product],
+    })
+    const inventory = await db.merchantInventoryProducts.get(product.id)
+    const original = numericOriginal(purchase)
+    expect(original.orderId).not.toBe(purchase.id)
+    db.close({ disableAutoOpen: false })
+    await db.open()
+    const input = {
+      ...session,
+      order: original.payload,
+      orderMessage: original,
+      products: [product],
+    }
+    if (operation === "read") {
+      expect(
+        JSON.stringify(
+          await readMerchantOccurrenceAcceptedOrder({
+            ...input,
+            orderId: original.orderId,
+          })
+        ) === JSON.stringify(accepted.order)
+      ).toBe(true)
+    } else {
+      const replay = await acceptMerchantOccurrenceOrder(input)
+      expect(replay.replayed).toBe(true)
+      expect(
+        JSON.stringify(replay.order) === JSON.stringify(accepted.order)
+      ).toBe(true)
+    }
+    expect(
+      matchesMerchantOccurrenceAcceptance(
+        accepted.order,
+        original.payload,
+        original
+      )
+    ).toBe(true)
+    expect(
+      matchesMerchantOccurrenceAcceptance(accepted.order, original.payload)
+    ).toBe(false)
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+    expect(await db.merchantInventoryProducts.get(product.id)).toEqual(
+      inventory
+    )
+    expect(
+      (await openMerchantAcceptanceEvidence(accepted.order)) ===
+        JSON.stringify(purchase)
+    ).toBe(true)
+  })
+}
+
+it("legacy numeric acceptance rejects changed terms and cannot authorize a named alias or different original", async () => {
+  const product = await setup(listing("legacy-numeric-binding"))
+  const purchase = order([product])
+  const accepted = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const original = numericOriginal(purchase)
+  const changed = numericOriginal({ ...purchase, note: "changed terms" })
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...session,
+      order: changed.payload,
+      orderMessage: changed,
+      products: [],
+    })
+  ).rejects.toThrow("conflicting accepted terms")
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...session,
+      order: { ...original.payload, buyerPubkey: "d".repeat(64) },
+      orderMessage: original,
+      products: [],
+    })
+  ).rejects.toThrow("authenticated original")
+  expect(
+    matchesMerchantOccurrenceAcceptance(accepted.order, original.payload)
+  ).toBe(false)
+  expect(
+    matchesMerchantOccurrenceAcceptance(accepted.order, original.payload, {
+      ...original,
+      wireOrderId: "another-order",
+    })
+  ).toBe(false)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+})
+
+it("a different buyer's legacy raw ID does not reuse or block a numeric acceptance", async () => {
+  const product = await setup(listing("legacy-numeric-collision"))
+  const purchase = order([product])
+  await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const original = numericOriginal({ ...purchase, buyerPubkey: "d".repeat(64) })
+  const input = {
+    ...session,
+    order: original.payload,
+    orderMessage: original,
+    products: [product],
+  }
+  expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(false)
+  expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(true)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(2)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(8)
 })
