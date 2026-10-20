@@ -84,6 +84,7 @@ import {
 } from "../wallets/spark-sdk"
 import type {
   SparkPaymentSummary,
+  SparkReceiveRequest,
   SparkSendQuote,
   SparkSendRequest,
   SparkSendResult,
@@ -242,7 +243,14 @@ export interface UseWalletsReturn {
     domain?: "breez.tips" | "conduit.cash"
   ): Promise<import("@conduit/core").BreezAddressState>
   requestAddressName?: AddressRequestWorkflow
-  receiveSparkLightning(walletId: string, amountSats?: number): Promise<string>
+  receiveSparkLightning(
+    walletId: string,
+    amountSats?: number
+  ): Promise<SparkReceiveRequest>
+  checkSparkReceive(
+    walletId: string,
+    request: SparkReceiveRequest
+  ): Promise<"pending" | "received" | "failed">
   getSparkAddress(walletId: string): Promise<string>
   listSparkPayments(walletId: string): Promise<SparkPaymentSummary[]>
   prepareSparkSend(
@@ -1795,7 +1803,14 @@ export function useWallets(
         amountSats,
         expirySecs: 3_600,
       })
-      return result.paymentRequest
+      return result
+    },
+    []
+  )
+
+  const checkSparkReceive = useCallback(
+    async (walletId: string, request: SparkReceiveRequest) => {
+      return requireSparkManager().checkLightningReceive(walletId, request)
     },
     []
   )
@@ -2351,6 +2366,7 @@ export function useWallets(
     revealSparkRecovery,
     lockSpark,
     receiveSparkLightning,
+    checkSparkReceive,
     getSparkLightningAddress,
     requestAddressName,
     getSparkAddress,
