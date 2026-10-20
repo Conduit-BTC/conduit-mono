@@ -1422,6 +1422,8 @@ export type MerchantStockCheckpointOutcome = {
   phase: MerchantStockCheckpointPhase
   wrappingOperation?: MerchantStockCheckpointWrappingOperation
   failure?: MerchantStockCheckpointFailure
+  /** Transient summary of an explicitly replayed checkpoint, not a recipient readback. */
+  checkpointSummary?: { sequence: number; orderCount: number }
 }
 
 /** Delivery may fail; the durable order decision and later acceptances remain intact. */
@@ -1503,6 +1505,7 @@ export async function resumeMerchantInventoryPublication(input: {
     const observation: {
       phase: MerchantStockCheckpointPhase
       wrappingOperation?: MerchantStockCheckpointWrappingOperation
+      checkpointSummary?: MerchantStockCheckpointOutcome["checkpointSummary"]
     } = {
       phase: "snapshot",
     }
@@ -1522,6 +1525,9 @@ export async function resumeMerchantInventoryPublication(input: {
             ...(status === "pending"
               ? { failure: checkpointFailure(error) }
               : {}),
+            ...(status === "acknowledged" && observation.checkpointSummary
+              ? { checkpointSummary: { ...observation.checkpointSummary } }
+              : {}),
           })
         ).catch(() => {})
       } catch {
@@ -1531,15 +1537,16 @@ export async function resumeMerchantInventoryPublication(input: {
     try {
       if (!input.stockCheckpoint)
         throw new Error("Stock checkpoint signer required")
+      const replayAcknowledgedCheckpoint =
+        input.stockCheckpoint.replayAcknowledgedCoordinates?.includes(
+          coordinate
+        ) === true
       const checkpoint = await publishMerchantOrganizerStockCheckpoint({
         db,
         authenticatedPubkey: merchantPubkey,
         productCoordinate: coordinate,
         ...input.stockCheckpoint,
-        replayAcknowledgedCheckpoint:
-          input.stockCheckpoint.replayAcknowledgedCoordinates?.includes(
-            coordinate
-          ) === true,
+        replayAcknowledgedCheckpoint,
         onPhase: (phase) => {
           observation.phase = phase
         },
@@ -1548,6 +1555,11 @@ export async function resumeMerchantInventoryPublication(input: {
         },
       })
       const state = JSON.parse(checkpoint.rumor.content).snapshot
+      if (input.onStockCheckpoint && replayAcknowledgedCheckpoint)
+        observation.checkpointSummary = {
+          sequence: checkpoint.sequence,
+          orderCount: state.orders.length,
+        }
       checkpointEvents.set(
         coordinate,
         new Set<string>([

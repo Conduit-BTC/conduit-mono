@@ -1,7 +1,10 @@
 import { expect, it } from "bun:test"
 import { readFileSync } from "node:fs"
 import ts from "typescript"
-import { merchantStockCheckpointNotice } from "../apps/merchant/src/lib/merchant-occurrence-publication"
+import {
+  merchantStockCheckpointNotice,
+  merchantStockCheckpointSummaryNotice,
+} from "../apps/merchant/src/lib/merchant-occurrence-publication"
 import type { MerchantStockCheckpointOutcome } from "@conduit/core"
 
 it("the actual saved-stock Retry handler uses the observed publication path", async () => {
@@ -119,6 +122,64 @@ it("shows a fixed checkpoint stage for only the current Event stock", () => {
     "Stock recovery checkpoint pending: inbox acknowledgement."
   )
   expect(notice.includes("product")).toBe(false)
+})
+
+it("shows validated saved backup summaries only for an explicit scoped repair", () => {
+  const outcome = {
+    productCoordinate: "current-product",
+    status: "acknowledged" as const,
+    phase: "freshness" as const,
+    checkpointSummary: { sequence: 4, orderCount: 3 },
+  }
+  expect(
+    merchantStockCheckpointNotice(["current-product"], [outcome], true)
+  ).toBe(
+    "This Event's stock recovery checkpoints were acknowledged. Recovery backup version 4: 3 reconciled orders."
+  )
+  expect(merchantStockCheckpointNotice(["current-product"], [outcome])).toBe(
+    "This Event's stock recovery checkpoints were acknowledged."
+  )
+  expect(
+    merchantStockCheckpointNotice(["different-product"], [outcome], true)
+  ).toBe("")
+  expect(
+    merchantStockCheckpointNotice(
+      ["current-product"],
+      [{ ...outcome, status: "pending", phase: "delivery_ack" }],
+      true
+    )
+  ).toBe("Stock recovery checkpoint pending: inbox acknowledgement.")
+})
+
+it("does not render malformed or throwing backup metadata", () => {
+  expect(
+    merchantStockCheckpointSummaryNotice({ sequence: 1, orderCount: 0 })
+  ).toBe("Recovery backup version 1: 0 reconciled orders.")
+  expect(
+    merchantStockCheckpointSummaryNotice({ sequence: 2, orderCount: 1 })
+  ).toBe("Recovery backup version 2: 1 reconciled order.")
+  for (const summary of [
+    null,
+    undefined,
+    "untrusted-data",
+    {},
+    { sequence: "4", orderCount: 3 },
+    { sequence: 0, orderCount: 3 },
+    { sequence: -1, orderCount: 3 },
+    { sequence: Infinity, orderCount: 3 },
+    { sequence: Number.MAX_SAFE_INTEGER + 1, orderCount: 3 },
+    { sequence: 4, orderCount: "untrusted-data" },
+    { sequence: 4, orderCount: NaN },
+    { sequence: 4, orderCount: -1 },
+    { sequence: 4, orderCount: 1.5 },
+    { sequence: 4, orderCount: Number.MAX_SAFE_INTEGER + 1 },
+    Object.defineProperty({}, "sequence", {
+      get() {
+        throw new Error("controlled metadata getter failure")
+      },
+    }),
+  ])
+    expect(merchantStockCheckpointSummaryNotice(summary)).toBe("")
 })
 
 it("does not turn unrelated queue failures or missing observations into Event success", () => {

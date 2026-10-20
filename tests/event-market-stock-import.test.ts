@@ -39,6 +39,7 @@ import {
   initializeMerchantInventoryProduct,
   outstandingOrganizerStockHold,
   resumeMerchantInventoryPublication,
+  type MerchantStockCheckpointOutcome,
 } from "@conduit/core/protocol/merchant-inventory"
 import {
   computeEventMarketAssignmentDTag,
@@ -3821,6 +3822,8 @@ it("reports a failed stock freshness recheck without losing its retained ACK", a
 
 it("replays only an explicitly selected acknowledged checkpoint using the saved ciphertext", async () => {
   const f = await fixture()
+  const order = f.order()
+  await f.importOrder(order, await f.accept(order))
   expect((await f.publish()).pending).toBe(0)
   const coordinate = f.products[0]!.coordinate,
     before = (await f.db.merchantInventoryProducts.get(coordinate))!,
@@ -3829,6 +3832,7 @@ it("replays only an explicitly selected acknowledged checkpoint using the saved 
     publicWrites = { count: 0 },
     state = { acknowledge: true },
     observed: { status: string; phase: string }[] = [],
+    summaries: MerchantStockCheckpointOutcome["checkpointSummary"][] = [],
     signed = spyOn(f.merchantSigner, "signEvent")
   expect(checkpoint.selfEnvelope).toBeDefined()
   expect(checkpoint.acknowledgedRelayUrls).toEqual([
@@ -3860,8 +3864,9 @@ it("replays only an explicitly selected acknowledged checkpoint using the saved 
       publicWrites.count++
       return true
     },
-    onStockCheckpoint: (outcome: { status: string; phase: string }) => {
+    onStockCheckpoint: (outcome: MerchantStockCheckpointOutcome) => {
       observed.push({ status: outcome.status, phase: outcome.phase })
+      if (outcome.checkpointSummary) summaries.push(outcome.checkpointSummary)
     },
   }
   try {
@@ -3877,6 +3882,7 @@ it("replays only an explicitly selected acknowledged checkpoint using the saved 
     }
     await resumeMerchantInventoryPublication(unselected)
     expect(sent).toHaveLength(0)
+    expect(summaries).toEqual([])
     const replayed = await resumeMerchantInventoryPublication({
       ...input,
       stockCheckpoint: {
@@ -3888,6 +3894,9 @@ it("replays only an explicitly selected acknowledged checkpoint using the saved 
     expect(sent[0] === JSON.stringify(checkpoint.selfEnvelope)).toBe(true)
     expect(replayed.pending).toBe(0)
     expect(replayed.signed).toBe(0)
+    expect(summaries).toEqual([
+      { sequence: checkpoint.sequence, orderCount: 1 },
+    ])
     expect(publicWrites.count).toBe(0)
     expect(signed).not.toHaveBeenCalled()
     const after = (await f.db.merchantInventoryProducts.get(coordinate))!
@@ -3902,6 +3911,7 @@ it("replays only an explicitly selected acknowledged checkpoint using the saved 
 
     state.acknowledge = false
     observed.length = 0
+    summaries.length = 0
     const held = await resumeMerchantInventoryPublication({
       ...input,
       stockCheckpoint: {
@@ -3912,6 +3922,7 @@ it("replays only an explicitly selected acknowledged checkpoint using the saved 
     expect(sent).toHaveLength(2)
     expect(sent[1] === sent[0]).toBe(true)
     expect(observed).toEqual([{ status: "pending", phase: "delivery_ack" }])
+    expect(summaries).toEqual([])
     expect(held.signed).toBe(0)
     expect(held.delivered).toBe(0)
     expect(signed).not.toHaveBeenCalled()

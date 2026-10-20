@@ -71,6 +71,7 @@ import {
 import { EventMarketOrganizerRecoveryQueue } from "./EventMarketOrganizerPickupCard"
 import {
   merchantStockCheckpointNotice,
+  merchantStockCheckpointSummaryNotice,
   resumeMerchantOccurrencePublication,
 } from "../lib/merchant-occurrence-publication"
 import type { MerchantStockCheckpointRestoreStage } from "@conduit/core/protocol/event-market-stock-checkpoint"
@@ -620,7 +621,8 @@ export function EventMarketStockPanel(props: {
     })
     return merchantStockCheckpointNotice(
       pools.map((pool) => pool.productCoordinate),
-      outcomes
+      outcomes,
+      replayAcknowledgedCheckpoint
     )
   }
   async function poolAction(
@@ -1210,6 +1212,14 @@ export function EventMarketStockPanel(props: {
               preserves entrusted stock, accepted orders and prior handouts; it
               never resets them.
             </p>
+            {packet.payload.type === "merchant_checkpoint" && (
+              <p className="text-sm text-[var(--text-muted)]">
+                {merchantStockCheckpointSummaryNotice({
+                  sequence: packet.payload.sequence,
+                  orderCount: packet.payload.snapshot.orders.length,
+                })}
+              </p>
+            )}
             <Button
               type="button"
               variant="outline"

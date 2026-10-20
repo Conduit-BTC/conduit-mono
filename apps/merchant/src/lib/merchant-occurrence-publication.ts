@@ -183,10 +183,35 @@ function checkpointFailureNotice(
   return "No typed signer/session error code was available."
 }
 
+/** Aggregate values from an authenticated backup; never render arbitrary payload data. */
+export function merchantStockCheckpointSummaryNotice(summary: unknown): string {
+  try {
+    if (!summary || typeof summary !== "object") return ""
+    const { sequence, orderCount } = summary as {
+      sequence?: unknown
+      orderCount?: unknown
+    }
+    if (
+      typeof sequence !== "number" ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      typeof orderCount !== "number" ||
+      !Number.isSafeInteger(orderCount) ||
+      orderCount < 0
+    )
+      return ""
+    return `Recovery backup version ${sequence}: ${orderCount} reconciled ${orderCount === 1 ? "order" : "orders"}.`
+  } catch {
+    // Observational metadata must not replace the stock action's result.
+    return ""
+  }
+}
+
 /** Fixed, transient UI copy only; coordinates are used solely for local scope. */
 export function merchantStockCheckpointNotice(
   productCoordinates: readonly string[],
-  outcomes: readonly MerchantStockCheckpointOutcome[]
+  outcomes: readonly MerchantStockCheckpointOutcome[],
+  includeRecoverySummary = false
 ): string {
   const products = new Set(productCoordinates)
   const scoped = new Map(
@@ -222,9 +247,21 @@ export function merchantStockCheckpointNotice(
       ),
     ].join(" ")
   }
-  return scoped.size === products.size
-    ? "This Event's stock recovery checkpoints were acknowledged."
-    : "Stock recovery checkpoint status is not confirmed for all current Event stock."
+  const notice =
+    scoped.size === products.size
+      ? "This Event's stock recovery checkpoints were acknowledged."
+      : "Stock recovery checkpoint status is not confirmed for all current Event stock."
+  if (!includeRecoverySummary) return notice
+  return [
+    notice,
+    ...new Set(
+      [...scoped.values()]
+        .map((outcome) =>
+          merchantStockCheckpointSummaryNotice(outcome.checkpointSummary)
+        )
+        .filter(Boolean)
+    ),
+  ].join(" ")
 }
 
 export function resumeMerchantOccurrencePublication(
