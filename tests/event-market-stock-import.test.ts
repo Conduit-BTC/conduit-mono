@@ -115,6 +115,13 @@ import {
 } from "@conduit/core/protocol/product-listing-delivery"
 import { deliverQueuedProductListings } from "../apps/merchant/src/lib/product-listing-delivery"
 import { createEventMarketEvidenceStore } from "@conduit/core/protocol/event-market-evidence-store"
+import {
+  beginOrganizerStockWriterHandover,
+  parseOrganizerStockWriterHandoverRumor,
+  registerOrganizerStockWriterDevice,
+} from "@conduit/core/protocol/event-market-stock-writer-handover"
+import { restoreOrganizerStockOrderHandout } from "@conduit/core/protocol/event-market-stock-handout"
+import { sameOrganizerStockRumor } from "@conduit/core/protocol/event-market-stock-import-authority"
 import { reserveMerchantOrganizerStockForAssignment } from "../apps/merchant/src/lib/event-market-stock-handover"
 import { merchantOccurrenceAcceptanceBindings } from "@conduit/core/protocol/merchant-order-acceptance-bindings"
 import {
@@ -169,7 +176,7 @@ async function fails(operation: Promise<unknown>, message?: string) {
   if (message) expect((failure as Error).message).toContain(message)
 }
 
-async function fixture(count = 1) {
+async function fixture(count = 1, grantQuantity = 4, receiveGrant = false) {
   const db = new ConduitDB(`stock-import-${crypto.randomUUID()}`, {
     indexedDB,
     IDBKeyRange,
@@ -333,7 +340,7 @@ async function fixture(count = 1) {
         marketEventId: market.id,
         occurrenceEventId: calendar.id,
         grantEventId: admission.id,
-        quantity: 4,
+        quantity: grantQuantity,
         expiresAtMs: 240_000,
       },
     })
@@ -356,14 +363,30 @@ async function fixture(count = 1) {
     const commitment = (await db.merchantInventoryAssignments.get(
       assignmentCoordinate
     ))!.signedAssignmentEvent!
-    await installOrganizerStockHandover({
-      db,
-      authenticatedPubkey: organizer,
-      writerId,
-      grantRumor,
-      committedAssignmentEvent: commitment,
-      nowMs: 102_000,
-    })
+    if (receiveGrant) {
+      const saved = (await db.eventMarketOrganizerStockPools.get(
+        `${merchant}:${grantRumor.id}`
+      ))!
+      await receiveOrganizerStockGrant({
+        db,
+        signer: organizerSigner,
+        authenticatedPubkey: organizer,
+        shouldContinue: () => true,
+        expectedWriterId: writerId,
+        grantEnvelope: saved.grantWraps!.recipient,
+        committedAssignmentEvent: commitment,
+        nowMs: 102_000,
+      })
+    } else {
+      await installOrganizerStockHandover({
+        db,
+        authenticatedPubkey: organizer,
+        writerId,
+        grantRumor,
+        committedAssignmentEvent: commitment,
+        nowMs: 102_000,
+      })
+    }
     const fulfillment: OrderEventMarketPickupFulfillmentSchema = {
       type: "event_market_pickup",
       organizerPubkey: organizer,
@@ -1432,6 +1455,571 @@ it("closes an unused pool without waiting for expiry, retaining a replay marker 
     assignment.publicationJobs.at(-1)?.assignmentSnapshot?.organizerStockHold
       ?.closed
   ).toBe(true)
+  expect(
+    (await f.db.merchantInventoryProducts.get(product.coordinate))!.stock
+  ).toBe(20)
+})
+
+it("original-writer grant replay accepts the same canonical event after authenticated envelope normalization", async () => {
+  const f = await fixture(1, 2)
+  const product = f.products[0]!
+  const merchantPool = (await f.db.eventMarketOrganizerStockPools.get(
+    `${f.merchant}:${product.poolId}`
+  ))!
+  const original = (await f.db.eventMarketOrganizerStockPools.get(
+    `${f.organizer}:${product.poolId}`
+  ))!
+  const envelope = merchantPool.grantWraps!.recipient
+  const packet = await inspectEventMarketStockPacket({
+    signer: f.organizerSigner,
+    authenticatedPubkey: f.organizer,
+    shouldContinue: () => true,
+    envelope,
+  })
+  if (!packet) throw new Error("Expected authenticated grant")
+  expect(sameOrganizerStockRumor(original.grantRumor, packet.rumor)).toBe(true)
+  expect(
+    JSON.stringify(Object.keys(original.grantRumor)) ===
+      JSON.stringify(Object.keys(packet.rumor))
+  ).toBe(false)
+  const preparedReplay = await prepareMerchantOrganizerStockPool({
+    db: f.db,
+    authenticatedPubkey: f.merchant,
+    grantRumor: packet.rumor,
+    expectedAssignmentRevision: (await f.db.merchantInventoryAssignments.get(
+      product.assignmentCoordinate
+    ))!.revision,
+    nowMs: 103_000,
+  })
+  expect(JSON.stringify(preparedReplay) === JSON.stringify(merchantPool)).toBe(
+    true
+  )
+  const received = await receiveOrganizerStockGrant({
+    db: f.db,
+    signer: f.organizerSigner,
+    authenticatedPubkey: f.organizer,
+    shouldContinue: () => true,
+    expectedWriterId: f.writerId,
+    grantEnvelope: envelope,
+    committedAssignmentEvent: product.commitment,
+    nowMs: 103_000,
+  })
+  expect(received.poolId === original.poolId).toBe(true)
+  expect(
+    sameOrganizerStockRumor(received.grantRumor, original.grantRumor)
+  ).toBe(true)
+  expect(
+    await f.db.eventMarketOrganizerStockPools
+      .where("accountPubkey")
+      .equals(f.organizer)
+      .count()
+  ).toBe(1)
+})
+
+async function originalWriterRegrantFixture(acceptedCount = 2) {
+  const f = await fixture(1, 2, true)
+  const product = f.products[0]!
+  const writer = await registerOrganizerStockWriterDevice({
+    db: f.db,
+    signer: f.organizerSigner,
+    authenticatedPubkey: f.organizer,
+    shouldContinue: () => true,
+    marketCoordinate: f.marketCoordinate,
+    writerId: f.writerId,
+    deviceId: f.writerId,
+    expectedPoolIds: [product.poolId],
+  })
+  const orders = Array.from({ length: acceptedCount }, () => f.order(1))
+  const accepted: SignedPublicNostrEvent[][] = []
+  for (const [index, order] of orders.entries()) {
+    const envelopes = await f.accept(order, 104_000 + index * 1_000)
+    const binding = getOrganizerStockOrderBindings(order)
+    // Upgrade the exact acceptance through the real whole-order replay seam;
+    // the complete writer transfer must retain its full pool manifest.
+    expect(
+      (
+        await commitOrganizerStockOrder({
+          db: f.db,
+          authenticatedPubkey: f.organizer,
+          orderId: order.id,
+          identityBinding: binding.identityHash,
+          termsBinding: binding.termsHash,
+          claimRef: getFutureMarketClaimRef({
+            orderId: order.id,
+            merchantPubkey: f.merchant,
+            organizerPubkey: f.organizer,
+            marketCoordinate: f.marketCoordinate,
+          }),
+          evidence: binding.termsBinding,
+          entries: [
+            { poolId: product.poolId, writerId: f.writerId, quantity: 1 },
+          ],
+          nowMs: 104_000 + index * 1_000,
+        })
+      ).replayed
+    ).toBe(true)
+    accepted.push(envelopes)
+    expect((await f.importOrder(order, envelopes, 106_000)).replayed).toBe(
+      false
+    )
+  }
+  if (orders.length) {
+    const entry = (await f.db.eventMarketOrganizerStockEntries
+      .where("[accountPubkey+poolId]")
+      .equals([f.organizer, product.poolId])
+      .first())!
+    const acceptance = parseEventMarketStockAuthorityRumor(entry.rumor)
+    if (acceptance.type !== "accepted") throw new Error("Acceptance expected")
+    const handout = createEventMarketStockAuthorityRumor({
+      createdAt: 105,
+      payload: {
+        version: 1,
+        type: "handed_out",
+        merchantPubkey: f.merchant,
+        organizerPubkey: f.organizer,
+        writerId: f.writerId,
+        orderId: entry.orderId,
+        identityBinding: acceptance.identityBinding,
+        termsBinding: acceptance.termsBinding,
+        claimRef: entry.claimRef,
+        handedOutAtMs: 105_500,
+        entries: [
+          {
+            poolId: entry.poolId,
+            acceptedId: entry.rumor.id,
+            quantity: entry.quantity,
+          },
+        ],
+      },
+    })
+    await restoreOrganizerStockOrderHandout({
+      db: f.db,
+      signer: f.organizerSigner,
+      authenticatedPubkey: f.organizer,
+      shouldContinue: () => true,
+      envelope: await wrapPrivateMessage(
+        handout,
+        { pubkey: f.organizer },
+        f.organizerSigner
+      ),
+    })
+  }
+  const closingEnvelope = await f.close()
+  const reconciled = await reconcileMerchantOrganizerStockClose({
+    db: f.db,
+    signer: f.merchantSigner,
+    authenticatedPubkey: f.merchant,
+    closingEnvelope,
+    shouldContinue: () => true,
+    nowMs: 107_000,
+  })
+  expect(reconciled.pool.state).toBe("closed")
+  expect(reconciled.pool.importedQuantity).toBe(acceptedCount)
+  expect((await f.publish()).pending).toBe(0)
+  const closedAssignment = (await f.db.merchantInventoryAssignments.get(
+    product.assignmentCoordinate
+  ))!
+  const closedProjection = parseEventMarketAssignmentEvent(
+    closedAssignment.signedAssignmentEvent!
+  )!
+  expect(closedProjection.stockPool.state).toBe("valid")
+  if (closedProjection.stockPool.state !== "valid")
+    throw new Error("Expected positively published closed stock projection")
+  expect(closedProjection.stockPool.pool.state).toBe("closed")
+  expect(closedProjection.stockPool.pool.importedQuantity).toBe(acceptedCount)
+  // Model normal public assignment discovery: the old positive close is
+  // retained independently of the new grant, not inferred from that grant.
+  await createEventMarketEvidenceStore(f.db).retain(f.marketCoordinate, [
+    closedAssignment.signedAssignmentEvent!,
+  ])
+  const organizerId = `${f.organizer}:${product.poolId}`
+  const originalPool =
+    (await f.db.eventMarketOrganizerStockPools.get(organizerId))!
+  const originalEntries = await f.db.eventMarketOrganizerStockEntries
+    .where("[accountPubkey+poolId]")
+    .equals([f.organizer, product.poolId])
+    .toArray()
+  expect(originalPool.state).toBe("closing")
+  expect(originalPool.acceptedQuantity).toBe(acceptedCount)
+  expect(originalPool.readOnlyRecovery === true).toBe(false)
+  expect(originalEntries).toHaveLength(acceptedCount)
+
+  // Use the normal assignment mutation and signed grant workflow. The old
+  // Organizer journal is neither overwritten nor restored as a read-only copy.
+  const inventory = (await f.db.merchantInventoryProducts.get(
+    product.coordinate
+  ))!
+  await commitMerchantInventoryAssignment({
+    db: f.db,
+    productCoordinate: product.coordinate,
+    assignmentCoordinate: product.assignmentCoordinate,
+    marketCoordinate: f.marketCoordinate,
+    occurrenceCoordinate: f.occurrenceCoordinate,
+    inventory: { mode: "tracked", quantity: 1 },
+    state: "active",
+    fulfillmentMethods: ["pickup"],
+    expectedRevision: closedAssignment.revision,
+    mutationId: crypto.randomUUID(),
+    context: {
+      kind: "validated-event-market-assignment",
+      productEventId: inventory.signedProductEvent.id,
+      marketEventId: product.fulfillment.market.eventId,
+      occurrenceEventId: product.fulfillment.calendar.eventId,
+      grantEventId: product.fulfillment.grant.eventId,
+      occurrenceEndMs: product.fulfillment.calendar.end,
+      terminal: false,
+    },
+    nowMs: 108_000,
+  })
+  expect((await f.publish()).pending).toBe(0)
+  const assignment = (await f.db.merchantInventoryAssignments.get(
+    product.assignmentCoordinate
+  ))!
+  const previousGrant = parseEventMarketStockAuthorityRumor(
+    originalPool.grantRumor
+  )
+  if (previousGrant.type !== "grant") throw new Error("Expected stock grant")
+  const grantRumor = createEventMarketStockAuthorityRumor({
+    createdAt: 110,
+    payload: {
+      ...previousGrant,
+      nonce: crypto.randomUUID(),
+      productEventId: inventory.signedProductEvent.id,
+      assignmentEventId: assignment.signedAssignmentEvent!.id,
+      quantity: 1,
+    },
+  })
+  const deliveryStore = protectedStore(f, "merchant").store
+  const granted = await startMerchantOrganizerStockGrant({
+    db: f.db,
+    signer: f.merchantSigner,
+    authenticatedPubkey: f.merchant,
+    shouldContinue: () => true,
+    grantRumor,
+    admissionEvidence: [
+      ...proofGraph(f),
+      inventory.signedProductEvent,
+      closedAssignment.signedAssignmentEvent!,
+      assignment.signedAssignmentEvent!,
+    ],
+    expectedAssignmentRevision: assignment.revision,
+    nowMs: 110_000,
+    publishPublic: async () => true,
+    delivery: {
+      deliveryStore,
+      resolveInboxRelays: async () => ["wss://relay.conduit.market"],
+      publishFn: async () => ack("wss://relay.conduit.market"),
+    },
+  })
+  const currentGrant = (await f.db.eventMarketOrganizerStockPools.get(
+    granted.pool.id
+  ))!
+  const receiveInput = {
+    db: f.db,
+    signer: f.organizerSigner,
+    authenticatedPubkey: f.organizer,
+    shouldContinue: () => true,
+    expectedWriterId: f.writerId,
+    grantEnvelope: currentGrant.grantWraps!.recipient,
+    committedAssignmentEvent: granted.commitment,
+    nowMs: 111_000,
+  }
+  const installInput = {
+    db: f.db,
+    authenticatedPubkey: f.organizer,
+    writerId: f.writerId,
+    grantRumor: currentGrant.grantRumor,
+    committedAssignmentEvent: granted.commitment,
+    closedAssignmentEvents: [closedAssignment.signedAssignmentEvent!],
+    shouldContinue: () => true,
+    nowMs: 111_000,
+  }
+  return {
+    f,
+    product,
+    orders,
+    accepted,
+    organizerId,
+    originalPool,
+    originalEntries,
+    writer,
+    closedEvent: closedAssignment.signedAssignmentEvent!,
+    receiveInput,
+    installInput,
+  }
+}
+
+it("original-writer regrant receives the new grant after exact close reconciliation and preserves complete handover", async () => {
+  const {
+    f,
+    product,
+    orders,
+    accepted,
+    organizerId,
+    originalPool,
+    originalEntries,
+    receiveInput,
+  } = await originalWriterRegrantFixture()
+  const received = await receiveOrganizerStockGrant(receiveInput)
+  expect(received.state).toBe("active")
+  expect(received.quantity).toBe(1)
+  expect(received.acceptedQuantity).toBe(0)
+  expect(received.writerId === f.writerId).toBe(true)
+  const retained = (await f.db.eventMarketOrganizerStockPools.get(organizerId))!
+  expect(retained.state).toBe("closed")
+  expect(retained.acceptedQuantity).toBe(2)
+  expect(retained.readOnlyRecovery === true).toBe(false)
+  expect(
+    JSON.stringify(retained.closingRumor) ===
+      JSON.stringify(originalPool.closingRumor)
+  ).toBe(true)
+  expect(
+    JSON.stringify(
+      await f.db.eventMarketOrganizerStockEntries
+        .where("[accountPubkey+poolId]")
+        .equals([f.organizer, product.poolId])
+        .toArray()
+    ) === JSON.stringify(originalEntries)
+  ).toBe(true)
+  for (const [index, order] of orders.entries())
+    expect(
+      (await f.importOrder(order, accepted[index]!, 112_000)).replayed
+    ).toBe(true)
+  expect(
+    (await f.db.merchantInventoryProducts.get(product.coordinate))!.stock
+  ).toBe(18)
+  expect(
+    outstandingOrganizerStockHold(
+      (await f.db.merchantInventoryAssignments.get(
+        product.assignmentCoordinate
+      ))!
+    )
+  ).toBe(1)
+  const replay = await receiveOrganizerStockGrant(receiveInput)
+  expect(replay.poolId === received.poolId).toBe(true)
+  expect(
+    await f.db.eventMarketOrganizerStockPools
+      .where("accountPubkey")
+      .equals(f.organizer)
+      .count()
+  ).toBe(2)
+  const handover = await beginOrganizerStockWriterHandover({
+    db: f.db,
+    signer: f.organizerSigner,
+    authenticatedPubkey: f.organizer,
+    shouldContinue: () => true,
+    marketCoordinate: f.marketCoordinate,
+    writerId: f.writerId,
+    targetDeviceId: crypto.randomUUID(),
+    nowMs: 113_000,
+  })
+  const payload = parseOrganizerStockWriterHandoverRumor(
+    handover.outgoing!.rumor
+  )
+  expect(handover.state).toBe("retired")
+  expect(payload.snapshot.pools).toHaveLength(2)
+  expect(
+    JSON.stringify(payload.snapshot.pools.map((pool) => pool.poolId).sort()) ===
+      JSON.stringify([product.poolId, received.poolId].sort())
+  ).toBe(true)
+  expect(payload.snapshot.pools.every((pool) => !pool.readOnlyRecovery)).toBe(
+    true
+  )
+  expect(
+    JSON.stringify(payload.snapshot.entries) ===
+      JSON.stringify(
+        [...originalEntries].sort((a, b) => a.sequence - b.sequence)
+      )
+  ).toBe(true)
+})
+
+it("original-writer regrant rejects missing, invalid, foreign, stale and contradictory close proof atomically", async () => {
+  const {
+    f,
+    product,
+    organizerId,
+    originalPool,
+    originalEntries,
+    closedEvent,
+    installInput,
+  } = await originalWriterRegrantFixture()
+  const resign = (
+    mutate: (tags: string[][]) => void,
+    secret = f.merchantSecret,
+    createdAt = closedEvent.created_at
+  ) => {
+    const tags = closedEvent.tags.map((tag) => [...tag])
+    mutate(tags)
+    return finalizeEvent(
+      {
+        kind: closedEvent.kind,
+        created_at: createdAt,
+        content: closedEvent.content,
+        tags,
+      },
+      secret
+    )
+  }
+  const marker = (tags: string[][]) =>
+    tags.find((tag) => tag[0] === "conduit_stock_pool")!
+  const invalid = structuredClone(closedEvent)
+  invalid.sig = `${invalid.sig[0] === "0" ? "1" : "0"}${invalid.sig.slice(1)}`
+  const wrongImported = resign((tags) => {
+    marker(tags)[6] = "1"
+  })
+  const cases: readonly SignedPublicNostrEvent[][] = [
+    [],
+    [invalid],
+    [resign(() => {}, generateSecretKey())],
+    [product.commitment],
+    [
+      resign((tags) => {
+        marker(tags)[3] = crypto
+          .randomUUID()
+          .replaceAll("-", "")
+          .padEnd(64, "0")
+      }),
+    ],
+    [
+      resign((tags) => {
+        marker(tags)[5] = "3"
+      }),
+    ],
+    [wrongImported],
+    [resign(() => {}, f.merchantSecret, 105)],
+    [resign(() => {}, f.merchantSecret, 112)],
+    [closedEvent, wrongImported],
+  ]
+  for (const closedAssignmentEvents of cases) {
+    await fails(
+      installOrganizerStockHandover({ ...installInput, closedAssignmentEvents })
+    )
+    expect(
+      JSON.stringify(
+        await f.db.eventMarketOrganizerStockPools.get(organizerId)
+      ) === JSON.stringify(originalPool)
+    ).toBe(true)
+    expect(
+      JSON.stringify(
+        await f.db.eventMarketOrganizerStockEntries
+          .where("[accountPubkey+poolId]")
+          .equals([f.organizer, product.poolId])
+          .toArray()
+      ) === JSON.stringify(originalEntries)
+    ).toBe(true)
+    expect(
+      await f.db.eventMarketOrganizerStockPools.get(
+        `${f.organizer}:${installInput.grantRumor.id}`
+      )
+    ).toBeUndefined()
+  }
+})
+
+it("original-writer regrant rejects incomplete local history, replaced writer and revoked session without installing", async () => {
+  const {
+    f,
+    product,
+    organizerId,
+    originalPool,
+    originalEntries,
+    writer,
+    installInput,
+  } = await originalWriterRegrantFixture()
+  const before = JSON.stringify(originalEntries)
+  await f.db.eventMarketOrganizerStockEntries.delete(originalEntries[0]!.id)
+  await fails(installOrganizerStockHandover(installInput))
+  expect(
+    await f.db.eventMarketOrganizerStockPools.get(
+      `${f.organizer}:${installInput.grantRumor.id}`
+    )
+  ).toBeUndefined()
+  await f.db.eventMarketOrganizerStockEntries.put(originalEntries[0]!)
+  await f.db.eventMarketOrganizerStockPools.put({
+    ...originalPool,
+    lastAcceptedId: product.poolId,
+  })
+  await fails(installOrganizerStockHandover(installInput))
+  await f.db.eventMarketOrganizerStockPools.put(originalPool)
+  await f.db.eventMarketOrganizerStockWriters.put({
+    ...writer,
+    state: "retired",
+  })
+  await fails(installOrganizerStockHandover(installInput))
+  await f.db.eventMarketOrganizerStockWriters.put(writer)
+  await f.db.eventMarketOrganizerStockPools.delete(organizerId)
+  await fails(installOrganizerStockHandover(installInput))
+  expect(
+    await f.db.eventMarketOrganizerStockPools.get(
+      `${f.organizer}:${installInput.grantRumor.id}`
+    )
+  ).toBeUndefined()
+  await f.db.eventMarketOrganizerStockPools.put({
+    ...originalPool,
+    // Negative-only inconsistent recovery/registration fixture. A closed
+    // readonly copy must not masquerade as this registered original journal.
+    state: "closed",
+    importedQuantity: originalPool.acceptedQuantity,
+    importedSequence: originalPool.acceptedSequence,
+    lastImportedId: originalPool.lastAcceptedId,
+    readOnlyRecovery: true,
+  })
+  await fails(installOrganizerStockHandover(installInput))
+  await f.db.eventMarketOrganizerStockPools.put(originalPool)
+  let sessionChecks = 0
+  await fails(
+    installOrganizerStockHandover({
+      ...installInput,
+      shouldContinue: () => ++sessionChecks < 4,
+    })
+  )
+  expect(sessionChecks).toBe(4)
+  expect(
+    JSON.stringify(
+      await f.db.eventMarketOrganizerStockPools.get(organizerId)
+    ) === JSON.stringify(originalPool)
+  ).toBe(true)
+  expect(
+    JSON.stringify(
+      await f.db.eventMarketOrganizerStockEntries
+        .where("[accountPubkey+poolId]")
+        .equals([f.organizer, product.poolId])
+        .toArray()
+    ) === before
+  ).toBe(true)
+  expect(
+    await f.db.eventMarketOrganizerStockPools.get(
+      `${f.organizer}:${installInput.grantRumor.id}`
+    )
+  ).toBeUndefined()
+  expect(
+    JSON.stringify(
+      await f.db.eventMarketOrganizerStockWriters.get(writer.id)
+    ) === JSON.stringify(writer)
+  ).toBe(true)
+})
+
+it("original-writer regrant acknowledges a positively closed unused pool without inventing handout or consumption", async () => {
+  const { f, product, organizerId, originalPool, receiveInput } =
+    await originalWriterRegrantFixture(0)
+  const received = await receiveOrganizerStockGrant(receiveInput)
+  const retained = (await f.db.eventMarketOrganizerStockPools.get(organizerId))!
+  expect(retained.state).toBe("closed")
+  expect(retained.acceptedQuantity).toBe(0)
+  expect(retained.importedQuantity).toBe(0)
+  expect(retained.importedSequence).toBe(0)
+  expect(retained.readOnlyRecovery === true).toBe(false)
+  expect(
+    JSON.stringify(retained.closingRumor) ===
+      JSON.stringify(originalPool.closingRumor)
+  ).toBe(true)
+  expect(received.state).toBe("active")
+  expect(received.quantity).toBe(1)
+  expect(
+    await f.db.eventMarketOrganizerStockEntries
+      .where("accountPubkey")
+      .equals(f.organizer)
+      .count()
+  ).toBe(0)
   expect(
     (await f.db.merchantInventoryProducts.get(product.coordinate))!.stock
   ).toBe(20)

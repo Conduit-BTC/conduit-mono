@@ -18,6 +18,7 @@ import {
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { assertOrganizerStockWriterCurrent } from "./event-market-stock-writer-guard"
 import { organizerStockWriterKey } from "./event-market-stock-writer-guard"
+import { sameOrganizerStockRumor } from "./event-market-stock-import-authority"
 
 const poolKey = (account: string, pool: string) => `${account}:${pool}`
 const entryKey = (account: string, entry: string) => `${account}:${entry}`
@@ -118,6 +119,129 @@ function newPool(
   }
 }
 
+/** A retained Merchant close acknowledges the intact original writer's frontier. */
+function reconcileOriginalOrganizerStockClose(input: {
+  pool: EventMarketOrganizerStockPool
+  entries: readonly EventMarketOrganizerStockEntry[]
+  nextGrant: EventMarketStockGrant
+  closedAssignmentEvents: readonly SignedPublicNostrEvent[]
+  nowMs: number
+}): EventMarketOrganizerStockPool {
+  const { pool, nextGrant, nowMs } = input
+  const grant = assertPool(pool)
+  const fail = () => {
+    throw new Error("An organizer writer already holds this assignment")
+  }
+  const closingRumor = pool.closingRumor
+  if (
+    pool.state !== "closing" ||
+    pool.readOnlyRecovery ||
+    pool.accountPubkey !== nextGrant.organizerPubkey ||
+    pool.organizerPubkey !== nextGrant.organizerPubkey ||
+    pool.merchantPubkey !== nextGrant.merchantPubkey ||
+    pool.writerId !== nextGrant.writerId ||
+    grant.marketCoordinate !== nextGrant.marketCoordinate ||
+    grant.occurrenceCoordinate !== nextGrant.occurrenceCoordinate ||
+    grant.assignmentCoordinate !== nextGrant.assignmentCoordinate ||
+    grant.productCoordinate !== nextGrant.productCoordinate ||
+    !closingRumor
+  )
+    return fail()
+  const closing = parseEventMarketStockAuthorityRumor(closingRumor)
+  if (
+    closing.type !== "closed" ||
+    closing.poolId !== pool.poolId ||
+    closing.merchantPubkey !== grant.merchantPubkey ||
+    closing.organizerPubkey !== grant.organizerPubkey ||
+    closing.writerId !== grant.writerId ||
+    closing.sequence !== pool.acceptedSequence ||
+    closing.acceptedQuantity !== pool.acceptedQuantity ||
+    closing.lastAcceptedId !== pool.lastAcceptedId ||
+    closingRumor.created_at < pool.grantRumor.created_at ||
+    closingRumor.created_at * 1000 > nowMs
+  )
+    return fail()
+  const projections = input.closedAssignmentEvents
+    .map(parseEventMarketAssignmentEvent)
+    .filter(
+      (assignment) =>
+        assignment?.coordinate === grant.assignmentCoordinate &&
+        assignment.stockPool.state === "valid" &&
+        assignment.stockPool.pool.state === "closed" &&
+        assignment.stockPool.pool.poolId === pool.poolId
+    )
+  if (
+    !projections.length ||
+    projections.some(
+      (assignment) =>
+        !assignment ||
+        assignment.merchantPubkey !== grant.merchantPubkey ||
+        assignment.organizerPubkey !== grant.organizerPubkey ||
+        assignment.marketCoordinate !== grant.marketCoordinate ||
+        assignment.occurrenceCoordinate !== grant.occurrenceCoordinate ||
+        assignment.productCoordinate !== grant.productCoordinate ||
+        assignment.createdAt < closingRumor.created_at ||
+        assignment.createdAt * 1000 > nowMs ||
+        assignment.stockPool.state !== "valid" ||
+        assignment.stockPool.pool.organizerPubkey !== grant.organizerPubkey ||
+        assignment.stockPool.pool.quantity !== grant.quantity ||
+        assignment.stockPool.pool.importedQuantity !== closing.acceptedQuantity
+    )
+  )
+    return fail()
+  const entries = [...input.entries].sort((a, b) => a.sequence - b.sequence)
+  if (entries.length !== closing.sequence) return fail()
+  let previousId = pool.poolId,
+    quantity = 0,
+    previousTime = pool.grantRumor.created_at * 1000,
+    importedId = pool.poolId,
+    importedQuantity = 0
+  for (const [index, entry] of entries.entries()) {
+    const accepted = parseEventMarketStockAuthorityRumor(entry.rumor)
+    if (
+      accepted.type !== "accepted" ||
+      entry.id !== entryKey(pool.accountPubkey, entry.rumor.id) ||
+      entry.accountPubkey !== pool.accountPubkey ||
+      entry.poolId !== pool.poolId ||
+      entry.sequence !== index + 1 ||
+      accepted.sequence !== entry.sequence ||
+      accepted.poolId !== pool.poolId ||
+      accepted.merchantPubkey !== grant.merchantPubkey ||
+      accepted.organizerPubkey !== grant.organizerPubkey ||
+      accepted.writerId !== grant.writerId ||
+      accepted.orderId !== entry.orderId ||
+      accepted.claimRef !== entry.claimRef ||
+      accepted.quantity !== entry.quantity ||
+      accepted.previousId !== previousId ||
+      accepted.acceptedAtMs < previousTime ||
+      accepted.acceptedAtMs >= grant.expiresAtMs ||
+      accepted.acceptedAtMs > closingRumor.created_at * 1000 + 999
+    )
+      return fail()
+    quantity += accepted.quantity
+    previousId = entry.rumor.id
+    previousTime = accepted.acceptedAtMs
+    if (entry.sequence <= pool.importedSequence) {
+      importedQuantity += accepted.quantity
+      importedId = entry.rumor.id
+    }
+  }
+  if (
+    quantity !== closing.acceptedQuantity ||
+    previousId !== closing.lastAcceptedId ||
+    importedQuantity !== pool.importedQuantity ||
+    importedId !== pool.lastImportedId
+  )
+    return fail()
+  return {
+    ...pool,
+    state: "closed",
+    importedQuantity: quantity,
+    importedSequence: closing.sequence,
+    lastImportedId: previousId,
+  }
+}
+
 /**
  * Reserve before signing. The authenticated workflow must first verify current
  * roster/occurrence/admission evidence; these references do not replace it.
@@ -158,7 +282,7 @@ export async function prepareMerchantOrganizerStockPool(input: {
       )
       if (prior) {
         assertPool(prior)
-        if (JSON.stringify(prior.grantRumor) !== JSON.stringify(rumor))
+        if (!sameOrganizerStockRumor(prior.grantRumor, rumor))
           throw new Error("Stock grant identity conflict")
         requireSession(input)
         return prior
@@ -248,6 +372,8 @@ export async function installOrganizerStockHandover(input: {
   writerId: string
   grantRumor: PrivateMessageRumor
   committedAssignmentEvent: SignedPublicNostrEvent
+  /** Retained positive Merchant closure evidence, never inferred from a new grant. */
+  closedAssignmentEvents?: readonly SignedPublicNostrEvent[]
   shouldContinue?(): boolean
   nowMs?: number
 }): Promise<EventMarketOrganizerStockPool> {
@@ -255,6 +381,7 @@ export async function installOrganizerStockHandover(input: {
     ...input,
     grantRumor: clone(input.grantRumor),
     committedAssignmentEvent: clone(input.committedAssignmentEvent),
+    closedAssignmentEvents: clone([...(input.closedAssignmentEvents ?? [])]),
   }
   const rumor = clone(input.grantRumor)
   const grant = readGrant(rumor)
@@ -292,6 +419,7 @@ export async function installOrganizerStockHandover(input: {
     "rw",
     [
       input.db.eventMarketOrganizerStockPools,
+      input.db.eventMarketOrganizerStockEntries,
       input.db.eventMarketOrganizerStockWriters,
     ],
     async () => {
@@ -309,13 +437,48 @@ export async function installOrganizerStockHandover(input: {
           grant.marketCoordinate
         )
       )
+      if (registration) {
+        const missingJournal = () => {
+          throw new Error(
+            "The original stock journal is missing; recover it before continuing."
+          )
+        }
+        if (
+          !Array.isArray(registration.installedPoolIds) ||
+          new Set(registration.installedPoolIds).size !==
+            registration.installedPoolIds.length ||
+          registration.installedPoolIds.some(
+            (poolId) =>
+              typeof poolId !== "string" || !/^[0-9a-f]{64}$/.test(poolId)
+          )
+        )
+          missingJournal()
+        const installed = await input.db.eventMarketOrganizerStockPools.bulkGet(
+          registration.installedPoolIds.map((poolId) =>
+            poolKey(input.authenticatedPubkey, poolId)
+          )
+        )
+        for (const [index, saved] of installed.entries()) {
+          if (
+            !saved ||
+            saved.poolId !== registration.installedPoolIds[index] ||
+            saved.accountPubkey !== input.authenticatedPubkey ||
+            saved.organizerPubkey !== input.authenticatedPubkey ||
+            saved.writerId !== input.writerId ||
+            saved.readOnlyRecovery
+          )
+            return missingJournal()
+          if (assertPool(saved).marketCoordinate !== grant.marketCoordinate)
+            missingJournal()
+        }
+      }
       if (registration?.installedPoolIds.includes(rumor.id) && !prior)
         throw new Error(
           "The original stock journal is missing; recover it before continuing."
         )
       if (prior) {
         assertPool(prior)
-        if (JSON.stringify(prior.grantRumor) !== JSON.stringify(rumor))
+        if (!sameOrganizerStockRumor(prior.grantRumor, rumor))
           throw new Error("Stock grant identity conflict")
         requireSession(input)
         return prior
@@ -324,8 +487,22 @@ export async function installOrganizerStockHandover(input: {
         .where("[accountPubkey+assignmentCoordinate]")
         .equals([grant.organizerPubkey, grant.assignmentCoordinate])
         .toArray()
-      if (overlapping.some((pool) => pool.state !== "closed"))
-        throw new Error("An organizer writer already holds this assignment")
+      for (const previous of overlapping) {
+        if (previous.state === "closed") continue
+        const entries = await input.db.eventMarketOrganizerStockEntries
+          .where("[accountPubkey+poolId]")
+          .equals([input.authenticatedPubkey, previous.poolId])
+          .toArray()
+        const closed = reconcileOriginalOrganizerStockClose({
+          pool: previous,
+          entries,
+          nextGrant: grant,
+          closedAssignmentEvents: input.closedAssignmentEvents!,
+          nowMs,
+        })
+        requireSession(input)
+        await input.db.eventMarketOrganizerStockPools.put(closed)
+      }
       const pool = newPool(grant.organizerPubkey, rumor, "active")
       requireSession(input)
       await input.db.eventMarketOrganizerStockPools.add(pool)

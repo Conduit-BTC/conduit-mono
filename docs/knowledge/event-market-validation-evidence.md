@@ -169,6 +169,14 @@ relays or transfers funds. `event-market-stock-schema` preserves populated
 installed v25/v26/v26.1/v27/v28 histories through additive v29 and proves that
 normal cache clearing/pruning retains inventory and private journals.
 
+`event-market-stock-import` also exercises a second finite grant on the intact
+original organizer writer after Merchant reconciliation. Receiving the new grant
+requires the separately retained, exact Merchant-signed closed projection and
+the complete local closing prefix. The original journal and delivery evidence
+remain intact; this is neither a consumption reset nor cold read-only recovery.
+Missing or mismatched closure evidence must leave both pool installation and
+the previous frontier unchanged.
+
 The current extension composes authenticated Merchant import/closing,
 checkout routing and claims, plus complete cooperative fresh-device writer
 handover. The [router acceptance map](event-market-router-acceptance.md) identifies

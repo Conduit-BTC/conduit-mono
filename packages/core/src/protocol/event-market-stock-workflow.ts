@@ -567,10 +567,12 @@ export async function receiveOrganizerStockGrant(
     grantEnvelope: clone(input.grantEnvelope),
     committedAssignmentEvent: clone(input.committedAssignmentEvent),
   }
+  const authority = session(input)
   const packet = await inspectEventMarketStockPacket({
     ...input,
     envelope: input.grantEnvelope,
   })
+  authority.check()
   if (
     !packet ||
     packet.payload.type !== "grant" ||
@@ -580,16 +582,28 @@ export async function receiveOrganizerStockGrant(
     throw new Error(
       "This device was not selected as the organizer stock writer"
     )
-  await createEventMarketEvidenceStore(input.db).retain(
-    packet.payload.marketCoordinate,
-    [input.committedAssignmentEvent]
+  const evidence = createEventMarketEvidenceStore(input.db)
+  await evidence.retain(packet.payload.marketCoordinate, [
+    input.committedAssignmentEvent,
+  ])
+  authority.check()
+  // A later grant cannot prove that the previous pool was reconciled. Keep
+  // its separately observed Merchant-signed closing projection available to
+  // the journal owner, which rechecks the complete local frontier atomically.
+  const closedAssignmentEvents = await evidence.load(
+    packet.payload.marketCoordinate
   )
+  authority.check()
   const pool = await installOrganizerStockHandover({
     ...input,
     writerId: input.expectedWriterId,
     grantRumor: packet.rumor,
+    closedAssignmentEvents,
+    shouldContinue: () => {
+      authority.check()
+      return true
+    },
   })
-  const authority = session(input)
   return input.db.transaction(
     "rw",
     input.db.eventMarketOrganizerStockPools,
