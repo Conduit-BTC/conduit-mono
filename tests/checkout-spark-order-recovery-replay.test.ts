@@ -42,6 +42,18 @@ class MemoryStorage {
   }
 }
 
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+function nextTurn(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
+
 async function fixture() {
   const graph = checkoutSparkEventMarketFixture({
     commerceTotalSats: 1_000,
@@ -305,17 +317,176 @@ describe("selected-order initial recovery delivery replay", () => {
       ).rejects.toThrow()
       expect(f.published.length).toBe(0)
     })
-  it("checks the same session again between the two deliveries", async () => {
+  it("drains both already-started deliveries but rejects replay after session replacement", async () => {
     const f = await fixture()
+    const entered = deferred()
+    const merchantAck = deferred()
+    const organizerAck = deferred()
+    const preparation = f.storage.getItem(
+      CHECKOUT_SPARK_SETTLED_PREPARATION_STORAGE_KEY
+    )
+    const snapshot = JSON.stringify(
+      await f.dependencies.loadSnapshot!(
+        f.graph.plan.checkoutId,
+        f.graph.plan.planDigest
+      )
+    )
+    const saved = JSON.stringify(f.saved)
+    const control = { completed: false }
     f.dependencies.publishFn = async (event, options) => {
-      const result = await f.publish(event, options)
-      f.replaceSession()
-      return result
+      const delivery = f.publish(event, options)
+      entered.resolve()
+      await (event.id === f.saved.record.signedRecipientWrap.id
+        ? merchantAck.promise
+        : organizerAck.promise)
+      return delivery
     }
-    await expect(
-      replayCheckoutSparkOrderRecovery(f.request, f.dependencies)
-    ).rejects.toThrow()
-    expect(f.published.length).toBe(1)
+    const pending = (async () => {
+      try {
+        return {
+          result: await replayCheckoutSparkOrderRecovery(
+            f.request,
+            f.dependencies
+          ),
+          error: null,
+        }
+      } catch (error) {
+        return { result: null, error }
+      } finally {
+        control.completed = true
+      }
+    })()
+    try {
+      await entered.promise
+      await nextTurn()
+      expect(f.published).toHaveLength(2)
+      const wraps = [
+        f.saved.record.signedRecipientWrap,
+        f.saved.organizerDelivery!.signedRecipientWrap,
+      ]
+      expect(
+        wraps.every((wrap) =>
+          f.published.some(
+            (event) => JSON.stringify(event) === JSON.stringify(wrap)
+          )
+        )
+      ).toBe(true)
+      f.replaceSession()
+      merchantAck.resolve()
+      await nextTurn()
+      expect(control.completed).toBe(false)
+      organizerAck.resolve()
+      const outcome = await pending
+      expect(outcome.result).toBeNull()
+      expect(
+        outcome.error instanceof Error &&
+          outcome.error.message.includes("Reconnect this order's buyer")
+      ).toBe(true)
+      // The selected-order wrapper rejects after network return, so no fresh
+      // ACK reaches the durable handoff. Earlier ACKs and exact bytes survive.
+      expect(
+        JSON.stringify(
+          getCheckoutSparkRecoveryDelivery(f.handoff.handoffId, f.storage)
+        ) === saved
+      ).toBe(true)
+      expect(
+        f.storage.getItem(CHECKOUT_SPARK_SETTLED_PREPARATION_STORAGE_KEY)
+      ).toBe(preparation)
+      expect(
+        JSON.stringify(
+          await f.dependencies.loadSnapshot!(
+            f.graph.plan.checkoutId,
+            f.graph.plan.planDigest
+          )
+        ) === snapshot
+      ).toBe(true)
+    } finally {
+      merchantAck.resolve()
+      organizerAck.resolve()
+      await pending
+    }
+  })
+  it("blocks a second external dispatch when the first publisher replaces the session synchronously", async () => {
+    const f = await fixture()
+    const entered = deferred()
+    const firstAck = deferred()
+    const preparation = f.storage.getItem(
+      CHECKOUT_SPARK_SETTLED_PREPARATION_STORAGE_KEY
+    )
+    const snapshot = JSON.stringify(
+      await f.dependencies.loadSnapshot!(
+        f.graph.plan.checkoutId,
+        f.graph.plan.planDigest
+      )
+    )
+    const saved = JSON.stringify(f.saved)
+    const control = { dispatches: 0, completed: false }
+    f.dependencies.publishFn = async (event, options) => {
+      control.dispatches++
+      const delivery = f.publish(event, options)
+      if (control.dispatches === 1) f.replaceSession()
+      entered.resolve()
+      await firstAck.promise
+      return delivery
+    }
+    const pending = (async () => {
+      try {
+        return {
+          result: await replayCheckoutSparkOrderRecovery(
+            f.request,
+            f.dependencies
+          ),
+          error: null,
+        }
+      } catch (error) {
+        return { result: null, error }
+      } finally {
+        control.completed = true
+      }
+    })()
+    try {
+      await entered.promise
+      await nextTurn()
+      expect(control.dispatches).toBe(1)
+      expect(f.published).toHaveLength(1)
+      const wraps = [
+        f.saved.record.signedRecipientWrap,
+        f.saved.organizerDelivery!.signedRecipientWrap,
+      ]
+      expect(
+        wraps.some(
+          (wrap) => JSON.stringify(wrap) === JSON.stringify(f.published[0])
+        )
+      ).toBe(true)
+      expect(control.completed).toBe(false)
+      firstAck.resolve()
+      const outcome = await pending
+      expect(outcome.result).toBeNull()
+      expect(
+        outcome.error instanceof Error &&
+          outcome.error.message.includes("Reconnect this order's buyer")
+      ).toBe(true)
+      expect(control.dispatches).toBe(1)
+      expect(
+        JSON.stringify(
+          getCheckoutSparkRecoveryDelivery(f.handoff.handoffId, f.storage)
+        ) === saved
+      ).toBe(true)
+      expect(
+        f.storage.getItem(CHECKOUT_SPARK_SETTLED_PREPARATION_STORAGE_KEY)
+      ).toBe(preparation)
+      expect(
+        JSON.stringify(
+          await f.dependencies.loadSnapshot!(
+            f.graph.plan.checkoutId,
+            f.graph.plan.planDigest
+          )
+        ) === snapshot
+      ).toBe(true)
+    } finally {
+      firstAck.resolve()
+      await pending
+    }
   })
   it("returns only fresh requested public host labels and coarse size buckets for each exact recipient", async () => {
     const f = await fixture()
