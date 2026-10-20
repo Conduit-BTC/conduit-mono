@@ -1,3 +1,4 @@
+import { findOrderConversation } from "@conduit/core"
 import {
   extractOrderSummary,
   formatNpub,
@@ -521,12 +522,20 @@ function compareOrderIds(
 export function getMerchantOrderSelection(
   conversations: readonly Pick<MerchantConversationSummary, "id" | "orderId">[],
   selectedId: string | null,
-  requestedOrderId?: string
+  requestedOrderId?: string,
+  requestedConversationId?: string,
+  allConversations = conversations
 ): string | null {
-  const requested = requestedOrderId
-    ? conversations.find((item) => item.orderId === requestedOrderId)
-    : null
-  if (requestedOrderId) return requested?.id ?? null
+  if (requestedOrderId) {
+    const requested = findOrderConversation(
+      allConversations,
+      requestedOrderId,
+      requestedConversationId
+    )
+    return requested && conversations.some((item) => item.id === requested.id)
+      ? requested.id
+      : null
+  }
   if (selectedId && conversations.some((item) => item.id === selectedId)) {
     return selectedId
   }

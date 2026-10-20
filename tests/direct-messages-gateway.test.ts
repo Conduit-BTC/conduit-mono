@@ -300,7 +300,12 @@ describe("shared direct-message gateway", () => {
     )
     const [direct, orders] = await Promise.all([
       getDirectMessageConversationList({ principalPubkey: h.buyer }),
-      getConversationDetail({ principalPubkey: h.buyer, orderId: "order-1" }),
+      getConversationDetail({
+        principalPubkey: h.buyer,
+        counterpartyPubkey: h.merchant,
+        role: "buyer",
+        orderId: "order-1",
+      }),
     ])
     expect(direct.data[0]?.messageCount).toBe(1)
     expect(orders.data?.messages).toHaveLength(1)

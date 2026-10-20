@@ -2,6 +2,7 @@ import { isOrderQueueTab, type OrderQueueTab } from "./order-phase"
 
 export type MerchantOrdersSearch = {
   order?: string
+  counterparty?: string
   queue?: OrderQueueTab
   recovery?: "paused"
 }
@@ -13,6 +14,10 @@ export function parseMerchantOrderSearch(
   const queue = search.queue
   return {
     ...(typeof order === "string" && order.length > 0 ? { order } : {}),
+    ...(typeof search.counterparty === "string" &&
+    /^[0-9a-f]{64}$/.test(search.counterparty)
+      ? { counterparty: search.counterparty }
+      : {}),
     ...(isOrderQueueTab(queue) && queue !== "all" ? { queue } : {}),
     ...(search.recovery === "paused" ? { recovery: "paused" as const } : {}),
   }

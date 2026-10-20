@@ -10,6 +10,7 @@ import {
 } from "react"
 import { db } from "@conduit/core/db"
 import {
+  getOrderConversationId,
   getProfilePaymentAddress,
   classifyEventMarketOrderHandoff,
   assertMerchantOrganizerStockOrderHandout,
@@ -701,6 +702,7 @@ function OrdersWorkspace() {
   const navigate = useNavigate()
   const {
     order: selectedFromUrl,
+    counterparty: counterpartyFromUrl,
     queue: queueFromUrl,
     recovery: recoveryMode,
   } = Route.useSearch()
@@ -1090,13 +1092,15 @@ function OrdersWorkspace() {
   const selectConversation = useCallback(
     (conversationId: string) => {
       setSelectedConversationId(conversationId)
-      const orderId = conversations.find(
+      const selectedConversation = conversations.find(
         (conversation) => conversation.id === conversationId
-      )?.orderId
+      )
+      if (!selectedConversation) return
       void navigate({
         to: "/orders",
         search: parseMerchantOrderSearch({
-          order: orderId,
+          order: selectedConversation.orderId,
+          counterparty: selectedConversation.buyerPubkey,
           queue: phaseTab,
           recovery: recoveryMode,
         }),
@@ -1127,9 +1131,27 @@ function OrdersWorkspace() {
 
   useEffect(() => {
     setSelectedConversationId((current) =>
-      getMerchantOrderSelection(filteredConversations, current, selectedFromUrl)
+      getMerchantOrderSelection(
+        filteredConversations,
+        current,
+        selectedFromUrl,
+        selectedFromUrl && counterpartyFromUrl && pubkey
+          ? getOrderConversationId({
+              orderId: selectedFromUrl,
+              buyerPubkey: counterpartyFromUrl,
+              merchantPubkey: pubkey,
+            })
+          : undefined,
+        conversations
+      )
     )
-  }, [filteredConversations, selectedFromUrl])
+  }, [
+    conversations,
+    counterpartyFromUrl,
+    filteredConversations,
+    pubkey,
+    selectedFromUrl,
+  ])
 
   const selected =
     filteredConversations.find(
@@ -4856,7 +4878,7 @@ function OrdersWorkspace() {
 
                     {selectedOrderMessage?.type === "order" && pubkey ? (
                       <EventGuestReceiptVerifier
-                        key={selectedOrderMessage.payload.id}
+                        key={selected.id}
                         order={selectedOrderMessage.payload}
                         merchantPubkey={pubkey}
                       />

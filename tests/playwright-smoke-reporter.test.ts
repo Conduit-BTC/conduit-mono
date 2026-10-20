@@ -1740,6 +1740,57 @@ describe("bounded smoke failure diagnostics", () => {
     ])
   })
 
+  it("retains only typed order-inbox readiness counts and flags", () => {
+    const file = "e2e/merchant-order-inbox.playwright.ts"
+    const observation = {
+      phase: "buyer_delivery",
+      orderMessages: 2,
+      distinctSenders: 1,
+      distinctRecipients: 2,
+      decryptFailures: 0,
+      pending: false,
+      storageUnavailable: false,
+      queued: 0,
+      opened: 2,
+    }
+    const annotation = {
+      type: "smoke:order-reply",
+      description: JSON.stringify({
+        ...observation,
+        pubkey: "private-value",
+        content: "private-value",
+        rawError: "private-value",
+      }),
+    }
+    expect(safeSmokeDiagnostics(file, [annotation])).toEqual([
+      { kind: "order-reply", ...observation },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    expect(
+      safeSmokeDiagnostics(file, [
+        {
+          ...annotation,
+          description: JSON.stringify(
+            Object.fromEntries(
+              Object.keys(observation).map((key) => [key, "private-value"])
+            )
+          ),
+        },
+      ])
+    ).toEqual([])
+    expect(
+      safeRetainedSmokeDiagnostics(file, [
+        {
+          kind: "order-reply",
+          ...observation,
+          rawDom: "private-value",
+        },
+      ])
+    ).toEqual([{ kind: "order-reply", ...observation }])
+  })
+
   it("keeps first-attempt readiness evidence in the report and failure progress without private annotations", () => {
     const directory = mkdtempSync(join(tmpdir(), "conduit-smoke-diagnostic-"))
     try {

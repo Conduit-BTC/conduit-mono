@@ -1354,9 +1354,10 @@ function CheckoutPage() {
   const [routerContinuationError, setRouterContinuationError] = useState<
     string | null
   >(null)
-  const [routerContinuedOrder, setRouterContinuedOrder] = useState<
-    string | null
-  >(null)
+  const [routerContinuedOrder, setRouterContinuedOrder] = useState<{
+    order: string
+    counterparty: string
+  } | null>(null)
   const autoZapStartedRef = useRef(false)
   const autoZapAuthorizationGenerationRef = useRef<number | null>(null)
   const payNowRef = useRef<
@@ -1732,7 +1733,10 @@ function CheckoutPage() {
       if (found.ownsOrder) {
         void navigate({
           to: "/orders",
-          search: { order: found.order.orderId },
+          search: {
+            order: found.order.orderId,
+            counterparty: found.order.merchantPubkey,
+          },
           replace: true,
         })
       }
@@ -2998,14 +3002,20 @@ function CheckoutPage() {
       routerPreparedOrderRef.current = result.orderId
       refreshRouterContinuations()
       if (result.nextStep === "merchant_recovery") {
-        setRouterContinuedOrder(result.orderId)
+        setRouterContinuedOrder({
+          order: result.orderId,
+          counterparty: saved.order.merchantPubkey,
+        })
         setRouterContinuationError(
           "The original private order was delivered. This browser no longer has its temporary wallet; coordinate recovery with the merchant. No new wallet, invoice, or payment was created."
         )
       } else {
         void navigate({
           to: "/orders",
-          search: { order: result.orderId },
+          search: {
+            order: result.orderId,
+            counterparty: saved.order.merchantPubkey,
+          },
           replace: true,
         })
       }
@@ -3014,9 +3024,16 @@ function CheckoutPage() {
       if (
         cause instanceof CheckoutSparkSettledContinuationManualRecoveryError
       ) {
-        setRouterContinuedOrder(saved.order.id)
+        setRouterContinuedOrder({
+          order: saved.order.id,
+          counterparty: saved.order.merchantPubkey,
+        })
       }
-      if (deliveredOrderId) setRouterContinuedOrder(deliveredOrderId)
+      if (deliveredOrderId)
+        setRouterContinuedOrder({
+          order: deliveredOrderId,
+          counterparty: saved.order.merchantPubkey,
+        })
       setRouterContinuationError(
         deliveredOrderId
           ? "The original private order was delivered, but its local recovery marker could not be finished. Open the original order to check it; do not create or pay another invoice."
@@ -3237,7 +3254,7 @@ function CheckoutPage() {
           void result.published.delivery.startPostAcceptanceWork?.()
           void navigate({
             to: "/orders",
-            search: { order: orderId },
+            search: { order: orderId, counterparty: selectedMerchant },
             replace: true,
           })
         }
@@ -3725,7 +3742,7 @@ function CheckoutPage() {
       })
       void navigate({
         to: "/orders",
-        search: { order: orderId },
+        search: { order: orderId, counterparty: selectedMerchant },
         replace: true,
       })
       void (async () => {
@@ -3803,7 +3820,7 @@ function CheckoutPage() {
         })
         void navigate({
           to: "/orders",
-          search: { order: publishedOrderId },
+          search: { order: publishedOrderId, counterparty: selectedMerchant },
           replace: true,
         })
         return
@@ -3850,7 +3867,10 @@ function CheckoutPage() {
         if (buyerSessionCurrent && stagedOrder) {
           void navigate({
             to: "/orders",
-            search: { order: stagedOrder.orderId },
+            search: {
+              order: stagedOrder.orderId,
+              counterparty: stagedOrder.merchantPubkey,
+            },
             replace: true,
           })
         }
@@ -4510,7 +4530,11 @@ function CheckoutPage() {
       paymentInFlightRef.current = false
       void navigate({
         to: "/orders",
-        search: { order: orderId, focus: "payment" },
+        search: {
+          order: orderId,
+          counterparty: selectedMerchant,
+          focus: "payment",
+        },
         replace: true,
       })
     } catch (e) {
@@ -4556,7 +4580,11 @@ function CheckoutPage() {
         })
         void navigate({
           to: "/orders",
-          search: { order: publishedOrderId, focus: "payment" },
+          search: {
+            order: publishedOrderId,
+            counterparty: selectedMerchant,
+            focus: "payment",
+          },
           replace: true,
         })
         return
@@ -4619,7 +4647,10 @@ function CheckoutPage() {
         if (buyerSessionCurrent && stagedOrder) {
           void navigate({
             to: "/orders",
-            search: { order: stagedOrder.orderId },
+            search: {
+              order: stagedOrder.orderId,
+              counterparty: stagedOrder.merchantPubkey,
+            },
             replace: true,
           })
         }
@@ -4835,7 +4866,7 @@ function CheckoutPage() {
           ))}
           {routerContinuedOrder && (
             <Button asChild variant="outline">
-              <Link to="/orders" search={{ order: routerContinuedOrder }}>
+              <Link to="/orders" search={routerContinuedOrder}>
                 Open original order
               </Link>
             </Button>

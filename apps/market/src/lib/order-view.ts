@@ -530,7 +530,7 @@ function deriveMerchantInvoiceAction({
 export function buildOrderViewModel(
   input: BuildOrderViewModelInput
 ): OrderViewModel {
-  const { lifecycle, conversation, paymentAttempt } = input
+  const { lifecycle, conversation } = input
   const messages = input.messages ?? conversation?.messages ?? undefined
   const summary: OrderSummary | null = messages
     ? extractOrderSummary(
@@ -558,6 +558,13 @@ export function buildOrderViewModel(
         message.senderPubkey === merchantPubkey
     )?.recipientPubkey ??
     ""
+
+  const paymentAttempt =
+    input.paymentAttempt?.orderId === input.orderId &&
+    input.paymentAttempt.buyerPubkey === buyerPubkey &&
+    input.paymentAttempt.merchantPubkey === merchantPubkey
+      ? input.paymentAttempt
+      : null
 
   // --- Items / totals -----------------------------------------------------
   const items: OrderViewItem[] = lifecycle
