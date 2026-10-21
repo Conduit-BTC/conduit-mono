@@ -22,14 +22,15 @@ const core = moduleUrl("index.ts")
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
-async function begin(page: Page) {
+async function begin(page: Page, options: { beforeDecrypt?: () => void } = {}) {
   await prepareControlledWallet(page)
   await observeWalletController(page, undefined, undefined, true)
   const identity = createRuntimeSignerIdentity()
   await installRealTestSigner(
     page,
     identity,
-    `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
+    `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`,
+    options
   )
   await page.goto(`${market}/wallet`)
   await installControlledWallet(page)
@@ -448,6 +449,119 @@ test("explicit creation resumes one identity after native failure and reload und
       pending: 0,
       defaults: selected,
     })
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})
+
+test("pending creation verifies retained backup after signer denial without resuming background work @market", async ({
+  page,
+}) => {
+  let denyDecrypt = false
+  const identity = await begin(page, {
+    beforeDecrypt: () => {
+      if (denyDecrypt) throw new Error("Signer permission denied")
+    },
+  })
+  try {
+    const original = await page.evaluate(async (root) => {
+      const signer = (await import(`${root}/index.ts`)).getAccountSigner()
+      const {
+        getAccountSparkRecovery,
+        runAccountWalletSetup,
+        pendingSparkCreation,
+      } = await import(`${root}/wallets/account-spark-recovery.ts`)
+      const { getMarketWalletStore } = await import(
+        `${root}/wallets/wallet-storage.ts`
+      )
+      const { DexieSparkRecoveryStore } = await import(
+        `${root}/wallets/spark-recovery-store.ts`
+      )
+      const { recoverStoredSparkMnemonic } = await import(
+        `${root}/wallets/signer-spark-recovery.ts`
+      )
+      const service = getAccountSparkRecovery(signer)
+      Reflect.get(service, "input").transport.read = async () => ({
+        status: "unavailable",
+        events: [],
+      })
+      Reflect.get(service, "input").transport.publish = async () => "timed_out"
+      await runAccountWalletSetup(signer, async () => {})
+      const controller = Reflect.get(window, "__controlledWalletController")
+      Reflect.get(window, "__walletProbe").failOpen = true
+      try {
+        await controller.createSpark()
+        throw new Error("Expected native initialization failure")
+      } catch (error) {
+        if (
+          !(error instanceof Error) ||
+          !error.message.includes("Injected SDK open failure")
+        )
+          throw error
+      }
+      const attempt = await pendingSparkCreation({
+        signer,
+        network: "mainnet",
+        store: getMarketWalletStore(),
+        journal: new DexieSparkRecoveryStore(),
+      })
+      if (!attempt) throw new Error("Expected retained creation")
+      const { mnemonic } = await recoverStoredSparkMnemonic(
+        attempt.recovery,
+        attempt.recovery,
+        undefined,
+        { priority: "foreground" }
+      )
+      await service.prepare(
+        {
+          mnemonic,
+          network: "mainnet",
+          accountNumber: attempt.recovery.accountNumber,
+        },
+        attempt.wallet.id
+      )
+      Reflect.get(window, "__walletProbe").failOpen = false
+      return { id: attempt.wallet.id, defaults: attempt.wallet.defaultIntents }
+    }, moduleUrl(""))
+    denyDecrypt = true
+    expect(
+      await page.evaluate(async (core) => {
+        const signer = (await import(core)).getAccountSigner()
+        try {
+          await signer.decryptNip44(signer.pubkey, "unused", {
+            priority: "foreground",
+          })
+          return "unexpected_success"
+        } catch (error) {
+          return (error as { code?: string }).code
+        }
+      }, core)
+    ).toBe("authorization_denied")
+    denyDecrypt = false
+    expect(
+      await page.evaluate(async () => {
+        const { wallet } = await Reflect.get(
+          window,
+          "__controlledWalletController"
+        ).createSpark()
+        return { id: wallet.id, defaults: wallet.defaultIntents }
+      })
+    ).toEqual(original)
+    expect(
+      await page.evaluate(async (core) => {
+        const { db, getAccountSigner } = await import(core)
+        const signer = getAccountSigner()
+        let backgroundCode
+        try {
+          await signer.decryptNip44(signer.pubkey, "unused", {
+            priority: "background",
+          })
+        } catch (error) {
+          backgroundCode = (error as { code?: string }).code
+        }
+        return { count: await db.walletCredentials.count(), backgroundCode }
+      }, core)
+    ).toEqual({ count: 1, backgroundCode: "background_paused" })
   } finally {
     disposeRuntimeSignerIdentity(identity)
   }

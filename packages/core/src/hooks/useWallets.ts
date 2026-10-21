@@ -1329,11 +1329,15 @@ export function useWallets(
                 )
               )
                 return
-              const backup = await getAccountSparkRecovery(signer).restore({
-                eventId: record.event.id,
-                walletId: attempt.wallet.id,
-                source: "conduit_v1",
-              })
+              const backup = await getAccountSparkRecovery(signer).restore(
+                {
+                  eventId: record.event.id,
+                  walletId: attempt.wallet.id,
+                  source: "conduit_v1",
+                },
+                undefined,
+                { priority: "foreground" }
+              )
               if (
                 backup.mnemonic !== mnemonic ||
                 backup.network !== network ||
