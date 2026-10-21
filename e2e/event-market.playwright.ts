@@ -7818,13 +7818,20 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     (key) => localStorage.setItem(key, "1"),
     SYNTHETIC_SIGNER_UNAVAILABLE_KEY
   )
+  const acceptedNotice = page.getByText(
+    "Accepted locally. The buyer notification and inventory publication can be retried.",
+    { exact: true }
+  )
+  const pendingAcceptance = page.getByRole("button", {
+    name: /^(Sending|Recording)…$/,
+  })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
-  await expect(
-    page.getByText(
-      "Accepted locally. The buyer notification and inventory publication can be retried.",
-      { exact: true }
-    )
-  ).toBeVisible()
+  await pendingAcceptance
+    .or(acceptedNotice)
+    .first()
+    .waitFor({ state: "visible" })
+  await pendingAcceptance.waitFor({ state: "hidden" })
+  await expect(acceptedNotice).toBeVisible()
   await expect
     .poll(() =>
       page.evaluate(
@@ -7842,12 +7849,21 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     SYNTHETIC_SIGNER_UNAVAILABLE_KEY
   )
   await page.reload()
-  await page
-    .getByRole("button", { name: "Retry acceptance publication", exact: true })
-    .click()
-  await expect(
-    page.getByText("Accepted inventory updates published.", { exact: true })
-  ).toBeVisible()
+  const retry = page.getByRole("button", {
+    name: "Retry acceptance publication",
+    exact: true,
+  })
+  const publishedNotice = page.getByText(
+    "Accepted inventory updates published.",
+    {
+      exact: true,
+    }
+  )
+  const pendingRetry = retry.and(page.locator(":disabled"))
+  await retry.click()
+  await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
+  await pendingRetry.waitFor({ state: "hidden" })
+  await expect(publishedNotice).toBeVisible()
   const state = await page.evaluate(
     async ({ root, coordinate, orderId }) => {
       const { db } = await import(`${root}/db/index.ts`)
