@@ -572,18 +572,22 @@ for (const from of ["market", "merchant"] as const) {
           ).toBeVisible()
           expect(await wallets(target)).toHaveLength(0)
           denyTargetRecovery = false
-          await openWalletSetup(target, "Create wallet")
-          const dialog = target.getByRole("dialog")
-          await expect(
-            dialog.getByRole("heading", {
-              name: "Wallet imported",
+          await target
+            .getByRole("button", {
+              name: "Retry encrypted wallet sync",
               exact: true,
             })
-          ).toBeVisible()
+            .click()
+          await expect
+            .poll(() => wallets(target).then((ids) => ids.length))
+            .toBe(2)
+          await target
+            .getByRole("button", { name: "Open wallet", exact: true })
+            .first()
+            .click()
           await expect(
-            dialog.getByLabel("Make this my main wallet", { exact: true })
-          ).not.toBeChecked()
-          await saved(target, false)
+            target.locator('[data-wallet-state="ready"]')
+          ).toHaveCount(1)
           if (from === "market")
             explicitlyReopenedAccount =
               await openWalletDuringDescriptorReload(target)
@@ -1216,7 +1220,7 @@ for (const size of [
     )
   }
 }
-test("controlled recovery transport retains concurrent signed branches and blocks another wallet on retry @market @merchant", async ({
+test("controlled recovery transport retains concurrent signed branches while explicit creation preserves prior wallets @market @merchant", async ({
   browser,
 }) => {
   const identity = createRuntimeSignerIdentity()
@@ -1385,27 +1389,54 @@ test("controlled recovery transport retains concurrent signed branches and block
         originalWallets.flat().sort()
       )
       const before = (await wallets(page)).sort()
+      const defaults = await page.evaluate(
+        async ({ storage, core }) => {
+          const store = (await import(storage)).getMarketWalletStore()
+          return (
+            await store.listVisible(
+              (await import(core)).getAccountSigner().pubkey
+            )
+          ).map((wallet: WalletDescriptor) => ({
+            id: wallet.id,
+            intents: wallet.defaultIntents,
+          }))
+        },
+        { storage, core }
+      )
       await openWalletSetup(page, "Create wallet")
-      const blockedCreation = page.getByRole("dialog").getByRole("status")
-      await expect(blockedCreation).toHaveText(
-        "Wallet recovery is incomplete or conflicting. Retry recovery before creating or importing another wallet."
+      await saved(page, false)
+      const after = (await wallets(page)).sort()
+      expect(after).toHaveLength(before.length + 1)
+      expect(after.filter((id) => before.includes(id))).toEqual(before)
+      expect(after.some((id) => originalWallets[1 - index].includes(id))).toBe(
+        false
       )
-      const opens = await page.evaluate(
-        () => (window as unknown as WalletFixtureWindow).__walletProbe.opens
-      )
-      await page
-        .getByRole("button", { name: "Retry creation", exact: true })
-        .click()
-      await expect(blockedCreation).toHaveText(
-        "Wallet recovery is incomplete or conflicting. Retry recovery before creating or importing another wallet."
-      )
-      expect((await wallets(page)).sort()).toEqual(before)
       expect(
         await page.evaluate(
-          () => (window as unknown as WalletFixtureWindow).__walletProbe.opens
+          async ({ storage, core, before }) => {
+            const store = (await import(storage)).getMarketWalletStore()
+            const visible = await store.listVisible(
+              (await import(core)).getAccountSigner().pubkey
+            )
+            return {
+              previous: visible
+                .filter((wallet: WalletDescriptor) =>
+                  before.includes(wallet.id)
+                )
+                .map((wallet: WalletDescriptor) => ({
+                  id: wallet.id,
+                  intents: wallet.defaultIntents,
+                })),
+              addedDefaults: visible
+                .filter(
+                  (wallet: WalletDescriptor) => !before.includes(wallet.id)
+                )
+                .flatMap((wallet: WalletDescriptor) => wallet.defaultIntents),
+            }
+          },
+          { storage, core, before }
         )
-      ).toBe(opens)
-      await page.getByRole("button", { name: "Cancel", exact: true }).click()
+      ).toEqual({ previous: defaults, addedDefaults: [] })
     }
   } finally {
     await context.close()

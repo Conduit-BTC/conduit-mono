@@ -923,7 +923,7 @@ test("foreign-network evidence allows active-network creation and survives subse
   }
 })
 
-test("valid Addy recovery blocks Create and imports only the supplied original account and network @market", async ({
+test("valid Addy recovery stays separate from explicit creation and imports only the supplied original account and network @market", async ({
   page,
 }) => {
   const identity = createRuntimeSignerIdentity()
@@ -969,23 +969,17 @@ test("valid Addy recovery blocks Create and imports only the supplied original a
       { core, journal, phrase, relay }
     )
     await openWalletSetup(page, "Create wallet")
-    await expect(
-      page.getByText(/An Addy recovery backup needs its original network/)
-    ).toBeVisible()
+    await saveWalletRecovery(page, false)
     expect(
       await page.evaluate(() => ({
         count: (window as any).__walletLifecycle.wallets.portableWallets.length,
-        opens: (window as any).__walletProbe.opens,
+        opens: (window as any).__walletProbe.openedAccounts,
       }))
-    ).toEqual({ count: 0, opens: 0 })
-    await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Cancel", exact: true })
-      .click()
+    ).toEqual({ count: 1, opens: [1] })
     await importKnownPhrase(page, true)
     expect(
       await page.evaluate(() => (window as any).__walletProbe.openedAccounts)
-    ).toEqual([7])
+    ).toEqual([1, 7])
     expect(
       await page.evaluate(
         async ({ core, recovery }) => {
@@ -998,13 +992,16 @@ test("valid Addy recovery blocks Create and imports only the supplied original a
           return {
             resolved: found.candidates.find((c: any) => c.source === "addy")
               .resolved,
-            network: (window as any).__walletLifecycle.wallets
-              .portableWallets[0].network,
+            networks: (
+              window as any
+            ).__walletLifecycle.wallets.portableWallets.map(
+              (wallet: any) => wallet.network
+            ),
           }
         },
         { core, recovery }
       )
-    ).toEqual({ resolved: true, network: "mainnet" })
+    ).toEqual({ resolved: true, networks: ["mainnet", "mainnet"] })
   } finally {
     disposeRuntimeSignerIdentity(identity)
   }

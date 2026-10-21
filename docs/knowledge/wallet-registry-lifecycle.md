@@ -206,3 +206,8 @@ Additional creation preserves existing defaults. Incomplete discovery neither
 selects another wallet nor changes account primary/default pointers. The setup
 surface reports native usability, retained/exported recovery and optional account
 synchronization separately. Recovery export remains required before inviting funding.
+
+Automatic public-address defaults additionally require verified first-wallet evidence
+from before creation. An empty device wallet list or a complete read of an unresolved
+registry cannot establish that evidence. Additional creation under uncertainty leaves
+the public profile unchanged and offers an explicit address choice instead.

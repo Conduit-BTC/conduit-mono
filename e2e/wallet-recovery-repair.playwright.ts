@@ -449,3 +449,113 @@ test("explicit creation resumes one identity after native failure and reload und
     disposeRuntimeSignerIdentity(identity)
   }
 })
+
+test("unresolved registry creation never automatically publishes a public address with Make main disabled @market", async ({
+  page,
+}) => {
+  const identity = await begin(page)
+  try {
+    const evidence = await page.evaluate(
+      async ({ core, recovery, registryModule }) => {
+        const signer = (await import(core)).getAccountSigner()
+        const { sparkWalletRegistryDTag } = await import(registryModule)
+        const service = (await import(recovery)).getAccountSparkRecovery(signer)
+        const missingId = crypto.randomUUID()
+        const createdAt = Math.floor(Date.now() / 1000)
+        const snapshot = {
+          format: "conduit.spark.registry",
+          version: 1,
+          ownerPubkey: signer.pubkey,
+          network: "mainnet",
+          revision: 1,
+          parentEventId: null,
+          activeWalletIds: [missingId],
+          removedWalletIds: [],
+          payInvoiceWalletId: missingId,
+          receiveWalletId: missingId,
+          createdAt,
+        }
+        const registry = await signer.signEvent({
+          kind: 30078,
+          pubkey: signer.pubkey,
+          created_at: createdAt,
+          tags: [["d", sparkWalletRegistryDTag("mainnet")]],
+          content: await signer.encryptNip44(
+            signer.pubkey,
+            JSON.stringify(snapshot)
+          ),
+        })
+        const events = new Map([[registry.id, registry]])
+        const transport = Reflect.get(service, "input").transport
+        transport.read = async (
+          _url: string,
+          owner: string,
+          eventId: string | undefined,
+          _current: unknown,
+          dTag: string | undefined
+        ) => ({
+          status: "complete",
+          events: [...events.values()].filter(
+            (event) =>
+              event.pubkey === owner &&
+              (!eventId || event.id === eventId) &&
+              (!dTag ||
+                event.tags.some((tag) => tag[0] === "d" && tag[1] === dTag))
+          ),
+        })
+        transport.publish = async (_url: string, event: typeof registry) => {
+          events.set(event.id, event)
+          return "acked"
+        }
+        const sign = signer.signEvent.bind(signer)
+        Reflect.set(window, "__profileWriteCount", 0)
+        signer.signEvent = async (...args: Parameters<typeof sign>) => {
+          if (args[0].kind === 0)
+            Reflect.set(
+              window,
+              "__profileWriteCount",
+              Reflect.get(window, "__profileWriteCount") + 1
+            )
+          return sign(...args)
+        }
+        const discovery = await service.discover(false, "mainnet")
+        return {
+          state: discovery.state,
+          coverage: discovery.coverage,
+          activeCount: discovery.registry?.activeWalletIds.length,
+        }
+      },
+      {
+        core,
+        recovery: moduleUrl("wallets/account-spark-recovery.ts"),
+        registryModule: moduleUrl("wallets/spark-wallet-registry.ts"),
+      }
+    )
+    expect(evidence).toEqual({
+      state: "unresolved",
+      coverage: "complete",
+      activeCount: 1,
+    })
+    await openWalletSetup(page, "Create wallet")
+    await saveWalletRecovery(page, false)
+    // The explicit suggestion proves setup completed without automatic publication.
+    await expect(
+      page.getByRole("button", { name: "Use this address", exact: true })
+    ).toBeVisible()
+    expect(
+      await page.evaluate(() => Reflect.get(window, "__profileWriteCount"))
+    ).toBe(0)
+    expect(
+      await page.evaluate(async (core) => {
+        const { db } = await import(core)
+        const wallets = await db.wallets.toArray()
+        return {
+          count: wallets.length,
+          defaults: wallets.flatMap((wallet: any) => wallet.defaultIntents),
+        }
+      }, core)
+    ).toEqual({ count: 1, defaults: [] })
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
+})

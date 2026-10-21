@@ -928,7 +928,6 @@ export function useWallets(
       retainOnFailure?: boolean
       creationPending?: boolean
       preserveDefaults?: boolean
-      onRegistered?(walletId: string): void
       onProgress?(phase: WalletSetupPhase): void
     }) => {
       const manager = requireSparkManager()
@@ -960,7 +959,6 @@ export function useWallets(
         recovery,
         shouldContinue: () => isWalletSignerCurrent(signer),
       })
-      input.onRegistered?.(wallet.id)
       try {
         input.onProgress?.("opening")
         await manager.openWithMnemonic({
@@ -1407,12 +1405,14 @@ export function useWallets(
             network,
             { priority: "foreground" }
           )
-          publicDefaultAllowed =
+          const recoveryReady =
             afterSetup.coverage === "complete" &&
             afterSetup.state !== "conflict" &&
+            afterSetup.state !== "unresolved" &&
             !afterSetup.invalidCount &&
             !afterSetup.unresolvedObserved
-          if (!publicDefaultAllowed) setRecoverySync("blocked")
+          publicDefaultAllowed = firstCompleteWallet && recoveryReady
+          if (!recoveryReady) setRecoverySync("blocked")
         } catch {
           assertWalletSignerCurrent(signer)
           setRecoverySync("pending")
