@@ -333,9 +333,9 @@ test("explicit creation resumes one identity after native failure and reload und
       page.evaluate(
         async ({ core, recovery, failOpen }) => {
           const signer = (await import(core)).getAccountSigner()
-          const service = (await import(recovery)).getAccountSparkRecovery(
-            signer
-          )
+          const { getAccountSparkRecovery, runAccountWalletSetup } =
+            await import(recovery)
+          const service = getAccountSparkRecovery(signer)
           Reflect.get(service, "input").transport.read = async () => ({
             status: "unavailable",
             events: [],
@@ -343,6 +343,9 @@ test("explicit creation resumes one identity after native failure and reload und
           Reflect.get(service, "input").transport.publish = async () =>
             "timed_out"
           Reflect.get(window, "__walletProbe").failOpen = failOpen
+          // Reload can already be restoring the wallet with the original transport.
+          // Drain that setup before exercising the controlled unavailable-read path.
+          await runAccountWalletSetup(signer, async () => {})
         },
         {
           core,
