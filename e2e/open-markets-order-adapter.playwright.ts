@@ -654,7 +654,9 @@ async function verifyIndependentOrder(
         const listingJob = prepareProductListingDeliveryJob({
           merchantPubkey: merchant,
           signedEvents: [changed],
-          relayTargets: [{ relayUrl: relay, ownerSelected: true }],
+          relayTargets: [
+            { relayUrl: relay, ownerSelected: true, appRelay: true },
+          ],
           readyForDelivery: false,
         })
         await commitLocalProductWrite({
