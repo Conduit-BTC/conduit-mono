@@ -1,5 +1,9 @@
 import { expect, test, type Page } from "@playwright/test"
-import { decodeConduitCommerceExtension } from "@conduit/core/protocol/commerce-wire"
+import {
+  decodeConduitCommerceExtension,
+  encodeOpenMarketsBuyerMessage,
+} from "@conduit/core/protocol/commerce-wire"
+import { buildCommerceSupportTagsFromEvents } from "@conduit/core/protocol/commerce-capabilities"
 import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -25,6 +29,10 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
+import {
+  observeCheckoutSubmit,
+  recordSmokeDiagnostic,
+} from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 
@@ -1754,8 +1762,36 @@ async function createAssignedPickupOrder(
   await page.getByRole("button", { name: "Order", exact: true }).click()
   await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible()
   const orderStart = relay.publications.length
-  await page.getByRole("button", { name: /^Send order$/i }).click()
-  await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  let lastSubmitObservation: Record<string, unknown> = {
+    observationAvailable: false,
+  }
+  const submitObservation = await observeCheckoutSubmit(page, (snapshot) => {
+    lastSubmitObservation = snapshot
+  })
+  try {
+    await page.getByRole("button", { name: /^Send order$/i }).click()
+    await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  } catch (error) {
+    const values = await Promise.race([
+      submitObservation
+        .evaluate((observation) => observation.read())
+        .catch(() => lastSubmitObservation),
+      new Promise<Record<string, unknown>>((resolve) =>
+        setTimeout(() => resolve(lastSubmitObservation), 1_000)
+      ),
+    ])
+    recordSmokeDiagnostic(test.info(), "event-checkout-submit", values)
+    throw error
+  } finally {
+    // Navigation destroys the observer's execution context; cleanup must not
+    // replace the original assertion or prolong a stalled browser failure.
+    await Promise.race([
+      submitObservation
+        .evaluate((observation) => observation.dispose())
+        .catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+    ])
+  }
   const orderMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -6937,7 +6973,8 @@ test("retention before a failed creation pointer save exposes exact retry withou
 function signedBuyerOrder(
   order: Record<string, unknown> & { id: string },
   createdAt: number,
-  extraTags: readonly string[][] = []
+  extraTags: readonly string[][] = [],
+  wireFormat: "conduit" | "open_markets_v2" = "conduit"
 ): SignedEvent[] {
   const draft = {
     kind: 16,
@@ -6951,7 +6988,19 @@ function signedBuyerOrder(
     ],
     content: JSON.stringify(order),
   }
-  const rumor = { ...draft, id: getEventHash(draft) }
+  const wire =
+    wireFormat === "open_markets_v2"
+      ? encodeOpenMarketsBuyerMessage(
+          draft,
+          {
+            buyerPubkey: BUYER_PUBKEY,
+            merchantPubkey: MERCHANT_PUBKEY,
+            orderId: order.id,
+          },
+          2
+        )
+      : draft
+  const rumor = { ...wire, id: getEventHash(wire) }
   return [MERCHANT_PUBKEY, BUYER_PUBKEY].map(
     (recipient) =>
       createWrap(
@@ -7965,14 +8014,26 @@ test("conflicting same-ID zero-cost order cannot inherit saved acceptance @merch
     (key) => localStorage.removeItem(key),
     SYNTHETIC_SIGNER_UNAVAILABLE_KEY
   )
+  // Change the signed terms inside the same numeric conversation. A named
+  // order with this raw ID is a separate legacy identity, not this conflict.
+  const changedOrder = orderSchema.parse({
+    ...order,
+    items: order.items.map((item) => ({ ...item, quantity: 2 })),
+    subtotal: 0,
+  })
   relay.seed(
     ...signedBuyerOrder(
-      {
-        ...order,
-        items: order.items.map((item) => ({ ...item, quantity: 2 })),
-        subtotal: 0,
-      },
-      createdAt - 60
+      changedOrder,
+      createdAt - 60,
+      [
+        ...buildEventMarketOrderRumorTags(changedOrder),
+        ...buildCommerceSupportTagsFromEvents(
+          changedOrder.items.map((item) => item.productId),
+          ["event_pickup"],
+          [product]
+        ),
+      ],
+      "open_markets_v2"
     )
   )
   await page.reload()

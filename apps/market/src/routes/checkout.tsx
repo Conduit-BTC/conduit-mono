@@ -1392,6 +1392,9 @@ function CheckoutPage() {
     enabled: signerConnected && session.relaySettingsReady,
     relayScope: session.relayScope,
   })
+  const newOrderMessagingPending =
+    !!signedBuyerPubkey && checkoutInbox.status === "loading"
+
   function checkNewOrderMessaging(): boolean {
     if (!signedBuyerPubkey) return true
     try {
@@ -4740,21 +4743,23 @@ function CheckoutPage() {
   // The HUD arms zap out from capability-only readiness, so checkout is the
   // first place the merchant payment endpoint is known. Wait while that answer
   // is still resolving, then explain the decline instead of stalling silently.
-  const autoZapInputsResolving = isFastCheckoutInputPending({
-    authPending,
-    walletConnecting: wallets.loading || wallet.status === "connecting",
-    merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
-    lnurlProbing,
-    privateZapFallbackPending:
-      !isGuestCheckout &&
-      lnurlPayAvailable &&
-      !lnurlAllowsNostr &&
-      isCheckoutPublicZapMode(selectedZapMode),
-    shippingLookupPending: shippingOptionsIsFetching,
-    shippingState: shippingCheckoutState,
-    availabilityChecking: checkoutAvailability.isChecking,
-    pricingRefreshing: pricingRefreshState === "refreshing",
-  })
+  const autoZapInputsResolving =
+    newOrderMessagingPending ||
+    isFastCheckoutInputPending({
+      authPending,
+      walletConnecting: wallets.loading || wallet.status === "connecting",
+      merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
+      lnurlProbing,
+      privateZapFallbackPending:
+        !isGuestCheckout &&
+        lnurlPayAvailable &&
+        !lnurlAllowsNostr &&
+        isCheckoutPublicZapMode(selectedZapMode),
+      shippingLookupPending: shippingOptionsIsFetching,
+      shippingState: shippingCheckoutState,
+      availabilityChecking: checkoutAvailability.isChecking,
+      pricingRefreshing: pricingRefreshState === "refreshing",
+    })
 
   useEffect(() => {
     if (
@@ -5985,6 +5990,7 @@ function CheckoutPage() {
                             hasUnavailableCheckoutItems ||
                             fulfillmentBlockingMessage !== null ||
                             routerPreparationUnavailableMessage !== null ||
+                            newOrderMessagingPending ||
                             authPending ||
                             !!signerBlockedMessage ||
                             !!routerPreparedOrderRef.current
@@ -6015,11 +6021,13 @@ function CheckoutPage() {
                             hasUnavailableCheckoutItems ||
                             fulfillmentBlockingMessage !== null ||
                             selectedPaymentTargetIsStale ||
+                            newOrderMessagingPending ||
                             authPending ||
                             !!signerBlockedMessage
                           }
                           canComplete={() =>
                             directCheckoutEligible &&
+                            !newOrderMessagingPending &&
                             !checkoutAvailability.isChecking &&
                             !checkoutRecoveryIsChecking &&
                             !checkoutRecoveryBlockingMessage &&
@@ -6141,6 +6149,7 @@ function CheckoutPage() {
                           hasUnavailableCheckoutItems ||
                           fulfillmentBlockingMessage !== null ||
                           hasUnpricedCheckoutItems ||
+                          newOrderMessagingPending ||
                           authPending ||
                           !!signerBlockedMessage
                         }

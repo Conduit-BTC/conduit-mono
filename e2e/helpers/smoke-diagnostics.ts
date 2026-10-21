@@ -108,6 +108,159 @@ export async function observeMessagesDialogTrigger(page: Page) {
   })
 }
 
+// Observe checkout without exporting labels, identifiers, or error text.
+export async function observeCheckoutSubmit(
+  page: Page,
+  onSnapshot: (value: Record<string, unknown>) => void
+) {
+  await page.exposeFunction(
+    "__conduitE2eCheckoutObservation",
+    (value: unknown) => {
+      const [safe] = safeSmokeDiagnostics("e2e/event-market.playwright.ts", [
+        {
+          type: "smoke:event-checkout-submit",
+          description: JSON.stringify(value),
+        },
+      ])
+      if (safe) onSnapshot(safe)
+    }
+  )
+  return page.evaluateHandle(() => {
+    let pointerDown = false
+    let pointerUp = false
+    let click = false
+    let sendStarted = false
+    const button = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (candidate) => candidate.textContent?.trim() === "Send order"
+      )
+    const onTrigger = (event: Event) =>
+      event.target instanceof Node && !!button()?.contains(event.target)
+    const down = (event: Event) => {
+      if (onTrigger(event)) {
+        pointerDown = true
+        observe()
+      }
+    }
+    const up = (event: Event) => {
+      if (onTrigger(event)) {
+        pointerUp = true
+        observe()
+      }
+    }
+    const clicked = (event: Event) => {
+      if (onTrigger(event)) {
+        click = true
+        observe()
+      }
+    }
+    const pending = () =>
+      [...document.querySelectorAll('[role="status"]')].some((element) =>
+        [
+          "Confirm the order in your signer. Checkout will continue after approval.",
+          "Sending your order to the merchant…",
+        ].includes(element.textContent?.trim() ?? "")
+      )
+    const readAlerts = () => {
+      const alerts = [...document.querySelectorAll('[role="alert"]')].map(
+        (element) => element.textContent?.trim() ?? ""
+      )
+      const capabilityMissing = alerts.some((text) =>
+        text.includes(
+          "This seller’s current listings do not declare support for these delivery or payment terms."
+        )
+      )
+      const inboxPending = alerts.some((text) =>
+        text.includes(
+          "Checking whether your private inbox can receive order updates and replies."
+        )
+      )
+      const inboxBlocked = alerts.some((text) =>
+        [
+          "The inbox check was incomplete.",
+          "No private inbox was found in this check.",
+          "Your published private inbox is not usable.",
+        ].some((message) => text.includes(message))
+      )
+      const shippingUnresolved = alerts.some((text) =>
+        [
+          "A product in this cart does not have resolved fixed shipping.",
+          "The referenced fixed shipping option could not be resolved.",
+        ].some((message) => text.includes(message))
+      )
+      return {
+        capabilityMissing,
+        inboxPending,
+        inboxBlocked,
+        shippingUnresolved,
+        unexpectedError:
+          alerts.length > 0 &&
+          !capabilityMissing &&
+          !inboxPending &&
+          !inboxBlocked &&
+          !shippingUnresolved,
+      }
+    }
+    let inboxPendingObserved = false
+    let inboxBlockedObserved = false
+    let capabilityMissingObserved = false
+    let unexpectedErrorObserved = false
+    const observe = () => {
+      if (!pointerDown && !click) return
+      sendStarted ||= pending()
+      const alerts = readAlerts()
+      inboxPendingObserved ||= alerts.inboxPending
+      inboxBlockedObserved ||= alerts.inboxBlocked
+      capabilityMissingObserved ||= alerts.capabilityMissing
+      unexpectedErrorObserved ||= alerts.unexpectedError
+      // Persist closed observations before application event handlers run, so
+      // a blocked browser cannot erase the original gesture evidence.
+      void (
+        window as unknown as {
+          __conduitE2eCheckoutObservation: (value: unknown) => Promise<void>
+        }
+      )
+        .__conduitE2eCheckoutObservation(snapshot())
+        .catch(() => undefined)
+    }
+    const snapshot = () => ({
+      observationAvailable: true,
+      pointerDown,
+      pointerUp,
+      click,
+      sendStarted,
+      sendPending: pending(),
+      buttonPresent: !!button(),
+      buttonDisabled: button()?.disabled ?? false,
+      ...readAlerts(),
+      inboxPendingObserved,
+      inboxBlockedObserved,
+      capabilityMissingObserved,
+      unexpectedErrorObserved,
+    })
+    const observer = new MutationObserver(observe)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    })
+    document.addEventListener("pointerdown", down, true)
+    document.addEventListener("pointerup", up, true)
+    document.addEventListener("click", clicked, true)
+    return {
+      read() {
+        observe()
+        return snapshot()
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", down, true)
+        document.removeEventListener("pointerup", up, true)
+        document.removeEventListener("click", clicked, true)
+      },
+    }
+  })
+}
+
 export const commerceJourneyPhases = [
   "seed_profiles",
   "start_wallets",
@@ -384,6 +537,28 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "event-checkout-submit": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        observationAvailable: "boolean",
+        pointerDown: "boolean",
+        pointerUp: "boolean",
+        click: "boolean",
+        sendStarted: "boolean",
+        sendPending: "boolean",
+        buttonPresent: "boolean",
+        buttonDisabled: "boolean",
+        capabilityMissing: "boolean",
+        inboxPending: "boolean",
+        inboxBlocked: "boolean",
+        shippingUnresolved: "boolean",
+        unexpectedError: "boolean",
+        inboxPendingObserved: "boolean",
+        inboxBlockedObserved: "boolean",
+        capabilityMissingObserved: "boolean",
+        unexpectedErrorObserved: "boolean",
+      },
+    },
     "wallet-import-menu": {
       file: "e2e/shared-ui-composition.playwright.ts",
       fields: {
@@ -1188,6 +1363,7 @@ export function safeRetainedSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "event-checkout-submit"
     | "wallet-import-menu"
     | "wallet-foreground-open"
     | "wallet-retry"
