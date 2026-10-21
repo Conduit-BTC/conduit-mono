@@ -1629,14 +1629,23 @@ async function createAssignedPickupOrder(
     ],
   })
   const template = createMerchantTemplateProductEvent(createdAt)
-  const product = options.zeroCost
-    ? signEvent(MERCHANT_SECRET, {
-        ...template,
-        tags: template.tags.map((tag) =>
-          tag[0] === "price" ? ["price", "0", "SATS"] : tag
-        ),
-      })
-    : template
+  // This checkout models a current Merchant listing. Keep the shared template
+  // unchanged for historical and discovery fixtures that do not claim support.
+  const product = signEvent(MERCHANT_SECRET, {
+    ...template,
+    tags: [
+      ...template.tags.map((tag) =>
+        options.zeroCost && tag[0] === "price" ? ["price", "0", "SATS"] : tag
+      ),
+      [
+        "conduit_commerce",
+        "2",
+        "per_item_shipping",
+        "event_pickup",
+        "router_checkout",
+      ],
+    ],
+  })
   relay.seed(
     calendar,
     market,
@@ -1754,6 +1763,12 @@ async function createAssignedPickupOrder(
       )
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orderMessages().length).toBe(1)
+  expect(orderMessages()[0]!.rumor.tags).toContainEqual(["type", "1"])
+  expect(
+    orderMessages()[0]!.rumor.tags.some(
+      (tag) => tag[0] === "conduit" && tag[1] === "2" && tag[2] === "order"
+    )
+  ).toBe(true)
   const order = JSON.parse(
     decodeConduitCommerceExtension(orderMessages()[0]!.rumor).content
   ) as {
