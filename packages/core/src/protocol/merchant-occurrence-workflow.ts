@@ -1,4 +1,8 @@
-import type { ParsedOrderMessage, ParsedOrderPayload } from "./orders"
+import {
+  hasCompleteOrderTerms,
+  type ParsedOrderMessage,
+  type ParsedOrderPayload,
+} from "./orders"
 import { openMarketsLocalOrderId } from "./open-markets-orders"
 import {
   merchantAcceptanceStore,
@@ -478,7 +482,8 @@ export async function resumeMerchantOccurrencePublication(
   })
 }
 
-/** Only an authenticated installed-format original can bind a raw acceptance ID. */
+/** Only an authenticated complete original can bind a raw acceptance ID.
+ * Used for installed records and new v2 orders with public wire commitments. */
 function legacyNumericAcceptanceOrder(
   order: ParsedOrderPayload,
   original?: Extract<ParsedOrderMessage, { type: "order" }>
@@ -630,14 +635,12 @@ export async function acceptMerchantOccurrenceOrder(
   }
 ) {
   assertSession(input)
-  const order = parseMerchantOccurrenceOrder(input.order)
+  let order = parseMerchantOccurrenceOrder(input.order)
   if (order.merchantPubkey !== input.merchantPubkey)
     throw new Error("Order belongs to another merchant.")
   const store = merchantAcceptanceStore(input.merchantPubkey)
   await protectMerchantAcceptanceHistory(store)
   assertSession(input)
-  const { identityBinding, termsBinding } =
-    merchantOccurrenceAcceptanceBindings(order)
   const previous = await resolveMerchantOccurrenceAcceptance(
     order,
     input.orderMessage
@@ -651,6 +654,30 @@ export async function acceptMerchantOccurrenceOrder(
       throw new Error("Order ID has conflicting accepted terms.")
     return { replayed: true, order: previous }
   }
+  // Ordinary numeric orders keep participant-qualified storage identities.
+  // Pickup/router commitments already bind the original wire ID, so a fresh
+  // v2 acceptance must preserve that identity. Resolve installed alias/raw
+  // records first; never migrate a saved decision or debit it again.
+  if (
+    input.orderMessage?.commerceExtensionVersion === 2 &&
+    hasCompleteOrderTerms(input.orderMessage) &&
+    (input.orderMessage.checkoutPaymentRoute === "spark_router_v1" ||
+      order.items.some(
+        (item) => item.fulfillment?.type === "event_market_pickup"
+      ))
+  ) {
+    const wireOrder = legacyNumericAcceptanceOrder(order, input.orderMessage)
+    if (!wireOrder) throw new Error("The order's wire identity is unavailable.")
+    if (await db.merchantInventoryAcceptedOrders.get(wireOrder.id))
+      throw new Error(
+        "This wire order ID belongs to another accepted order. Review the original order before continuing."
+      )
+    assertSession(input)
+    store.assertCurrent()
+    order = wireOrder
+  }
+  const { identityBinding, termsBinding } =
+    merchantOccurrenceAcceptanceBindings(order)
   const eventItems = order.items.filter(
     (item) => item.fulfillment?.type === "event_market_pickup"
   )

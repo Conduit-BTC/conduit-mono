@@ -3,14 +3,18 @@ import type { ParsedOrderMessage } from "./orders"
 import { openMarketsLocalOrderId } from "./open-markets-orders"
 import { GUEST_ORDER_LOCAL_RETENTION_MS } from "./order-lifecycle"
 
-export type OrderWireFormat = "conduit" | "open_markets"
+export type OrderWireFormat = "conduit" | "open_markets" | "open_markets_v2"
 
 /** Absence is the deployed named contract, never inferred peer capability. */
 export function getOrderWireFormat(order: {
   orderWireFormat?: OrderWireFormat
 }): OrderWireFormat {
   const format = order.orderWireFormat ?? "conduit"
-  if (format !== "conduit" && format !== "open_markets")
+  if (
+    format !== "conduit" &&
+    format !== "open_markets" &&
+    format !== "open_markets_v2"
+  )
     throw new Error("Unsupported saved order format")
   return format
 }
@@ -160,7 +164,7 @@ export function projectOwnedNumericOrderMessages(
       order.merchantPubkey
     )
     // Conflicting named/numeric evidence for this exact pair fails closed.
-    if (order.orderWireFormat !== "open_markets") bindings.set(alias, null)
+    if (getOrderWireFormat(order) === "conduit") bindings.set(alias, null)
     else if (bindings.get(alias) !== null) bindings.set(alias, order)
   }
   for (const order of orders) bind(order)
@@ -185,7 +189,11 @@ export function projectOwnedNumericOrderMessages(
       orderId,
       buyerPubkey: principal,
       merchantPubkey: message.recipientPubkey,
-      orderWireFormat: numeric ? "open_markets" : "conduit",
+      orderWireFormat: numeric
+        ? message.commerceExtensionVersion === 2
+          ? "open_markets_v2"
+          : "open_markets"
+        : "conduit",
     })
   }
   return messages.map((message) => {

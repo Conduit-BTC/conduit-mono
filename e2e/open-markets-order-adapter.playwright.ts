@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { randomBytes } from "node:crypto"
 import { getEventHash } from "nostr-tools/pure"
 import { createWrap } from "nostr-tools/nip59"
@@ -20,9 +20,10 @@ import {
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
-test("independent numeric order retains invoice, shipping and accepted conversation after reload @commerce", async ({
-  page,
-}) => {
+async function verifyIndependentOrder(
+  page: Page,
+  delivery: "shipping" | "digital"
+) {
   test.setTimeout(180_000)
   page.setDefaultTimeout(30_000)
   const buyer = createRuntimeSignerIdentity()
@@ -128,7 +129,7 @@ test("independent numeric order retains invoice, shipping and accepted conversat
           ["d", "adapter-book"],
           ["title", "Independent order book"],
           ["price", "100", "SATS"],
-          ["format", "physical"],
+          ["format", delivery === "digital" ? "digital" : "physical"],
           ["stock", "10"],
           ["t", "books"],
         ],
@@ -261,79 +262,121 @@ test("independent numeric order retains invoice, shipping and accepted conversat
     await expect
       .poll(readInventory)
       .toEqual({ stock: 8, accepted: 1, encrypted: true })
-    await page.locator("#shipping-tracking-code").fill("SYNTHETIC-TRACKING")
-    await page.locator("#shipping-carrier").fill("Synthetic carrier")
+    await expect(page.locator("#shipping-tracking-code")).not.toBeVisible()
+    await expect(
+      page.getByRole("button", { name: "Confirm delivery", exact: true })
+    ).not.toBeVisible()
+    await page.locator("#fulfillment-choice-0").click()
     await page
-      .getByRole("button", { name: "Send shipping update", exact: true })
+      .getByRole("option", {
+        name: delivery === "digital" ? "Digital delivery" : "Ship to buyer",
+        exact: true,
+      })
       .click()
-    await expect.poll(() => peerObserved("4"), { timeout: 30_000 }).toBe(true)
+    await page
+      .getByRole("button", { name: "Save delivery choices", exact: true })
+      .click()
     await expect(
-      page.getByText("Shipping update sent to buyer", { exact: true })
-    ).toBeVisible()
-    console.info("Adapter shipping observed and local send completed")
-    await page.reload()
-    await expect
-      .poll(
-        async () =>
-          await page.evaluate(
-            async (path) => {
-              const { readAuthSession } = await import(
-                path + "/auth-session.ts"
-              )
-              const { getCommerceInbox } = await import(
-                path + "/commerce-inbox.ts"
-              )
-              try {
-                const snapshot = getCommerceInbox(
-                  readAuthSession().userPubkey
-                ).getSnapshot()
-                return {
-                  shipping: snapshot.orderMessages.filter(
-                    (message: { type: string }) =>
-                      message.type === "shipping_update"
-                  ).length,
-                  tracking: snapshot.orderMessages.some(
-                    (message: {
-                      type: string
-                      payload: { trackingNumber?: string }
-                    }) =>
-                      message.type === "shipping_update" &&
-                      message.payload.trackingNumber === "SYNTHETIC-TRACKING"
-                  ),
-                  external: snapshot.externalRecords.length,
-                  storageFailed: snapshot.diagnostics.storageUnavailable,
-                }
-              } catch {
-                return {
-                  shipping: 0,
-                  tracking: false,
-                  external: 0,
-                  storageFailed: false,
-                }
-              }
-            },
-            "/@fs" + process.cwd() + "/packages/core/src/protocol"
-          ),
-        { timeout: 30_000 }
+      page.getByText(
+        "Your delivery choices are saved on this device for this order.",
+        { exact: true }
       )
-      .toMatchObject({ shipping: 1, tracking: true, storageFailed: false })
+    ).toBeVisible()
+    await page.reload()
     await expect(
-      page
-        .getByText("SYNTHETIC-TRACKING", { exact: false })
-        .filter({ visible: true })
-        .first()
-    ).toBeVisible({ timeout: 30_000 })
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth > window.innerWidth + 1
-    )
-    expect(overflow).toBe(false)
-    console.info("Adapter shipping reload and layout verified")
+      page.getByText(
+        "Your delivery choices are saved on this device for this order.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    if (delivery === "digital") {
+      await expect(page.locator("#shipping-tracking-code")).not.toBeVisible()
+      await page
+        .getByRole("button", { name: "Confirm delivery", exact: true })
+        .click()
+      await expect.poll(() => peerObserved("3", "completed")).toBe(true)
+      await page.reload()
+      await expect
+        .poll(readInventory)
+        .toEqual({ stock: 8, accepted: 1, encrypted: true })
+      await expect(page.locator("#shipping-tracking-code")).not.toBeVisible()
+    } else {
+      await page.locator("#shipping-tracking-code").fill("SYNTHETIC-TRACKING")
+      await page.locator("#shipping-carrier").fill("Synthetic carrier")
+      await page
+        .getByRole("button", { name: "Send shipping update", exact: true })
+        .click()
+      await expect.poll(() => peerObserved("4"), { timeout: 30_000 }).toBe(true)
+      await expect(
+        page.getByText("Shipping update sent to buyer", { exact: true })
+      ).toBeVisible()
+      console.info("Adapter shipping observed and local send completed")
+      await page.reload()
+      await expect
+        .poll(
+          async () =>
+            await page.evaluate(
+              async (path) => {
+                const { readAuthSession } = await import(
+                  path + "/auth-session.ts"
+                )
+                const { getCommerceInbox } = await import(
+                  path + "/commerce-inbox.ts"
+                )
+                try {
+                  const snapshot = getCommerceInbox(
+                    readAuthSession().userPubkey
+                  ).getSnapshot()
+                  return {
+                    shipping: snapshot.orderMessages.filter(
+                      (message: { type: string }) =>
+                        message.type === "shipping_update"
+                    ).length,
+                    tracking: snapshot.orderMessages.some(
+                      (message: {
+                        type: string
+                        payload: { trackingNumber?: string }
+                      }) =>
+                        message.type === "shipping_update" &&
+                        message.payload.trackingNumber === "SYNTHETIC-TRACKING"
+                    ),
+                    external: snapshot.externalRecords.length,
+                    storageFailed: snapshot.diagnostics.storageUnavailable,
+                  }
+                } catch {
+                  return {
+                    shipping: 0,
+                    tracking: false,
+                    external: 0,
+                    storageFailed: false,
+                  }
+                }
+              },
+              "/@fs" + process.cwd() + "/packages/core/src/protocol"
+            ),
+          { timeout: 30_000 }
+        )
+        .toMatchObject({ shipping: 1, tracking: true, storageFailed: false })
+      await expect(
+        page
+          .getByText("SYNTHETIC-TRACKING", { exact: false })
+          .filter({ visible: true })
+          .first()
+      ).toBeVisible({ timeout: 30_000 })
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth + 1
+      )
+      expect(overflow).toBe(false)
+      console.info("Adapter shipping reload and layout verified")
+    }
     const note = "Synthetic accepted Merchant conversation"
     await page.evaluate((principal) => {
       const provider = (
         window as unknown as {
           nostr: {
-            nip44: { encrypt: (peer: string, text: string) => Promise<string> }
+            nip44: {
+              encrypt: (peer: string, text: string) => Promise<string>
+            }
           }
         }
       ).nostr.nip44
@@ -549,4 +592,12 @@ test("independent numeric order retains invoice, shipping and accepted conversat
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)
   }
-})
+}
+
+for (const delivery of ["shipping", "digital"] as const) {
+  test(`independent numeric ${delivery} order retains invoice, fulfillment and accepted conversation after reload @commerce`, async ({
+    page,
+  }) => {
+    await verifyIndependentOrder(page, delivery)
+  })
+}

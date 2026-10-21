@@ -9,6 +9,7 @@ import {
   ConversationMessageBubble,
   LegacyDirectMessageNotice,
   MessagingReadinessNotice,
+  OrderMessagingReadinessNotice,
   toMessagingReadinessNoticeState,
   MessageComposer,
   PrivateSendNotice,
@@ -56,6 +57,7 @@ import {
 } from "@conduit/core"
 import type { DirectConversationSummary } from "@conduit/core"
 import { requireAuth } from "../lib/auth"
+import { assertOrderMessagingReady } from "@conduit/core/protocol/order-messaging-readiness"
 import { publishBuyerOrderReply } from "../lib/order-reply"
 import { CopyButton } from "../components/CopyButton"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
@@ -521,6 +523,14 @@ function MessagesWorkspace() {
         throw new Error("Reconnect your signer, then send this message again.")
       }
 
+      if (
+        input.conversation.messages?.some(
+          (message) =>
+            message.type === "order" && message.wireFormat === "open_markets"
+        )
+      ) {
+        assertOrderMessagingReady(dmReadiness.status)
+      }
       const delivery = await publishBuyerOrderReply(
         {
           buyerPubkey: input.accountPubkey,
@@ -557,6 +567,14 @@ function MessagesWorkspace() {
       setReplyText((current) =>
         current.trim() === input.content ? "" : current
       )
+    },
+    onError: (error) => {
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        dmReadiness.refetch()
+      }
     },
   })
 
@@ -831,6 +849,8 @@ function MessagesWorkspace() {
       appId: "market",
       createdAt: Math.floor(createdAt / 1000),
       replyTo: selectedDmMessages.at(-1)?.id,
+      subject: selectedDmMessages.at(-1)?.orderContext?.wireOrderId,
+      orderReference: selectedDmMessages.at(-1)?.orderContext?.wireOrderId,
     })
     preparedDmRumors.current.set(rumor.id, rumor)
     const messageScope = optimisticDmScope
@@ -853,15 +873,10 @@ function MessagesWorkspace() {
 
   const retryDirectMessage = (message: OptimisticConversationMessage) => {
     if (!accountPubkey || !selectedDmPubkey || !messagingReady) return
-    const rumor =
-      preparedDmRumors.current.get(message.eventId ?? "") ??
-      createParticipantMessageRumor({
-        senderPubkey: accountPubkey,
-        recipientPubkeys: [selectedDmPubkey],
-        content: message.content,
-        appId: "market",
-        createdAt: Math.floor(message.createdAt / 1000),
-      })
+    // A retry must keep its original parent/order context and rumor ID. A new
+    // message based on the current thread could attach it to a different order.
+    const rumor = preparedDmRumors.current.get(message.eventId ?? "")
+    if (!rumor) return
     const messageScope = optimisticDmScope
     setDirectSendOutcome(null)
     optimisticDmQueue.markPending(messageScope, message.localId)
@@ -885,9 +900,15 @@ function MessagesWorkspace() {
       key: optimisticDmScope.authorityKey,
       accountPubkey,
     }
-    if (previous.key === optimisticDmScope.authorityKey) return
-    preparedDmRumors.current.clear()
-    if (previous.accountPubkey !== accountPubkey) replyMutation.reset()
+    if (
+      previous.key === optimisticDmScope.authorityKey &&
+      previous.accountPubkey === accountPubkey
+    )
+      return
+    if (previous.accountPubkey !== accountPubkey) {
+      preparedDmRumors.current.clear()
+      replyMutation.reset()
+    }
     sendDmMutation.reset()
   }, [
     accountPubkey,
@@ -980,6 +1001,7 @@ function MessagesWorkspace() {
           dmConversations.length === 0 &&
           !selectedDmPubkey ? (
           <MessagingReadinessNotice
+            setupInNewTab
             state={readinessNoticeState}
             onAction={onReadinessAction}
             pending={dmReadiness.isRefetching}
@@ -1270,6 +1292,7 @@ function MessagesWorkspace() {
                         ) : !messagingReady ? (
                           readinessNoticeState ? (
                             <MessagingReadinessNotice
+                              setupInNewTab
                               state={readinessNoticeState}
                               onAction={onReadinessAction}
                               pending={dmReadiness.isRefetching}
@@ -1277,6 +1300,12 @@ function MessagesWorkspace() {
                           ) : null
                         ) : (
                           <>
+                            {selectedDmMessages.at(-1)?.orderContext && (
+                              <p className="mb-2 text-sm text-[var(--text-secondary)]">
+                                This reply will also appear in the order
+                                conversation.
+                              </p>
+                            )}
                             <MessageComposer
                               value={dmText}
                               onChange={setDmText}
@@ -1354,6 +1383,7 @@ function MessagesWorkspace() {
             !messagingReady &&
             readinessNoticeState && (
               <MessagingReadinessNotice
+                setupInNewTab
                 state={readinessNoticeState}
                 onAction={onReadinessAction}
                 pending={dmReadiness.isRefetching}
@@ -1607,6 +1637,17 @@ function MessagesWorkspace() {
                     </div>
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
+                      {selectedConversation.messages?.some(
+                        (message) =>
+                          message.type === "order" &&
+                          message.wireFormat === "open_markets"
+                      ) && (
+                        <OrderMessagingReadinessNotice
+                          status={dmReadiness.status}
+                          checking={dmReadiness.isRefetching}
+                          onRetry={dmReadiness.refetch}
+                        />
+                      )}
                       <div className="flex flex-col gap-3 sm:flex-row">
                         {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
@@ -1621,7 +1662,13 @@ function MessagesWorkspace() {
                           disabled={
                             replyMutation.isPending ||
                             !replyText.trim() ||
-                            !signerConnected
+                            !signerConnected ||
+                            (selectedConversation.messages?.some(
+                              (message) =>
+                                message.type === "order" &&
+                                message.wireFormat === "open_markets"
+                            ) &&
+                              dmReadiness.status !== "ready")
                           }
                           onClick={() => {
                             if (!accountPubkey || !selectedConversation) return

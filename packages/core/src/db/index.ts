@@ -1120,7 +1120,7 @@ export interface OrderLifecycleItem {
 export interface OrderLifecycle {
   orderId: string
   /** Explicit immutable commerce encoding; absent on historical named orders. */
-  orderWireFormat?: "conduit" | "open_markets"
+  orderWireFormat?: "conduit" | "open_markets" | "open_markets_v2"
   /** Buyer-local source provenance; legacy field name. Never sent in order content or used for payment/payout. */
   claimedReferralSource?: {
     sourceDomain?: string
@@ -1517,7 +1517,7 @@ export class ConduitDB extends Dexie {
       orderId: string
       buyerPubkey: string
       merchantPubkey: string
-      orderWireFormat: "conduit" | "open_markets"
+      orderWireFormat: "conduit" | "open_markets" | "open_markets_v2"
       createdAt: number
       /** Guest metadata expires with its existing bounded checkout session. */
       expiresAt?: number

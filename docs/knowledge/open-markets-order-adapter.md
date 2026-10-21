@@ -4,13 +4,13 @@ Owner: Commerce/Core maintainers. This describes client behavior, not deployment
 or another client's certification. Source: the current Open Markets
 [order communication flow](https://github.com/OpenMarketsFoundation/specification#4-order-communication-flow-and-payment-processing).
 
-- Status: proposed compatibility lane, implemented for candidate validation.
+- Status: unified numeric writer with historical readers, implemented for candidate validation.
 - Canonical target: an explicitly selected, versioned commerce envelope that
   avoids the NIP-18/NIP-25 inner-kind collisions. No proposed kind is activated
   by this adapter.
 - Started: 2026-10-15. Next review: 2026-11-15.
-- Rollout control: reviewed release commit and authenticated per-order format
-  selection. No environment toggle can widen supported operations or peers.
+- Rollout control: reviewed release commit and immutable per-order writer
+  checkpoints. No environment toggle can widen supported operations or peers.
 - Activation: local candidate validation only; production admission requires
   maintainer approval and the separate client/signer/payment evidence below.
 
@@ -32,35 +32,43 @@ experimental proposal, not an enabled writer.
 
 ### New Market orders
 
-New ordinary checkout defaults to **Open Markets** (numeric type 1) and exposes
-an explicit **Conduit** override for the existing named kind-16 JSON contract.
-This default is a new-order policy, not inferred merchant capability.
-Neither a `client` tag, kind-10050 inbox declaration, relay response nor empty
-lookup establishes commerce-format support. There is no probe order or second
-representation. Private router checkout, event pickup and carts with multiple
-distinct shipping coordinates require their existing Conduit contract. The locked
-selector explains that requirement; submission checks it before wallet preparation.
-The final serialized order also uses Conduit when its complete shipping evidence
-exceeds the numeric extension's existing size limit. Both checkout paths choose
-that format before pinning it; signed quotes are preserved without truncation. Manual invoice/payment behavior remains
-unchanged; no automatic payment preference is advertised by this adapter.
+New Market checkout writes one Open Markets numeric type-1 order. There is no
+compatibility selector, size-based writer switch, probe order or second
+representation. Its common tags and human-readable content remain readable by
+independent clients. A version-2 `conduit` extension preserves the complete
+approved order payload and original canonical tags in the same encrypted rumor,
+including per-item shipping, signed quotes, pickup snapshots and router markers.
+This is a Conduit extension to the working Open Markets contract, not a claim
+that independent clients implement the richer features or that kind 1327 is active.
 
-Before wrapping or staging a new order, save its order ID, buyer, merchant and
-selected format in the device-local `orderWireFormats` table. The staged
-`orderLifecycles.orderWireFormat` also freezes that choice. A different party
-pair or format cannot reuse it. Missing historical metadata means the deployed
-named contract. Recovery republishes the original signed encrypted wrap;
-it never re-encodes the order from current checkout controls. Changing a seller
-or starting another order does not change a pending order or invoice.
+Ordinary orders require no capability declaration. Advanced terms require each
+exact authorized signed product listing to declare the required subset of
+`["conduit_commerce", "2", "per_item_shipping", "event_pickup", "router_checkout"]`.
+Merchant publishes that declaration with new or updated listings. Checkout carries
+those signed revisions in `conduit_commerce_support` inside the extension; both
+encoder and receiver validate them. Brand tags, inbox declarations and relay
+responses do not establish support. Existing listings without the declaration must
+be updated by the seller before a new advanced order can proceed. The buyer sees
+an actionable refresh request before funding; there is no downgrade or hidden
+named-order fallback. Already staged orders keep their original continuation path.
 
-Numeric order `amount` is the aggregate sats total including delivery. Common
-tags carry product coordinates, quantities and optional delivery/contact fields;
-text carries the buyer's note. The bounded extension retains the already
-approved Conduit snapshot inside the same recipient's encryption. Multiple
-different shipping coordinates cannot be represented by this common contract.
-Checkout selects the named contract before pinning those orders, preserving all
-per-item shipping snapshots. The encoder still rejects an incompatible numeric
-payload; it never silently drops a line's terms.
+Before wrapping or staging a new order, persist its ID, parties and
+`open_markets_v2` writer in `orderWireFormats` and `orderLifecycles`. New routed
+checkout preparations persist the same writer before funding preparation. Saved
+named orders, numeric-v1 orders and historical routed preparations with no writer
+metadata retain their original grammar. A checkpoint cannot change its parties or
+version. Recovery republishes the original signed encrypted wrap; it never
+re-encodes from current checkout controls. Historical missing metadata means the
+deployed named contract only for those historical records.
+
+The version-2 extension is `{payload, tags}`; common identity, amount, currency,
+items, invoice and status fields must agree with the full snapshot. Unknown or
+conflicting extensions stay non-actionable. Multiple shipping coordinates remain
+per-item in the full snapshot; the common shipping tag is emitted only when it is
+unambiguous. Version 1 retains its 32 KiB extension bound. Version 2 uses the shared
+512 KiB message bound, with the existing final encrypted-frame transport bound
+still enforced independently. Oversized work fails explicitly without truncation,
+changing formats or losing signed shipping evidence.
 
 Payment reports use kind 17 with the exact Lightning invoice, its amount and
 an optional preimage. Conversation uses kind 14 with the original wire order
@@ -125,8 +133,8 @@ consequential actions while conversation remains available.
 | Shipping           | Kind 16, type 4, processing/shipped/delivered/exception; shipped exposes optional carrier/tracking |
 | Conversation       | Kind 14, subject equal to wire order ID                                                            |
 
-Numeric replies have human-readable content. An optional bounded `conduit`
-version-1 tag preserves richer local semantics, including acceptance versus
+Numeric replies have human-readable content. A bounded versioned `conduit`
+tag preserves richer local semantics, including acceptance versus
 pending and verified paid versus a remote claim. Its identities, amount,
 invoice, mapped status and tracking must agree with the common fields.
 Independent buyers need no extension on their orders or receipts. On Merchant,
@@ -201,8 +209,7 @@ Invoice totals may differ after merchant review; the buyer sees the existing
 amount-change warning, and the merchant's note explains adjustments.
 
 Reply format selection comes from the retained authenticated order; new Market
-selection comes from the ordinary numeric default or explicit checkout choice,
-never a client brand or relay-declaration tag. Select one representation before
+orders always use numeric version 2, never a client brand or relay-declaration tag. Select one representation before
 staging. Retry exact rumor and encrypted delivery bytes under existing authority. Missing history cannot
 silently select an incompatible writer. The decode-rule upgrade reprocesses
 previously retained external wrappers.
@@ -255,7 +262,7 @@ local identity, format pinning, installed pending invoices and retained-history
 recovery. Peer vectors are derived from
 [nostrich-marketplace at 668198e](https://github.com/nostrichOS/nostrich-marketplace/tree/668198e3388ba35e0fcc3a2a4a9e9503402de69e),
 `src/orders/orders.ts` and `docs/orders.md`. Local-relay browser journeys cover
-both directions: numeric intake/replies and Market selection, merchant invoice,
+both directions: numeric intake/replies and unified Market checkout, merchant invoice,
 no-preimage report, merchant confirmation, conversation, fulfillment and reload.
 They use real NIP-44/NIP-59 encryption with runner-owned identities and simulated
 peers. Wallet-verifier tests, browser observations, actual external clients,
@@ -270,11 +277,33 @@ its own schemas, explicit capability selection, compatibility/recovery evidence
 and retirement policy. Another marketplace's adoption is not a prerequisite to
 implementing that experimental migration.
 
-Event pickup retains the named Conduit contract for its authenticated pickup
-snapshot, organizer handoff and completion gates, including zero-cost signed-in
-and guest orders. Checkout displays and locks that required format, even after
-an earlier numeric selection. The numeric encoder rejects event pickup before
-encryption; this adapter does not claim a numeric pickup fulfillment contract.
+New event pickup and routed-payment orders retain all authenticated snapshots and
+markers in numeric version 2. Complete terms are a validated-payload property,
+independent of wire grammar. Stock, organizer handoff, receipt and routed-payment
+commitments use the original wire ID; participant-scoped inbox aliases never enter
+those commitments. Existing named pickup/router orders keep their saved writer.
+An occupied raw-ID journal belonging to another order fails closed before stock
+mutation; ordinary numeric orders retain participant-qualified acceptance keys.
+
+## Review corrections
+
+Direct-message composers inherit an order reference only from an authenticated
+order/participant pair or a verified reply chain. A note composed in Messages
+returns to its order after reload. Plain chats and advisory companion messages
+cannot manufacture that context; ambiguous ancestry remains unassociated.
+
+Independent orders can omit item format. Merchant must resolve each genuinely
+unknown line as shipping or digital before fulfillment. That decision is encrypted,
+bound to the original terms and parties, and recovered after reload. It does not
+rewrite the buyer's order, override known fields, change acceptance hashes or
+repeat inventory work. Digital orders can complete without invented tracking;
+shipping orders retain the existing shipping workflow.
+
+New signed-in numeric checkout and order-message actions expose the existing inbox
+readiness state. Missing setup opens Network in a separate tab so checkout and
+message drafts survive; users refresh discovery and retry after setup. Retained
+authenticated declarations survive partial discovery. Existing staged delivery and
+guest recipient-only flows retain their established recovery and authority rules.
 
 ## Converged reply, payment and storage boundaries
 
@@ -297,7 +326,7 @@ Ordinary independent numeric orders can enter merchant inventory acceptance usin
 their authenticated aggregate terms. Missing historical item prices and formats
 remain unknown. Encrypted acceptance and replay bindings preserve those terms,
 and a replay cannot decrement stock again. Event pickup and organizer stock
-handoff still require the complete named contract and its authenticated snapshot.
+handoff require complete authenticated terms, including numeric version 2 snapshots.
 
 Installed versions stored extension-backed numeric acceptances under the raw wire
 ID. Reads and retries resolve those records only through the authenticated numeric
@@ -311,7 +340,8 @@ longer need recovery; schema upgrades alone cannot retire it.
 
 Schema version 30 converges main versions 27–29 and adapter versions 27–28,
 preserving format choices, discovery indexes, organizer stock records and exact
-encrypted delivery bytes. Decode rules version 8 combines retained numeric-envelope
-reprocessing with the current machine-message and deletion safeguards. Upgrade,
+encrypted delivery bytes. Decode rules version 9 combines retained numeric-envelope
+reprocessing, authenticated note context and version-2 snapshots with the current
+machine-message and deletion safeguards. Upgrade,
 reply, payment and browser fixtures remain synthetic evidence; the external-client,
 live-signer, device and receiving-wallet acceptance gates above remain separate.

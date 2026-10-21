@@ -12,6 +12,7 @@ import {
   type CheckoutSparkMerchantSettlementProjection,
   type MerchantConversationSummary,
   type MerchantOrderState,
+  type MerchantFulfillmentDecisionLine,
   type OrderSummary,
   type OrderStatusDisplay,
   type Profile,
@@ -192,7 +193,8 @@ function getOrderItemFulfillmentMode(
  * pickup claim remains compatible with the shipping workflow.
  */
 export function getMerchantOrderFulfillment(
-  items: OrderSummary["items"]
+  items: OrderSummary["items"],
+  decisions: readonly MerchantFulfillmentDecisionLine[] = []
 ): MerchantOrderFulfillment {
   const hasPickupClaim = items.some(
     (item) => item.fulfillment?.type === "event_market_pickup"
@@ -205,7 +207,18 @@ export function getMerchantOrderFulfillment(
     }
   }
 
-  const itemModes = items.map(getOrderItemFulfillmentMode)
+  const itemModes = items.map((item, index) => {
+    if (item.format === undefined && item.fulfillment === undefined) {
+      const decision = decisions.find(
+        (line) =>
+          line.index === index &&
+          line.productId === item.productId &&
+          line.quantity === item.quantity
+      )
+      if (decision) return decision.mode
+    }
+    return getOrderItemFulfillmentMode(item)
+  })
   const physicalModes = new Set(
     itemModes.filter((mode) => mode !== "digital" && mode !== "unknown")
   )

@@ -1,3 +1,4 @@
+import { requiredCommerceFeatures } from "@conduit/core/protocol/commerce-capabilities"
 /**
  * Unit tests for buyer checkout validation, fast-checkout eligibility,
  * LNURL helpers, and NWC URI parsing.
@@ -34,7 +35,6 @@ import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
 import { getKnownWalletPaymentConstraint } from "../apps/market/src/lib/wallet-readiness"
 import {
   buildCheckoutPricingIntent,
-  requiresConduitOrderCompatibility,
   applyAuthorizedAnonZapPricing,
   buildDefaultZapContent,
   buildPendingCheckoutManualInvoice,
@@ -4229,27 +4229,19 @@ describe("parseRelayFailureMessage", () => {
   })
 })
 
-describe("checkout commerce format requirements", () => {
-  it("retains the numeric default for no delivery or one shared option, but preserves distinct shipping terms", () => {
+describe("unified checkout feature requirements", () => {
+  it("requires feature evidence for distinct delivery terms, without selecting another writer", () => {
     const first = { shippingOptionId: "30406:merchant:parcel-a" }
     const second = { shippingOptionId: "30406:merchant:parcel-b" }
-    expect(requiresConduitOrderCompatibility([{}])).toBe(false)
-    expect(requiresConduitOrderCompatibility([first, first, {}])).toBe(false)
-    expect(requiresConduitOrderCompatibility([first, second])).toBe(true)
-    expect(requiresConduitOrderCompatibility([first], true)).toBe(true)
+    expect(requiredCommerceFeatures({ items: [{}] })).toEqual([])
+    expect(requiredCommerceFeatures({ items: [first, first, {}] })).toEqual([])
+    expect(requiredCommerceFeatures({ items: [first, second] })).toEqual([
+      "per_item_shipping",
+    ])
     expect(
-      requiresConduitOrderCompatibility(
-        [first, first],
-        false,
-        JSON.stringify({ note: "x".repeat(32_757) })
-      )
-    ).toBe(false)
-    expect(
-      requiresConduitOrderCompatibility(
-        [first, first],
-        false,
-        JSON.stringify({ note: "x".repeat(32_758) })
-      )
-    ).toBe(true)
+      requiredCommerceFeatures({ items: [first] }, [
+        ["conduit_checkout_payment"],
+      ])
+    ).toEqual(["router_checkout"])
   })
 })

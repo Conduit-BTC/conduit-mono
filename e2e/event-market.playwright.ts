@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { decodeConduitCommerceExtension } from "@conduit/core/protocol/commerce-wire"
 import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -948,7 +949,9 @@ function decryptPrivatePublications(
 }
 
 function rumorType(rumor: PrivateRumor): string | undefined {
-  return rumor.tags.find((tag) => tag[0] === "type")?.[1]
+  return decodeConduitCommerceExtension(rumor).tags.find(
+    (tag) => tag[0] === "type"
+  )?.[1]
 }
 
 function formatPickupClaimCode(claimRef: string): string {
@@ -1751,7 +1754,9 @@ async function createAssignedPickupOrder(
       )
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orderMessages().length).toBe(1)
-  const order = JSON.parse(orderMessages()[0]!.rumor.content) as {
+  const order = JSON.parse(
+    decodeConduitCommerceExtension(orderMessages()[0]!.rumor).content
+  ) as {
     id: string
     items: Array<{
       fulfillment?: {
@@ -2008,6 +2013,13 @@ test("Event Market variable products select a purchasable variation before check
         ["title", name],
         ["price", "0", "SAT"],
         [
+          "conduit_commerce",
+          "2",
+          "per_item_shipping",
+          "event_pickup",
+          "router_checkout",
+        ],
+        [
           "type",
           dTag === "future-handoff-soap" ? "variable" : "variation",
           "physical",
@@ -2130,13 +2142,7 @@ test("Event Market variable products select a purchasable variation before check
   const compatibility = page.getByRole("combobox", {
     name: "Order compatibility",
   })
-  await expect(compatibility).toBeDisabled()
-  await expect(compatibility).toContainText("Conduit")
-  await expect(
-    page
-      .getByRole("status")
-      .filter({ hasText: "Event pickup requires Conduit order compatibility." })
-  ).toBeVisible()
+  await expect(compatibility).toHaveCount(0)
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/)
@@ -2149,7 +2155,15 @@ test("Event Market variable products select a purchasable variation before check
       )
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orders().length).toBe(1)
-  const order = JSON.parse(orders()[0]!.rumor.content) as {
+  expect(orders()[0]!.rumor.tags).toContainEqual(["type", "1"])
+  expect(
+    orders()[0]!.rumor.tags.some(
+      (tag) => tag[0] === "conduit" && tag[1] === "2" && tag[2] === "order"
+    )
+  ).toBe(true)
+  const order = JSON.parse(
+    decodeConduitCommerceExtension(orders()[0]!.rumor).content
+  ) as {
     items: Array<{
       productId: string
       selectedSpecifications?: Array<{ key: string; value: string }>
@@ -2319,7 +2333,9 @@ test("two historical future market products retain one authenticated order and p
     )
   ).filter((message) => rumorType(message.rumor) === "order")
   expect(originalOrders).toHaveLength(1)
-  expect(JSON.parse(originalOrders[0]!.rumor.content)).toEqual(order)
+  expect(
+    JSON.parse(decodeConduitCommerceExtension(originalOrders[0]!.rumor).content)
+  ).toEqual(order)
   relay.seed(
     ...originalOrderWraps,
     signEvent(ORGANIZER_SECRET, {
@@ -5095,6 +5111,13 @@ test("guest retains a private event receipt and merchant verifies it @market @me
       ["t", "handmade"],
       ["t", "home"],
       ["price", "0", "SAT"],
+      [
+        "conduit_commerce",
+        "2",
+        "per_item_shipping",
+        "event_pickup",
+        "router_checkout",
+      ],
       ["conduit_event_guest", "contact_optional"],
       ["type", "simple", "physical"],
       ["stock", "5"],
@@ -5132,8 +5155,7 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   const compatibility = page.getByRole("combobox", {
     name: "Order compatibility",
   })
-  await expect(compatibility).toBeDisabled()
-  await expect(compatibility).toContainText("Conduit")
+  await expect(compatibility).toHaveCount(0)
   const before = relay.publications.length
   await page.getByRole("button", { name: "Send order", exact: true }).click()
   await expect(
@@ -5166,7 +5188,15 @@ test("guest retains a private event receipt and merchant verifies it @market @me
       decryptPrivatePublications(relay.publications, MERCHANT_SECRET, before)
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orders().length).toBe(1)
-  const order = JSON.parse(orders()[0]!.rumor.content) as {
+  expect(orders()[0]!.rumor.tags).toContainEqual(["type", "1"])
+  expect(
+    orders()[0]!.rumor.tags.some(
+      (tag) => tag[0] === "conduit" && tag[1] === "2" && tag[2] === "order"
+    )
+  ).toBe(true)
+  const order = JSON.parse(
+    decodeConduitCommerceExtension(orders()[0]!.rumor).content
+  ) as {
     id: string
     buyerIdentityKind: string
     guestContact?: unknown
@@ -5176,7 +5206,7 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   expect(order.guestContact).toBeUndefined()
   expect(order.contactFreePickup.label).toBe("Soap fan")
   expect(order.contactFreePickup.receiptCommitment).toMatch(/^[0-9a-f]{64}$/)
-  expect(orders()[0]!.rumor.content).not.toContain("claimSecret")
+  expect(JSON.stringify(orders()[0]!.rumor)).not.toContain("claimSecret")
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   await expect(page.getByText("Handoff name: Soap fan")).toBeVisible()
   await page.getByLabel("Verify customer receipt").setInputFiles(receiptPath)
@@ -5465,7 +5495,8 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         ).filter(
           (message) =>
             rumorType(message.rumor) === "status_update" &&
-            JSON.parse(message.rumor.content).status === "complete"
+            JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+              .status === "complete"
         ).length
     )
     .toBe(1)
@@ -7114,7 +7145,8 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
         ).filter(
           (message) =>
             rumorType(message.rumor) === "status_update" &&
-            JSON.parse(message.rumor.content).status === "complete"
+            JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+              .status === "complete"
         ).length
     )
     .toBe(1)
@@ -7291,7 +7323,8 @@ test("saved prepaid acceptance publication resumes after reload @merchant @occur
           ).filter(
             (message) =>
               rumorType(message.rumor) === "status_update" &&
-              JSON.parse(message.rumor.content).status === "paid"
+              JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+                .status === "paid"
           ).length
       )
       .toBe(1)
@@ -7455,7 +7488,8 @@ for (const scenario of [
           ).filter(
             (message) =>
               rumorType(message.rumor) === "status_update" &&
-              JSON.parse(message.rumor.content).status === "paid"
+              JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+                .status === "paid"
           ).length
       )
       .toBe(1)

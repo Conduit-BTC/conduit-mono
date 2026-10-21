@@ -56,6 +56,7 @@ async function product(
       tags: [
         ["d", id],
         ["title", "Synthetic digital item"],
+        ["conduit_commerce", "2", "router_checkout"],
         ["price", String(price), currency],
         ["type", "simple", "digital"],
         ...tags,

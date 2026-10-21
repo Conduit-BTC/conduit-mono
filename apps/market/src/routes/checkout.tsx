@@ -1,5 +1,4 @@
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
-import { OrderFormatSelect } from "../components/OrderFormatSelect"
 import { CheckoutEventOrganizerFeeDisclosure } from "../components/CheckoutEventOrganizerFeeDisclosure"
 import { CheckoutSparkNativeTreasuryNotice } from "../components/CheckoutSparkNativeTreasuryNotice"
 import {
@@ -23,6 +22,11 @@ import {
   useState,
 } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  buildCommerceSupportTags,
+  requiredCommerceFeatures,
+} from "@conduit/core/protocol/commerce-capabilities"
+import { assertOrderMessagingReady } from "@conduit/core/protocol/order-messaging-readiness"
 import {
   isContactFreeEventHandoff,
   getEventGuestReceiptCommitment,
@@ -66,6 +70,7 @@ import {
   validateAddressConsistency,
   useAuth,
   useConduitSession,
+  useInboxDeclaration,
   useProfile,
   type AddressValidityResult,
   type CommercePriceLike,
@@ -74,7 +79,6 @@ import {
   type OrderLifecycleItem,
   type OrderShippingZoneEligibility,
   type StagedOrderLifecycleInput,
-  type OrderWireFormat,
   type NwcConnection,
   type NwcGetInfoResult,
   type Profile,
@@ -100,6 +104,7 @@ import {
   SelectTrigger,
   SignerRecoveryNotice,
   Textarea,
+  OrderMessagingReadinessNotice,
 } from "@conduit/ui"
 import {
   EventGuestReceiptDetails,
@@ -207,7 +212,6 @@ import {
 } from "../lib/checkout-session"
 import {
   buildCheckoutPricingIntent,
-  requiresConduitOrderCompatibility,
   buildDefaultZapContent,
   buildZapRequestContent,
   getCheckoutPublicZapSigner,
@@ -1334,9 +1338,6 @@ function CheckoutPage() {
   const [eventReceiptDraft, setEventReceiptDraft] =
     useState<EventGuestReceiptDraft | null>(null)
   const [note, setNote] = useState("")
-  const [orderFormats, setOrderFormats] = useState<
-    Record<string, OrderWireFormat>
-  >({})
   const [error, setError] = useState<string | null>(null)
   const [shippingAttempted, setShippingAttempted] = useState(false)
   const [shippingErrors, setShippingErrors] = useState<
@@ -1387,6 +1388,25 @@ function CheckoutPage() {
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
   const signerConnected = authSignerReadiness === "ready"
   const signedBuyerPubkey = signerConnected ? accountPubkey : null
+  const checkoutInbox = useInboxDeclaration(signedBuyerPubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
+  function checkNewOrderMessaging(): boolean {
+    if (!signedBuyerPubkey) return true
+    try {
+      assertOrderMessagingReady(checkoutInbox.status)
+      return true
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Check messaging setup before ordering."
+      )
+      return false
+    }
+  }
+
   const draftOwnerIdentity = accountPubkey
   const authPending =
     authSignerReadiness === "pending" || restorePendingPubkey !== null
@@ -1636,9 +1656,6 @@ function CheckoutPage() {
       ? matchingMerchantPurchases[0]
       : undefined
   const selectedMerchant = selectedPurchase?.merchantPubkey
-  const requestedOrderWireFormat = selectedMerchant
-    ? (orderFormats[selectedMerchant] ?? "open_markets")
-    : "open_markets"
   const freePurchaseDeliveriesQuery = useQuery({
     queryKey: [
       "event-free-purchase-deliveries",
@@ -2002,13 +2019,6 @@ function CheckoutPage() {
     fulfillment: preparedFulfillment.resolutions,
   })
   const routerBranchTargetCheckout = routerAdmission.mode === "router"
-  const requiresConduitOrderFormat = requiresConduitOrderCompatibility(
-    checkoutItems,
-    routerBranchTargetCheckout
-  )
-  const orderWireFormat: OrderWireFormat = requiresConduitOrderFormat
-    ? "conduit"
-    : requestedOrderWireFormat
   const routerPreparationUnavailableMessage =
     routerAdmission.mode === "router" && !routerAdmission.ready
       ? eventFeePreview.status === "unavailable"
@@ -3069,10 +3079,7 @@ function CheckoutPage() {
 
   /** Explicit checkout preparation; this action never submits payment. */
   async function prepareSettledRouterOrder(): Promise<void> {
-    if (orderWireFormat !== "conduit") {
-      setError("This payment option requires Conduit order compatibility.")
-      return
-    }
+    if (!checkNewOrderMessaging()) return
     if (routerPreparationUnavailableMessage) {
       setError(routerPreparationUnavailableMessage)
       return
@@ -3415,6 +3422,7 @@ function CheckoutPage() {
   }
 
   async function placeOrder(): Promise<void> {
+    if (!checkNewOrderMessaging()) return
     if (routerBranchTargetCheckout) {
       setError(
         "This purchase requires the private router order. Direct checkout is disabled for this purchase."
@@ -3652,6 +3660,13 @@ function CheckoutPage() {
         }
       }
       rumor.tags.push(...buildEventMarketOrderRumorTags(validatedPayload))
+      rumor.tags.push(
+        ...buildCommerceSupportTags({
+          productIds: validatedPayload.items.map((item) => item.productId),
+          products: checkoutAuthorization.listingReadProducts,
+          features: requiredCommerceFeatures(validatedPayload, rumor.tags),
+        })
+      )
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = serializeOrderRumorContent({
         ...payload,
@@ -3662,13 +3677,7 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
-        orderWireFormat: requiresConduitOrderCompatibility(
-          checkoutPricing.items,
-          routerBranchTargetCheckout,
-          rumor.content
-        )
-          ? "conduit"
-          : orderWireFormat,
+        orderWireFormat: "open_markets_v2",
         ...(freePurchaseDelivery
           ? { eventMarketFreePurchaseDelivery: freePurchaseDelivery }
           : {}),
@@ -4003,6 +4012,7 @@ function CheckoutPage() {
   async function payNow(
     zapAuthorization: HudZapAuthorization | null = null
   ): Promise<void> {
+    if (!checkNewOrderMessaging()) return
     if (routerBranchTargetCheckout) {
       setError(
         "This purchase requires the private router order. Direct payment is disabled for this purchase."
@@ -4360,6 +4370,16 @@ function CheckoutPage() {
       orderRumor.tags.push(
         ...buildEventMarketOrderRumorTags(validatedOrderPayload)
       )
+      orderRumor.tags.push(
+        ...buildCommerceSupportTags({
+          productIds: validatedOrderPayload.items.map((item) => item.productId),
+          products: checkoutAuthorization.listingReadProducts,
+          features: requiredCommerceFeatures(
+            validatedOrderPayload,
+            orderRumor.tags
+          ),
+        })
+      )
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = serializeOrderRumorContent({
         ...orderPayload,
@@ -4382,13 +4402,7 @@ function CheckoutPage() {
       // Orders can render it immediately, then hand payment to the service.
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
-        orderWireFormat: requiresConduitOrderCompatibility(
-          checkoutPricing.items,
-          routerBranchTargetCheckout,
-          orderRumor.content
-        )
-          ? "conduit"
-          : orderWireFormat,
+        orderWireFormat: "open_markets_v2",
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
@@ -5566,30 +5580,15 @@ function CheckoutPage() {
           )}
 
           {/* ── Order action ──────────────────────────────────────────────── */}
-          <OrderFormatSelect
-            value={orderWireFormat}
-            disabled={
-              requiresConduitOrderFormat ||
-              checkoutRecoveryIsChecking ||
-              checkoutRecoveryBlockingMessage !== null ||
-              paymentInFlightRef.current
-            }
-            onChange={(format) => {
-              if (selectedMerchant)
-                setOrderFormats((current) => ({
-                  ...current,
-                  [selectedMerchant]: format,
-                }))
-            }}
-          />
-          {requiresConduitOrderFormat && (
-            <p role="status" className="text-sm text-[var(--text-secondary)]">
-              {isPickupCheckout
-                ? "Event pickup requires Conduit order compatibility."
-                : routerBranchTargetCheckout
-                  ? "This payment option requires Conduit order compatibility."
-                  : "These products have separate shipping options and require Conduit order compatibility."}
-            </p>
+          {!isGuestCheckout && (
+            <OrderMessagingReadinessNotice
+              status={checkoutInbox.status}
+              checking={checkoutInbox.isRefetching}
+              context="checkout"
+              onRetry={() => {
+                void checkoutInbox.refetch()
+              }}
+            />
           )}
           {
             <>

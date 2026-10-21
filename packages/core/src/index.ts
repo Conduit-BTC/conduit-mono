@@ -405,3 +405,8 @@ export {
   type CheckoutSparkPerformanceObservation,
   type CheckoutSparkPerformanceObserver,
 } from "./protocol/checkout-spark-performance"
+
+export {
+  hasCompleteOrderTerms,
+  getOrderProtocolPayload,
+} from "./protocol/orders"

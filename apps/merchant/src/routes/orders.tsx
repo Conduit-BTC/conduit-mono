@@ -1,3 +1,4 @@
+import { assertOrderMessagingReady } from "@conduit/core/protocol/order-messaging-readiness"
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -18,6 +19,12 @@ import {
   acceptMerchantOccurrenceOrder,
   readMerchantOccurrenceAcceptedOrder,
   matchesMerchantOccurrenceAcceptance,
+  getUnresolvedMerchantFulfillmentLines,
+  readMerchantFulfillmentDecision,
+  saveMerchantFulfillmentDecision,
+  hasCompleteOrderTerms,
+  getOrderProtocolPayload,
+  type MerchantFulfillmentChoice,
   buildOrderStatusTimeline,
   clearProtectedReadAuthenticationSuppression,
   convertCommerceAmountToSats,
@@ -63,6 +70,7 @@ import {
   type ParsedOrderMessage,
   type SignedPublicNostrEvent,
   type LocalProductStockRecovery,
+  PrivateMessageRelayReadinessError,
   useAuth,
   useCommerceInbox,
   useConduitSession,
@@ -92,6 +100,7 @@ import {
   toMessagingReadinessNoticeState,
   EventGuestReceiptVerifier,
   OrderMessagesWidget,
+  OrderMessagingReadinessNotice,
   ProtectedInboxNotice,
   RefreshChip,
   Select,
@@ -115,6 +124,7 @@ import { OrderCardScroller } from "../components/OrderCardScroller"
 import { BuyerAvatar, OrderListItem } from "../components/OrderListItem"
 import { CheckoutSparkRecoveryPanel } from "../components/CheckoutSparkRecoveryPanel"
 import { OrderItemsCard } from "../components/OrderItemsCard"
+import { MerchantFulfillmentDecisionPanel } from "../components/MerchantFulfillmentDecision"
 import { MerchantProjectTip } from "../components/MerchantProjectTip"
 import { ShopperTrustCard } from "../components/ShopperTrustCard"
 import {
@@ -1215,29 +1225,89 @@ function OrdersWorkspace() {
     () => getPendingInvoiceQueryToken(selected),
     [selected]
   )
-  const selectedStockDecisionId = selected
-    ? `${pubkey ?? "none"}:${selected.id}`
-    : null
-  const localStockJournalQuery = useQuery({
-    queryKey: ["merchant-order-stock-journal", pubkey, selected?.orderId],
-    queryFn: () =>
-      getLocalProductStockRecoveryForOrder(pubkey!, selected!.orderId),
-    enabled: !!pubkey && !!selected,
-  })
-  const localStockJournal = useMemo(
-    () => localStockJournalQuery.data ?? [],
-    [localStockJournalQuery.data]
-  )
   const selectedOrderMessage = selected?.messages?.find(
     (message) => message.type === "order"
   )
   const selectedOrder =
     selectedOrderMessage?.type === "order" ? selectedOrderMessage.payload : null
   const selectedConduitOrder =
-    selectedOrderMessage?.type === "order" &&
-    selectedOrderMessage.wireFormat !== "open_markets"
-      ? selectedOrderMessage.payload
+    selectedOrderMessage && hasCompleteOrderTerms(selectedOrderMessage)
+      ? getOrderProtocolPayload(selectedOrderMessage)
       : null
+  // Inventory and pickup commitments bind the original protocol order ID;
+  // conversation IDs remain participant-scoped for private message routing.
+  const selectedProtocolOrderId =
+    selectedConduitOrder &&
+    (selectedOrderMessage?.checkoutPaymentRoute ||
+      selectedConduitOrder.items.some(
+        (item) => item.fulfillment?.type === "event_market_pickup"
+      ))
+      ? selectedConduitOrder.id
+      : selected?.orderId
+  const selectedStockDecisionId = selected
+    ? `${pubkey ?? "none"}:${selected.id}:${selectedProtocolOrderId ?? "none"}`
+    : null
+  const localStockJournalQuery = useQuery({
+    queryKey: ["merchant-order-stock-journal", pubkey, selectedProtocolOrderId],
+    queryFn: () =>
+      getLocalProductStockRecoveryForOrder(pubkey!, selectedProtocolOrderId!),
+    enabled: !!pubkey && !!selected,
+  })
+  const localStockJournal = useMemo(
+    () => localStockJournalQuery.data ?? [],
+    [localStockJournalQuery.data]
+  )
+  const unresolvedFulfillmentLines = selectedOrder
+    ? getUnresolvedMerchantFulfillmentLines(selectedOrder)
+    : []
+  const fulfillmentDecisionQueryKey = [
+    "merchant-fulfillment-decision",
+    pubkey,
+    selectedOrderMessage?.id,
+  ]
+  const fulfillmentDecisionQuery = useQuery({
+    queryKey: fulfillmentDecisionQueryKey,
+    enabled:
+      !!selectedOrderMessage &&
+      unresolvedFulfillmentLines.length > 0 &&
+      signerConnected,
+    retry: false,
+    queryFn: () =>
+      readMerchantFulfillmentDecision({ original: selectedOrderMessage! }),
+  })
+  const fulfillmentDecision = fulfillmentDecisionQuery.data ?? null
+  const fulfillmentDecisionReady =
+    unresolvedFulfillmentLines.length === 0 ||
+    (!!fulfillmentDecision && !fulfillmentDecisionQuery.isError)
+  const fulfillmentDecisionMutation = useMutation({
+    mutationFn: async (choices: MerchantFulfillmentChoice[]) => {
+      const authority = captureFreshOrderAuthority()
+      const original = selectedOrderMessage
+      if (!original || original.recipientPubkey !== authority.accountPubkey)
+        throw new Error(
+          "Select the original order before saving delivery choices."
+        )
+      const decision = await saveMerchantFulfillmentDecision({
+        original,
+        choices,
+        shouldContinue: () =>
+          isCurrentOrderAction(authority) &&
+          isCurrentSelectedOrder(
+            authority.accountPubkey,
+            original.senderPubkey,
+            original.orderId
+          ),
+      })
+      return { decision, original, authority }
+    },
+    onSuccess: ({ decision, original, authority }) => {
+      if (!isCurrentOrderAction(authority)) return
+      queryClient.setQueryData(
+        ["merchant-fulfillment-decision", authority.accountPubkey, original.id],
+        decision
+      )
+    },
+  })
   const acceptedInventoryQuery = useQuery({
     queryKey: [
       "merchant-accepted-inventory",
@@ -1287,7 +1357,7 @@ function OrdersWorkspace() {
     selectedFuturePickup.mode === "organizer_handoff" &&
     pubkey
       ? getFutureMarketClaimRef({
-          orderId: selectedOrder.id,
+          orderId: selectedProtocolOrderId!,
           merchantPubkey: pubkey,
           organizerPubkey: selectedFuturePickup.organizerPubkey,
           marketCoordinate: selectedFuturePickup.market.coordinate,
@@ -1298,7 +1368,7 @@ function OrdersWorkspace() {
       ? getFutureMarketTerminalHistory(pubkey, selectedFutureClaimRef)
       : null
   const selectedOrderCorrelationRef = selectedOrder
-    ? getEventMarketOrderCorrelationRef(selectedOrder.id)
+    ? getEventMarketOrderCorrelationRef(selectedProtocolOrderId!)
     : null
   const futureDeliveries = useMemo(() => {
     void handoffDeliveryRevision
@@ -1425,7 +1495,7 @@ function OrdersWorkspace() {
     const pendingStockDeliveries =
       pubkey && selected
         ? pendingStockDeliveryStoreRef.current
-            .getForOrder(pubkey, selected.orderId)
+            .getForOrder(pubkey, selectedProtocolOrderId!)
             .filter((pending) => {
               const decision = stockDecisionStoreRef.current.get(
                 pubkey,
@@ -1482,7 +1552,7 @@ function OrdersWorkspace() {
     setInvoiceCurrency(
       normalizeInvoiceCurrencyChoice(firstOrder.payload.currency)
     )
-  }, [pubkey, selected, selectedStockDecisionId])
+  }, [pubkey, selected, selectedStockDecisionId, selectedProtocolOrderId])
 
   useEffect(() => {
     if (!pubkey || !selected || !localStockJournalQuery.isSuccess) return
@@ -1504,12 +1574,19 @@ function OrdersWorkspace() {
       })
     } else {
       setStockDelivery((current) =>
-        current?.authority === "journal" && current.orderId === selected.orderId
+        current?.authority === "journal" &&
+        current.orderId === selectedProtocolOrderId
           ? null
           : current
       )
     }
-  }, [pubkey, selected, localStockJournal, localStockJournalQuery.isSuccess])
+  }, [
+    pubkey,
+    selected,
+    selectedProtocolOrderId,
+    localStockJournal,
+    localStockJournalQuery.isSuccess,
+  ])
 
   const orderSummary = useMemo(
     () => (selected ? getMerchantOrderSummary(selected) : null),
@@ -1544,7 +1621,8 @@ function OrdersWorkspace() {
   // A buyer-authored pickup snapshot is only a claim until the current signed
   // organizer graph and merchant listing authorize the same semantic terms.
   const snapshottedOrderFulfillment = getMerchantOrderFulfillment(
-    orderSummary?.items ?? []
+    orderSummary?.items ?? [],
+    fulfillmentDecision?.lines
   )
   const pickupAuthorizationQuery = useQuery({
     queryKey: [
@@ -1671,15 +1749,16 @@ function OrdersWorkspace() {
     !localStockJournalQuery.isSuccess
       ? []
       : buildOrderStockAdjustments({
-          orderId: selected.orderId,
+          orderId: selectedProtocolOrderId!,
           merchantPubkey: pubkey,
           items: orderSummary.items,
           productRecords: orderProductsQuery.data?.data ?? [],
         }).flatMap((adjustment) => {
           const pendingAdjustment =
-            stockDelivery?.notice.state !== "delivered" &&
-            stockDelivery?.notice.state !== "rejected" &&
-            stockDelivery?.orderId === selected.orderId &&
+            stockDelivery &&
+            stockDelivery.notice.state !== "delivered" &&
+            stockDelivery.notice.state !== "rejected" &&
+            stockDelivery.orderId === selectedProtocolOrderId &&
             stockDelivery.adjustment.key === adjustment.key
               ? stockDelivery.adjustment
               : null
@@ -1687,7 +1766,7 @@ function OrdersWorkspace() {
             journalStockDecision(localStockJournal, adjustment.addressId) ??
             stockDecisionStoreRef.current.get(
               pubkey,
-              selected.orderId,
+              selectedProtocolOrderId!,
               adjustment.addressId
             )
           const persistedDecision = pendingAdjustment
@@ -1725,7 +1804,7 @@ function OrdersWorkspace() {
       stockDelivery.notice.state !== "delivered" &&
       stockDelivery.notice.state !== "rejected" &&
       selected &&
-      stockDelivery.orderId === selected.orderId &&
+      stockDelivery.orderId === selectedProtocolOrderId &&
       stockDelivery.adjustment.key === adjustment.key
     )
     const persistedDecision =
@@ -1733,7 +1812,7 @@ function OrdersWorkspace() {
         ? (journalStockDecision(localStockJournal, adjustment.addressId) ??
           stockDecisionStoreRef.current.get(
             pubkey,
-            selected.orderId,
+            selectedProtocolOrderId!,
             adjustment.addressId
           ))
         : null
@@ -1773,6 +1852,16 @@ function OrdersWorkspace() {
         order: selectedOrder,
         orderMessage: selectedOrderMessage,
       })
+      if (
+        selectedOrderMessage &&
+        selectedOrder &&
+        getUnresolvedMerchantFulfillmentLines(selectedOrder).length > 0 &&
+        !(await readMerchantFulfillmentDecision({
+          original: selectedOrderMessage,
+        }))
+      ) {
+        throw new Error("Choose delivery methods before fulfilling this order.")
+      }
       if (
         !merchantPaid &&
         !(
@@ -1838,10 +1927,12 @@ function OrdersWorkspace() {
     selected && inventoryAcceptanceReady && !orderSummary?.conflictingTerms
       ? getMerchantOrderActions(merchantOrderState).filter(
           ({ action }) =>
-            !merchantOrderState.checkoutSparkRouted ||
-            (action !== "confirm_payment" &&
-              (merchantPaid ||
-                (action !== "record_shipment" && action !== "complete")))
+            (fulfillmentDecisionReady ||
+              (action !== "record_shipment" && action !== "complete")) &&
+            (!merchantOrderState.checkoutSparkRouted ||
+              (action !== "confirm_payment" &&
+                (merchantPaid ||
+                  (action !== "record_shipment" && action !== "complete"))))
         )
       : []
   const reopenTransition = getMerchantOrderReopenTransition(merchantOrderState)
@@ -1886,6 +1977,7 @@ function OrdersWorkspace() {
     },
   })
   const canRecordShipping =
+    fulfillmentDecisionReady &&
     !orderSummary?.conflictingTerms &&
     pickupFulfillmentActionsAuthorized &&
     selectedQueue === "paid_fulfill" &&
@@ -1904,7 +1996,9 @@ function OrdersWorkspace() {
     canRecordShipping,
     canRequestPaymentOutOfBand,
     fulfillmentActionsAuthorized:
-      pickupFulfillmentActionsAuthorized && !organizerCompletionBlocked,
+      fulfillmentDecisionReady &&
+      pickupFulfillmentActionsAuthorized &&
+      !organizerCompletionBlocked,
   })
   const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
   const paymentConfirmationSelection =
@@ -1930,7 +2024,7 @@ function OrdersWorkspace() {
       })
     : null
   const selectedStockDelivery =
-    stockDelivery?.orderId === selected?.orderId ? stockDelivery : null
+    stockDelivery?.orderId === selectedProtocolOrderId ? stockDelivery : null
   const stockDeliveryCanRetry =
     selectedStockDelivery?.notice.state === "partial" ||
     selectedStockDelivery?.notice.state === "retry_needed"
@@ -3467,6 +3561,8 @@ function OrdersWorkspace() {
         throw new Error("No ready merchant signer for this order")
       }
       assertBuyerHasNostrInbox()
+      if (selectedOrderMessage?.wireFormat === "open_markets")
+        assertOrderMessagingReady(inboxReadiness.status)
       const preparedContent = content.trim()
       if (!preparedContent) throw new Error("Message is required")
       const delivery = await publishMerchantOrderMessage({
@@ -3508,6 +3604,14 @@ function OrdersWorkspace() {
         console.warn("Could not refresh accepted reply history")
       )
     },
+    onError: (error) => {
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        inboxReadiness.refetch()
+      }
+    },
   })
 
   const orderDeliveryPending =
@@ -3546,12 +3650,14 @@ function OrdersWorkspace() {
     reopenOrderMutation.reset()
     shippingMutation.reset()
     noteMutation.reset()
+    fulfillmentDecisionMutation.reset()
   }, [
     advanceStatusMutation,
     authGeneration,
     confirmPaymentMutation,
     createInvoiceMutation,
     noteMutation,
+    fulfillmentDecisionMutation,
     futureReadyMutation,
     futureRevokeMutation,
     futureRetryMutation,
@@ -3578,7 +3684,7 @@ function OrdersWorkspace() {
     stockUpdateMutation.mutate({
       action: "update",
       orderMessage: selectedOrderMessage,
-      orderId: selected.orderId,
+      orderId: selectedProtocolOrderId!,
       adjustment: applyOrderStockTarget(adjustment, stock, targetMode),
       orderItems: orderSummary.items,
     })
@@ -3600,7 +3706,7 @@ function OrdersWorkspace() {
     stockUpdateMutation.mutate({
       action: "republish",
       orderMessage: selectedOrderMessage,
-      orderId: selected.orderId,
+      orderId: selectedProtocolOrderId!,
       adjustment,
     })
   }
@@ -3682,6 +3788,7 @@ function OrdersWorkspace() {
         !inboxReadiness.isLoading &&
         inboxReadinessNoticeState && (
           <MessagingReadinessNotice
+            setupInNewTab
             state={inboxReadinessNoticeState}
             onAction={() => {
               if (
@@ -3690,7 +3797,7 @@ function OrdersWorkspace() {
               ) {
                 inboxReadiness.refetch()
               } else {
-                void navigate({ to: "/network" })
+                window.open("/network", "_blank", "noopener,noreferrer")
               }
             }}
             pending={inboxReadiness.isRefetching}
@@ -3713,13 +3820,13 @@ function OrdersWorkspace() {
           principalPubkey={pubkey}
           selectedOrderId={
             merchantOrderState.checkoutSparkRouted
-              ? (selectedOrder?.id ?? null)
+              ? (selectedProtocolOrderId ?? null)
               : null
           }
           selectedOrderSettlement={
             selectedOrder && selectedRoutedSettlement
               ? {
-                  orderId: selectedOrder.id,
+                  orderId: selectedProtocolOrderId!,
                   projection: selectedRoutedSettlement,
                 }
               : null
@@ -3849,6 +3956,38 @@ function OrdersWorkspace() {
           <section className="min-w-0">
             {selected && orderSummary ? (
               <div className="space-y-4">
+                {unresolvedFulfillmentLines.length > 0 ? (
+                  <MerchantFulfillmentDecisionPanel
+                    key={`${pubkey}:${selectedOrderMessage?.id}`}
+                    items={unresolvedFulfillmentLines.map((line) => ({
+                      index: line.index,
+                      title:
+                        orderSummary.items[line.index]?.title ||
+                        productLookup.get(line.productId)?.title ||
+                        `Item ${line.index + 1}`,
+                    }))}
+                    saved={fulfillmentDecision}
+                    pending={
+                      !signerConnected ||
+                      fulfillmentDecisionQuery.isPending ||
+                      fulfillmentDecisionMutation.isPending
+                    }
+                    error={
+                      fulfillmentDecisionQuery.isError
+                        ? "Saved delivery choices could not be verified. Retry before fulfilling this order."
+                        : fulfillmentDecisionMutation.error instanceof Error
+                          ? fulfillmentDecisionMutation.error.message
+                          : null
+                    }
+                    onSave={(choices) =>
+                      fulfillmentDecisionMutation.mutate(choices)
+                    }
+                    onRetry={() => {
+                      fulfillmentDecisionMutation.reset()
+                      void fulfillmentDecisionQuery.refetch()
+                    }}
+                  />
+                ) : null}
                 {inventoryAcceptanceConflict ? (
                   <p role="alert" className="text-sm text-[var(--error-text)]">
                     Saved inventory could not be verified for this order. Stock
@@ -4190,7 +4329,11 @@ function OrdersWorkspace() {
                                           size="sm"
                                           variant="outline"
                                           onClick={() =>
-                                            void navigate({ to: "/network" })
+                                            window.open(
+                                              "/network",
+                                              "_blank",
+                                              "noopener,noreferrer"
+                                            )
                                           }
                                         >
                                           Open Network recovery
@@ -4932,12 +5075,10 @@ function OrdersWorkspace() {
                         </section>
                       )}
 
-                    {selectedOrderMessage?.type === "order" &&
-                    selectedOrderMessage.wireFormat !== "open_markets" &&
-                    pubkey ? (
+                    {selectedConduitOrder && pubkey ? (
                       <EventGuestReceiptVerifier
                         key={selected.id}
-                        order={selectedOrderMessage.payload}
+                        order={selectedConduitOrder}
                         merchantPubkey={pubkey}
                       />
                     ) : null}
@@ -5059,18 +5200,32 @@ function OrdersWorkspace() {
                   messages={selected.messages ?? []}
                   historyIncomplete={protectedOrdersReadState !== "complete"}
                   notice={
-                    acceptedOrderNotice?.label === "Message" &&
-                    acceptedOrderNotice.merchantPubkey === pubkey &&
-                    acceptedOrderNotice.buyerPubkey === selected.buyerPubkey &&
-                    acceptedOrderNotice.orderId === selected.orderId ? (
-                      <MerchantOrderSendNotice notice={acceptedOrderNotice} />
-                    ) : null
+                    <>
+                      {selectedOrderMessage?.wireFormat === "open_markets" && (
+                        <OrderMessagingReadinessNotice
+                          status={inboxReadiness.status}
+                          checking={inboxReadiness.isRefetching}
+                          onRetry={inboxReadiness.refetch}
+                        />
+                      )}
+                      {acceptedOrderNotice?.label === "Message" &&
+                      acceptedOrderNotice.merchantPubkey === pubkey &&
+                      acceptedOrderNotice.buyerPubkey ===
+                        selected.buyerPubkey &&
+                      acceptedOrderNotice.orderId === selected.orderId ? (
+                        <MerchantOrderSendNotice notice={acceptedOrderNotice} />
+                      ) : null}
+                    </>
                   }
                   selfPubkey={pubkey}
                   replyValue={replyNote}
                   onReplyChange={setReplyNote}
                   onSend={() => noteMutation.mutate(replyNote)}
                   sending={noteMutation.isPending}
+                  sendDisabled={
+                    selectedOrderMessage?.wireFormat === "open_markets" &&
+                    inboxReadiness.status !== "ready"
+                  }
                   error={
                     noteMutation.error instanceof Error
                       ? noteMutation.error.message

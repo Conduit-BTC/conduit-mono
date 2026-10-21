@@ -382,6 +382,7 @@ export function saveCheckoutSparkSettledPreparation(
   if (
     previous &&
     (previous.planDigest !== next.planDigest ||
+      previous.orderWireFormat !== next.orderWireFormat ||
       previous.purchaseClaimDigest !== next.purchaseClaimDigest ||
       (previous.recoveryHandoffId !== null &&
         previous.recoveryHandoffId !== next.recoveryHandoffId) ||
@@ -976,6 +977,7 @@ export async function prepareCheckoutSparkSettledFunding(
     const initial = saveCheckoutSparkSettledPreparation(
       {
         schemaVersion: 3,
+        orderWireFormat: "open_markets_v2",
         checkoutId: plan.checkoutId,
         planDigest: plan.planDigest,
         purchaseClaimDigest: input.purchaseClaimDigest,

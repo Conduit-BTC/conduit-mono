@@ -42,8 +42,12 @@ const MERCHANT_PROFILE = finalizeEvent(
 )
 const BUYER = plainTestSigner(NDKPrivateKeySigner.generate())
 
-function request(): PrepareCheckoutSparkSettledOrderInput {
-  const quote = checkoutSparkQuoteFixture(MERCHANT_SECRET)
+function request(
+  advertiseCommerceSupport = true
+): PrepareCheckoutSparkSettledOrderInput {
+  const quote = checkoutSparkQuoteFixture(MERCHANT_SECRET, 1_000, {
+    advertiseCommerceSupport,
+  })
   return {
     checkoutId: "settled-entry-checkout",
     orderId: "settled-entry-order",
@@ -78,6 +82,34 @@ function request(): PrepareCheckoutSparkSettledOrderInput {
 }
 
 describe("settled Spark checkout entry", () => {
+  it("rejects a signed listing without router capability before wallet preparation or funding", async () => {
+    const input = request(false)
+    let preparedCalls = 0
+    let publishedCalls = 0
+    await expect(
+      prepareCheckoutSparkSettledOrder(input, {
+        now: () => NOW,
+        readRecipientPayout: async () => ({
+          state: "ready",
+          recipientPubkey: MERCHANT,
+          lud16: "merchant@example.com",
+          profileEventId: MERCHANT_PROFILE.id,
+          profileEventCreatedAt: NOW / 1_000,
+          signedEvent: MERCHANT_PROFILE,
+        }),
+        prepareFunding: async () => {
+          preparedCalls++
+          throw new Error("Must not prepare funding")
+        },
+        publishOrder: async () => {
+          publishedCalls++
+          throw new Error("Must not publish")
+        },
+      })
+    ).rejects.toThrow("do not declare support")
+    expect(preparedCalls).toBe(0)
+    expect(publishedCalls).toBe(0)
+  })
   function guestRequest() {
     const input = request()
     input.buyer = createSessionGuestOrderSigningIdentity(

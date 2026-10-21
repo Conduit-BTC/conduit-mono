@@ -1,3 +1,4 @@
+import { hasCompleteOrderTerms, getOrderProtocolPayload } from "./orders"
 import type { CommerceInbox } from "./commerce-inbox"
 import type { AuthenticatedEventMarketStockPacket } from "./event-market-stock-workflow"
 import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
@@ -54,9 +55,8 @@ export async function readRetainedMerchantOrganizerStockImports(input: {
     if (projection.kind !== "order" || projection.message.type !== "order")
       continue
     const message = projection.message
-    // Organizer stock remains bound to the complete named pickup contract.
-    if (message.wireFormat === "open_markets") continue
-    const order = message.payload
+    if (!hasCompleteOrderTerms(message)) continue
+    const order = getOrderProtocolPayload(message)
     if (
       message.recipientPubkey !== input.inbox.store.principal ||
       order.merchantPubkey !== input.inbox.store.principal ||

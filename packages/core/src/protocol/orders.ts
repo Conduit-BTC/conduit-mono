@@ -244,6 +244,7 @@ type ParsedOrderMessageBase = {
   wireFormat?: "open_markets"
   wireOrderId?: string
   /** Set by the authenticated numeric extension decoder, never by peer hints. */
+  commerceExtensionVersion?: 1 | 2
   conduitExtension?: true
   /** View-only binding of an installed-version named reply to its numeric order. */
   legacyNumericOrder?: true
@@ -276,7 +277,7 @@ export type ParsedOrderMessage =
       type: "order"
       wireFormat: "open_markets"
       payload: ParsedOrderPayload
-      checkoutPaymentRoute?: undefined
+      checkoutPaymentRoute?: CheckoutOrderPaymentRoute
     })
   | (ParsedOrderMessageBase & {
       type: "payment_request"
@@ -760,13 +761,16 @@ export function parseOrderMessageRumorEvent(
       conduitExtension: true,
       wireOrderId,
       orderId,
-      checkoutPaymentRoute: undefined,
+      commerceExtensionVersion:
+        event.tags.find((tag) => tag[0] === "conduit")?.[1] === "2" ? 2 : 1,
       payload: { ...parsed.payload, id: orderId },
     }
   return {
     ...parsed,
     wireFormat: "open_markets",
     conduitExtension: true,
+    commerceExtensionVersion:
+      event.tags.find((tag) => tag[0] === "conduit")?.[1] === "2" ? 2 : 1,
     wireOrderId,
     orderId,
   }
@@ -950,4 +954,28 @@ export function buildLightningPaymentProofMessage(
     source: PaymentProofSourceSchema
     proofDeliveryStatus?: PaymentProofDeliveryStatusSchema
   }
+}
+
+/** Full validated terms are independent of the transport encoding. */
+export function hasCompleteOrderTerms(
+  message: ParsedOrderMessage | undefined | null
+): message is Extract<ParsedOrderMessage, { type: "order" }> & {
+  payload: OrderSchema
+} {
+  return (
+    message?.type === "order" &&
+    (message.wireFormat !== "open_markets" || message.conduitExtension === true)
+  )
+}
+
+/** Public protocol/stock commitments use the immutable wire ID, not a device alias. */
+export function getOrderProtocolPayload(
+  message: ParsedOrderMessage
+): OrderSchema {
+  if (!hasCompleteOrderTerms(message))
+    throw new Error("Complete authenticated order terms are required")
+  return orderSchema.parse({
+    ...message.payload,
+    id: message.wireOrderId ?? message.payload.id,
+  })
 }

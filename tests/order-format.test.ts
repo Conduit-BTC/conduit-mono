@@ -659,6 +659,29 @@ describe("explicit order-format selection and the numeric peer contract", () => 
         }),
       })
     ).rejects.toThrow("saved commerce format")
+    await expect(
+      publishBuyerOrderReply(input, {
+        ...dependencies,
+        loadOrderContextFn: async () => ({
+          ...f.lifecycle,
+          orderWireFormat: "open_markets_v2",
+        }),
+      })
+    ).rejects.toThrow("saved commerce format")
+    const v2Original = parseOrderMessageRumorEvent(
+      createPrivateMessageRumor(
+        encodeOpenMarketsBuyerMessage(f.canonical, f.scope, 2)
+      )
+    )
+    await expect(
+      publishBuyerOrderReply(
+        {
+          ...input,
+          conversation: { ...conversation, messages: [original, v2Original] },
+        },
+        dependencies
+      )
+    ).rejects.toThrow("conflicting commerce formats")
     expect(sends).toBe(1)
     // A saved immutable choice can recover replies even before the original is rehydrated.
     await publishBuyerOrderReply(

@@ -23,6 +23,7 @@ export type OrderMessagesWidgetProps = {
   onReplyChange: (value: string) => void
   onSend: () => void
   sending?: boolean
+  sendDisabled?: boolean
   error?: string | null
   placeholder?: string
   readOnly?: boolean
@@ -45,6 +46,7 @@ export function OrderMessagesWidget({
   onReplyChange,
   onSend,
   sending = false,
+  sendDisabled = false,
   error = null,
   placeholder = "Message, then press Enter",
   readOnly = false,
@@ -110,7 +112,7 @@ export function OrderMessagesWidget({
               className="border-t border-[var(--border)] p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]"
               onSubmit={(event) => {
                 event.preventDefault()
-                if (sending || !replyValue.trim()) return
+                if (sending || sendDisabled || !replyValue.trim()) return
                 onSend()
               }}
             >
@@ -131,7 +133,7 @@ export function OrderMessagesWidget({
                   type="submit"
                   size="icon"
                   className="shrink-0"
-                  disabled={sending || !replyValue.trim()}
+                  disabled={sending || sendDisabled || !replyValue.trim()}
                   aria-label="Send message"
                 >
                   <Send className="size-4" aria-hidden="true" />

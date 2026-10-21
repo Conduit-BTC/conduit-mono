@@ -253,7 +253,7 @@ async function checkShippingCheckout(
     )
     await expect(
       page.getByRole("combobox", { name: "Order compatibility" })
-    ).toHaveText("Open Markets")
+    ).toHaveCount(0)
     const send = page.getByRole("button", { name: "Send order", exact: true })
     await expect(send).toBeEnabled({ timeout: 30000 })
     await send.click()
@@ -263,8 +263,8 @@ async function checkShippingCheckout(
       shippingCostSats: 6875,
       totalSats: 44375,
       orderDeliveryStatus: "sent",
-      orderWireFormat: largeEvidence ? "conduit" : "open_markets",
-      savedWireFormat: largeEvidence ? "conduit" : "open_markets",
+      orderWireFormat: "open_markets_v2",
+      savedWireFormat: "open_markets_v2",
     })
     expect(saved!.quotes[0]).toMatchObject({
       policyEventId: policyEvent.id,
@@ -297,7 +297,9 @@ async function checkShippingCheckout(
           )
       )!
     expect(rumor).toBeTruthy()
-    expect(rumor.tags).toContainEqual(["type", largeEvidence ? "order" : "1"])
+    expect(rumor.tags).toContainEqual(["type", "1"])
+    const extension = rumor.tags.find((tag) => tag[0] === "conduit")!
+    expect(extension.slice(0, 3)).toEqual(["conduit", "2", "order"])
     expect(
       wraps.filter(
         (wrap) =>
@@ -310,7 +312,7 @@ async function checkShippingCheckout(
       )
     ).toHaveLength(1)
     if (largeEvidence) {
-      expect(rumor.content.length).toBeGreaterThan(32_768)
+      expect(extension[3]!.length).toBeGreaterThan(32_768)
       expect(
         new TextEncoder().encode(JSON.stringify(rumor)).length
       ).toBeLessThan(65_535)
@@ -396,7 +398,7 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
   await checkShippingCheckout(page, testInfo)
 })
 
-test("large shared-table shipping evidence uses Conduit once and survives recovery @commerce", async ({
+test("large shared-table shipping evidence uses the unified format once and survives recovery @commerce", async ({
   page,
 }, testInfo) => {
   await checkShippingCheckout(page, testInfo, true)

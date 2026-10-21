@@ -521,12 +521,16 @@ export async function publishBuyerOrderMessage(
       dependencies.orderLifecycle,
       { shouldContinue }
     )
-  if (formatOwner && getOrderWireFormat(formatOwner) === "open_markets") {
-    rumor = encodeOpenMarketsBuyerMessage(rumor, {
-      buyerPubkey: buyerIdentity.pubkey,
-      merchantPubkey,
-      orderId,
-    })
+  if (formatOwner && getOrderWireFormat(formatOwner) !== "conduit") {
+    rumor = encodeOpenMarketsBuyerMessage(
+      rumor,
+      {
+        buyerPubkey: buyerIdentity.pubkey,
+        merchantPubkey,
+        orderId,
+      },
+      getOrderWireFormat(formatOwner) === "open_markets_v2" ? 2 : 1
+    )
     rumor.id = ""
     prepareBuyerRumor(rumor, buyerIdentity.pubkey)
     if (rumor.kind !== 14) parseOrderMessageRumorEvent(rumor)

@@ -5,7 +5,8 @@ import type { CheckoutSparkQuoteAuthority } from "../../apps/market/src/lib/chec
 /** Only the fields consumed by the router's frozen-quote boundary. */
 export function checkoutSparkQuoteFixture(
   merchantIdentity: string | Uint8Array,
-  commerceTotalSats = 1_000
+  commerceTotalSats = 1_000,
+  options: { advertiseCommerceSupport?: boolean } = {}
 ): CheckoutSparkQuoteAuthority {
   const merchantPubkey =
     typeof merchantIdentity === "string"
@@ -24,6 +25,9 @@ export function checkoutSparkQuoteFixture(
               ["title", "Router fixture"],
               ["price", String(commerceTotalSats), "SAT"],
               ["type", "simple", "digital"],
+              ...(options.advertiseCommerceSupport === false
+                ? []
+                : [["conduit_commerce", "2", "router_checkout"]]),
             ],
             content: "Router test product",
           },

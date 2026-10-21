@@ -1,13 +1,11 @@
+import { resolveOrderNoteContexts } from "./order-note-context"
 import type { RelayTarget } from "./relay-authority"
 import { db, type OrderLifecycle } from "../db"
 import {
   correlateLegacyNumericOrderHistory,
   projectOwnedNumericOrderMessages,
 } from "./order-format"
-import {
-  getOrderAdapterCounts,
-  openMarketsLocalOrderId,
-} from "./open-markets-orders"
+import { getOrderAdapterCounts } from "./open-markets-orders"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -276,54 +274,48 @@ function projectRetainedInboxRecords(
   // Kind-14 notes stay in the direct inbox. An authenticated order or exact
   // saved buyer selection can bind a non-authoritative order preview, even if
   // the outgoing history copy is missing. The party-scoped alias excludes peers.
-  const knownOrders = new Set(
-    orderMessages
-      .filter(
-        (message) =>
-          message.type === "order" && message.wireFormat === "open_markets"
-      )
-      .map((message) => message.orderId)
-      .concat(
-        ownedOrders
-          .filter(
-            (order) =>
-              order.buyerPubkey === principal &&
-              order.orderWireFormat === "open_markets"
-          )
-          .map((order) =>
-            openMarketsLocalOrderId(
-              order.orderId,
-              principal,
-              order.merchantPubkey
-            )
-          )
-      )
-  )
+  const contexts = resolveOrderNoteContexts(directMessages, [
+    ...orderMessages.flatMap((message) =>
+      message.type === "order" && message.wireFormat === "open_markets"
+        ? [
+            {
+              wireOrderId: message.wireOrderId!,
+              buyerPubkey: message.senderPubkey,
+              merchantPubkey: message.recipientPubkey,
+            },
+          ]
+        : []
+    ),
+    ...ownedOrders.flatMap((order) =>
+      order.buyerPubkey === principal &&
+      (order.orderWireFormat === "open_markets" ||
+        order.orderWireFormat === "open_markets_v2")
+        ? [
+            {
+              wireOrderId: order.orderId,
+              buyerPubkey: principal,
+              merchantPubkey: order.merchantPubkey,
+            },
+          ]
+        : []
+    ),
+  ])
   const orderMessageIds = new Set(orderMessages.map((message) => message.id))
-  for (const message of directMessages) {
-    if (
-      message.transport !== "nip17" ||
-      !message.subject ||
-      message.file ||
-      orderMessageIds.has(message.id) ||
-      (message.participants && message.participants.length !== 2)
-    )
-      continue
-    const orderId = openMarketsLocalOrderId(
-      message.subject,
-      message.senderPubkey,
-      message.recipientPubkey
-    )
-    if (knownOrders.has(orderId))
-      orderMessages.push({
-        ...message,
-        type: "message",
-        orderId,
-        rawContent: message.content,
-        wireFormat: "open_markets",
-        wireOrderId: message.subject,
-        payload: { note: message.content },
-      })
+  for (let index = 0; index < directMessages.length; index++) {
+    const message = directMessages[index]!
+    const context = contexts.get(message.id)
+    if (!context) continue
+    directMessages[index] = { ...message, orderContext: context }
+    if (orderMessageIds.has(message.id)) continue
+    orderMessages.push({
+      ...message,
+      type: "message",
+      orderId: context.orderId,
+      rawContent: message.content,
+      wireFormat: "open_markets",
+      wireOrderId: context.wireOrderId,
+      payload: { note: message.content },
+    })
   }
   // Advisory companion is suppressed only by its exact authenticated order.
   const orders = new Set(

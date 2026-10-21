@@ -436,6 +436,8 @@ function MessagesWorkspace() {
       appId: "merchant",
       createdAt: Math.floor(createdAt / 1000),
       replyTo: threadMessages.at(-1)?.id,
+      subject: threadMessages.at(-1)?.orderContext?.wireOrderId,
+      orderReference: threadMessages.at(-1)?.orderContext?.wireOrderId,
     })
     preparedDmRumors.current.set(rumor.id, rumor)
     const messageScope = optimisticMessageScope
@@ -465,15 +467,10 @@ function MessagesWorkspace() {
     ) {
       return
     }
-    const rumor =
-      preparedDmRumors.current.get(message.eventId ?? "") ??
-      createParticipantMessageRumor({
-        senderPubkey: accountPubkey,
-        recipientPubkeys: [selected.counterpartyPubkey],
-        content: message.content,
-        appId: "merchant",
-        createdAt: Math.floor(message.createdAt / 1000),
-      })
+    // A retry must keep its original parent/order context and rumor ID. A new
+    // message based on the current thread could attach it to a different order.
+    const rumor = preparedDmRumors.current.get(message.eventId ?? "")
+    if (!rumor) return
     const messageScope = optimisticMessageScope
     setDirectSendOutcome(null)
     optimisticMessageQueue.markPending(messageScope, message.localId)
@@ -490,13 +487,21 @@ function MessagesWorkspace() {
   const previousMessageAuthorityKeyRef = useRef(
     optimisticMessageScope.authorityKey
   )
+  const previousMessageAccountRef = useRef(accountPubkey)
   useLayoutEffect(() => {
     const previousAuthorityKey = previousMessageAuthorityKeyRef.current
     previousMessageAuthorityKeyRef.current = optimisticMessageScope.authorityKey
-    if (previousAuthorityKey === optimisticMessageScope.authorityKey) return
-    preparedDmRumors.current.clear()
+    if (
+      previousAuthorityKey === optimisticMessageScope.authorityKey &&
+      previousMessageAccountRef.current === accountPubkey
+    )
+      return
+    if (previousMessageAccountRef.current !== accountPubkey) {
+      preparedDmRumors.current.clear()
+      previousMessageAccountRef.current = accountPubkey
+    }
     sendMutation.reset()
-  }, [optimisticMessageScope.authorityKey, sendMutation])
+  }, [accountPubkey, optimisticMessageScope.authorityKey, sendMutation])
 
   const showEmpty =
     signerConnected &&
@@ -546,6 +551,7 @@ function MessagesWorkspace() {
         !messagingReady &&
         readinessNoticeState && (
           <MessagingReadinessNotice
+            setupInNewTab
             state={readinessNoticeState}
             onAction={onReadinessAction}
             pending={dmReadiness.isRefetching}
@@ -862,6 +868,11 @@ function MessagesWorkspace() {
                     </div>
                   ) : (
                     <>
+                      {threadMessages.at(-1)?.orderContext && (
+                        <p className="mb-2 text-sm text-[var(--text-secondary)]">
+                          This reply will also appear in the order conversation.
+                        </p>
+                      )}
                       <MessageComposer
                         value={composerText}
                         onChange={setComposerText}

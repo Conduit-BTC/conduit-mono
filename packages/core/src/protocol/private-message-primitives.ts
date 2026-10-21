@@ -1,3 +1,7 @@
+import {
+  readDirectMessageReferences,
+  type OrderNoteContext,
+} from "./order-note-context"
 import { inboxDeclarationEvidenceFacts } from "./account-network-evidence"
 import { getEventHash } from "nostr-tools"
 import { v2 as nip44 } from "nostr-tools/nip44"
@@ -755,6 +759,8 @@ export interface BuildDirectMessageRumorInput {
   content: string
   appId: ConduitAppId
   subject?: string
+  /** Exact raw order reference, only from authenticated retained order context. */
+  orderReference?: string
   replyTo?: string
   createdAt?: number
 }
@@ -775,6 +781,8 @@ export function buildDirectMessageRumor(
   rumor.created_at = input.createdAt ?? Math.floor(Date.now() / 1000)
   const tags: string[][] = [["p", input.recipientPubkey]]
   if (input.subject) tags.push(["subject", input.subject])
+  if (input.orderReference) tags.push(["order", input.orderReference])
+  if (input.replyTo) tags.push(["e", input.replyTo, "", "reply"])
   rumor.tags = appendConduitClientTag(tags, input.appId)
   rumor.content = input.content
   try {
@@ -791,6 +799,10 @@ export interface ParsedDirectMessage {
   recipientPubkey: string
   content: string
   subject?: string
+  /** Null means malformed or conflicting reference tags: never infer ancestry. */
+  orderReference?: string | null
+  /** Derived from retained authenticated orders; never a payment authority. */
+  orderContext?: OrderNoteContext
   /** Present only for an exact canonical companion awaiting order evidence. */
   orderCompanionIdentity?: OrderCompanionNotificationIdentity
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
@@ -900,7 +912,7 @@ export function parseDirectMessageRumor(
       ]),
     ].sort(),
     conversationId: `nip17:${[...new Set([rumor.pubkey, ...rumor.tags.filter((tag) => tag[0] === "p").map((tag) => tag[1]!)])].sort().join(":")}`,
-    replyTo: rumor.tags.filter((tag) => tag[0] === "e").at(-1)?.[1],
+    ...readDirectMessageReferences(rumor.tags),
   }
 }
 
@@ -1264,6 +1276,7 @@ export function createParticipantMessageRumor(
       [
         ...participants.map((p) => ["p", p]),
         ...(input.subject ? [["subject", input.subject]] : []),
+        ...(input.orderReference ? [["order", input.orderReference]] : []),
         ...(input.replyTo ? [["e", input.replyTo, "", "reply"]] : []),
       ],
       input.appId

@@ -60,6 +60,7 @@ export interface PublishMerchantOrderMessageInput {
 type PreparedMerchantOrderMessageInput = PublishMerchantOrderMessageInput & {
   /** Derived only from a retained, authenticated inbound order. */
   wireOrderId?: string
+  commerceExtensionVersion?: 1 | 2
 }
 
 export function getMerchantOrderDeliveryRecipients(
@@ -175,7 +176,11 @@ function buildMerchantOrderRumor(
     }),
   } as PrivateMessageEvent
   if (input.wireOrderId)
-    rumor = encodeOpenMarketsMerchantReply(rumor, input.wireOrderId)
+    rumor = encodeOpenMarketsMerchantReply(
+      rumor,
+      input.wireOrderId,
+      input.commerceExtensionVersion ?? 1
+    )
   prepareMerchantRumor(rumor, input.merchantPubkey)
   return rumor
 }
@@ -347,7 +352,11 @@ export async function publishMerchantOrderMessage(
         input.merchantPubkey
       ) === input.orderId
     ) {
-      prepared = { ...input, wireOrderId: order.wireOrderId }
+      prepared = {
+        ...input,
+        wireOrderId: order.wireOrderId,
+        commerceExtensionVersion: order.commerceExtensionVersion,
+      }
       const distinctNamedOrder = accountOwner
         .getSnapshot()
         .orderMessages.some(

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { getEventHash } from "nostr-tools/pure"
 import { createWrap } from "nostr-tools/nip59"
@@ -127,8 +127,9 @@ test("Market defaults to one numeric order and completes the external merchant l
       .getByRole("region", { name: "Cart inventory" })
       .getByRole("link", { name: "Continue to checkout" })
       .click()
-    const format = page.getByRole("combobox", { name: "Order compatibility" })
-    await expect(format).toHaveText("Open Markets")
+    await expect(
+      page.getByRole("combobox", { name: "Order compatibility" })
+    ).toHaveCount(0)
     await page.getByRole("button", { name: "Send order", exact: true }).click()
     await expect(page).toHaveURL(/\/orders\?order=/)
     orderId = new URL(page.url()).searchParams.get("order") ?? ""
@@ -146,6 +147,23 @@ test("Market defaults to one numeric order and completes the external merchant l
       })
       .toBe(1)
     const orders = await peerRead(16)
+    const extension = orders[0]!.tags.find((tag) => tag[0] === "conduit")!
+    expect(extension.slice(0, 3)).toEqual(["conduit", "2", "order"])
+    const terms = JSON.parse(extension[3]!)
+    expect(terms.payload).toMatchObject({
+      id: orderId,
+      buyerPubkey: buyer.pubkey,
+      merchantPubkey: merchant.pubkey,
+      subtotal: 21,
+      currency: "SATS",
+    })
+    expect(terms.payload.items[0]).toMatchObject({
+      productId: `30402:${merchant.pubkey}:peer-contract`,
+      quantity: 1,
+      priceAtPurchase: 21,
+      format: "digital",
+    })
+    expect(terms.tags).toContainEqual(["type", "order"])
     expect(
       orders.every(
         (rumor) =>
@@ -177,8 +195,8 @@ test("Market defaults to one numeric order and completes the external merchant l
         const order = await db.orderLifecycles.get(orderId)
         const choice = await db.orderWireFormats.get(orderId)
         if (
-          order?.orderWireFormat !== "open_markets" ||
-          choice?.orderWireFormat !== "open_markets" ||
+          order?.orderWireFormat !== "open_markets_v2" ||
+          choice?.orderWireFormat !== "open_markets_v2" ||
           !order.orderRelayDelivery
         )
           throw new Error("Numeric order format was not durably bound")
@@ -401,7 +419,7 @@ test("Market defaults to one numeric order and completes the external merchant l
         const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
         const order = await db.orderLifecycles.get(orderId)
         return (
-          order?.orderWireFormat === "open_markets" &&
+          order?.orderWireFormat === "open_markets_v2" &&
           JSON.stringify(order.orderRelayDelivery?.signedRecipientWrap) ===
             original
         )
@@ -466,9 +484,7 @@ test("Market defaults to one numeric order and completes the external merchant l
   }
 })
 
-test("Market preserves two product-scoped fixed shipping snapshots with required compatibility @commerce", async ({
-  page,
-}) => {
+async function checkPerItemShipping(page: Page, supported: boolean) {
   test.setTimeout(180_000)
   const buyer = createRuntimeSignerIdentity()
   const merchant = createRuntimeSignerIdentity()
@@ -523,6 +539,17 @@ test("Market preserves two product-scoped fixed shipping snapshots with required
             ["price", String(line.price), "SATS"],
             ["type", "simple", "physical"],
             ["stock", "3"],
+            ...(supported
+              ? [
+                  [
+                    "conduit_commerce",
+                    "2",
+                    "per_item_shipping",
+                    "event_pickup",
+                    "router_checkout",
+                  ],
+                ]
+              : []),
             ["image", image],
             [
               "shipping_option",
@@ -562,11 +589,31 @@ test("Market preserves two product-scoped fixed shipping snapshots with required
     await page.getByLabel(/^City/i).fill("Seattle")
     await page.getByLabel(/State/i).fill("WA")
     await page.getByLabel(/Postal\/ZIP code/i).fill("98101")
-    // Observe the whole default checkout before checking the selected format:
-    // the regression is failure to deliver, not just the selector label.
+    await expect(
+      page.getByRole("combobox", { name: "Order compatibility" })
+    ).toHaveCount(0)
     const send = page.getByRole("button", { name: "Send order", exact: true })
     await expect(send).toBeEnabled()
     await send.click()
+    if (!supported) {
+      await expect(
+        page.getByText(/This seller’s current listings do not declare support/)
+      ).toBeVisible()
+      expect(new URL(page.url()).pathname).toBe("/checkout")
+      const staged = await page.evaluate(async (root) => {
+        const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
+        return {
+          lifecycles: await db.orderLifecycles.count(),
+          formats: await db.orderWireFormats.count(),
+          paymentAttempts: await db.paymentAttempts.count(),
+        }
+      }, `/@fs${process.cwd()}/packages/core/src`)
+      expect(staged).toEqual({ lifecycles: 0, formats: 0, paymentAttempts: 0 })
+      expect(
+        await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)
+      ).toHaveLength(0)
+      return
+    }
     await expect(page).toHaveURL(/\/orders\?order=/)
     const orderId = new URL(page.url()).searchParams.get("order")!
     const saved = await page.evaluate(
@@ -579,8 +626,8 @@ test("Market preserves two product-scoped fixed shipping snapshots with required
       },
       { root: `/@fs${process.cwd()}/packages/core/src`, orderId }
     )
-    expect(saved.choice.orderWireFormat).toBe("conduit")
-    expect(saved.lifecycle.orderWireFormat).toBe("conduit")
+    expect(saved.choice.orderWireFormat).toBe("open_markets_v2")
+    expect(saved.lifecycle.orderWireFormat).toBe("open_markets_v2")
     expect(saved.lifecycle.totalSats).toBe(63)
     await expect
       .poll(async () => {
@@ -598,7 +645,11 @@ test("Market preserves two product-scoped fixed shipping snapshots with required
             !rumor.tags.some((tag) => tag[0] === "order" && tag[1] === orderId)
           )
             return []
-          const payload = JSON.parse(rumor.content)
+          expect(rumor.tags).toContainEqual(["type", "1"])
+          expect(rumor.tags.filter((tag) => tag[0] === "shipping")).toEqual([])
+          const extension = rumor.tags.find((tag) => tag[0] === "conduit")!
+          expect(extension.slice(0, 3)).toEqual(["conduit", "2", "order"])
+          const { payload } = JSON.parse(extension[3]!)
           return payload.items
             .map(
               (item: {
@@ -628,10 +679,225 @@ test("Market preserves two product-scoped fixed shipping snapshots with required
         }))
       )
     console.info(
-      "Two fixed shipping snapshots delivered with the saved Conduit format"
+      "Two fixed shipping snapshots delivered with the unified format"
     )
   } finally {
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)
   }
-})
+}
+
+for (const historicalFormat of ["conduit", "open_markets"] as const) {
+  test(`Market resumes a saved ${historicalFormat} order without upgrading its writer @commerce`, async ({
+    page,
+  }) => {
+    const buyer = createRuntimeSignerIdentity()
+    const merchant = createRuntimeSignerIdentity()
+    const orderId = crypto.randomUUID()
+    const now = Math.floor(Date.now() / 1000) - 2
+    const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
+    const payload = {
+      id: orderId,
+      buyerPubkey: buyer.pubkey,
+      merchantPubkey: merchant.pubkey,
+      buyerIdentityKind: "signed_in",
+      items: [
+        {
+          productId: `30402:${merchant.pubkey}:installed-product`,
+          quantity: 1,
+          priceAtPurchase: 21,
+          currency: "SATS",
+          format: "digital",
+          fulfillment: { type: "digital" },
+        },
+      ],
+      subtotal: 21,
+      currency: "SATS",
+      createdAt: now * 1000,
+    }
+    const tags =
+      historicalFormat === "conduit"
+        ? [
+            ["p", merchant.pubkey],
+            ["type", "order"],
+            ["order", orderId],
+            ["amount", "21"],
+            ["currency", "SATS"],
+          ]
+        : [
+            ["p", merchant.pubkey],
+            ["subject", "Order"],
+            ["type", "1"],
+            ["order", orderId],
+            ["amount", "21"],
+            ["currency", "SATS"],
+            ["item", `30402:${merchant.pubkey}:installed-product`, "1"],
+            ["conduit", "1", "order", JSON.stringify(payload)],
+          ]
+    const original = {
+      kind: 16,
+      pubkey: buyer.pubkey,
+      created_at: now,
+      tags,
+      content: historicalFormat === "conduit" ? JSON.stringify(payload) : "",
+    }
+    const seal = signRuntimeTestEvent(buyer, {
+      kind: 13,
+      created_at: now,
+      tags: [],
+      content: encryptRuntimeTestPayload(
+        buyer,
+        buyer.pubkey,
+        JSON.stringify({ ...original, id: getEventHash(original) })
+      ),
+    })
+    const originalWrap = createWrap(seal, buyer.pubkey)
+    try {
+      await publishTestRelayEvents([
+        ...[buyer, merchant].flatMap((identity) => [
+          signRuntimeTestEvent(identity, {
+            kind: 10050,
+            created_at: now,
+            tags: [["relay", TEST_RELAY_URL]],
+            content: "",
+          }),
+          signRuntimeTestEvent(identity, {
+            kind: 10002,
+            created_at: now,
+            tags: [["r", TEST_RELAY_URL]],
+            content: "",
+          }),
+        ]),
+        originalWrap,
+      ])
+      await installRealTestSigner(page, buyer, TEST_RELAY_URL)
+      await page.goto(
+        `${marketUrl}/orders?order=${orderId}&counterparty=${merchant.pubkey}`
+      )
+      await expect(page.getByLabel("Open account menu")).toBeVisible()
+      await page.evaluate(
+        async ({
+          root,
+          orderId,
+          buyerPubkey,
+          merchantPubkey,
+          orderWireFormat,
+        }) => {
+          const { db } = await import(`${root}/db/index.ts`)
+          await db.orderWireFormats.put({
+            orderId,
+            buyerPubkey,
+            merchantPubkey,
+            orderWireFormat,
+            createdAt: Date.now(),
+          })
+        },
+        {
+          root: `/@fs${process.cwd()}/packages/core/src`,
+          orderId,
+          buyerPubkey: buyer.pubkey,
+          merchantPubkey: merchant.pubkey,
+          orderWireFormat: historicalFormat,
+        }
+      )
+      await page.reload()
+      await page
+        .getByRole("button", { name: "Open messages", exact: true })
+        .click()
+      const dialog = page.getByRole("dialog", { name: "Messages" })
+      await dialog
+        .getByRole("textbox", { name: "Message", exact: true })
+        .fill("Reply to installed order")
+      await dialog
+        .getByRole("button", { name: "Send message", exact: true })
+        .click()
+      const replies = async () =>
+        (await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)).flatMap(
+          (wrap) => {
+            const rumor = parseCanonicalRuntimePrivateRumor({
+              inboxOwner: merchant,
+              recipient: merchant,
+              sender: buyer,
+              rumorKind: historicalFormat === "conduit" ? 16 : 14,
+              wrap,
+            })
+            return rumor &&
+              rumor.tags.some((tag) => tag[0] === "order" && tag[1] === orderId)
+              ? [rumor]
+              : []
+          }
+        )
+      await expect.poll(async () => (await replies()).length).toBe(1)
+      const reply = (await replies())[0]!
+      if (historicalFormat === "conduit") {
+        expect(reply.tags).toContainEqual(["type", "message"])
+        expect(JSON.parse(reply.content).note).toBe("Reply to installed order")
+      } else {
+        expect(reply.tags).toContainEqual(["subject", orderId])
+        expect(reply.content).toBe("Reply to installed order")
+      }
+      await page.reload()
+      const retained = await page.evaluate(
+        async ({ root, orderId, wrapId, expectedWrap }) => {
+          const { db } = await import(`${root}/db/index.ts`)
+          const choice = await db.orderWireFormats.get(orderId)
+          const rows = await db.commerceInboxWrappers.toArray()
+          return {
+            format: choice?.orderWireFormat,
+            originalUnchanged: rows.some(
+              (row: { event: Record<string, unknown> }) => {
+                const expected = JSON.parse(expectedWrap) as Record<
+                  string,
+                  unknown
+                >
+                // Admission may reorder object properties. Compare every signed field,
+                // including the exact ciphertext, signature and original event identity.
+                return (
+                  row.event.id === wrapId &&
+                  [
+                    "id",
+                    "pubkey",
+                    "kind",
+                    "created_at",
+                    "tags",
+                    "content",
+                    "sig",
+                  ].every(
+                    (key) =>
+                      JSON.stringify(row.event[key]) ===
+                      JSON.stringify(expected[key])
+                  )
+                )
+              }
+            ),
+          }
+        },
+        {
+          root: `/@fs${process.cwd()}/packages/core/src`,
+          orderId,
+          wrapId: originalWrap.id,
+          expectedWrap: JSON.stringify(originalWrap),
+        }
+      )
+      expect(retained).toEqual({
+        format: historicalFormat,
+        originalUnchanged: true,
+      })
+      expect((await replies()).length).toBe(1)
+    } finally {
+      disposeRuntimeSignerIdentity(buyer)
+      disposeRuntimeSignerIdentity(merchant)
+    }
+  })
+}
+
+for (const supported of [true, false]) {
+  test(
+    supported
+      ? "Market preserves two product-scoped fixed shipping snapshots with unified numeric terms @commerce"
+      : "Market explains unsupported per-item shipping before staging an order or payment @commerce",
+    async ({ page }) => {
+      await checkPerItemShipping(page, supported)
+    }
+  )
+}

@@ -26,7 +26,12 @@ export function getCheckoutSparkOrderSettlementRecord(
 ): CheckoutSparkMerchantSettlementRecord | null {
   const candidates = bindings.filter(
     ({ witness }) =>
-      witness.orderId === conversation.orderId &&
+      (conversation.messages ?? []).some(
+        (message) =>
+          message.type === "order" &&
+          message.orderId === conversation.orderId &&
+          (message.wireOrderId ?? message.orderId) === witness.orderId
+      ) &&
       witness.buyerPubkey === conversation.buyerPubkey &&
       witness.merchantPubkey === conversation.merchantPubkey
   )
@@ -72,7 +77,7 @@ export function getCheckoutSparkOrderSettlement(
   const provider = projectCheckoutSparkMerchantSettlement(record)
   const receiver = bindings.find(
     ({ witness }) =>
-      witness.orderId === conversation.orderId &&
+      witness.orderId === record.orderId &&
       witness.buyerPubkey === conversation.buyerPubkey &&
       witness.merchantPubkey === conversation.merchantPubkey
   )?.receiverSettlement

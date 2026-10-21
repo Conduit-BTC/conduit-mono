@@ -1285,3 +1285,164 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
     disposeRuntimeSignerIdentity(peer)
   }
 })
+
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} direct replies retain authenticated order context after reload @commerce`, async ({
+    page,
+  }) => {
+    const buyer = createRuntimeSignerIdentity()
+    const merchant = createRuntimeSignerIdentity()
+    const owner = app === "market" ? buyer : merchant
+    const peer = app === "market" ? merchant : buyer
+    const relayUrl = `ws://127.0.0.1:${process.env.PLAYWRIGHT_RELAY_PORT}`
+    const createdAt = Math.floor(Date.now() / 1000) - 2
+    const orderId = crypto.randomUUID()
+    const noteText = "Order context browser note"
+    const replyText = "Reply from direct order conversation"
+    try {
+      await publishTestRelayEvents(
+        [buyer, merchant].flatMap((identity) => [
+          signRuntimeTestEvent(identity, {
+            kind: 10050,
+            created_at: createdAt,
+            tags: [["relay", relayUrl]],
+            content: "",
+          }),
+          signRuntimeTestEvent(identity, {
+            kind: 10002,
+            created_at: createdAt,
+            tags: [["r", relayUrl]],
+            content: "",
+          }),
+        ])
+      )
+      const original = {
+        kind: 16,
+        pubkey: buyer.pubkey,
+        created_at: createdAt,
+        tags: [
+          ["p", merchant.pubkey],
+          ["subject", "Order"],
+          ["type", "1"],
+          ["order", orderId],
+          ["amount", "21"],
+          ["item", `30402:${merchant.pubkey}:context-product`, "1"],
+        ],
+        content: "",
+      }
+      const note = {
+        kind: 14,
+        pubkey: peer.pubkey,
+        created_at: createdAt + 1,
+        tags: [
+          ["p", owner.pubkey],
+          ["subject", orderId],
+          ["order", orderId],
+        ],
+        content: noteText,
+      }
+      for (const [rumor, sender] of [
+        [original, buyer],
+        [note, peer],
+      ] as const) {
+        const seal = signRuntimeTestEvent(sender, {
+          kind: 13,
+          created_at: createdAt,
+          tags: [],
+          content: encryptRuntimeTestPayload(
+            sender,
+            owner.pubkey,
+            JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+          ),
+        })
+        await publishTestRelayEvents([createWrap(seal, owner.pubkey)])
+      }
+      await installRealTestSigner(page, owner, relayUrl)
+      const port =
+        app === "market"
+          ? (process.env.PLAYWRIGHT_MARKET_PORT ?? "7000")
+          : (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
+      await page.goto(
+        `http://127.0.0.1:${port}/messages${app === "market" ? "?tab=dms" : ""}`
+      )
+      const thread = page
+        .getByRole("button")
+        .filter({ hasText: noteText })
+        .first()
+      await expect(thread).toBeVisible({ timeout: 30_000 })
+      await thread.click()
+      await expect(
+        page.getByText(
+          "This reply will also appear in the order conversation.",
+          { exact: true }
+        )
+      ).toBeVisible()
+      await page
+        .getByRole("textbox", { name: "Message", exact: true })
+        .fill(replyText)
+      await page
+        .getByRole("button", { name: "Send message", exact: true })
+        .click()
+      const peerReplies = async () =>
+        (await readAuthenticatedGiftWraps(peer, relayUrl)).flatMap((wrap) => {
+          const rumor = parseCanonicalRuntimePrivateRumor({
+            inboxOwner: peer,
+            recipient: peer,
+            sender: owner,
+            rumorKind: 14,
+            wrap,
+          })
+          return rumor?.content === replyText ? [rumor] : []
+        })
+      await expect.poll(async () => (await peerReplies()).length).toBe(1)
+      const sent = (await peerReplies())[0]!
+      expect(sent.tags).toContainEqual(["subject", orderId])
+      expect(sent.tags).toContainEqual(["order", orderId])
+      expect(sent.tags).toContainEqual(["e", getEventHash(note), "", "reply"])
+      await page.reload()
+      await expect(
+        page.getByRole("button").filter({ hasText: replyText }).first()
+      ).toBeVisible({ timeout: 30_000 })
+      await expect
+        .poll(
+          async () =>
+            await page.evaluate(
+              async ({ root, principal, replyId, orderId }) => {
+                const { readRetainedCommerceInbox } = await import(
+                  `${root}/commerce-inbox.ts`
+                )
+                const snapshot = await readRetainedCommerceInbox(
+                  principal,
+                  () => true
+                )
+                return {
+                  order: snapshot.orderMessages.filter(
+                    (message: { id: string; wireOrderId?: string }) =>
+                      message.id === replyId && message.wireOrderId === orderId
+                  ).length,
+                  direct: snapshot.directMessages.filter(
+                    (message: {
+                      id: string
+                      orderContext?: { wireOrderId: string }
+                    }) =>
+                      message.id === replyId &&
+                      message.orderContext?.wireOrderId === orderId
+                  ).length,
+                }
+              },
+              {
+                root: `/@fs${process.cwd()}/packages/core/src/protocol`,
+                principal: owner.pubkey,
+                replyId: sent.id,
+                orderId,
+              }
+            )
+        )
+        .toEqual({ order: 1, direct: 1 })
+      expect((await peerReplies()).length).toBe(1)
+    } finally {
+      disposeRuntimeSignerIdentity(buyer)
+      disposeRuntimeSignerIdentity(merchant)
+    }
+  })
+}

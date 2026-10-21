@@ -65,8 +65,16 @@ export async function publishBuyerOrderReply(
     (message) => message.wireFormat === "open_markets"
   )
   const rawIds = new Set(numericOriginals.map((message) => message.wireOrderId))
+  const numericFormats = new Set(
+    numericOriginals.map((message) =>
+      message.commerceExtensionVersion === 2
+        ? "open_markets_v2"
+        : "open_markets"
+    )
+  )
   if (
     rawIds.size > 1 ||
+    numericFormats.size > 1 ||
     rawIds.has(undefined) ||
     (numericOriginals.length && numericOriginals.length !== originals.length)
   )
@@ -119,12 +127,18 @@ export async function publishBuyerOrderReply(
   const orderWireFormat = saved
     ? getOrderWireFormat(saved)
     : numericOriginals.length
-      ? "open_markets"
+      ? numericOriginals[0]?.commerceExtensionVersion === 2
+        ? "open_markets_v2"
+        : "open_markets"
       : "conduit"
   if (
-    (numericEvidence && orderWireFormat !== "open_markets") ||
+    (numericEvidence && orderWireFormat === "conduit") ||
+    (numericFormats.size > 0 &&
+      !numericFormats.has(
+        orderWireFormat as "open_markets" | "open_markets_v2"
+      )) ||
     (originals.some((message) => message.wireFormat !== "open_markets") &&
-      orderWireFormat === "open_markets")
+      orderWireFormat !== "conduit")
   )
     throw new Error(
       "Order conversation conflicts with its saved commerce format"

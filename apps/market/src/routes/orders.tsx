@@ -39,8 +39,11 @@ import {
   replaceOrderPaymentTarget,
   retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
+  PrivateMessageRelayReadinessError,
   useAuth,
   useCommerceInbox,
+  useConduitSession,
+  useInboxDeclaration,
   useProfile,
   useProfiles,
   type CommercePriceLike,
@@ -49,6 +52,7 @@ import {
   type ShopperPriceDisplay,
   type ShopperPriceDisplayOptions,
 } from "@conduit/core"
+import { assertOrderMessagingReady } from "@conduit/core/protocol/order-messaging-readiness"
 import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
 import {
   CommerceInboxRecovery,
@@ -61,6 +65,7 @@ import {
   Button,
   LightningStrikeOverlay,
   OrderMessagesWidget,
+  OrderMessagingReadinessNotice,
   ProtectedInboxNotice,
   SearchInput,
   SignerRecoveryNotice,
@@ -893,6 +898,19 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
+  const messagingSession = useConduitSession()
+  const replyInbox = useInboxDeclaration(buyerPubkey, {
+    enabled:
+      !guestIdentity && signerReady && messagingSession.relaySettingsReady,
+    relayScope: messagingSession.relayScope,
+  })
+  const replyRequiresInbox =
+    (row.lifecycle?.orderWireFormat !== undefined &&
+      row.lifecycle.orderWireFormat !== "conduit") ||
+    row.conversation?.messages?.some(
+      (message) =>
+        message.type === "order" && message.wireFormat === "open_markets"
+    ) === true
   const [replyNotice, setReplyNotice] = useState<{
     buyerPubkey: string
     merchantPubkey: string
@@ -2288,6 +2306,7 @@ function OrderDetail({
     mutationFn: async () => {
       if (guestIdentity) throw new Error("Guest orders cannot send messages")
       if (!signerReady) throw new Error("Reconnect your signer to send.")
+      if (replyRequiresInbox) assertOrderMessagingReady(replyInbox.status)
       const delivery = await publishBuyerOrderReply(
         {
           buyerPubkey,
@@ -2335,6 +2354,14 @@ function OrderDetail({
           queryKey: ["buyer-messages-live", buyerPubkey],
         }),
       ]).catch(() => console.warn("Could not refresh accepted order reply"))
+    },
+    onError: (error) => {
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        replyInbox.refetch()
+      }
     },
   })
 
@@ -3521,16 +3548,26 @@ function OrderDetail({
           onReplyChange={setReplyText}
           onSend={() => replyMutation.mutate()}
           sending={replyMutation.isPending}
+          sendDisabled={replyRequiresInbox && replyInbox.status !== "ready"}
           historyIncomplete={historyIncomplete}
           notice={
-            replyNotice?.buyerPubkey === buyerPubkey &&
-            replyNotice.merchantPubkey === row.merchantPubkey &&
-            replyNotice.orderId === vm.orderId &&
-            replyNotice.text ? (
-              <p role="status" className="text-sm text-[var(--warning-text)]">
-                {replyNotice.text}
-              </p>
-            ) : null
+            <>
+              {replyRequiresInbox && (
+                <OrderMessagingReadinessNotice
+                  status={replyInbox.status}
+                  checking={replyInbox.isRefetching}
+                  onRetry={replyInbox.refetch}
+                />
+              )}
+              {replyNotice?.buyerPubkey === buyerPubkey &&
+              replyNotice.merchantPubkey === row.merchantPubkey &&
+              replyNotice.orderId === vm.orderId &&
+              replyNotice.text ? (
+                <p role="status" className="text-sm text-[var(--warning-text)]">
+                  {replyNotice.text}
+                </p>
+              ) : null}
+            </>
           }
           readOnly={!signerReady}
           error={

@@ -34,7 +34,7 @@ import {
 } from "./merchant-acceptance-privacy"
 export { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
 import type { AccountSigner } from "./nostr-event-signer"
-import { parseOrderMessageRumorEvent } from "./orders"
+import { getOrderProtocolPayload, parseOrderMessageRumorEvent } from "./orders"
 import {
   completePrivateMessageEvent,
   unwrapPrivateMessageEnvelope,
@@ -113,13 +113,13 @@ export async function importMerchantOrganizerStockOrder(input: {
   authority.check()
   const message = parseOrderMessageRumorEvent(original)
   if (message.type !== "order") throw new Error("Original buyer order required")
-  const order = orderSchema.parse(message.payload)
+  const order = getOrderProtocolPayload(message)
   if (
     original.kind !== 16 ||
     original.pubkey !== order.buyerPubkey ||
     message.senderPubkey !== order.buyerPubkey ||
     message.recipientPubkey !== input.authenticatedPubkey ||
-    message.orderId !== order.id ||
+    (message.wireOrderId ?? message.orderId) !== order.id ||
     order.merchantPubkey !== input.authenticatedPubkey ||
     order.items.some(
       (item) =>

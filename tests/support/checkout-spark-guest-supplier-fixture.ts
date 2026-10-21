@@ -66,6 +66,7 @@ export async function createCheckoutSparkGuestSupplierFixture(
         tags: [
           ["d", dTag],
           ["title", "Synthetic supplier item"],
+          ["conduit_commerce", "2", "router_checkout"],
           ["price", String(unitSats), "SAT"],
           ["type", "simple", physical && index === 0 ? "physical" : "digital"],
           ...(shipping && index === 0
