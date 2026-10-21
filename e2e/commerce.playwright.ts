@@ -19,7 +19,6 @@ import {
   type DeterministicNwcWallet,
 } from "./helpers/deterministic-nwc-wallet"
 import {
-  countDistinctMatchingRuntimePrivateWraps,
   createRuntimeSignerIdentity,
   disposeRuntimeSignerIdentity,
   installRealTestSigner,
@@ -250,6 +249,67 @@ async function publishPrivateInbox(
     .toBe(true)
 }
 
+// Assert the actual unified wire format independently of the application decoder.
+function matchesUnifiedRumor(
+  rumor: ReturnType<typeof parseCanonicalRuntimePrivateRumor>,
+  input: { orderId: string; type: string; status?: string }
+): boolean {
+  if (
+    !rumor ||
+    !rumor.tags.some(
+      ([name, value]) => name === "order" && value === input.orderId
+    )
+  )
+    return false
+  if (input.type === "payment_proof")
+    return (
+      rumor.kind === 17 &&
+      rumor.tags.some(
+        ([name, value]) => name === "subject" && value === "order-receipt"
+      ) &&
+      rumor.tags.some(
+        ([name, method, invoice]) =>
+          name === "payment" && method === "lightning" && !!invoice
+      )
+    )
+  const numericType = { order: "1", payment_request: "2", status_update: "3" }[
+    input.type
+  ]
+  if (
+    rumor.kind !== 16 ||
+    !numericType ||
+    !rumor.tags.some(
+      ([name, value]) => name === "type" && value === numericType
+    )
+  )
+    return false
+  const extensions = rumor.tags.filter(([name]) => name === "conduit")
+  if (
+    extensions.length !== 1 ||
+    extensions[0]?.[1] !== "2" ||
+    extensions[0]?.[2] !== input.type
+  )
+    return false
+  const extension = JSON.parse(extensions[0]![3]!) as {
+    payload: { id?: string; orderId?: string; status?: string }
+    tags: string[][]
+  }
+  const wireStatus = input.status
+    ? ({ accepted: "pending", paid: "confirmed" }[input.status] ?? input.status)
+    : undefined
+  return (
+    (extension.payload.id ?? extension.payload.orderId) === input.orderId &&
+    extension.tags.some(
+      ([name, value]) => name === "type" && value === input.type
+    ) &&
+    (!input.status ||
+      (extension.payload.status === input.status &&
+        rumor.tags.some(
+          ([name, value]) => name === "status" && value === wireStatus
+        )))
+  )
+}
+
 async function privateRumorCount(input: {
   orderId: string
   recipient: RuntimeSignerIdentity
@@ -273,17 +333,17 @@ async function privateRumorCount(input: {
       recipient: input.recipient,
       sender: input.sender,
       wrapperKeyAssignments: input.wrapperKeyAssignments,
+      rumorKind: input.type === "payment_proof" ? 17 : 16,
       wrap,
     })
     observations.push({ rumor, wrapId: wrap.id })
   }
 
-  return countDistinctMatchingRuntimePrivateWraps({
-    observations,
-    orderId: input.orderId,
-    status: input.status,
-    type: input.type,
-  })
+  return new Set(
+    observations
+      .filter(({ rumor }) => matchesUnifiedRumor(rumor, input))
+      .map(({ wrapId }) => wrapId)
+  ).size
 }
 
 async function privateRumorDiagnostics(input: {
@@ -320,34 +380,14 @@ async function privateRumorDiagnostics(input: {
       recipient: input.recipient,
       sender: input.sender,
       wrapperKeyAssignments: input.wrapperKeyAssignments,
+      rumorKind: input.type === "payment_proof" ? 17 : 16,
       wrap,
     })
     if (!rumor) continue
     counts.parsed += 1
     counts.bound += 1
-    if (
-      !rumor.tags.some(
-        ([name, value]) => name === "type" && value === input.type
-      )
-    ) {
-      continue
-    }
+    if (!matchesUnifiedRumor(rumor, input)) continue
     counts.type += 1
-    if (
-      !rumor.tags.some(
-        ([name, value]) => name === "order" && value === input.orderId
-      )
-    ) {
-      continue
-    }
-    if (
-      input.status &&
-      !rumor.tags.some(
-        ([name, value]) => name === "status" && value === input.status
-      )
-    ) {
-      continue
-    }
     counts.order += 1
   }
 
@@ -389,18 +429,12 @@ async function expectPrivateInvoiceHasNoWalletRouting(
       inboxOwner: input.recipient,
       wrap,
     })
-    if (
-      !rumor ||
-      !rumor.tags.some(
-        ([name, value]) => name === "type" && value === "payment_request"
-      ) ||
-      !rumor.tags.some(
-        ([name, value]) => name === "order" && value === input.orderId
-      )
-    )
-      continue
+    if (!matchesUnifiedRumor(rumor, input)) continue
     matched += 1
-    const payload = JSON.parse(rumor.content) as Record<string, unknown>
+    const extension = rumor!.tags.find(([name]) => name === "conduit")!
+    const payload = (
+      JSON.parse(extension[3]!) as { payload: Record<string, unknown> }
+    ).payload
     if (
       [
         "receivingWallet",
@@ -1056,15 +1090,9 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
     await expect(
       buyerPage.getByRole("heading", { name: "Checkout", exact: true })
     ).toBeVisible({ timeout: 30_000 })
-    const compatibility = buyerPage.getByRole("combobox", {
-      name: "Order compatibility",
-    })
-    await expect(compatibility).toHaveText("Open Markets")
-    await compatibility.click()
-    await buyerPage
-      .getByRole("option", { name: "Conduit", exact: true })
-      .click()
-    await expect(compatibility).toHaveText("Conduit")
+    await expect(
+      buyerPage.getByRole("combobox", { name: "Order compatibility" })
+    ).toHaveCount(0)
     const sendOrder = buyerPage.getByRole("button", {
       name: "Send order",
       exact: true,

@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
 import { getEventHash, nip19 } from "nostr-tools"
 import { createWrap } from "nostr-tools/nip59"
-import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-store"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import { prepareEmptyMerchantCatalog } from "./helpers/merchant-catalog"
 import {
@@ -145,15 +144,9 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
       .getByRole("region", { name: "Cart inventory" })
       .getByRole("link", { name: "Continue to checkout" })
       .click()
-    const compatibility = buyerPage.getByRole("combobox", {
-      name: "Order compatibility",
-    })
-    await expect(compatibility).toHaveText("Open Markets")
-    await compatibility.click()
-    await buyerPage
-      .getByRole("option", { name: "Conduit", exact: true })
-      .click()
-    await expect(compatibility).toHaveText("Conduit")
+    await expect(
+      buyerPage.getByRole("combobox", { name: "Order compatibility" })
+    ).toHaveCount(0)
     phase("send_order")
     await expect(
       buyerPage.getByRole("button", { name: "Send order" })
@@ -164,6 +157,33 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
     await expect(buyerPage).toHaveURL(/\/orders\?order=/, { timeout: 30_000 })
     const orderId = new URL(buyerPage.url()).searchParams.get("order")
     if (!orderId) throw new Error("The order route has no order ID")
+
+    await expect
+      .poll(async () => {
+        const wraps = await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)
+        return wraps.filter((wrap) => {
+          const rumor = parseCanonicalRuntimePrivateRumor({
+            inboxOwner: merchant,
+            recipient: merchant,
+            sender: buyer,
+            wrapperKeyAssignments: assignments,
+            wrap,
+          })
+          return (
+            rumor?.tags.some(
+              ([name, value]) => name === "order" && value === orderId
+            ) &&
+            rumor.tags.some(
+              ([name, value]) => name === "type" && value === "1"
+            ) &&
+            rumor.tags.some(
+              ([name, version, type]) =>
+                name === "conduit" && version === "2" && type === "order"
+            )
+          )
+        }).length
+      })
+      .toBe(1)
 
     phase("merchant_order")
     await merchantPage.goto(
@@ -264,16 +284,20 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
             `${root.replace("/protocol", "")}/db/index.ts`
           )
           const owner = getCommerceInbox(principal)
-          const projections = await owner.store.projections()
           const records = await db.commerceInboxRecords.toArray()
           return {
-            matches: projections.filter(
-              ({ projection }: { projection: InboxProjection }) =>
-                projection.kind === "order" &&
-                projection.message.type === "message" &&
-                projection.message.senderPubkey === principal &&
-                projection.message.payload.note === note
-            ).length,
+            matches: owner
+              .getSnapshot()
+              .orderMessages.filter(
+                (message: {
+                  type: string
+                  senderPubkey: string
+                  payload: { note?: string }
+                }) =>
+                  message.type === "message" &&
+                  message.senderPubkey === principal &&
+                  message.payload.note === note
+              ).length,
             encrypted: !JSON.stringify(records).includes(note),
           }
         },
@@ -312,16 +336,17 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
         recipient: buyer,
         sender: merchant,
         wrapperKeyAssignments: assignments,
+        rumorKind: 14,
         wrap,
       })
       return (
-        rumor?.kind === 16 &&
+        rumor?.kind === 14 &&
         rumor.content.includes(reply) &&
         rumor.tags.some(
           ([name, value]) => name === "order" && value === orderId
         ) &&
         rumor.tags.some(
-          ([name, value]) => name === "type" && value === "message"
+          ([name, value]) => name === "subject" && value === orderId
         )
       )
     })
@@ -468,16 +493,17 @@ test("Buyer and Merchant order replies survive refused self-copy and reload afte
           recipient: merchant,
           sender: buyer,
           wrapperKeyAssignments: assignments,
+          rumorKind: 14,
           wrap,
         })
         return (
-          rumor?.kind === 16 &&
+          rumor?.kind === 14 &&
           rumor.content.includes(buyerReply) &&
           rumor.tags.some(
             ([name, value]) => name === "order" && value === orderId
           ) &&
           rumor.tags.some(
-            ([name, value]) => name === "type" && value === "message"
+            ([name, value]) => name === "subject" && value === orderId
           )
         )
       })
