@@ -15,7 +15,10 @@ export function OrderMessagingReadinessNotice({
   context?: "checkout" | "reply"
   onRetry: () => void
 }) {
-  const readiness = getOrderMessagingReadiness(status)
+  const readiness = getOrderMessagingReadiness(
+    status,
+    context === "checkout" ? "initial_order" : "direct_reply"
+  )
   if (readiness.ready) return null
   return (
     <div role="status" aria-live="polite" className="space-y-2 text-sm">

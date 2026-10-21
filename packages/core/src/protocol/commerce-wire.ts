@@ -133,12 +133,48 @@ export function decodeConduitCommerceExtension<T extends WireRumor>(
       ))
   )
     throw new Error("Commerce extension invoice mismatch")
+  if (type === "status_update" && originalTags) {
+    const commonStatuses = rumor.tags.filter((value) => value[0] === "status")
+    const restoredStatuses = originalTags.filter(
+      (value) => value[0] === "status"
+    )
+    // Restored tags take precedence over JSON in the domain parser. They may
+    // retain the richer named status, but cannot change its payment authority.
+    if (
+      typeof payload.status !== "string" ||
+      commonStatuses.length !== 1 ||
+      commonStatuses[0]!.length !== 2 ||
+      commonStatuses[0]![1] !== openMarketsStatus(payload.status) ||
+      restoredStatuses.length > 1 ||
+      restoredStatuses.some(
+        (value) => value.length !== 2 || value[1] !== payload.status
+      )
+    )
+      throw new Error("Commerce extension status mismatch")
+  }
   if (
     type === "status_update" &&
     payload.status !== tag("status") &&
     openMarketsStatus(String(payload.status)) !== tag("status")
   )
     throw new Error("Commerce extension status mismatch")
+  if (type === "shipping_update" && originalTags) {
+    for (const [name, value] of [
+      ["carrier", payload.carrier],
+      ["tracking", payload.trackingNumber],
+    ] as const) {
+      const common = rumor.tags.filter((tag) => tag[0] === name)
+      const restored = originalTags.filter((tag) => tag[0] === name)
+      if (
+        common.length !== (value === undefined ? 0 : 1) ||
+        restored.length > 1 ||
+        [...common, ...restored].some(
+          (tag) => tag.length !== 2 || tag[1] !== value
+        )
+      )
+        throw new Error("Commerce extension shipping mismatch")
+    }
+  }
   if (
     type === "shipping_update" &&
     ((payload.carrier && payload.carrier !== tag("carrier")) ||

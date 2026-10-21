@@ -300,10 +300,16 @@ repeat inventory work. Digital orders can complete without invented tracking;
 shipping orders retain the existing shipping workflow.
 
 New signed-in numeric checkout and order-message actions expose the existing inbox
-readiness state. Missing setup opens Network in a separate tab so checkout and
-message drafts survive; users refresh discovery and retry after setup. Retained
-authenticated declarations survive partial discovery. Existing staged delivery and
-guest recipient-only flows retain their established recovery and authority rules.
+readiness state. Initial order delivery remains available when signer and merchant
+routing checks pass, even if sender-inbox discovery is pending, partial, unavailable
+or missing. The notice explains that receiving updates and sending replies may
+require inbox setup; it does not give optional sender copies veto power over a
+recipient-accepted order. Local recovery and truthful backup status remain intact.
+Missing setup opens Network in a separate tab so checkout and message drafts
+survive. Direct replies retain their strict messaging preflight; users refresh
+discovery and retry after setup. Retained authenticated declarations survive partial
+discovery. Existing staged delivery and guest recipient-only flows retain their
+established recovery and authority rules.
 
 ## Converged reply, payment and storage boundaries
 

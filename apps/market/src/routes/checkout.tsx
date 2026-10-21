@@ -26,7 +26,6 @@ import {
   buildCommerceSupportTags,
   requiredCommerceFeatures,
 } from "@conduit/core/protocol/commerce-capabilities"
-import { assertOrderMessagingReady } from "@conduit/core/protocol/order-messaging-readiness"
 import {
   isContactFreeEventHandoff,
   getEventGuestReceiptCommitment,
@@ -1392,23 +1391,6 @@ function CheckoutPage() {
     enabled: signerConnected && session.relaySettingsReady,
     relayScope: session.relayScope,
   })
-  const newOrderMessagingPending =
-    !!signedBuyerPubkey && checkoutInbox.status === "loading"
-
-  function checkNewOrderMessaging(): boolean {
-    if (!signedBuyerPubkey) return true
-    try {
-      assertOrderMessagingReady(checkoutInbox.status)
-      return true
-    } catch (error) {
-      setError(
-        error instanceof Error
-          ? error.message
-          : "Check messaging setup before ordering."
-      )
-      return false
-    }
-  }
 
   const draftOwnerIdentity = accountPubkey
   const authPending =
@@ -3082,7 +3064,6 @@ function CheckoutPage() {
 
   /** Explicit checkout preparation; this action never submits payment. */
   async function prepareSettledRouterOrder(): Promise<void> {
-    if (!checkNewOrderMessaging()) return
     if (routerPreparationUnavailableMessage) {
       setError(routerPreparationUnavailableMessage)
       return
@@ -3425,7 +3406,6 @@ function CheckoutPage() {
   }
 
   async function placeOrder(): Promise<void> {
-    if (!checkNewOrderMessaging()) return
     if (routerBranchTargetCheckout) {
       setError(
         "This purchase requires the private router order. Direct checkout is disabled for this purchase."
@@ -4015,7 +3995,6 @@ function CheckoutPage() {
   async function payNow(
     zapAuthorization: HudZapAuthorization | null = null
   ): Promise<void> {
-    if (!checkNewOrderMessaging()) return
     if (routerBranchTargetCheckout) {
       setError(
         "This purchase requires the private router order. Direct payment is disabled for this purchase."
@@ -4743,23 +4722,21 @@ function CheckoutPage() {
   // The HUD arms zap out from capability-only readiness, so checkout is the
   // first place the merchant payment endpoint is known. Wait while that answer
   // is still resolving, then explain the decline instead of stalling silently.
-  const autoZapInputsResolving =
-    newOrderMessagingPending ||
-    isFastCheckoutInputPending({
-      authPending,
-      walletConnecting: wallets.loading || wallet.status === "connecting",
-      merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
-      lnurlProbing,
-      privateZapFallbackPending:
-        !isGuestCheckout &&
-        lnurlPayAvailable &&
-        !lnurlAllowsNostr &&
-        isCheckoutPublicZapMode(selectedZapMode),
-      shippingLookupPending: shippingOptionsIsFetching,
-      shippingState: shippingCheckoutState,
-      availabilityChecking: checkoutAvailability.isChecking,
-      pricingRefreshing: pricingRefreshState === "refreshing",
-    })
+  const autoZapInputsResolving = isFastCheckoutInputPending({
+    authPending,
+    walletConnecting: wallets.loading || wallet.status === "connecting",
+    merchantProfileLoading: merchantTrust.profileEvidenceState === "loading",
+    lnurlProbing,
+    privateZapFallbackPending:
+      !isGuestCheckout &&
+      lnurlPayAvailable &&
+      !lnurlAllowsNostr &&
+      isCheckoutPublicZapMode(selectedZapMode),
+    shippingLookupPending: shippingOptionsIsFetching,
+    shippingState: shippingCheckoutState,
+    availabilityChecking: checkoutAvailability.isChecking,
+    pricingRefreshing: pricingRefreshState === "refreshing",
+  })
 
   useEffect(() => {
     if (
@@ -5990,7 +5967,6 @@ function CheckoutPage() {
                             hasUnavailableCheckoutItems ||
                             fulfillmentBlockingMessage !== null ||
                             routerPreparationUnavailableMessage !== null ||
-                            newOrderMessagingPending ||
                             authPending ||
                             !!signerBlockedMessage ||
                             !!routerPreparedOrderRef.current
@@ -6021,13 +5997,11 @@ function CheckoutPage() {
                             hasUnavailableCheckoutItems ||
                             fulfillmentBlockingMessage !== null ||
                             selectedPaymentTargetIsStale ||
-                            newOrderMessagingPending ||
                             authPending ||
                             !!signerBlockedMessage
                           }
                           canComplete={() =>
                             directCheckoutEligible &&
-                            !newOrderMessagingPending &&
                             !checkoutAvailability.isChecking &&
                             !checkoutRecoveryIsChecking &&
                             !checkoutRecoveryBlockingMessage &&
@@ -6149,7 +6123,6 @@ function CheckoutPage() {
                           hasUnavailableCheckoutItems ||
                           fulfillmentBlockingMessage !== null ||
                           hasUnpricedCheckoutItems ||
-                          newOrderMessagingPending ||
                           authPending ||
                           !!signerBlockedMessage
                         }

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { publishTestRelayEvents, TEST_RELAY_URL } from "./helpers/auth"
 import {
@@ -12,7 +12,7 @@ import {
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
-test("signed-in checkout repairs messaging before committing while retaining its draft @commerce", async ({
+test("signed-in checkout keeps repair drafts and sends without a discoverable sender inbox @commerce", async ({
   page,
   context,
 }) => {
@@ -85,10 +85,6 @@ test("signed-in checkout repairs messaging before committing while retaining its
     ).toBeVisible()
     const note = page.getByLabel("Order note (optional)")
     await note.fill("Keep this synthetic draft during setup")
-    await page.getByRole("button", { name: "Send order", exact: true }).click()
-    await expect(
-      page.getByRole("alert").filter({ hasText: "No private inbox was found" })
-    ).toBeVisible()
     await expect(page).toHaveURL(/\/checkout/)
     expect(
       (await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)).length
@@ -115,25 +111,15 @@ test("signed-in checkout repairs messaging before committing while retaining its
     await expect(note).toHaveValue("Keep this synthetic draft during setup")
     await expect(page).toHaveURL(/\/checkout/)
 
-    // The signed declaration is published by the runner-owned signer. This
-    // verifies discovery and return behavior, not an installed signer or device.
-    await publishTestRelayEvents([
-      signRuntimeTestEvent(buyer, {
-        kind: 10050,
-        created_at: now + 1,
-        tags: [["relay", TEST_RELAY_URL]],
-        content: "",
-      }),
-    ])
     await setup.close()
     await page.bringToFront()
     await expect
       .poll(() => page.evaluate(() => document.visibilityState))
       .toBe("visible")
-    await page.getByRole("button", { name: "Check again", exact: true }).click()
     await expect(
       page.getByText("Set up order messaging", { exact: true })
-    ).toHaveCount(0)
+    ).toBeVisible()
+    await expect(page.getByText(/You can still send this order/)).toBeVisible()
     await expect(note).toHaveValue("Keep this synthetic draft during setup")
     await page.getByRole("button", { name: "Send order", exact: true }).click()
     await expect(page).toHaveURL(/\/orders\?order=/)
@@ -159,13 +145,22 @@ test("signed-in checkout repairs messaging before committing while retaining its
         ).size
       })
       .toBe(1)
+    await assertOneLocallyRecoverableOrder(page, orderId!)
+    expect(
+      await readAuthenticatedGiftWraps(buyer, TEST_RELAY_URL)
+    ).toHaveLength(0)
+    await page.reload()
+    await assertOneLocallyRecoverableOrder(page, orderId!)
+    expect(
+      await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)
+    ).toHaveLength(1)
   } finally {
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)
   }
 })
 
-test("signed-in checkout waits for delayed inbox evidence before one-click order submission @commerce", async ({
+test("signed-in checkout sends once while sender inbox evidence is delayed @commerce", async ({
   page,
 }) => {
   const buyer = createRuntimeSignerIdentity()
@@ -261,11 +256,9 @@ test("signed-in checkout waits for delayed inbox evidence before one-click order
       name: "Send order",
       exact: true,
     })
-    expect(await sendOrder.isDisabled()).toBe(true)
+    await expect(sendOrder).toBeEnabled()
     expect(pendingInboxReads.length).toBeGreaterThan(0)
-    // A disabled native control must not invoke the preflight or persist work.
-    await sendOrder.evaluate((button: HTMLButtonElement) => button.click())
-    await expect(page.getByRole("alert")).toHaveCount(0)
+    await expect(page.getByText(/You can still send this order/)).toBeVisible()
     const pendingCounts = await page.evaluate(async (root) => {
       const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
       return {
@@ -278,9 +271,6 @@ test("signed-in checkout waits for delayed inbox evidence before one-click order
       await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)
     ).toHaveLength(0)
 
-    waitingForInbox = false
-    for (const release of pendingInboxReads.splice(0)) release()
-    await expect(sendOrder).toBeEnabled()
     await sendOrder.click()
     await expect(page).toHaveURL(/\/orders\?order=/)
     const orderId = new URL(page.url()).searchParams.get("order")
@@ -305,8 +295,48 @@ test("signed-in checkout waits for delayed inbox evidence before one-click order
         ).size
       })
       .toBe(1)
+    // Merchant acceptance and local recovery do not wait for optional self-copy.
+    await assertOneLocallyRecoverableOrder(page, orderId!)
+    waitingForInbox = false
+    for (const release of pendingInboxReads.splice(0)) release()
+    await page.reload()
+    await assertOneLocallyRecoverableOrder(page, orderId!)
+    expect(
+      await readAuthenticatedGiftWraps(merchant, TEST_RELAY_URL)
+    ).toHaveLength(1)
   } finally {
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)
   }
 })
+
+async function assertOneLocallyRecoverableOrder(page: Page, orderId: string) {
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ root, orderId }) => {
+          const { db } = await import(/* @vite-ignore */ `${root}/db/index.ts`)
+          const order = await db.orderLifecycles.get(orderId)
+          return {
+            orders: await db.orderLifecycles.count(),
+            payments: await db.paymentAttempts.count(),
+            status: order?.orderDeliveryStatus,
+            format: order?.orderWireFormat,
+            declaredRecipient:
+              order?.orderRelayDelivery?.route === "declared_inbox",
+            exactRecipientWrap:
+              !!order?.orderRelayDelivery?.signedRecipientWrap,
+          }
+        },
+        { root: `/@fs${process.cwd()}/packages/core/src`, orderId }
+      )
+    )
+    .toEqual({
+      orders: 1,
+      payments: 0,
+      status: "sent",
+      format: "open_markets_v2",
+      declaredRecipient: true,
+      exactRecipientWrap: true,
+    })
+}
