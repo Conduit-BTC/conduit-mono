@@ -100,9 +100,15 @@ and authenticated decryption. Optional size and original-file hash are checked
 when supplied. Attachments are not fetched merely by opening a conversation.
 
 Shared codecs read Conduit named JSON histories and current Open Markets
-numeric-tag kind-16 messages and kind-17 receipts. Normal order operations retain
-the deployed named kind-16 JSON grammar. A numeric writer requires an accepted
-migration contract and explicit recipient capability evidence before activation.
+numeric-tag kind-16 messages and kind-17 receipts. New ordinary Market orders
+default to numeric Open Markets with an explicit named override. Router/event
+pickup and existing orders retain their named or saved format. The bounded
+[numeric order adapter](./open-markets-order-adapter.md) selects replies from the
+retained authenticated order and preserves exact staged bytes through recovery.
+Decode-rule version 7 reprocesses formerly rejected multi-option invoices and
+selects a sole supported Lightning option without authorizing other rails.
+Supported Lightning claims reach the existing independent verifier; missing
+terms remain unknown.
 The bounded `conduit` version-1 extension is read only when its identity agrees
 with the surrounding message. Unknown versions remain inspectable evidence.
 Kind 1327 is not a default writer.

@@ -2656,6 +2656,13 @@ async function rehearseEventRouter(
       content: "Offline event checkout rehearsal.",
       tags: [
         ["d", "native-event-product"],
+        [
+          "conduit_commerce",
+          "2",
+          "per_item_shipping",
+          "event_pickup",
+          "router_checkout",
+        ],
         ["title", productTitle],
         ["summary", "Offline event checkout rehearsal."],
         ["price", "1000", "SATS"],

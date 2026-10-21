@@ -40,3 +40,20 @@ inbox, encrypted storage reload, both app selectors, and recipient-specific
 replies against a local relay. This does not qualify external signers, public
 relay delivery or funded payment behavior. NIP-44 v3 readiness remains a separate
 capability-gated effort; no capability negotiation changes here.
+
+Numeric order notes remain ordinary encrypted direct messages as well as order
+transcript entries. Their association is a derived view anchored by an
+authenticated original order or the buyer's exact saved order binding. A note
+may name the raw order in an `order` tag (or the historical exact `subject`),
+and a reply may inherit that context through its authenticated `e` parent.
+Association follows the exact participant pair, never the latest room topic or
+another message merely sharing an order ID. Conflicting references, ambiguous
+buyer/merchant direction, groups, files, advisory companions and cyclic ancestry
+do not produce order notes. Missing parents can be resolved when history arrives.
+This association grants no payment, acceptance, inventory or fulfillment authority.
+
+Both direct-message composers make order context visible and carry it into the
+reply. Same-account signer recovery retries the prepared rumor with its original
+references and ID; it does not rebuild a reply against a later message. The
+retained encrypted inbox reconstructs the association after reload. Decode rule
+v9 reads explicit order references while preserving older subject-only histories.

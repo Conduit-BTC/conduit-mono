@@ -795,6 +795,26 @@ describe("merchant order phase", () => {
     ).toBe(true)
   })
 
+  it("completes an external digital order after its supplemental fulfillment decision", () => {
+    const item = { productId: "download", quantity: 1, currency: "SATS" }
+    const fulfillment = getMerchantOrderFulfillment(
+      [item],
+      [{ index: 0, productId: "download", quantity: 1, mode: "digital" }]
+    )
+    expect(fulfillment.requiresShipping).toBe(false)
+    expect(
+      getMerchantOrderActions({ status: "paid", ...fulfillment }).map(
+        (action) => action.action
+      )
+    ).toContain("complete")
+    expect(
+      getMerchantOrderActions({ status: "paid", ...fulfillment }).map(
+        (action) => action.action
+      )
+    ).not.toContain("record_shipment")
+    expect(item).not.toHaveProperty("fulfillment")
+  })
+
   it("derives fulfillment from the signed order item snapshot", () => {
     expect(
       getMerchantOrderFulfillment([

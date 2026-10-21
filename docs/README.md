@@ -37,6 +37,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/knowledge/open-markets-order-adapter.md`: supported numeric order/reply
+  and Lightning receipt adapter; proposed compatibility lane, review/removal
+  gates, incomplete terms, exact identity and recovery
 - `docs/knowledge/central-relay-policy.md`: central relay ownership, installed
   delivery-plan migration, finite caller ledger and CI enforcement
 

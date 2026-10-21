@@ -1,3 +1,7 @@
+import {
+  buildCommerceSupportTagsFromEvents,
+  requiredCommerceFeatures,
+} from "@conduit/core/protocol/commerce-capabilities"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { mapCheckoutSparkPreparationReads } from "@conduit/core/protocol/checkout-spark-preparation-reads"
 import {
@@ -496,6 +500,12 @@ async function prepareCheckoutSparkSettledOrderPhase(
     ...sourcesById.values(),
   ])
 
+  // Validate feature support before creating a wallet or exposing a funding invoice.
+  buildCommerceSupportTagsFromEvents(
+    quote.pricing.items.map((item) => item.productId),
+    requiredCommerceFeatures(quote.pricing, [["conduit_checkout_payment"]]),
+    sourceEvents
+  )
   if (eventMarket && eventMarket.organizerFeeSats > 0) {
     const fee = eventMarket.organizerFee
     if (fee.state !== "active")

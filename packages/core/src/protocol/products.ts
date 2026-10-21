@@ -1,3 +1,7 @@
+import {
+  COMMERCE_CAPABILITIES_TAG,
+  COMMERCE_FEATURES,
+} from "./commerce-capabilities"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import {
   isVerifiedNostrEvent,
@@ -319,6 +323,9 @@ export function buildProductListingEventDraft({
     ],
     [PRODUCT_ZAP_MESSAGE_POLICY_TAG, emittedZapMessagePolicy],
   ]
+
+  if (clientAppId === "merchant")
+    tags.push([COMMERCE_CAPABILITIES_TAG, "2", ...COMMERCE_FEATURES])
 
   if (
     product.eventGuestContactOptional === true &&

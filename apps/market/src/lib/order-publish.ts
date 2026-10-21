@@ -5,12 +5,16 @@ import {
   appendConduitClientTag,
   beginOrderRelayDeliveryAttempt,
   cacheOrderMessageRumor,
+  cacheAcceptedDirectMessageRumor,
   createAcceptedInboxSendCheckpoint,
   createOrderCompanionNotificationRumor,
   createValidatedGuestOrderCompanion,
   createValidatedOrderRouteScope,
   getRelayPublishTargetStatus,
   getAccountSigner,
+  getOrderWireFormat,
+  pinOrderWireFormat,
+  encodeOpenMarketsBuyerMessage,
   getCommerceInbox,
   type CommerceInbox,
   type NostrKeySigner,
@@ -108,7 +112,14 @@ export type BuyerOrderSigningIdentity =
 
 type BuyerOrderIdentityInput = string | BuyerOrderSigningIdentity
 
-type BuyerOrderPublishDependencies = {
+export type BuyerOrderPublishDependencies = {
+  getCommerceInboxFn?: typeof getCommerceInbox
+  pinOrderWireFormatFn?: typeof pinOrderWireFormat
+  /** The already loaded owner snapshot for follow-ups; never a brand/relay hint. */
+  orderContext?: Pick<
+    OrderLifecycle,
+    "orderId" | "buyerPubkey" | "merchantPubkey" | "orderWireFormat"
+  >
   publishPrivateMessageFn?: typeof publishPrivateMessage
   cacheBuyerOrderRumorFn?: typeof cacheBuyerOrderRumor
   signerInteraction?: "external" | "background_external"
@@ -170,6 +181,7 @@ export function assertStagedOrderLifecycleMatchesRumor(
   const currencyTags = rumor.tags.filter((tag) => tag[0] === "currency")
   if (
     parsed.type !== "order" ||
+    parsed.wireFormat === "open_markets" ||
     rumor.kind !== EVENT_KINDS.ORDER ||
     orderTags.length !== 1 ||
     recipientTags.length !== 1 ||
@@ -368,7 +380,11 @@ async function publishOrderCompanionNotification(input: {
   const messageType = input.authoritativeOrder.tags.find(
     (tag) => tag[0] === "type"
   )?.[1]
-  if (messageType !== "order") return "skipped_non_order"
+  if (
+    input.authoritativeOrder.kind !== EVENT_KINDS.ORDER ||
+    !["order", "1"].includes(messageType ?? "")
+  )
+    return "skipped_non_order"
   if (input.deliveryRoute !== "declared_inbox") {
     return "skipped_non_declared_route"
   }
@@ -429,7 +445,9 @@ async function cacheBuyerOrderRumor(
   try {
     if (!rumor.id) throw new Error("Missing buyer order rumor id")
     if (!accountOwner) throw new Error("Local order history unavailable")
-    await cacheOrderMessageRumor(rumor, accountOwner)
+    if (rumor.kind === 14)
+      await cacheAcceptedDirectMessageRumor(rumor, accountOwner)
+    else await cacheOrderMessageRumor(rumor, accountOwner)
     return null
   } catch (error) {
     console.warn("Failed to cache buyer order message")
@@ -472,6 +490,12 @@ export async function publishBuyerOrderMessage(
   dependencies: BuyerOrderPublishDependencies = {}
 ): Promise<BuyerMessageDeliveryResult> {
   const buyerIdentity = resolveBuyerOrderSigningIdentity(buyer)
+  const shouldContinue =
+    buyerIdentity.kind === "guest_ephemeral"
+      ? dependencies.shouldContinue
+      : () =>
+          (dependencies.shouldContinue?.() ?? true) &&
+          getAccountSigner() === buyerIdentity.signer
   assertBuyerOrderScope(rumor, merchantPubkey, buyerIdentity)
   prepareBuyerRumor(rumor, buyerIdentity.pubkey)
   if (dependencies.orderLifecycle) {
@@ -482,23 +506,47 @@ export async function publishBuyerOrderMessage(
       merchantPubkey
     )
   }
+  const orderId = rumor.tags.find((tag) => tag[0] === "order")?.[1] ?? ""
+  if (shouldContinue?.() === false) throw new Error("Buyer order session ended")
+  const formatOwner = dependencies.orderLifecycle ?? dependencies.orderContext
+  if (
+    formatOwner &&
+    (formatOwner.buyerPubkey !== buyerIdentity.pubkey ||
+      formatOwner.merchantPubkey !== merchantPubkey ||
+      formatOwner.orderId !== orderId)
+  )
+    throw new Error("Saved order format belongs to another buyer or merchant")
+  if (dependencies.orderLifecycle?.orderWireFormat !== undefined)
+    await (dependencies.pinOrderWireFormatFn ?? pinOrderWireFormat)(
+      dependencies.orderLifecycle,
+      { shouldContinue }
+    )
+  if (formatOwner && getOrderWireFormat(formatOwner) !== "conduit") {
+    rumor = encodeOpenMarketsBuyerMessage(
+      rumor,
+      {
+        buyerPubkey: buyerIdentity.pubkey,
+        merchantPubkey,
+        orderId,
+      },
+      getOrderWireFormat(formatOwner) === "open_markets_v2" ? 2 : 1
+    )
+    rumor.id = ""
+    prepareBuyerRumor(rumor, buyerIdentity.pubkey)
+    if (rumor.kind !== 14) parseOrderMessageRumorEvent(rumor)
+  }
   const accountPubkey =
     buyerIdentity.kind === "guest_ephemeral"
       ? null
       : (dependencies.accountPubkey ?? null)
-  const shouldContinue =
-    buyerIdentity.kind === "guest_ephemeral"
-      ? dependencies.shouldContinue
-      : () =>
-          (dependencies.shouldContinue?.() ?? true) &&
-          getAccountSigner() === buyerIdentity.signer
-
   // Pin the signed-in projection to the initiating session before relay work.
   // The checkout remains sendable if local history is unavailable.
   let accountOwner: CommerceInbox | null = null
   if (buyerIdentity.kind !== "guest_ephemeral") {
     try {
-      accountOwner = getCommerceInbox(buyerIdentity.pubkey)
+      accountOwner = (dependencies.getCommerceInboxFn ?? getCommerceInbox)(
+        buyerIdentity.pubkey
+      )
     } catch {
       // Report a local-cache failure after recipient acceptance.
     }
@@ -600,7 +648,7 @@ export async function publishBuyerOrderMessage(
       senderPubkey: buyerIdentity.pubkey,
       recipientPubkey: merchantPubkey,
       signer: buyerIdentity.signer,
-      rumorKind: EVENT_KINDS.ORDER,
+      rumorKind: rumor.kind as 14 | 16 | 17,
       selfCopy: buyerIdentity.kind !== "guest_ephemeral",
       accountPubkey,
       authenticatedPubkey:
@@ -621,12 +669,15 @@ export async function publishBuyerOrderMessage(
       // leg may use the bounded compatibility route when the merchant has
       // no usable NIP-17 declaration (CND-208). Guest orders gain no reply
       // promise from this.
-      validatedOrderScope: createValidatedOrderRouteScope({
-        rumor,
-        orderId: rumor.tags.find((tag) => tag[0] === "order")?.[1] ?? "",
-        senderPubkey: buyerIdentity.pubkey,
-        recipientPubkey: merchantPubkey,
-      }),
+      validatedOrderScope:
+        rumor.kind === 14
+          ? undefined
+          : createValidatedOrderRouteScope({
+              rumor,
+              orderId: rumor.tags.find((tag) => tag[0] === "order")?.[1] ?? "",
+              senderPubkey: buyerIdentity.pubkey,
+              recipientPubkey: merchantPubkey,
+            }),
       telemetryApp: "market",
       ...(buyerIdentity.kind !== "guest_ephemeral"
         ? { onRecipientAccepted: historyCheckpoint.onRecipientAccepted }

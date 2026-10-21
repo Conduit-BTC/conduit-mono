@@ -1205,7 +1205,11 @@ export async function publishPrivateMessage(
 
   let senderReadyRelays: string[] | null = null
   let senderReadyDeclaration: InboxDeclarationResolution | null = null
-  if (input.rumorKind !== EVENT_KINDS.ORDER && !validatedGuestOrderCompanion) {
+  if (
+    input.rumorKind !== EVENT_KINDS.ORDER &&
+    !validatedGuestOrderCompanion &&
+    !(input.rumorKind === 17 && validatedOrder)
+  ) {
     const senderReadiness = await (
       input.inspectOwnInboxReadiness ??
       inspectRetainedOwnPrivateMessageRelayReadiness

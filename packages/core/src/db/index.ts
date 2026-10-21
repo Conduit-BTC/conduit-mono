@@ -1119,6 +1119,8 @@ export interface OrderLifecycleItem {
  */
 export interface OrderLifecycle {
   orderId: string
+  /** Explicit immutable commerce encoding; absent on historical named orders. */
+  orderWireFormat?: "conduit" | "open_markets" | "open_markets_v2"
   /** Buyer-local source provenance; legacy field name. Never sent in order content or used for payment/payout. */
   claimedReferralSource?: {
     sourceDomain?: string
@@ -1510,6 +1512,18 @@ export class ConduitDB extends Dexie {
   paymentAttempts!: EntityTable<StoredPaymentAttempt, "id">
   merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
+  orderWireFormats!: EntityTable<
+    {
+      orderId: string
+      buyerPubkey: string
+      merchantPubkey: string
+      orderWireFormat: "conduit" | "open_markets" | "open_markets_v2"
+      createdAt: number
+      /** Guest metadata expires with its existing bounded checkout session. */
+      expiresAt?: number
+    },
+    "orderId"
+  >
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
   productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
   localProductWriteIntents!: EntityTable<LocalProductWriteIntent, "id">
@@ -1865,8 +1879,10 @@ export class ConduitDB extends Dexie {
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
     })
-
     this.version(27).stores({
+      // The adapter v27 lineage already has this store. Declare it
+      // here as well so Dexie does not drop its rows before applying the converged version.
+      orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
       // Main and discovery previews independently used v26. A fresh version
       // applies their complete additive union to either installed lineage.
       // Size keys bound background discovery without scanning signed payloads.
@@ -1885,6 +1901,20 @@ export class ConduitDB extends Dexie {
     })
     this.version(29).stores({
       // Additive device handover owner. All installed stock/inventory rows stay.
+      eventMarketOrganizerStockWriters:
+        "id, accountPubkey, &[accountPubkey+marketCoordinate]",
+    })
+    // Converge adapter v27/v28 and main v27/v28/v29 installations. Repeat the
+    // additive union because prior same-numbered versions have different stores.
+    // All rows and immutable encrypted bytes remain untouched.
+    this.version(30).stores({
+      orderWireFormats: "orderId, buyerPubkey, merchantPubkey, createdAt",
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
+      eventMarketOrganizerStockPools:
+        "id, accountPubkey, &[accountPubkey+poolId], [accountPubkey+assignmentCoordinate]",
+      eventMarketOrganizerStockEntries:
+        "id, accountPubkey, [accountPubkey+poolId], &[accountPubkey+poolId+sequence], &[accountPubkey+poolId+orderId], &[accountPubkey+poolId+claimRef]",
       eventMarketOrganizerStockWriters:
         "id, accountPubkey, &[accountPubkey+marketCoordinate]",
     })

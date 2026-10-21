@@ -1,6 +1,7 @@
 import {
   decodeLightningInvoiceAmount,
   decodeLightningInvoicePaymentHash,
+  extractOrderSummary,
   type MerchantConversationSummary,
   type NwcLookupInvoiceResult,
 } from "@conduit/core"
@@ -129,6 +130,8 @@ export function getMerchantNwcAddressStatus({
 function findCandidate(
   conversation: MerchantConversationSummary
 ): MerchantPaymentVerificationCandidate | null {
+  if (extractOrderSummary(conversation.messages ?? []).conflictingTerms)
+    return null
   if (
     !["verify_payment", "unpaid_review"].includes(
       getMerchantConversationQueue(conversation)
@@ -200,6 +203,12 @@ function findCandidate(
     return null
   const matchesMerchantInvoice =
     matchingMerchantInvoice?.type === "payment_request"
+  if (
+    evidence?.wireFormat === "open_markets" &&
+    (evidence.type !== "payment_proof" ||
+      evidence.payload.amountMsats !== decoded.msats)
+  )
+    return null
   const orderCurrency = order.payload.currency.trim().toUpperCase()
   const matchesSatsOrder =
     (orderCurrency === "SAT" || orderCurrency === "SATS") &&

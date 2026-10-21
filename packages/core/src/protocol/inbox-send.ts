@@ -14,6 +14,7 @@ import {
   getProtectedReadAuthorization,
   assertProtectedReadAuthorization,
 } from "./protected-read-authorization"
+import type { CommerceInbox } from "./commerce-inbox"
 import { getAccountSigner } from "./session-signer"
 
 export interface AccountInboxSendResult {
@@ -68,6 +69,24 @@ export function createAcceptedInboxSendCheckpoint(
       }
     },
   }
+}
+
+/** Persist an accepted sender note before a non-critical relay self-copy. */
+export async function cacheAcceptedDirectMessageRumor(
+  rumor: PrivateMessageEvent,
+  owner: CommerceInbox
+): Promise<void> {
+  owner.assertCurrent()
+  if (
+    rumor.pubkey !== owner.store.principal ||
+    !rumor.id ||
+    ![14, 15].includes(rumor.kind!)
+  )
+    throw new Error("Accepted conversation belongs to another account")
+  const projection = projectDirectOrFileRumor(rumor, owner.store.principal)
+  await owner.store.putProjection(projection, 1)
+  owner.assertCurrent()
+  await owner.refresh()
 }
 
 interface AccountInboxSendDependencies {

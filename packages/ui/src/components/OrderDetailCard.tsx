@@ -5,7 +5,7 @@ type OrderItem = {
   productId: string
   title?: string
   quantity: number
-  priceAtPurchase: number
+  priceAtPurchase?: number
   currency: string
   sourcePrice?: {
     amount: number
@@ -144,7 +144,12 @@ export function OrderDetailCard({
                       )}
                     </span>
                     <span className="shrink-0 text-[var(--text-secondary)]">
-                      {formatOrderAmount(item.priceAtPurchase, item.currency)}
+                      {item.priceAtPurchase === undefined
+                        ? "Unit price not supplied"
+                        : formatOrderAmount(
+                            item.priceAtPurchase,
+                            item.currency
+                          )}
                     </span>
                   </div>
                 )

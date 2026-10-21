@@ -33,6 +33,7 @@ export interface BuyerOrderEntry {
   merchantPubkey: string
   lifecycle?: OrderLifecycle
   conversation?: BuyerConversation
+  messages?: BuyerConversation["messages"]
 }
 
 export function mergeBuyerOrderConversations(
@@ -63,6 +64,7 @@ export function mergeBuyerOrderConversations(
       orderId: conversation.orderId,
       merchantPubkey: conversation.merchantPubkey,
       conversation,
+      messages: conversation.messages,
     })
   }
   return [...entries.values()]

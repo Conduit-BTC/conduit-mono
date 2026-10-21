@@ -10,6 +10,8 @@ export type CheckoutSparkSettledPreparationStorage = Pick<
 
 export interface StoredCheckoutSparkSettledPreparation {
   schemaVersion: 3
+  /** Absent on installed preparations: retain their named writer. */
+  orderWireFormat?: "open_markets_v2"
   checkoutId: string
   planDigest: string
   /** SHA-256 of the exact cart batches that started this checkout. */
@@ -51,6 +53,8 @@ export function parseStoredCheckoutSparkSettledPreparation(
   const item = value as Partial<StoredCheckoutSparkSettledPreparation>
   if (
     item.schemaVersion !== 3 ||
+    (item.orderWireFormat !== undefined &&
+      item.orderWireFormat !== "open_markets_v2") ||
     typeof item.checkoutId !== "string" ||
     !item.checkoutId ||
     item.checkoutId.trim() !== item.checkoutId ||

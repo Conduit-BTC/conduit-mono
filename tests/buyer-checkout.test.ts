@@ -1,3 +1,4 @@
+import { requiredCommerceFeatures } from "@conduit/core/protocol/commerce-capabilities"
 /**
  * Unit tests for buyer checkout validation, fast-checkout eligibility,
  * LNURL helpers, and NWC URI parsing.
@@ -4225,5 +4226,22 @@ describe("parseRelayFailureMessage", () => {
     const urls = result.failures.map((f) => f.url)
     expect(urls).not.toContain("wss://ok.relay")
     expect(urls).toContain("wss://bad.relay")
+  })
+})
+
+describe("unified checkout feature requirements", () => {
+  it("requires feature evidence for distinct delivery terms, without selecting another writer", () => {
+    const first = { shippingOptionId: "30406:merchant:parcel-a" }
+    const second = { shippingOptionId: "30406:merchant:parcel-b" }
+    expect(requiredCommerceFeatures({ items: [{}] })).toEqual([])
+    expect(requiredCommerceFeatures({ items: [first, first, {}] })).toEqual([])
+    expect(requiredCommerceFeatures({ items: [first, second] })).toEqual([
+      "per_item_shipping",
+    ])
+    expect(
+      requiredCommerceFeatures({ items: [first] }, [
+        ["conduit_checkout_payment"],
+      ])
+    ).toEqual(["router_checkout"])
   })
 })

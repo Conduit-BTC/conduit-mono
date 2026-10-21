@@ -16,6 +16,8 @@ import { createRumor, createSeal, wrapEvent } from "nostr-tools/nip59"
 import { ConduitDB } from "../packages/core/src/db"
 import {
   createPrivateMessageRumor,
+  createParticipantMessageRumor,
+  createOrderCompanionNotificationRumor,
   unwrapPrivateMessageEnvelope,
 } from "../packages/core/src/protocol/messaging"
 import {
@@ -644,6 +646,168 @@ describe("durable account-owned commerce inbox", () => {
       }
     }
     owner.stop()
+  })
+
+  it("suppresses a numeric advisory only after its exact authenticated order and retains that match on reload", async () => {
+    const { owner, store, database, pubkey } = setup()
+    const sender = generateSecretKey()
+    const senderPubkey = getPublicKey(sender)
+    const order = createPrivateMessageRumor({
+      kind: 16,
+      pubkey: senderPubkey,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["p", pubkey],
+        ["subject", "Order numeric-advisory"],
+        ["type", "1"],
+        ["order", "numeric-advisory"],
+        ["amount", "21"],
+        ["item", `30402:${pubkey}:product`, "1"],
+      ],
+      content: "",
+    })
+    const companion = createOrderCompanionNotificationRumor({
+      authoritativeOrder: order,
+      senderPubkey,
+      recipientPubkey: pubkey,
+      buyerIdentityKind: "signed_in",
+      merchantOrigin: "https://sell.conduit.market",
+    })
+    const otherSender = generateSecretKey()
+    const otherCompanion = createOrderCompanionNotificationRumor({
+      authoritativeOrder: order,
+      senderPubkey: getPublicKey(otherSender),
+      recipientPubkey: pubkey,
+      buyerIdentityKind: "signed_in",
+      merchantOrigin: "https://sell.conduit.market",
+    })
+    await owner.ingest(
+      await admitFixture(wrapEvent(companion, sender, pubkey)),
+      ["wss://fixture.example"]
+    )
+    await owner.ingest(
+      await admitFixture(wrapEvent(otherCompanion, otherSender, pubkey)),
+      ["wss://fixture.example"]
+    )
+    await owner.waitForDecode()
+    expect(
+      owner
+        .getSnapshot()
+        .directMessages.map((m) => m.id)
+        .sort()
+    ).toEqual([companion.id, otherCompanion.id].sort())
+    await owner.ingest(await admitFixture(wrapEvent(order, sender, pubkey)), [
+      "wss://fixture.example",
+    ])
+    await owner.waitForDecode()
+    expect(owner.getSnapshot().orderMessages).toHaveLength(1)
+    expect(owner.getSnapshot().directMessages.map((m) => m.id)).toEqual([
+      otherCompanion.id,
+    ])
+    expect(
+      (await store.projections()).filter(
+        ({ projection }) => projection.kind === "direct"
+      )
+    ).toHaveLength(2)
+    const reopened = await readRetainedCommerceInbox(
+      pubkey,
+      () => true,
+      database
+    )
+    expect(reopened.directMessages.map((m) => m.id)).toEqual([
+      otherCompanion.id,
+    ])
+    expect(reopened.orderMessages).toHaveLength(1)
+  })
+
+  it("keeps direct order replies associated through encrypted intake, late parents and reload", async () => {
+    const { owner, database, pubkey, secret } = setup()
+    const buyerSecret = generateSecretKey()
+    const buyer = getPublicKey(buyerSecret)
+    const order = createPrivateMessageRumor({
+      kind: 16,
+      pubkey: buyer,
+      created_at: 1_700_000_000,
+      tags: [
+        ["p", pubkey],
+        ["subject", "Order thread"],
+        ["type", "1"],
+        ["order", "thread"],
+        ["amount", "21"],
+        ["item", `30402:${pubkey}:product`, "1"],
+      ],
+      content: "",
+    })
+    const note = createParticipantMessageRumor({
+      senderPubkey: buyer,
+      recipientPubkeys: [pubkey],
+      appId: "market",
+      subject: "thread",
+      orderReference: "thread",
+      content: "Order note",
+      createdAt: 1_700_000_001,
+    })
+    // Historical/current external peers need not repeat subject on each reply.
+    const reply = createParticipantMessageRumor({
+      senderPubkey: pubkey,
+      recipientPubkeys: [buyer],
+      appId: "merchant",
+      replyTo: note.id,
+      content: "Merchant reply",
+      createdAt: 1_700_000_002,
+    })
+    await owner.ingest(await admitFixture(wrapEvent(reply, secret, pubkey)), [
+      "wss://fixture.example",
+    ])
+    await owner.waitForDecode()
+    expect(owner.getSnapshot().orderMessages).toHaveLength(0)
+    for (const rumor of [order, note]) {
+      await owner.ingest(
+        await admitFixture(wrapEvent(rumor, buyerSecret, pubkey)),
+        ["wss://fixture.example"]
+      )
+    }
+    await owner.waitForDecode()
+    expect(
+      owner.getSnapshot().orderMessages.map((message) => message.id)
+    ).toEqual([order.id, note.id, reply.id])
+    const directReply = owner
+      .getSnapshot()
+      .directMessages.find((message) => message.id === reply.id)!
+    expect(directReply.orderContext?.wireOrderId).toBe("thread")
+    const followup = createParticipantMessageRumor({
+      senderPubkey: buyer,
+      recipientPubkeys: [pubkey],
+      appId: "market",
+      replyTo: directReply.id,
+      subject: directReply.orderContext?.wireOrderId,
+      orderReference: directReply.orderContext?.wireOrderId,
+      content: "Buyer reply",
+      createdAt: 1_700_000_003,
+    })
+    expect(followup.tags).toContainEqual(["subject", "thread"])
+    expect(followup.tags).toContainEqual(["order", "thread"])
+    await owner.ingest(
+      await admitFixture(wrapEvent(followup, buyerSecret, pubkey)),
+      ["wss://fixture.example"]
+    )
+    await owner.waitForDecode()
+    const retained = await readRetainedCommerceInbox(
+      pubkey,
+      () => true,
+      database
+    )
+    expect(retained.orderMessages.map((message) => message.id)).toEqual([
+      order.id,
+      note.id,
+      reply.id,
+      followup.id,
+    ])
+    expect(
+      retained.directMessages.map(
+        (message) => message.orderContext?.wireOrderId
+      )
+    ).toEqual(["thread", "thread", "thread"])
   })
 
   it("fences old-account reads and late decrypt commits", async () => {

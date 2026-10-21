@@ -1,5 +1,9 @@
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import {
+  buildCommerceSupportTagsFromEvents,
+  requiredCommerceFeatures,
+} from "@conduit/core/protocol/commerce-capabilities"
+import {
   EVENT_KINDS,
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
   CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG,
@@ -157,14 +161,21 @@ export async function publishCheckoutSparkSettledBoundOrder(
   ) {
     throw new Error("Settled checkout order is not durably prepared.")
   }
-  return publishBoundOrderFromFrozenPlan(input, plan, now, dependencies)
+  return publishBoundOrderFromFrozenPlan(
+    input,
+    plan,
+    now,
+    dependencies,
+    stored.orderWireFormat ?? "conduit"
+  )
 }
 
 async function publishBoundOrderFromFrozenPlan(
   input: PublishCheckoutSparkBoundOrderInput,
   plan: CheckoutSparkSettledPlan,
   now: number,
-  dependencies: PublishCheckoutSparkBoundOrderDependencies
+  dependencies: PublishCheckoutSparkBoundOrderDependencies,
+  orderWireFormat: "conduit" | "open_markets_v2"
 ): Promise<PublishedCheckoutSparkBoundOrder> {
   // Parse into a strict payload so a caller cannot accidentally forward local
   // plan, funding invoice, split details, or other payment metadata to Merchant.
@@ -414,6 +425,8 @@ async function publishBoundOrderFromFrozenPlan(
 
   const lifecycle: StagedOrderLifecycleInput = {
     orderId: plan.orderId,
+    // The complete terms and payment marker survive the numeric envelope.
+    orderWireFormat,
     buyerPubkey,
     buyerIdentityKind: guest ? "guest_ephemeral" : "signed_in",
     ...(guest ? { guestSessionExpiresAt: guest.expiresAt } : {}),
@@ -484,6 +497,14 @@ async function publishBoundOrderFromFrozenPlan(
     ],
     "market"
   )
+  if (orderWireFormat === "open_markets_v2")
+    rumor.tags.push(
+      ...buildCommerceSupportTagsFromEvents(
+        order.items.map((item) => item.productId),
+        requiredCommerceFeatures(order, rumor.tags),
+        input.sourceEvents ?? []
+      )
+    )
   rumor.content = JSON.stringify(order)
 
   let deliveryAccepted = false

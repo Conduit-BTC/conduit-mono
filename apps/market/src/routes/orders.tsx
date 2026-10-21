@@ -9,7 +9,6 @@ import {
   useState,
 } from "react"
 import {
-  appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
   config,
   isQuantumRouterExecutionEnabled,
@@ -20,7 +19,6 @@ import {
   formatEventMarketPickupDate,
   getFutureMarketClaimRef,
   deriveProtectedReadPresentationState,
-  EVENT_KINDS,
   formatNpub,
   formatPubkey,
   getAccountSigner,
@@ -41,9 +39,11 @@ import {
   replaceOrderPaymentTarget,
   retryOrderRelayDelivery,
   resolveWalletPaymentInstance,
+  PrivateMessageRelayReadinessError,
   useAuth,
   useCommerceInbox,
-  type PrivateMessageEvent,
+  useConduitSession,
+  useInboxDeclaration,
   useProfile,
   useProfiles,
   type CommercePriceLike,
@@ -52,6 +52,7 @@ import {
   type ShopperPriceDisplay,
   type ShopperPriceDisplayOptions,
 } from "@conduit/core"
+import { assertOrderMessagingReady } from "@conduit/core/protocol/order-messaging-readiness"
 import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
 import {
   CommerceInboxRecovery,
@@ -64,6 +65,7 @@ import {
   Button,
   LightningStrikeOverlay,
   OrderMessagesWidget,
+  OrderMessagingReadinessNotice,
   ProtectedInboxNotice,
   SearchInput,
   SignerRecoveryNotice,
@@ -123,7 +125,7 @@ import {
 } from "../components/SparkFeeApprovalDialog"
 import {
   mergeBuyerOrderConversations,
-  type BuyerConversation,
+  type BuyerOrderEntry,
 } from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
@@ -204,10 +206,8 @@ import {
   doesAuthorizedAnonZapPricingMatchOrder,
   type CheckoutZapMode,
 } from "../lib/checkout-payment"
-import {
-  getDeliveryNotice,
-  publishBuyerOrderMessage,
-} from "../lib/order-publish"
+import { publishBuyerOrderReply } from "../lib/order-reply"
+import { getDeliveryNotice } from "../lib/order-publish"
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
@@ -307,12 +307,7 @@ const TONE_VARIANT: Record<
 }
 
 /** A merged order: durable local lifecycle and/or relay conversation. */
-interface OrderRow {
-  id: string
-  orderId: string
-  merchantPubkey: string
-  lifecycle?: OrderLifecycle
-  conversation?: BuyerConversation
+interface OrderRow extends BuyerOrderEntry {
   vm: OrderViewModel
   headerStatus: OrderHeaderStatus
   receipt?: PaymentReceipt | null
@@ -646,18 +641,23 @@ function OrderItemsSection({
           const image = product
             ? getProductImageCandidates(product)[0]
             : undefined
-          const price = formatPrice(
-            {
-              price: item.priceAtPurchase,
-              currency: item.currency,
-              priceSats:
-                item.currency === "SATS" ? item.priceAtPurchase : undefined,
-              sourcePrice: item.sourcePrice,
-            },
-            {
-              allowZero: item.fulfillment?.type === "event_market_pickup",
-            }
-          )
+          const price =
+            item.priceAtPurchase === undefined
+              ? { primary: "Unit price not supplied", secondary: undefined }
+              : formatPrice(
+                  {
+                    price: item.priceAtPurchase,
+                    currency: item.currency,
+                    priceSats:
+                      item.currency === "SATS"
+                        ? item.priceAtPurchase
+                        : undefined,
+                    sourcePrice: item.sourcePrice,
+                  },
+                  {
+                    allowZero: item.fulfillment?.type === "event_market_pickup",
+                  }
+                )
           return (
             <div
               key={`${item.productId}-${index}`}
@@ -898,6 +898,19 @@ function OrderDetail({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
   const [replyText, setReplyText] = useState("")
+  const messagingSession = useConduitSession()
+  const replyInbox = useInboxDeclaration(buyerPubkey, {
+    enabled:
+      !guestIdentity && signerReady && messagingSession.relaySettingsReady,
+    relayScope: messagingSession.relayScope,
+  })
+  const replyRequiresInbox =
+    (row.lifecycle?.orderWireFormat !== undefined &&
+      row.lifecycle.orderWireFormat !== "conduit") ||
+    row.conversation?.messages?.some(
+      (message) =>
+        message.type === "order" && message.wireFormat === "open_markets"
+    ) === true
   const [replyNotice, setReplyNotice] = useState<{
     buyerPubkey: string
     merchantPubkey: string
@@ -1647,22 +1660,28 @@ function OrderDetail({
       id: row.orderId,
       buyerPubkey,
       merchantPubkey: row.merchantPubkey,
-      items: (row.lifecycle?.items ?? vm.items).map((item) => ({
-        productId: item.productId,
-        familyProductId: item.familyProductId,
-        selectedSpecifications: item.selectedSpecifications,
-        format: item.format ?? "physical",
-        quantity: item.quantity,
-        priceAtPurchase: item.priceAtPurchase,
-        currency: item.currency,
-        fulfillment:
-          item.fulfillment?.type === "event_market_pickup"
-            ? item.fulfillment
-            : undefined,
-        sourcePrice: item.sourcePrice,
-        shippingCostSats: item.shippingCostSats,
-        sourceShippingCost: item.sourceShippingCost,
-      })),
+      items: (row.lifecycle?.items ?? vm.items).map((item) => {
+        if (item.priceAtPurchase === undefined)
+          throw new Error(
+            "The original item prices are unavailable. Contact the merchant before retrying."
+          )
+        return {
+          productId: item.productId,
+          familyProductId: item.familyProductId,
+          selectedSpecifications: item.selectedSpecifications,
+          format: item.format ?? "physical",
+          quantity: item.quantity,
+          priceAtPurchase: item.priceAtPurchase,
+          currency: item.currency,
+          fulfillment:
+            item.fulfillment?.type === "event_market_pickup"
+              ? item.fulfillment
+              : undefined,
+          sourcePrice: item.sourcePrice,
+          shippingCostSats: item.shippingCostSats,
+          sourceShippingCost: item.sourceShippingCost,
+        }
+      }),
       subtotal: row.lifecycle?.totalSats ?? vm.totalSats ?? 0,
       currency: row.lifecycle?.currency ?? vm.currency,
       shippingCostSats: row.lifecycle?.shippingCostSats ?? 0,
@@ -2287,38 +2306,17 @@ function OrderDetail({
     mutationFn: async () => {
       if (guestIdentity) throw new Error("Guest orders cannot send messages")
       if (!signerReady) throw new Error("Reconnect your signer to send.")
-      if (!replyText.trim()) throw new Error("Message is required")
-      if (!getAccountSigner()) throw new Error("Signer not connected")
-
-      const rumor: PrivateMessageEvent = {
-        id: "",
-        pubkey: buyerPubkey,
-        kind: 16,
-        tags: [],
-        content: "",
-      }
-      rumor.kind = EVENT_KINDS.ORDER
-      rumor.created_at = Math.floor(Date.now() / 1000)
-      rumor.tags = appendConduitClientTag(
-        [
-          ["p", row.merchantPubkey],
-          ["type", "message"],
-          ["order", vm.orderId],
-        ],
-        "market"
-      )
-      rumor.content = JSON.stringify({
-        note: replyText.trim(),
-        orderId: vm.orderId,
-        merchantPubkey: row.merchantPubkey,
-        buyerPubkey,
-        createdAt: Date.now(),
-      })
-      const delivery = await publishBuyerOrderMessage(
-        rumor,
-        row.merchantPubkey,
-        buyerPubkey,
+      if (replyRequiresInbox) assertOrderMessagingReady(replyInbox.status)
+      const delivery = await publishBuyerOrderReply(
         {
+          buyerPubkey,
+          merchantPubkey: row.merchantPubkey,
+          orderId: vm.orderId,
+          note: replyText,
+          conversation: row.conversation,
+        },
+        {
+          orderContext: row.lifecycle,
           accountPubkey: authenticatedPubkey ?? null,
           authenticatedPubkey: authenticatedPubkey ?? null,
           shouldContinue: shouldContinueBuyerSession,
@@ -2356,6 +2354,14 @@ function OrderDetail({
           queryKey: ["buyer-messages-live", buyerPubkey],
         }),
       ]).catch(() => console.warn("Could not refresh accepted order reply"))
+    },
+    onError: (error) => {
+      if (
+        error instanceof PrivateMessageRelayReadinessError &&
+        error.reason === "sender_not_ready"
+      ) {
+        replyInbox.refetch()
+      }
     },
   })
 
@@ -3542,16 +3548,26 @@ function OrderDetail({
           onReplyChange={setReplyText}
           onSend={() => replyMutation.mutate()}
           sending={replyMutation.isPending}
+          sendDisabled={replyRequiresInbox && replyInbox.status !== "ready"}
           historyIncomplete={historyIncomplete}
           notice={
-            replyNotice?.buyerPubkey === buyerPubkey &&
-            replyNotice.merchantPubkey === row.merchantPubkey &&
-            replyNotice.orderId === vm.orderId &&
-            replyNotice.text ? (
-              <p role="status" className="text-sm text-[var(--warning-text)]">
-                {replyNotice.text}
-              </p>
-            ) : null
+            <>
+              {replyRequiresInbox && (
+                <OrderMessagingReadinessNotice
+                  status={replyInbox.status}
+                  checking={replyInbox.isRefetching}
+                  onRetry={replyInbox.refetch}
+                />
+              )}
+              {replyNotice?.buyerPubkey === buyerPubkey &&
+              replyNotice.merchantPubkey === row.merchantPubkey &&
+              replyNotice.orderId === vm.orderId &&
+              replyNotice.text ? (
+                <p role="status" className="text-sm text-[var(--warning-text)]">
+                  {replyNotice.text}
+                </p>
+              ) : null}
+            </>
           }
           readOnly={!signerReady}
           error={
@@ -3885,7 +3901,7 @@ function OrdersPage() {
       conversations
     )
     for (const entry of entries) {
-      const { id, orderId, merchantPubkey } = entry
+      const { orderId, merchantPubkey } = entry
       const settlement = entry.lifecycle
         ? buyerSettlements.get(orderId)
         : undefined
@@ -3898,11 +3914,7 @@ function OrdersPage() {
         checkoutSparkSettlement: settlement,
       })
       rows.push({
-        id,
-        orderId,
-        merchantPubkey,
-        lifecycle: entry.lifecycle,
-        conversation: entry.conversation,
+        ...entry,
         vm,
         receipt: settlement?.receipt,
         headerStatus: presentSettledRouterHeaderStatus(

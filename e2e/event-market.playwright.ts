@@ -1,4 +1,9 @@
 import { expect, test, type Page } from "@playwright/test"
+import {
+  decodeConduitCommerceExtension,
+  encodeOpenMarketsBuyerMessage,
+} from "@conduit/core/protocol/commerce-wire"
+import { buildCommerceSupportTagsFromEvents } from "@conduit/core/protocol/commerce-capabilities"
 import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -24,6 +29,10 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
+import {
+  observeCheckoutSubmit,
+  recordSmokeDiagnostic,
+} from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 
@@ -948,7 +957,11 @@ function decryptPrivatePublications(
 }
 
 function rumorType(rumor: PrivateRumor): string | undefined {
-  return rumor.tags.find((tag) => tag[0] === "type")?.[1]
+  // Kind-14 companions also use a conduit marker, but are ordinary chat.
+  // Only commerce envelopes carry the versioned complete-order extension.
+  const message =
+    rumor.kind === 16 ? decodeConduitCommerceExtension(rumor) : rumor
+  return message.tags.find((tag) => tag[0] === "type")?.[1]
 }
 
 function formatPickupClaimCode(claimRef: string): string {
@@ -1626,14 +1639,23 @@ async function createAssignedPickupOrder(
     ],
   })
   const template = createMerchantTemplateProductEvent(createdAt)
-  const product = options.zeroCost
-    ? signEvent(MERCHANT_SECRET, {
-        ...template,
-        tags: template.tags.map((tag) =>
-          tag[0] === "price" ? ["price", "0", "SATS"] : tag
-        ),
-      })
-    : template
+  // This checkout models a current Merchant listing. Keep the shared template
+  // unchanged for historical and discovery fixtures that do not claim support.
+  const product = signEvent(MERCHANT_SECRET, {
+    ...template,
+    tags: [
+      ...template.tags.map((tag) =>
+        options.zeroCost && tag[0] === "price" ? ["price", "0", "SATS"] : tag
+      ),
+      [
+        "conduit_commerce",
+        "2",
+        "per_item_shipping",
+        "event_pickup",
+        "router_checkout",
+      ],
+    ],
+  })
   relay.seed(
     calendar,
     market,
@@ -1740,8 +1762,36 @@ async function createAssignedPickupOrder(
   await page.getByRole("button", { name: "Order", exact: true }).click()
   await expect(page.getByRole("heading", { name: "Checkout" })).toBeVisible()
   const orderStart = relay.publications.length
-  await page.getByRole("button", { name: /^Send order$/i }).click()
-  await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  let lastSubmitObservation: Record<string, unknown> = {
+    observationAvailable: false,
+  }
+  const submitObservation = await observeCheckoutSubmit(page, (snapshot) => {
+    lastSubmitObservation = snapshot
+  })
+  try {
+    await page.getByRole("button", { name: /^Send order$/i }).click()
+    await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  } catch (error) {
+    const values = await Promise.race([
+      submitObservation
+        .evaluate((observation) => observation.read())
+        .catch(() => lastSubmitObservation),
+      new Promise<Record<string, unknown>>((resolve) =>
+        setTimeout(() => resolve(lastSubmitObservation), 1_000)
+      ),
+    ])
+    recordSmokeDiagnostic(test.info(), "event-checkout-submit", values)
+    throw error
+  } finally {
+    // Navigation destroys the observer's execution context; cleanup must not
+    // replace the original assertion or prolong a stalled browser failure.
+    await Promise.race([
+      submitObservation
+        .evaluate((observation) => observation.dispose())
+        .catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+    ])
+  }
   const orderMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -1751,7 +1801,15 @@ async function createAssignedPickupOrder(
       )
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orderMessages().length).toBe(1)
-  const order = JSON.parse(orderMessages()[0]!.rumor.content) as {
+  expect(orderMessages()[0]!.rumor.tags).toContainEqual(["type", "1"])
+  expect(
+    orderMessages()[0]!.rumor.tags.some(
+      (tag) => tag[0] === "conduit" && tag[1] === "2" && tag[2] === "order"
+    )
+  ).toBe(true)
+  const order = JSON.parse(
+    decodeConduitCommerceExtension(orderMessages()[0]!.rumor).content
+  ) as {
     id: string
     items: Array<{
       fulfillment?: {
@@ -2008,6 +2066,13 @@ test("Event Market variable products select a purchasable variation before check
         ["title", name],
         ["price", "0", "SAT"],
         [
+          "conduit_commerce",
+          "2",
+          "per_item_shipping",
+          "event_pickup",
+          "router_checkout",
+        ],
+        [
           "type",
           dTag === "future-handoff-soap" ? "variable" : "variation",
           "physical",
@@ -2127,6 +2192,10 @@ test("Event Market variable products select a purchasable variation before check
   await expect(
     page.getByText(/Pickup from event organizer/).first()
   ).toBeVisible()
+  const compatibility = page.getByRole("combobox", {
+    name: "Order compatibility",
+  })
+  await expect(compatibility).toHaveCount(0)
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/)
@@ -2139,7 +2208,15 @@ test("Event Market variable products select a purchasable variation before check
       )
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orders().length).toBe(1)
-  const order = JSON.parse(orders()[0]!.rumor.content) as {
+  expect(orders()[0]!.rumor.tags).toContainEqual(["type", "1"])
+  expect(
+    orders()[0]!.rumor.tags.some(
+      (tag) => tag[0] === "conduit" && tag[1] === "2" && tag[2] === "order"
+    )
+  ).toBe(true)
+  const order = JSON.parse(
+    decodeConduitCommerceExtension(orders()[0]!.rumor).content
+  ) as {
     items: Array<{
       productId: string
       selectedSpecifications?: Array<{ key: string; value: string }>
@@ -2309,7 +2386,9 @@ test("two historical future market products retain one authenticated order and p
     )
   ).filter((message) => rumorType(message.rumor) === "order")
   expect(originalOrders).toHaveLength(1)
-  expect(JSON.parse(originalOrders[0]!.rumor.content)).toEqual(order)
+  expect(
+    JSON.parse(decodeConduitCommerceExtension(originalOrders[0]!.rumor).content)
+  ).toEqual(order)
   relay.seed(
     ...originalOrderWraps,
     signEvent(ORGANIZER_SECRET, {
@@ -5085,6 +5164,13 @@ test("guest retains a private event receipt and merchant verifies it @market @me
       ["t", "handmade"],
       ["t", "home"],
       ["price", "0", "SAT"],
+      [
+        "conduit_commerce",
+        "2",
+        "per_item_shipping",
+        "event_pickup",
+        "router_checkout",
+      ],
       ["conduit_event_guest", "contact_optional"],
       ["type", "simple", "physical"],
       ["stock", "5"],
@@ -5119,6 +5205,10 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   await expect(page.getByLabel("Phone", { exact: true })).toHaveCount(0)
   await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
   await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
+  const compatibility = page.getByRole("combobox", {
+    name: "Order compatibility",
+  })
+  await expect(compatibility).toHaveCount(0)
   const before = relay.publications.length
   await page.getByRole("button", { name: "Send order", exact: true }).click()
   await expect(
@@ -5151,7 +5241,15 @@ test("guest retains a private event receipt and merchant verifies it @market @me
       decryptPrivatePublications(relay.publications, MERCHANT_SECRET, before)
     ).filter((message) => rumorType(message.rumor) === "order")
   await expect.poll(() => orders().length).toBe(1)
-  const order = JSON.parse(orders()[0]!.rumor.content) as {
+  expect(orders()[0]!.rumor.tags).toContainEqual(["type", "1"])
+  expect(
+    orders()[0]!.rumor.tags.some(
+      (tag) => tag[0] === "conduit" && tag[1] === "2" && tag[2] === "order"
+    )
+  ).toBe(true)
+  const order = JSON.parse(
+    decodeConduitCommerceExtension(orders()[0]!.rumor).content
+  ) as {
     id: string
     buyerIdentityKind: string
     guestContact?: unknown
@@ -5161,7 +5259,7 @@ test("guest retains a private event receipt and merchant verifies it @market @me
   expect(order.guestContact).toBeUndefined()
   expect(order.contactFreePickup.label).toBe("Soap fan")
   expect(order.contactFreePickup.receiptCommitment).toMatch(/^[0-9a-f]{64}$/)
-  expect(orders()[0]!.rumor.content).not.toContain("claimSecret")
+  expect(JSON.stringify(orders()[0]!.rumor)).not.toContain("claimSecret")
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   await expect(page.getByText("Handoff name: Soap fan")).toBeVisible()
   await page.getByLabel("Verify customer receipt").setInputFiles(receiptPath)
@@ -5450,7 +5548,8 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         ).filter(
           (message) =>
             rumorType(message.rumor) === "status_update" &&
-            JSON.parse(message.rumor.content).status === "complete"
+            JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+              .status === "complete"
         ).length
     )
     .toBe(1)
@@ -6874,7 +6973,8 @@ test("retention before a failed creation pointer save exposes exact retry withou
 function signedBuyerOrder(
   order: Record<string, unknown> & { id: string },
   createdAt: number,
-  extraTags: readonly string[][] = []
+  extraTags: readonly string[][] = [],
+  wireFormat: "conduit" | "open_markets_v2" = "conduit"
 ): SignedEvent[] {
   const draft = {
     kind: 16,
@@ -6888,7 +6988,19 @@ function signedBuyerOrder(
     ],
     content: JSON.stringify(order),
   }
-  const rumor = { ...draft, id: getEventHash(draft) }
+  const wire =
+    wireFormat === "open_markets_v2"
+      ? encodeOpenMarketsBuyerMessage(
+          draft,
+          {
+            buyerPubkey: BUYER_PUBKEY,
+            merchantPubkey: MERCHANT_PUBKEY,
+            orderId: order.id,
+          },
+          2
+        )
+      : draft
+  const rumor = { ...wire, id: getEventHash(wire) }
   return [MERCHANT_PUBKEY, BUYER_PUBKEY].map(
     (recipient) =>
       createWrap(
@@ -7099,7 +7211,8 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
         ).filter(
           (message) =>
             rumorType(message.rumor) === "status_update" &&
-            JSON.parse(message.rumor.content).status === "complete"
+            JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+              .status === "complete"
         ).length
     )
     .toBe(1)
@@ -7276,7 +7389,8 @@ test("saved prepaid acceptance publication resumes after reload @merchant @occur
           ).filter(
             (message) =>
               rumorType(message.rumor) === "status_update" &&
-              JSON.parse(message.rumor.content).status === "paid"
+              JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+                .status === "paid"
           ).length
       )
       .toBe(1)
@@ -7440,7 +7554,8 @@ for (const scenario of [
           ).filter(
             (message) =>
               rumorType(message.rumor) === "status_update" &&
-              JSON.parse(message.rumor.content).status === "paid"
+              JSON.parse(decodeConduitCommerceExtension(message.rumor).content)
+                .status === "paid"
           ).length
       )
       .toBe(1)
@@ -7899,14 +8014,26 @@ test("conflicting same-ID zero-cost order cannot inherit saved acceptance @merch
     (key) => localStorage.removeItem(key),
     SYNTHETIC_SIGNER_UNAVAILABLE_KEY
   )
+  // Change the signed terms inside the same numeric conversation. A named
+  // order with this raw ID is a separate legacy identity, not this conflict.
+  const changedOrder = orderSchema.parse({
+    ...order,
+    items: order.items.map((item) => ({ ...item, quantity: 2 })),
+    subtotal: 0,
+  })
   relay.seed(
     ...signedBuyerOrder(
-      {
-        ...order,
-        items: order.items.map((item) => ({ ...item, quantity: 2 })),
-        subtotal: 0,
-      },
-      createdAt - 60
+      changedOrder,
+      createdAt - 60,
+      [
+        ...buildEventMarketOrderRumorTags(changedOrder),
+        ...buildCommerceSupportTagsFromEvents(
+          changedOrder.items.map((item) => item.productId),
+          ["event_pickup"],
+          [product]
+        ),
+      ],
+      "open_markets_v2"
     )
   )
   await page.reload()

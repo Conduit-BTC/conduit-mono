@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { createHash } from "node:crypto"
 import {
   orderSchema,
+  openMarketsLocalOrderId,
   type CheckoutSparkMerchantOrderWitness,
   type CheckoutSparkMerchantSettlementRecord,
   type MerchantConversationSummary,
@@ -120,6 +121,59 @@ function binding(paid: readonly string[] = []): MerchantOrderSettlementBinding {
 }
 
 describe("exact merchant order settlement overlay", () => {
+  it("joins raw routed settlement commitments through the authenticated numeric conversation alias", () => {
+    const alias = openMarketsLocalOrderId(orderId, buyer, merchant)
+    const numeric = {
+      ...orderMessage,
+      orderId: alias,
+      wireOrderId: orderId,
+      wireFormat: "open_markets" as const,
+      commerceExtensionVersion: 2 as const,
+      conduitExtension: true,
+      payload: { ...orderPayload, id: alias },
+    } as ParsedOrderMessage
+    const numericConversation = {
+      ...conversation,
+      id: alias,
+      orderId: alias,
+      messages: [numeric],
+    }
+    const observed = {
+      ...binding([merchantLeg, supplierLeg]),
+      receiverSettlement: {
+        creditVerified: false,
+        merchantVerified: false,
+        commerceVerified: false,
+        feePending: false,
+        recipientUnverified: false,
+        receiverSettlementObserved: true,
+        receiverCommerceObserved: true,
+      },
+    }
+    expect(
+      getCheckoutSparkOrderSettlementRecord(numericConversation, [observed])
+    ).toEqual(observed.settlement)
+    expect(
+      getCheckoutSparkOrderSettlement(numericConversation, [observed])
+        ?.receiverCommerceObserved
+    ).toBe(true)
+    expect(
+      getCheckoutSparkOrderSettlementRecord(
+        { ...numericConversation, buyerPubkey: "c".repeat(64) },
+        [observed]
+      )
+    ).toBeNull()
+    expect(
+      getCheckoutSparkOrderSettlementRecord(
+        {
+          ...numericConversation,
+          messages: [{ ...numeric, wireOrderId: "different" }],
+        },
+        [observed]
+      )
+    ).toBeNull()
+  })
+
   it("shows exact witnessed receiver observations without confirming commerce or manufacturing Spark facts", () => {
     const observed = {
       witness,

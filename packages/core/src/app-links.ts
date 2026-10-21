@@ -147,7 +147,8 @@ export function inferConduitAppOrigin(
 /** Build a safe Merchant order-detail URL from a deployment origin. */
 export function buildMerchantOrderReviewUrl(
   merchantOrigin: string,
-  orderId: string
+  orderId: string,
+  buyerPubkey?: string
 ): string {
   const trimmedOrderId = orderId.trim()
   if (!trimmedOrderId) throw new Error("Order review URL requires an order id.")
@@ -164,6 +165,11 @@ export function buildMerchantOrderReviewUrl(
 
   url.pathname = "/orders"
   url.searchParams.set("order", trimmedOrderId)
+  if (buyerPubkey !== undefined) {
+    if (!buyerPubkey.trim())
+      throw new Error("Order review URL requires a counterparty.")
+    url.searchParams.set("counterparty", buyerPubkey.trim().toLowerCase())
+  }
   return url.toString()
 }
 

@@ -874,7 +874,7 @@ describe("buyer order publishing", () => {
     ])
     expect(companion.content).toBe(
       "A new order was sent to you through Conduit Market.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=guest-order"
+        "Review it at: https://sell.conduit.market/orders?order=guest-order&counterparty=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
     expect(companion.content).not.toContain("[")
     expect(companion.content).not.toContain("](")
@@ -1201,7 +1201,7 @@ describe("buyer order publishing", () => {
     const companion = calls[1]?.rumor
     expect(companion?.content).toBe(
       "A new order was sent to you through Conduit Market.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=order+%2F%3F%26%3D%E2%9C%93"
+        "Review it at: https://sell.conduit.market/orders?order=order+%2F%3F%26%3D%E2%9C%93&counterparty=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     )
     expect(companion?.tags?.map((tag) => tag[0])).toEqual([
       "p",
@@ -1305,7 +1305,7 @@ describe("buyer order publishing", () => {
     expect(companion.content).toBe(
       "A new guest order was sent to you through Conduit Market.\n" +
         "This buyer does not receive Nostr replies. Review the order and follow up using the email or phone provided there.\n" +
-        "Review it at: https://sell.conduit.market/orders?order=guest-order"
+        "Review it at: https://sell.conduit.market/orders?order=guest-order&counterparty=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     )
     expect(companion.content).not.toContain("guest-private@example.com")
     expect(companion.content).not.toContain("+1-555-0100")
@@ -1498,6 +1498,226 @@ describe("buyer order publishing", () => {
       )
     }
   })
+
+  it.each(["signed_in", "guest_ephemeral"] as const)(
+    "sends one acknowledged numeric %s order notification through the real encrypted boundary",
+    async (identityKind) => {
+      const merchantSigner = plainTestSigner(NDKPrivateKeySigner.generate())
+      const merchantPubkey = await merchantSigner.getPublicKey()
+      const orderId = "numeric-notification"
+      const buyerSigner = plainTestSigner(NDKPrivateKeySigner.generate())
+      if (activeSignerLease) removeSigner(activeSignerLease)
+      activeSignerLease = setSigner(buyerSigner)
+      const buyerIdentity =
+        identityKind === "guest_ephemeral"
+          ? createGuestOrderSigningIdentity(orderId, merchantPubkey)
+          : {
+              kind: "signed_in" as const,
+              pubkey: activeSignerLease.pubkey,
+              signer: activeSignerLease,
+            }
+      const authoritativeOrder = orderRumor({
+        tags: [
+          ["p", merchantPubkey],
+          ["type", "order"],
+          ["order", orderId],
+        ],
+        content: JSON.stringify({
+          id: orderId,
+          merchantPubkey,
+          buyerPubkey: buyerIdentity.pubkey,
+          buyerIdentityKind: identityKind,
+          items: [
+            {
+              productId: `30402:${merchantPubkey}:private-product`,
+              quantity: 1,
+              priceAtPurchase: 21_000,
+              currency: "SATS",
+            },
+          ],
+          subtotal: 21_000,
+          currency: "SATS",
+          ...(identityKind === "guest_ephemeral"
+            ? {
+                guestContact: {
+                  email: "guest-private@example.com",
+                  phone: "+1-555-0100",
+                },
+              }
+            : {}),
+          createdAt: 100_000,
+        }),
+      })
+      const inboxEvidence = createInMemoryInboxDeclarationEvidenceRepository()
+      const merchantRelay = "wss://merchant.inbox.conduit.market"
+      const buyerRelay = "wss://buyer.inbox.conduit.market"
+      let buyerDeclarationId = ""
+      for (const declarationSigner of identityKind === "signed_in"
+        ? [merchantSigner, buyerSigner]
+        : [merchantSigner]) {
+        const declarationPubkey = await declarationSigner.getPublicKey()
+        const signedEvent = await admitFixture(
+          await declarationSigner.signEvent({
+            pubkey: declarationPubkey,
+            kind: 10050,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              [
+                "relay",
+                declarationPubkey === merchantPubkey
+                  ? merchantRelay
+                  : buyerRelay,
+              ],
+            ],
+            content: "",
+          })
+        )
+        if (declarationPubkey !== merchantPubkey)
+          buyerDeclarationId = signedEvent.id
+        await mergeInboxDeclarationEvidence(
+          {
+            pubkey: declarationPubkey,
+            signedEvent,
+            sourceRelayUrls: sharedInboxDiscoveryRelayUrls(),
+            sharedSourceRelayUrls: sharedInboxDiscoveryRelayUrls(),
+          },
+          inboxEvidence
+        )
+      }
+      const networkRepository =
+        createInMemoryAccountNetworkLocalStateRepository()
+      const wraps: Array<{
+        kind: number
+        event: NDKEvent
+        recipients: readonly string[]
+      }> = []
+      let releaseOrderAck!: () => void
+      const orderAck = new Promise<void>((resolve) => {
+        releaseOrderAck = resolve
+      })
+      let orderStarted!: () => void
+      const orderStarting = new Promise<void>((resolve) => {
+        orderStarted = resolve
+      })
+      let acknowledged = false
+      let cacheAttempts = 0
+      let ownInboxChecks = 0
+      const publishing = publishBuyerOrderMessage(
+        authoritativeOrder,
+        merchantPubkey,
+        buyerIdentity,
+        {
+          orderContext: {
+            orderId,
+            buyerPubkey: buyerIdentity.pubkey,
+            merchantPubkey,
+            orderWireFormat: "open_markets",
+          },
+          accountPubkey:
+            identityKind === "signed_in" ? buyerIdentity.pubkey : null,
+          authenticatedPubkey:
+            identityKind === "signed_in" ? buyerIdentity.pubkey : null,
+          cacheBuyerOrderRumorFn: async () => {
+            cacheAttempts += 1
+            return null
+          },
+          publishPrivateMessageFn: async (input) =>
+            publishPrivateMessage({
+              ...input,
+              recipientInboxRelays: [merchantRelay],
+              senderInboxRelays: [buyerRelay],
+              accountNetworkLocalStateRepository: networkRepository,
+              inboxDeclarationEvidenceRepository: inboxEvidence,
+              inspectOwnInboxReadiness: async () => {
+                ownInboxChecks += 1
+                return {
+                  state: "ready",
+                  eventId: buyerDeclarationId,
+                  relayUrls: [buyerRelay],
+                  stale: false,
+                  distributionRepairable: false,
+                }
+              },
+              publishFn: (async (event, options) => {
+                if (input.rumorKind === EVENT_KINDS.ORDER) {
+                  orderStarted()
+                  await orderAck
+                  acknowledged = true
+                } else expect(acknowledged).toBe(true)
+                wraps.push({
+                  kind: input.rumorKind,
+                  event: new NDKEvent(undefined, event),
+                  recipients: [...(options.recipientPubkeys ?? [])],
+                })
+                return {
+                  successfulRelayUrls: [...(options.exclusiveRelayUrls ?? [])],
+                  failedRelayUrls: [],
+                }
+              }) as never,
+            }),
+        }
+      )
+      await orderStarting
+      expect(wraps).toHaveLength(0)
+      releaseOrderAck()
+      const result = await publishing
+      expect(await result.companionNotification).toBe("sent")
+      const merchantWraps = wraps.filter((wrap) =>
+        wrap.recipients.includes(merchantPubkey)
+      )
+      expect(merchantWraps.map((wrap) => wrap.kind)).toEqual([
+        EVENT_KINDS.ORDER,
+        EVENT_KINDS.DIRECT_MESSAGE,
+      ])
+      const order = await unwrapGiftWrap(
+        merchantWraps[0]!.event,
+        merchantSigner
+      )
+      const companion = await unwrapGiftWrap(
+        merchantWraps[1]!.event,
+        merchantSigner
+      )
+      expect(order.status).toBe("ok")
+      expect(companion.status).toBe("ok")
+      if (order.status !== "ok" || companion.status !== "ok")
+        throw new Error("Expected numeric order and advisory to decrypt")
+      expect(order.rumor.tags).toContainEqual(["type", "1"])
+      expect(companion.rumor.tags).toContainEqual(["order", orderId])
+      expect(companion.rumor.tags).toContainEqual([
+        "conduit",
+        "order-companion",
+        "1",
+        order.rumor.id,
+      ])
+      expect(companion.rumor.tags.filter((tag) => tag[0] === "p")).toEqual([
+        ["p", merchantPubkey],
+      ])
+      for (const value of [
+        "guest-private@example.com",
+        "+1-555-0100",
+        "private-product",
+        "21000",
+      ]) {
+        expect(companion.rumor.content).not.toContain(value)
+        expect(JSON.stringify(companion.rumor.tags)).not.toContain(value)
+      }
+      expect(
+        wraps.filter((wrap) => wrap.kind === EVENT_KINDS.DIRECT_MESSAGE)
+      ).toHaveLength(1)
+      expect(cacheAttempts).toBe(identityKind === "guest_ephemeral" ? 0 : 1)
+      if (identityKind === "guest_ephemeral") {
+        expect(ownInboxChecks).toBe(0)
+        expect(wraps).toHaveLength(2)
+        expect(companion.rumor.content).toContain(
+          "This buyer does not receive Nostr replies."
+        )
+      }
+      expect(await result.companionNotification).toBe("sent")
+      expect(
+        wraps.filter((wrap) => wrap.kind === EVENT_KINDS.DIRECT_MESSAGE)
+      ).toHaveLength(1)
+    }
+  )
 
   it("does not route a guest companion through compatibility order relays", async () => {
     const guestSigner = { id: "guest-signer" }

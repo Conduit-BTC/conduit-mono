@@ -1,3 +1,12 @@
+import { readMerchantOrderStockHistory } from "../apps/merchant/src/lib/order-stock-history"
+import {
+  ProductStockDecisionStore,
+  PendingProductStockDeliveryStore,
+} from "../apps/merchant/src/lib/productStock"
+import { getLegacyNumericStockOrderId } from "../packages/core/src/protocol/order-stock-history"
+import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
+import { encodeOpenMarketsBuyerMessage } from "../packages/core/src/protocol/commerce-wire"
+import { createPrivateMessageRumor } from "../packages/core/src/protocol/private-message-primitives"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { admitFixture } from "./helpers/public-event"
 import { IDBFactory as FakeIDBFactory, IDBKeyRange } from "fake-indexeddb"
@@ -303,5 +312,233 @@ describe("committed local stock recovery", () => {
     ).rejects.toThrow("no longer pending")
     const rows = await getLocalProductStockRecoveryForOrder(merchant, orderId)
     expect(rows[0]?.checkpoint.state).toBe("pending")
+  })
+})
+
+function upgradedNumericOriginal(buyerPubkey = "a".repeat(64)) {
+  const purchase = {
+    id: orderId,
+    buyerPubkey,
+    merchantPubkey: merchant,
+    items: [
+      {
+        productId: addressId,
+        title: "Synthetic stock product",
+        quantity: 1,
+        format: "digital",
+        fulfillment: { type: "digital" },
+        priceAtPurchase: 10,
+        currency: "SATS",
+      },
+    ],
+    subtotal: 10,
+    currency: "SATS",
+    createdAt: createdAt * 1000,
+  }
+  const draft = createPrivateMessageRumor({
+    kind: 16,
+    pubkey: buyerPubkey,
+    created_at: createdAt,
+    tags: [
+      ["p", merchant],
+      ["type", "order"],
+      ["order", orderId],
+    ],
+    content: JSON.stringify(purchase),
+  })
+  const original = parseOrderMessageRumorEvent(
+    createPrivateMessageRumor(
+      encodeOpenMarketsBuyerMessage(
+        draft,
+        { buyerPubkey, merchantPubkey: merchant, orderId },
+        1
+      )
+    )
+  )
+  if (original.type !== "order") throw new Error("Missing fixture order")
+  return original
+}
+function stockStores() {
+  const rows = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return rows.size
+    },
+    clear: () => rows.clear(),
+    key: (index) => [...rows.keys()][index] ?? null,
+    getItem: (key) => rows.get(key) ?? null,
+    setItem: (key, value) => {
+      rows.set(key, value)
+    },
+    removeItem: (key) => {
+      rows.delete(key)
+    },
+  }
+  return {
+    decisions: new ProductStockDecisionStore(storage),
+    pending: new PendingProductStockDeliveryStore(storage),
+    rows,
+  }
+}
+
+describe("numeric legacy manual-stock history", () => {
+  it("keeps pending exact recovery under the original key without crediting either buyer", async () => {
+    const committed = await committedStock()
+    const stores = stockStores()
+    const before = await db.localProductStockCheckpoints.toArray()
+    for (const buyer of ["a".repeat(64), "b".repeat(64)]) {
+      const original = upgradedNumericOriginal(buyer)
+      const history = await readMerchantOrderStockHistory({
+        merchantPubkey: merchant,
+        orderId: original.orderId,
+        original,
+        ...stores,
+      })
+      expect(history.current).toEqual([])
+      expect(history.hasUnboundLegacyHistory).toBe(true)
+      expect(history.legacyOrderId).toBe(orderId)
+      expect(history.legacy).toHaveLength(1)
+      expect(history.legacy[0]!.checkpoint.orderId).toBe(orderId)
+      expect(history.legacy[0]!.signedEvent).toEqual(
+        JSON.parse(JSON.stringify(committed.signedEvent))
+      )
+    }
+    const exact = await confirmLocalProductStockRecovery(committed.input)
+    expect(exact.signedEvent).toEqual(
+      JSON.parse(JSON.stringify(committed.signedEvent))
+    )
+    await expect(
+      confirmLocalProductStockRecovery({
+        ...committed.input,
+        orderId: upgradedNumericOriginal().orderId,
+      })
+    ).rejects.toThrow("no longer pending")
+    expect(await db.localProductStockCheckpoints.toArray()).toEqual(before)
+    expect((await db.products.get(addressId))?.stock).toBe(4)
+  })
+
+  it("finds older localStorage decisions without moving keys or applying them to the alias", async () => {
+    const committed = await committedStock()
+    const row = (await db.localProductStockCheckpoints.toArray())[0]!
+    await db.localProductStockCheckpoints.clear()
+    const stores = stockStores()
+    const original = upgradedNumericOriginal()
+    stores.decisions.set(
+      merchant,
+      orderId,
+      addressId,
+      "applied",
+      row.adjustment
+    )
+    const saved = [...stores.rows]
+    const history = await readMerchantOrderStockHistory({
+      merchantPubkey: merchant,
+      orderId: original.orderId,
+      original,
+      ...stores,
+    })
+    expect(history.hasUnboundLegacyHistory).toBe(true)
+    expect(history.current).toEqual([])
+    expect(history.legacy).toEqual([])
+    expect(
+      stores.decisions.get(merchant, original.orderId, addressId)
+    ).toBeNull()
+    expect([...stores.rows]).toEqual(saved)
+    const pending = stockStores()
+    pending.pending.set(merchant, {
+      orderId,
+      adjustment: row.adjustment,
+      signedEvent: committed.signedEvent,
+    })
+    const retry = await readMerchantOrderStockHistory({
+      merchantPubkey: merchant,
+      orderId: original.orderId,
+      original,
+      ...pending,
+    })
+    expect(JSON.stringify(retry.legacyPending[0]!.signedEvent)).toBe(
+      JSON.stringify(committed.signedEvent)
+    )
+    expect(retry.legacyPending[0]!.orderId).toBe(orderId)
+    expect(retry.hasUnboundLegacyHistory).toBe(true)
+  })
+
+  it("requires the exact participant-qualified original to locate old history", () => {
+    const original = upgradedNumericOriginal()
+    expect(getLegacyNumericStockOrderId(merchant, original)).toBe(orderId)
+    for (const changed of [
+      { ...original, senderPubkey: otherMerchant },
+      { ...original, recipientPubkey: otherMerchant },
+      { ...original, orderId },
+      { ...original, wireOrderId: "different-order" },
+    ])
+      expect(() => getLegacyNumericStockOrderId(merchant, changed)).toThrow(
+        "authenticated original"
+      )
+    expect(() => getLegacyNumericStockOrderId(otherMerchant, original)).toThrow(
+      "authenticated original"
+    )
+    expect(
+      getLegacyNumericStockOrderId(merchant, {
+        ...original,
+        conduitExtension: false,
+      })
+    ).toBeNull()
+    expect(
+      getLegacyNumericStockOrderId(merchant, {
+        ...original,
+        wireFormat: "conduit",
+      })
+    ).toBeNull()
+  })
+
+  it("fences an alias stock write atomically against a raw checkpoint without changing signed bytes", async () => {
+    const committed = await committedStock()
+    await recordDelivery(committed.listingJob.id, "acked")
+    expect(
+      await settleLocalProductStockRecovery({
+        ...committed.input,
+        kind: "applied",
+      })
+    ).toBe("saved")
+    const original = upgradedNumericOriginal()
+    const before = await db.localProductStockCheckpoints.toArray()
+    const signedEvent = signedProduct(3, createdAt + 2)
+    await expect(
+      commitLocalProductWrite({
+        intentId: "alias-stock-write",
+        merchantPubkey: merchant,
+        expectedRevisions: [{ addressId, eventId: committed.signedEvent.id }],
+        listingJob: prepareProductListingDeliveryJob({
+          merchantPubkey: merchant,
+          signedEvents: [signedEvent],
+          relayTargets: [
+            {
+              relayUrl: "wss://relay.conduit.market",
+              ownerSelected: false,
+              appRelay: true,
+            },
+          ],
+          readyForDelivery: false,
+        }),
+        stock: {
+          orderId: original.orderId,
+          legacyOrderId: orderId,
+          adjustment: {
+            ...before[0]!.adjustment,
+            key: `${encodeURIComponent(original.orderId)}:${encodeURIComponent(addressId)}`,
+            sourceEventId: committed.signedEvent.id,
+            currentStock: 4,
+            nextStock: 3,
+          },
+        },
+      })
+    ).rejects.toThrow("Older stock history")
+    expect(await db.localProductStockCheckpoints.toArray()).toEqual(before)
+    expect((await db.products.get(addressId))?.stock).toBe(4)
+    expect(
+      (await getLocalProductStockRecoveryForOrder(merchant, orderId))[0]!
+        .signedEvent
+    ).toEqual(JSON.parse(JSON.stringify(committed.signedEvent)))
   })
 })

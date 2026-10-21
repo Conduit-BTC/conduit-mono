@@ -36,7 +36,6 @@ const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? 
 
 type MobileFooterProbeWindow = Window & {
   __footerScrollProbe?: { count: number; last: number; delta: number }
-  __orderViewportScrollFinished?: boolean
 }
 
 test.setTimeout(60_000)
@@ -1064,13 +1063,6 @@ test.describe("CND-162 mobile browser baseline", () => {
     const secretKey = generateSecretKey()
     const buyerPubkey = getPublicKey(secretKey)
 
-    await page.addInitScript(() => {
-      document.addEventListener("scrollend", (event) => {
-        if (event.target === document)
-          (window as MobileFooterProbeWindow).__orderViewportScrollFinished =
-            true
-      })
-    })
     await page.setViewportSize({ width: 320, height: 700 })
     await seedTestRelayIdentity(secretKey)
     await installTestSigner(page, buyerPubkey, { secretKey })
@@ -1097,17 +1089,11 @@ test.describe("CND-162 mobile browser baseline", () => {
     })
 
     await expect(messagesTrigger).toBeVisible()
-    // Wait for the selected-order viewport scroll to finish before arranging
-    // the visible initial state. Its smooth animation can outlive the request.
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            (window as MobileFooterProbeWindow).__orderViewportScrollFinished
-        )
-      )
-      .toBe(true)
+    // A visible selected card needs no scroll and emits no scrollend. Cancel
+    // any in-progress smooth selection scroll and verify the actual starting
+    // position before exercising the footer's hide/return behavior.
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
     await expect(footer).not.toHaveAttribute("aria-hidden", "true")
     await expectVisibleDisjointControls(
       page,

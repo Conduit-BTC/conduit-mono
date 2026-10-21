@@ -1,5 +1,6 @@
 import {
   db,
+  type ConduitDB,
   type OrderCheckoutMode,
   type OrderLifecycle,
   type OrderLifecyclePhase,
@@ -130,15 +131,29 @@ type CreateOrderLifecycleInput = Omit<
 export async function createOrderLifecycle(
   input: CreateOrderLifecycleInput
 ): Promise<OrderLifecycle> {
-  const now = Date.now()
-  const record: OrderLifecycle = {
-    ...input,
-    phase: input.phase ?? deriveOrderLifecyclePhase(input),
-    createdAt: input.createdAt ?? now,
-    updatedAt: now,
-  }
-  await db.orderLifecycles.put(record)
-  return record
+  return await db.transaction("rw", db.orderLifecycles, async () => {
+    const previous = await db.orderLifecycles.get(input.orderId)
+    if (
+      previous &&
+      (previous.buyerPubkey !== input.buyerPubkey ||
+        previous.merchantPubkey !== input.merchantPubkey ||
+        (input.orderWireFormat !== undefined &&
+          input.orderWireFormat !== (previous.orderWireFormat ?? "conduit")))
+    )
+      throw new Error(
+        "A saved order cannot change its party pair or commerce format"
+      )
+    const now = Date.now()
+    const record: OrderLifecycle = {
+      ...input,
+      orderWireFormat: previous?.orderWireFormat ?? input.orderWireFormat,
+      phase: input.phase ?? deriveOrderLifecyclePhase(input),
+      createdAt: input.createdAt ?? now,
+      updatedAt: now,
+    }
+    await db.orderLifecycles.put(record)
+    return record
+  })
 }
 
 export async function getOrderLifecycle(
@@ -1028,6 +1043,12 @@ function mergeOrderLifecyclePatch(
   patch: Partial<Omit<OrderLifecycle, "orderId" | "createdAt">>,
   now = Date.now()
 ): OrderLifecycle {
+  if (
+    Object.prototype.hasOwnProperty.call(patch, "orderWireFormat") &&
+    (patch.orderWireFormat ?? "conduit") !==
+      (existing.orderWireFormat ?? "conduit")
+  )
+    throw new Error("A saved order cannot change commerce format")
   const merged: OrderLifecycle = {
     ...existing,
     ...patch,
@@ -2075,24 +2096,40 @@ export async function listOrderLifecycles(
  */
 export async function pruneExpiredGuestOrderData(
   nowMs = Date.now(),
-  retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS
+  retentionMs = GUEST_ORDER_LOCAL_RETENTION_MS,
+  database: ConduitDB = db
 ): Promise<number> {
-  const expired = await db.orderLifecycles
-    .filter((lifecycle) =>
-      isGuestOrderDataExpired(lifecycle, nowMs, retentionMs)
-    )
-    .toArray()
-  if (expired.length === 0) return 0
+  const [expired, expiredFormats] = await Promise.all([
+    database.orderLifecycles
+      .filter((lifecycle) =>
+        isGuestOrderDataExpired(lifecycle, nowMs, retentionMs)
+      )
+      .toArray(),
+    database.orderWireFormats
+      .filter(
+        (choice) => choice.expiresAt !== undefined && choice.expiresAt <= nowMs
+      )
+      .primaryKeys(),
+  ])
+  if (expired.length === 0 && expiredFormats.length === 0) return 0
 
   const orderIds = expired.map((lifecycle) => lifecycle.orderId)
-  await db.transaction(
+  await database.transaction(
     "rw",
-    [db.orderLifecycles, db.paymentAttempts, db.orderMessages],
+    [
+      database.orderLifecycles,
+      database.paymentAttempts,
+      database.orderMessages,
+      database.orderWireFormats,
+    ],
     async () => {
       await Promise.all([
-        db.orderLifecycles.bulkDelete(orderIds),
-        db.paymentAttempts.where("orderId").anyOf(orderIds).delete(),
-        db.orderMessages.where("orderId").anyOf(orderIds).delete(),
+        database.orderLifecycles.bulkDelete(orderIds),
+        database.paymentAttempts.where("orderId").anyOf(orderIds).delete(),
+        database.orderMessages.where("orderId").anyOf(orderIds).delete(),
+        database.orderWireFormats.bulkDelete([
+          ...new Set([...orderIds, ...expiredFormats]),
+        ]),
       ])
     }
   )

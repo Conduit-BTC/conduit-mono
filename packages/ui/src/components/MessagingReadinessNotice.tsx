@@ -47,6 +47,8 @@ export interface MessagingReadinessNoticeProps {
   pending?: boolean
   error?: string | null
   className?: string
+  /** Keep the originating composer mounted while Network owns repair. */
+  setupInNewTab?: boolean
 }
 
 const COPY: Record<
@@ -97,6 +99,7 @@ export function MessagingReadinessNotice({
   pending,
   error,
   className,
+  setupInNewTab = false,
 }: MessagingReadinessNoticeProps) {
   const copy = COPY[state]
 
@@ -120,22 +123,36 @@ export function MessagingReadinessNotice({
           ) : null}
         </div>
       </div>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={onAction}
-        disabled={pending}
-      >
-        {copy.setup ? (
-          <Settings2 className="mr-1 size-3.5" />
-        ) : (
-          <RefreshCw
-            className={cn("mr-1 size-3.5", pending && "animate-spin")}
-          />
-        )}
-        {copy.actionLabel}
-      </Button>
+      {copy.setup && setupInNewTab ? (
+        <div className="space-y-1">
+          <Button asChild variant="outline" size="sm">
+            <a href="/network" target="_blank" rel="noopener noreferrer">
+              <Settings2 className="mr-1 size-3.5" />
+              Open Network settings in a new tab
+            </a>
+          </Button>
+          <p className="text-[var(--text-secondary)]">
+            Your draft stays here. Return after saving your inbox settings.
+          </p>
+        </div>
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onAction}
+          disabled={pending}
+        >
+          {copy.setup ? (
+            <Settings2 className="mr-1 size-3.5" />
+          ) : (
+            <RefreshCw
+              className={cn("mr-1 size-3.5", pending && "animate-spin")}
+            />
+          )}
+          {copy.actionLabel}
+        </Button>
+      )}
     </div>
   )
 }

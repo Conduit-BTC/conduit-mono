@@ -3,6 +3,10 @@ import {
   type SignedPublicNostrEvent,
 } from "./signed-event"
 import { decodeConduitCommerceExtension } from "./commerce-wire"
+import {
+  openMarketsLocalOrderId,
+  parseOpenMarketsOrderMessage,
+} from "./open-markets-orders"
 import type { PrivateMessageEvent } from "./messaging"
 import { z } from "zod"
 import { isSatsLikeCurrency } from "../pricing"
@@ -237,12 +241,42 @@ type ParsedOrderMessageBase = {
   senderPubkey: string
   recipientPubkey: string
   rawContent: string
+  wireFormat?: "open_markets"
+  wireOrderId?: string
+  /** Set by the authenticated numeric extension decoder, never by peer hints. */
+  commerceExtensionVersion?: 1 | 2
+  conduitExtension?: true
+  /** View-only binding of an installed-version named reply to its numeric order. */
+  legacyNumericOrder?: true
+}
+
+/** External intents never synthesize missing historical line prices or fulfillment. */
+export type ParsedOrderPayload = Omit<OrderSchema, "items"> & {
+  items: Array<
+    Omit<OrderSchema["items"][number], "priceAtPurchase" | "format"> & {
+      priceAtPurchase?: number
+      format?: "physical" | "digital"
+    }
+  >
+  openMarkets?: {
+    address?: string
+    email?: string
+    phone?: string
+    shippingCoordinate?: string
+  }
 }
 
 export type ParsedOrderMessage =
   | (ParsedOrderMessageBase & {
       type: "order"
+      wireFormat?: undefined
       payload: OrderSchema
+      checkoutPaymentRoute?: CheckoutOrderPaymentRoute
+    })
+  | (ParsedOrderMessageBase & {
+      type: "order"
+      wireFormat: "open_markets"
+      payload: ParsedOrderPayload
       checkoutPaymentRoute?: CheckoutOrderPaymentRoute
     })
   | (ParsedOrderMessageBase & {
@@ -685,13 +719,64 @@ function parseCheckoutOrderPaymentRoute(
 }
 
 /**
- * Parse an unwrapped kind-16 rumor into a typed order-conversation message.
+ * Parse an unwrapped kind-16 order rumor or supported kind-17 receipt claim.
  *
  * This parser is intentionally permissive for non-`order` message types so
  * MVP clients can handle mixed sender implementations while remaining
  * conservative in what we emit.
  */
 export function parseOrderMessageRumorEvent(
+  event: OrderRumorEvent
+): ParsedOrderMessage {
+  if (event.kind === 17) {
+    const receipt = parseOpenMarketsOrderMessage(event)
+    if (receipt?.type !== "payment_proof")
+      throw new Error("Unsupported commerce receipt")
+    return receipt
+  }
+  const numeric =
+    event.kind === 16 && /^\d+$/.test(getTagValue(event.tags, "type") ?? "")
+  if (numeric && event.tags.some((tag) => tag[0] === "conduit")) {
+    parseOpenMarketsOrderMessage({
+      ...event,
+      tags: event.tags.filter((tag) => tag[0] !== "conduit"),
+    })
+  }
+  if (!event.tags.some((tag) => tag[0] === "conduit")) {
+    const external = parseOpenMarketsOrderMessage(event)
+    if (external) return external
+  }
+  const parsed = parseConduitOrderMessageRumorEvent(event)
+  if (!numeric) return parsed
+  const wireOrderId = getTagValue(event.tags, "order")!
+  const orderId = openMarketsLocalOrderId(
+    wireOrderId,
+    parsed.senderPubkey,
+    parsed.recipientPubkey
+  )
+  if (parsed.type === "order")
+    return {
+      ...parsed,
+      wireFormat: "open_markets",
+      conduitExtension: true,
+      wireOrderId,
+      orderId,
+      commerceExtensionVersion:
+        event.tags.find((tag) => tag[0] === "conduit")?.[1] === "2" ? 2 : 1,
+      payload: { ...parsed.payload, id: orderId },
+    }
+  return {
+    ...parsed,
+    wireFormat: "open_markets",
+    conduitExtension: true,
+    commerceExtensionVersion:
+      event.tags.find((tag) => tag[0] === "conduit")?.[1] === "2" ? 2 : 1,
+    wireOrderId,
+    orderId,
+  }
+}
+
+function parseConduitOrderMessageRumorEvent(
   event: OrderRumorEvent
 ): ParsedOrderMessage {
   event = decodeConduitCommerceExtension(event)
@@ -706,6 +791,7 @@ export function parseOrderMessageRumorEvent(
     const checkoutPaymentRoute = parseCheckoutOrderPaymentRoute(event, payload)
     return {
       ...messageBase(event, type, orderId),
+      wireFormat: undefined,
       payload,
       ...(checkoutPaymentRoute ? { checkoutPaymentRoute } : {}),
     }
@@ -868,4 +954,28 @@ export function buildLightningPaymentProofMessage(
     source: PaymentProofSourceSchema
     proofDeliveryStatus?: PaymentProofDeliveryStatusSchema
   }
+}
+
+/** Full validated terms are independent of the transport encoding. */
+export function hasCompleteOrderTerms(
+  message: ParsedOrderMessage | undefined | null
+): message is Extract<ParsedOrderMessage, { type: "order" }> & {
+  payload: OrderSchema
+} {
+  return (
+    message?.type === "order" &&
+    (message.wireFormat !== "open_markets" || message.conduitExtension === true)
+  )
+}
+
+/** Public protocol/stock commitments use the immutable wire ID, not a device alias. */
+export function getOrderProtocolPayload(
+  message: ParsedOrderMessage
+): OrderSchema {
+  if (!hasCompleteOrderTerms(message))
+    throw new Error("Complete authenticated order terms are required")
+  return orderSchema.parse({
+    ...message.payload,
+    id: message.wireOrderId ?? message.payload.id,
+  })
 }

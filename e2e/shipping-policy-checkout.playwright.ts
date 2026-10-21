@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url"
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Page, type TestInfo } from "@playwright/test"
 import { TEST_RELAY_URL, publishTestRelayEvents } from "./helpers/auth"
 import {
   createRuntimeSignerIdentity,
@@ -66,6 +66,9 @@ async function readShippingOrder(page: Page, merchant: string) {
       return {
         orderId: order.orderId,
         orderDeliveryStatus: order.orderDeliveryStatus,
+        orderWireFormat: order.orderWireFormat,
+        savedWireFormat: (await db.orderWireFormats.get(order.orderId))
+          ?.orderWireFormat,
         shippingCostSats: order.shippingCostSats,
         totalSats: order.totalSats,
         quotes: order.items.map(
@@ -77,9 +80,11 @@ async function readShippingOrder(page: Page, merchant: string) {
   )
 }
 
-test("mixed currency product adjustments keep cart, encrypted order and recovered lifecycle terms aligned @commerce", async ({
-  page,
-}, testInfo) => {
+async function checkShippingCheckout(
+  page: Page,
+  testInfo: TestInfo,
+  largeEvidence = false
+) {
   test.setTimeout(90000)
   const merchantIdentity = createRuntimeSignerIdentity()
   const buyerIdentity = createRuntimeSignerIdentity()
@@ -122,7 +127,9 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
       signRuntimeTestEvent(merchantIdentity, {
         kind: 30402,
         created_at: createdAt + 1,
-        content: "Synthetic physical product",
+        content: largeEvidence
+          ? "Synthetic physical product ".repeat(700)
+          : "Synthetic physical product",
         tags: [
           ["d", name],
           ["title", `Synthetic ${name}`],
@@ -244,6 +251,9 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
     await expect(page.getByText("Zap visibility", { exact: true })).toHaveCount(
       0
     )
+    await expect(
+      page.getByRole("combobox", { name: "Order compatibility" })
+    ).toHaveCount(0)
     const send = page.getByRole("button", { name: "Send order", exact: true })
     await expect(send).toBeEnabled({ timeout: 30000 })
     await send.click()
@@ -253,6 +263,8 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
       shippingCostSats: 6875,
       totalSats: 44375,
       orderDeliveryStatus: "sent",
+      orderWireFormat: "open_markets_v2",
+      savedWireFormat: "open_markets_v2",
     })
     expect(saved!.quotes[0]).toMatchObject({
       policyEventId: policyEvent.id,
@@ -279,20 +291,51 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
       )
       .find(
         (event) =>
-          event?.kind === 16 && JSON.parse(event.content).id === saved!.orderId
+          event?.kind === 16 &&
+          event.tags.some(
+            ([name, value]) => name === "order" && value === saved!.orderId
+          )
       )!
     expect(rumor).toBeTruthy()
+    expect(rumor.tags).toContainEqual(["type", "1"])
+    const extension = rumor.tags.find((tag) => tag[0] === "conduit")!
+    expect(extension.slice(0, 3)).toEqual(["conduit", "2", "order"])
+    expect(
+      wraps.filter(
+        (wrap) =>
+          parseCanonicalRuntimePrivateRumor({
+            inboxOwner: merchantIdentity,
+            recipient: merchantIdentity,
+            sender: buyerIdentity,
+            wrap,
+          })?.id === rumor.id
+      )
+    ).toHaveLength(1)
+    if (largeEvidence) {
+      expect(extension[3]!.length).toBeGreaterThan(32_768)
+      expect(
+        new TextEncoder().encode(JSON.stringify(rumor)).length
+      ).toBeLessThan(65_535)
+    }
+    expect(rumor.tags).toContainEqual(["amount", "44375"])
     const delivered = await page.evaluate(
-      async ({ content, modulePath }) => {
-        const { parseOrderRumorEvent } = await import(
+      async ({ rumor, modulePath }) => {
+        const { parseOrderMessageRumorEvent } = await import(
           /* @vite-ignore */ modulePath
         )
-        return parseOrderRumorEvent({ content })
+        const parsed = parseOrderMessageRumorEvent(rumor)
+        if (parsed.type !== "order") throw new Error("Expected decoded order")
+        return parsed.payload
       },
-      { content: rumor.content, modulePath: coreOrderModuleUrl }
+      { rumor, modulePath: coreOrderModuleUrl }
     )
     expect(delivered.shippingCostSats).toBe(6875)
     expect(delivered.items[0].shippingPolicyQuote).toEqual(saved!.quotes[0])
+    expect(delivered.items[1].shippingPolicyQuote).toEqual(saved!.quotes[1])
+    for (const product of products) {
+      expect(JSON.stringify(delivered)).toContain(product.sig)
+      expect(JSON.stringify(delivered)).toContain(product.content)
+    }
     expect(
       wraps.every(
         (wrap) =>
@@ -347,4 +390,16 @@ test("mixed currency product adjustments keep cart, encrypted order and recovere
     disposeRuntimeSignerIdentity(merchantIdentity)
     disposeRuntimeSignerIdentity(buyerIdentity)
   }
+}
+
+test("mixed currency product adjustments keep cart, encrypted order and recovered lifecycle terms aligned @commerce", async ({
+  page,
+}, testInfo) => {
+  await checkShippingCheckout(page, testInfo)
+})
+
+test("large shared-table shipping evidence uses the unified format once and survives recovery @commerce", async ({
+  page,
+}, testInfo) => {
+  await checkShippingCheckout(page, testInfo, true)
 })

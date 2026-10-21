@@ -1,3 +1,7 @@
+import {
+  readDirectMessageReferences,
+  type OrderNoteContext,
+} from "./order-note-context"
 import { inboxDeclarationEvidenceFacts } from "./account-network-evidence"
 import { getEventHash } from "nostr-tools"
 import { v2 as nip44 } from "nostr-tools/nip44"
@@ -136,7 +140,8 @@ const SIGNED_IN_ORDER_COMPANION_COPY =
   "A new order was sent to you through Conduit Market."
 
 export function getOrderCompanionNotificationContentOrderId(
-  content: string
+  content: string,
+  expectedBuyerPubkey?: string
 ): string | null {
   for (const copy of [
     GUEST_ORDER_COMPANION_COPY,
@@ -150,8 +155,22 @@ export function getOrderCompanionNotificationContentOrderId(
       const parsed = new URL(reviewUrl)
       const orderIds = parsed.searchParams.getAll("order")
       const orderId = orderIds.length === 1 ? orderIds[0]?.trim() : null
-      if (!orderId) return null
-      return buildMerchantOrderReviewUrl(parsed.origin, orderId) === reviewUrl
+      const counterparties = parsed.searchParams.getAll("counterparty")
+      if (!orderId || counterparties.length > 1) return null
+      const counterparty = counterparties[0]
+      if (
+        counterparty !== undefined &&
+        (!counterparty ||
+          (expectedBuyerPubkey &&
+            counterparty !== expectedBuyerPubkey.trim().toLowerCase()))
+      )
+        return null
+      // Retained canonical order-only notifications remain recognizable.
+      return buildMerchantOrderReviewUrl(
+        parsed.origin,
+        orderId,
+        counterparty
+      ) === reviewUrl
         ? orderId
         : null
     } catch {
@@ -195,7 +214,7 @@ export function getOrderCompanionNotificationIdentity(
     markers[0]?.[2] === ORDER_COMPANION_NOTIFICATION_VERSION &&
     Boolean(markers[0]?.[3]?.trim()) &&
     clients.length === 1 &&
-    getOrderCompanionNotificationContentOrderId(rumor.content) ===
+    getOrderCompanionNotificationContentOrderId(rumor.content, rumor.pubkey) ===
       orders[0]?.[1]?.trim()
   if (!isCanonical) return null
 
@@ -277,7 +296,7 @@ export function createOrderCompanionNotificationRumor(input: {
       : SIGNED_IN_ORDER_COMPANION_COPY
   companion.content =
     `${copy}\n` +
-    `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId)}`
+    `Review it at: ${buildMerchantOrderReviewUrl(input.merchantOrigin, orderId, input.senderPubkey)}`
   companion.id = getEventHash(completePrivateMessageEvent(companion))
   return companion
 }
@@ -308,7 +327,6 @@ export function createValidatedOrderRouteScope(input: {
   )
     .trim()
     .toLowerCase()
-  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
   const rumorRecipient = input.rumor.tags
     .find((tag) => tag[0] === "p")?.[1]
     ?.trim()
@@ -317,21 +335,22 @@ export function createValidatedOrderRouteScope(input: {
     completePrivateMessageEvent(input.rumor)
   )
   if (
-    input.rumor.kind !== EVENT_KINDS.ORDER ||
+    ![EVENT_KINDS.ORDER, 17].includes(input.rumor.kind) ||
     !input.rumor.id ||
     input.rumor.pubkey?.trim().toLowerCase() !== senderPubkey ||
     rumorRecipient !== expectedRumorRecipient ||
     (expectedRumorRecipient !== recipientPubkey &&
       recipientPubkey !== senderPubkey) ||
-    rumorOrderId !== orderId ||
     decoded.category !== "commerce" ||
-    !decoded.parsedOrderMessage
+    !decoded.parsedOrderMessage ||
+    (decoded.parsedOrderMessage.orderId !== orderId &&
+      decoded.parsedOrderMessage.wireOrderId !== orderId)
   ) {
     throw new Error("Cannot authorize compatibility routing for this rumor.")
   }
   const scope = Object.freeze({
     rumorId: input.rumor.id,
-    orderId,
+    orderId: decoded.parsedOrderMessage.wireOrderId ?? orderId,
     senderPubkey,
     recipientPubkey,
   })
@@ -392,7 +411,7 @@ export function createValidatedGuestOrderCompanion(input: {
   const scope = Object.freeze({
     rumorId: companion.id,
     orderRumorId: input.authoritativeOrder.id,
-    orderId: parsedOrder.orderId,
+    orderId: parsedOrder.wireOrderId ?? parsedOrder.orderId,
     subject: ORDER_COMPANION_NOTIFICATION_SUBJECT,
     senderPubkey,
     recipientPubkey,
@@ -740,6 +759,8 @@ export interface BuildDirectMessageRumorInput {
   content: string
   appId: ConduitAppId
   subject?: string
+  /** Exact raw order reference, only from authenticated retained order context. */
+  orderReference?: string
   replyTo?: string
   createdAt?: number
 }
@@ -760,6 +781,8 @@ export function buildDirectMessageRumor(
   rumor.created_at = input.createdAt ?? Math.floor(Date.now() / 1000)
   const tags: string[][] = [["p", input.recipientPubkey]]
   if (input.subject) tags.push(["subject", input.subject])
+  if (input.orderReference) tags.push(["order", input.orderReference])
+  if (input.replyTo) tags.push(["e", input.replyTo, "", "reply"])
   rumor.tags = appendConduitClientTag(tags, input.appId)
   rumor.content = input.content
   try {
@@ -775,6 +798,11 @@ export interface ParsedDirectMessage {
   senderPubkey: string
   recipientPubkey: string
   content: string
+  subject?: string
+  /** Null means malformed or conflicting reference tags: never infer ancestry. */
+  orderReference?: string | null
+  /** Derived from retained authenticated orders; never a payment authority. */
+  orderContext?: OrderNoteContext
   /** Present only for an exact canonical companion awaiting order evidence. */
   orderCompanionIdentity?: OrderCompanionNotificationIdentity
   /** Milliseconds, matching ParsedOrderMessage.createdAt. */
@@ -884,7 +912,7 @@ export function parseDirectMessageRumor(
       ]),
     ].sort(),
     conversationId: `nip17:${[...new Set([rumor.pubkey, ...rumor.tags.filter((tag) => tag[0] === "p").map((tag) => tag[1]!)])].sort().join(":")}`,
-    replyTo: rumor.tags.filter((tag) => tag[0] === "e").at(-1)?.[1],
+    ...readDirectMessageReferences(rumor.tags),
   }
 }
 
@@ -897,9 +925,14 @@ export function consumeValidatedOrderRouteScope(input: {
   const scope = input.scope
   if (!scope || !validatedOrderRouteScopes.has(scope)) return false
   validatedOrderRouteScopes.delete(scope)
-  const rumorOrderId = input.rumor.tags.find((tag) => tag[0] === "order")?.[1]
+  const decoded = decodeCommerceMessageRumor(input.rumor)
+  const rumorOrderId =
+    decoded.category === "commerce"
+      ? (decoded.parsedOrderMessage?.wireOrderId ??
+        decoded.parsedOrderMessage?.orderId)
+      : undefined
   return (
-    input.rumor.kind === EVENT_KINDS.ORDER &&
+    [EVENT_KINDS.ORDER, 17].includes(input.rumor.kind) &&
     scope.rumorId === input.rumor.id &&
     scope.orderId === rumorOrderId &&
     scope.senderPubkey === input.senderPubkey &&
@@ -1243,6 +1276,7 @@ export function createParticipantMessageRumor(
       [
         ...participants.map((p) => ["p", p]),
         ...(input.subject ? [["subject", input.subject]] : []),
+        ...(input.orderReference ? [["order", input.orderReference]] : []),
         ...(input.replyTo ? [["e", input.replyTo, "", "reply"]] : []),
       ],
       input.appId

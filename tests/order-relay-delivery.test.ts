@@ -554,37 +554,41 @@ describe("order relay delivery retry", () => {
     expect(attempts).toEqual([])
   })
 
-  it("replays the exact wrap only to non-ACKed targets and converges", async () => {
-    const store = repository(lifecycle())
-    const attempts: Array<{
-      relayUrl: string
-      signedEvent: SignedPublicNostrEvent
-      accountPubkey: string
-    }> = []
+  it.each(["conduit", "open_markets"] as const)(
+    "replays the exact %s wrap only to non-ACKed targets and converges",
+    async (orderWireFormat) => {
+      const store = repository(lifecycle({ orderWireFormat }))
+      const attempts: Array<{
+        relayUrl: string
+        signedEvent: SignedPublicNostrEvent
+        accountPubkey: string
+      }> = []
 
-    await retryOrderRelayDelivery("order-id", BUYER, {
-      repository: store.repository,
-      accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
-      leaseOwner: "worker",
-      now: () => 100,
-      publisher: async (input) => {
-        attempts.push(input)
-        return "acked"
-      },
-    })
+      await retryOrderRelayDelivery("order-id", BUYER, {
+        repository: store.repository,
+        accountNetworkLocalStateRepository: allowAllAccountNetworkRepository,
+        leaseOwner: "worker",
+        now: () => 100,
+        publisher: async (input) => {
+          attempts.push(input)
+          return "acked"
+        },
+      })
 
-    expect(attempts.map((attempt) => attempt.relayUrl)).toEqual([
-      "wss://failed.conduit.market",
-    ])
-    expect(attempts[0]?.signedEvent).toEqual(structuredClone(signedWrap))
-    expect(attempts[0]?.accountPubkey).toBe(BUYER)
-    expect(
-      store
-        .read()
-        .orderRelayDelivery?.relayDelivery.map((target) => target.status)
-    ).toEqual(["acked", "acked"])
-    expect(store.read().orderRelayDelivery?.nextRetryAt).toBeUndefined()
-  })
+      expect(attempts.map((attempt) => attempt.relayUrl)).toEqual([
+        "wss://failed.conduit.market",
+      ])
+      expect(attempts[0]?.signedEvent).toEqual(structuredClone(signedWrap))
+      expect(attempts[0]?.accountPubkey).toBe(BUYER)
+      expect(
+        store
+          .read()
+          .orderRelayDelivery?.relayDelivery.map((target) => target.status)
+      ).toEqual(["acked", "acked"])
+      expect(store.read().orderRelayDelivery?.nextRetryAt).toBeUndefined()
+      expect(store.read().orderWireFormat).toBe(orderWireFormat)
+    }
+  )
 
   it("replays a partial compatibility order only to its original approved target", async () => {
     const relayUrls = [...config.dmCompatibilityOrderRelayUrls]

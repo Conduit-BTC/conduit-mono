@@ -6,6 +6,7 @@ import {
 } from "./orders"
 import type { OrderItemFulfillmentSchema } from "../schemas"
 import type { ShippingPolicyQuote } from "./shipping-policy"
+import { hasConflictingOpenMarketsOrders } from "./open-markets-orders"
 
 export type OrderSummary = {
   buyerIdentityKind: "signed_in" | "guest_ephemeral" | null
@@ -16,10 +17,10 @@ export type OrderSummary = {
     familyProductId?: string
     selectedSpecifications?: Array<{ key: string; value: string }>
     title?: string
-    format: "physical" | "digital"
+    format?: "physical" | "digital"
     fulfillment?: OrderItemFulfillmentSchema
     quantity: number
-    priceAtPurchase: number
+    priceAtPurchase?: number
     currency: string
     shippingCostSats?: number
     shippingPolicyQuote?: ShippingPolicyQuote
@@ -82,6 +83,13 @@ export type OrderSummary = {
   trackingCarrier: string | null
   trackingNumber: string | null
   trackingUrl: string | null
+  openMarkets?: {
+    address?: string
+    email?: string
+    phone?: string
+    shippingCoordinate?: string
+  }
+  conflictingTerms?: boolean
 }
 
 export interface OrderSummaryParticipants {
@@ -248,9 +256,11 @@ export function extractOrderSummary(
       normalizeSummaryCurrency(currency)
   )
   const calculatedItemSubtotal =
-    firstOrder?.type === "order" && itemCurrenciesMatch
+    firstOrder?.type === "order" &&
+    itemCurrenciesMatch &&
+    items.every((item) => item.priceAtPurchase !== undefined)
       ? items.reduce(
-          (total, item) => total + item.priceAtPurchase * item.quantity,
+          (total, item) => total + item.priceAtPurchase! * item.quantity,
           0
         )
       : null
@@ -331,6 +341,12 @@ export function extractOrderSummary(
       : null
 
   return {
+    ...(hasConflictingOpenMarketsOrders(messages)
+      ? { conflictingTerms: true }
+      : {}),
+    ...(firstOrder?.type === "order" && firstOrder.wireFormat === "open_markets"
+      ? { openMarkets: firstOrder.payload.openMarkets }
+      : {}),
     buyerIdentityKind:
       firstOrder?.type === "order"
         ? (firstOrder.payload.buyerIdentityKind ?? null)

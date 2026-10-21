@@ -204,6 +204,13 @@ export function checkoutSparkEventMarketFixture(
       content: "Fixture apples",
       tags: [
         ["d", "apples"],
+        [
+          "conduit_commerce",
+          "2",
+          "per_item_shipping",
+          "event_pickup",
+          "router_checkout",
+        ],
         ["title", "Fixture apples"],
         ["price", String(commerceTotalSats), "SAT"],
         ["type", options.variation ? "variation" : "simple", "physical"],

@@ -1,14 +1,27 @@
 import {
+  assertNoUnboundLegacyStockHistory,
+  getLegacyNumericStockOrderId,
+} from "./order-stock-history"
+import {
+  hasCompleteOrderTerms,
+  type ParsedOrderMessage,
+  type ParsedOrderPayload,
+} from "./orders"
+import { openMarketsLocalOrderId } from "./open-markets-orders"
+import {
   merchantAcceptanceStore,
   protectMerchantAcceptanceHistory,
   sealMerchantAcceptanceEvidence,
 } from "./merchant-acceptance-privacy"
 import { verifySignedEventBatches } from "./relay-reader"
-import { merchantOccurrenceAcceptanceBindings } from "./merchant-order-acceptance-bindings"
+import {
+  merchantOccurrenceAcceptanceBindings,
+  parseMerchantOccurrenceOrder,
+} from "./merchant-order-acceptance-bindings"
 import { db, type MerchantInventoryAcceptedOrder } from "../db"
 import { normalizeCurrencyIdentity } from "../pricing"
 import { recoverMerchantInventoryProduct } from "./merchant-inventory-recovery"
-import { orderSchema, type OrderSchema, type ProductSchema } from "../schemas"
+import { orderSchema, type ProductSchema } from "../schemas"
 import {
   computeEventMarketAssignmentDTag,
   parseEventMarketAssignmentEvent,
@@ -473,37 +486,123 @@ export async function resumeMerchantOccurrencePublication(
   })
 }
 
-/** A saved stock decision authorizes only its original order, not an ID alias. */
+/** Only an authenticated complete original can bind a raw acceptance ID.
+ * Used for installed records and new v2 orders with public wire commitments. */
+function legacyNumericAcceptanceOrder(
+  order: ParsedOrderPayload,
+  original?: Extract<ParsedOrderMessage, { type: "order" }>
+): ParsedOrderPayload | undefined {
+  if (original?.wireFormat !== "open_markets" || !original.conduitExtension)
+    return undefined
+  const wireOrderId = original.wireOrderId
+  if (
+    !wireOrderId ||
+    original.orderId !== order.id ||
+    original.senderPubkey !== order.buyerPubkey ||
+    original.recipientPubkey !== order.merchantPubkey ||
+    openMarketsLocalOrderId(
+      wireOrderId,
+      order.buyerPubkey,
+      order.merchantPubkey
+    ) !== order.id ||
+    merchantOccurrenceAcceptanceBindings(
+      parseMerchantOccurrenceOrder(original.payload)
+    ).termsBinding !== merchantOccurrenceAcceptanceBindings(order).termsBinding
+  )
+    throw new Error(
+      "Numeric acceptance does not match its authenticated original."
+    )
+  // The installed parser accepted only complete extension-backed orders.
+  return orderSchema.parse({ ...order, id: wireOrderId })
+}
+
+/** Reuse exact saved terms; numeric aliases require their authenticated original. */
 export function matchesMerchantOccurrenceAcceptance(
   accepted: MerchantInventoryAcceptedOrder,
-  candidate: OrderSchema
+  candidate: ParsedOrderPayload,
+  original?: Extract<ParsedOrderMessage, { type: "order" }>
 ): boolean {
-  const parsed = orderSchema.safeParse(candidate)
-  if (!parsed.success) return false
-  const binding = merchantOccurrenceAcceptanceBindings(parsed.data)
-  return (
-    accepted.orderId === parsed.data.id &&
-    accepted.merchantPubkey === parsed.data.merchantPubkey &&
-    accepted.identityBinding === binding.identityBinding &&
-    accepted.termsBinding === binding.termsBinding
-  )
+  try {
+    const parsed = parseMerchantOccurrenceOrder(candidate)
+    const order =
+      accepted.orderId === parsed.id
+        ? parsed
+        : legacyNumericAcceptanceOrder(parsed, original)
+    if (!order) return false
+    const binding = merchantOccurrenceAcceptanceBindings(order)
+    return (
+      accepted.orderId === order.id &&
+      accepted.merchantPubkey === order.merchantPubkey &&
+      accepted.identityBinding === binding.identityBinding &&
+      accepted.termsBinding === binding.termsBinding
+    )
+  } catch {
+    return false
+  }
+}
+
+async function resolveMerchantOccurrenceAcceptance(
+  order: ParsedOrderPayload,
+  original?: Extract<ParsedOrderMessage, { type: "order" }>
+): Promise<MerchantInventoryAcceptedOrder | undefined> {
+  const direct = await db.merchantInventoryAcceptedOrders.get(order.id)
+  const legacyOrder = legacyNumericAcceptanceOrder(order, original)
+  const raw = legacyOrder
+    ? await db.merchantInventoryAcceptedOrders.get(legacyOrder.id)
+    : undefined
+  // A different buyer's legacy raw-ID record cannot veto this conversation.
+  const legacy =
+    raw &&
+    legacyOrder &&
+    raw.merchantPubkey === order.merchantPubkey &&
+    raw.identityBinding ===
+      merchantOccurrenceAcceptanceBindings(legacyOrder).identityBinding
+      ? raw
+      : undefined
+  if (direct && legacy && direct.orderId !== legacy.orderId)
+    throw new Error("Multiple inventory acceptances need reconciliation.")
+  const saved = direct ?? legacy
+  if (saved && !matchesMerchantOccurrenceAcceptance(saved, order, original))
+    throw new Error("Order ID has conflicting accepted terms.")
+  return saved
 }
 
 export async function readMerchantOccurrenceAcceptedOrder(input: {
   merchantPubkey: string
   orderId: string
-  order: OrderSchema | null
+  order: ParsedOrderPayload | null
+  orderMessage?: Extract<ParsedOrderMessage, { type: "order" }>
 }): Promise<MerchantInventoryAcceptedOrder | undefined> {
   const store = merchantAcceptanceStore(input.merchantPubkey)
   await protectMerchantAcceptanceHistory(store)
-  const saved = await db.merchantInventoryAcceptedOrders.get(input.orderId)
+  const validOrder =
+    input.order &&
+    input.order.merchantPubkey === input.merchantPubkey &&
+    input.order.id === input.orderId
+  const saved = validOrder
+    ? await resolveMerchantOccurrenceAcceptance(
+        parseMerchantOccurrenceOrder(input.order!),
+        input.orderMessage
+      )
+    : await db.merchantInventoryAcceptedOrders.get(input.orderId)
   store.assertCurrent()
-  if (!saved) return undefined
+  if (!saved) {
+    if (validOrder)
+      await assertNoUnboundLegacyStockHistory(
+        db,
+        input.merchantPubkey,
+        input.orderId,
+        getLegacyNumericStockOrderId(input.merchantPubkey, input.orderMessage)
+      )
+    return undefined
+  }
   if (
-    !input.order ||
-    input.order.merchantPubkey !== input.merchantPubkey ||
-    input.order.id !== input.orderId ||
-    !matchesMerchantOccurrenceAcceptance(saved, input.order)
+    !validOrder ||
+    !matchesMerchantOccurrenceAcceptance(
+      saved,
+      input.order!,
+      input.orderMessage
+    )
   )
     throw new Error("Order ID has conflicting accepted terms.")
   return saved
@@ -540,7 +639,8 @@ function strongestObservedProduct(
 /** Local acceptance uses committed inventory and known evidence, without a mandatory relay read. */
 export async function acceptMerchantOccurrenceOrder(
   input: MerchantOccurrenceSession & {
-    order: OrderSchema
+    order: ParsedOrderPayload
+    orderMessage?: Extract<ParsedOrderMessage, { type: "order" }>
     products: readonly ProductSchema[]
     priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
     /** Recording received payment may outlive the original occurrence. */
@@ -548,33 +648,71 @@ export async function acceptMerchantOccurrenceOrder(
   }
 ) {
   assertSession(input)
-  const order = orderSchema.parse(input.order)
+  let order = parseMerchantOccurrenceOrder(input.order)
   if (order.merchantPubkey !== input.merchantPubkey)
     throw new Error("Order belongs to another merchant.")
   const store = merchantAcceptanceStore(input.merchantPubkey)
   await protectMerchantAcceptanceHistory(store)
   assertSession(input)
-  const { identityBinding, termsBinding } =
-    merchantOccurrenceAcceptanceBindings(order)
-  const previous = await db.merchantInventoryAcceptedOrders.get(order.id)
+  const previous = await resolveMerchantOccurrenceAcceptance(
+    order,
+    input.orderMessage
+  )
   if (previous) {
     assertSession(input)
     store.assertCurrent()
-    if (!matchesMerchantOccurrenceAcceptance(previous, order))
+    if (
+      !matchesMerchantOccurrenceAcceptance(previous, order, input.orderMessage)
+    )
       throw new Error("Order ID has conflicting accepted terms.")
     return { replayed: true, order: previous }
   }
+  // Ordinary numeric orders keep participant-qualified storage identities.
+  // Pickup/router commitments already bind the original wire ID, so a fresh
+  // v2 acceptance must preserve that identity. Resolve installed alias/raw
+  // records first; never migrate a saved decision or debit it again.
+  if (
+    input.orderMessage?.commerceExtensionVersion === 2 &&
+    hasCompleteOrderTerms(input.orderMessage) &&
+    (input.orderMessage.checkoutPaymentRoute === "spark_router_v1" ||
+      order.items.some(
+        (item) => item.fulfillment?.type === "event_market_pickup"
+      ))
+  ) {
+    const wireOrder = legacyNumericAcceptanceOrder(order, input.orderMessage)
+    if (!wireOrder) throw new Error("The order's wire identity is unavailable.")
+    if (await db.merchantInventoryAcceptedOrders.get(wireOrder.id))
+      throw new Error(
+        "This wire order ID belongs to another accepted order. Review the original order before continuing."
+      )
+    assertSession(input)
+    store.assertCurrent()
+    order = wireOrder
+  }
+  const legacyStockOrderId = getLegacyNumericStockOrderId(
+    input.merchantPubkey,
+    input.orderMessage
+  )
+  await assertNoUnboundLegacyStockHistory(
+    db,
+    input.merchantPubkey,
+    order.id,
+    legacyStockOrderId
+  )
+  const { identityBinding, termsBinding } =
+    merchantOccurrenceAcceptanceBindings(order)
   const eventItems = order.items.filter(
     (item) => item.fulfillment?.type === "event_market_pickup"
   )
-  const orderEvidence = eventItems.length
-    ? await admitEmbeddedEventMarketOrderEvidence(order)
+  const eventOrder = eventItems.length ? orderSchema.parse(order) : null
+  const orderEvidence = eventOrder
+    ? await admitEmbeddedEventMarketOrderEvidence(eventOrder)
     : []
   assertSession(input)
   if (
-    eventItems.length &&
-    verifyEventMarketOrderEvidence({ order, events: orderEvidence }).status !==
-      "verified"
+    eventOrder &&
+    verifyEventMarketOrderEvidence({ order: eventOrder, events: orderEvidence })
+      .status !== "verified"
   )
     throw new Error("The order's exact signed event evidence is invalid.")
   await reconcileKnownOccurrenceLifecycle(input.merchantPubkey)
@@ -819,5 +957,6 @@ export async function acceptMerchantOccurrenceOrder(
     },
     items,
     priorStockAdjustments: input.priorStockAdjustments,
+    legacyStockOrderId,
   })
 }

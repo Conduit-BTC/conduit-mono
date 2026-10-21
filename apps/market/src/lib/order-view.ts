@@ -76,7 +76,7 @@ export interface OrderViewItem {
   displayTitle: string
   format: "physical" | "digital"
   quantity: number
-  priceAtPurchase: number
+  priceAtPurchase?: number
   currency: string
   sourcePrice?: SourcePriceQuote
   shippingCostSats?: number
@@ -291,7 +291,11 @@ export function isZeroCostPickupOrder(
     vm.items.length > 0 &&
     vm.items.every((item) => {
       const fulfillment = item.fulfillment
-      if (fulfillment?.type !== "event_market_pickup") return false
+      if (
+        fulfillment?.type !== "event_market_pickup" ||
+        item.priceAtPurchase === undefined
+      )
+        return false
       const productZero = getPriceSats(
         {
           price: item.priceAtPurchase,
@@ -606,7 +610,7 @@ export function buildOrderViewModel(
         ),
         displayTitle:
           item.title?.trim() || deriveItemDisplayTitle(item.productId),
-        format: item.format,
+        format: item.format ?? "physical",
         quantity: item.quantity,
         priceAtPurchase: item.priceAtPurchase,
         currency: item.currency,

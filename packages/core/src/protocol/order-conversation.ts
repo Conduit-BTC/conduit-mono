@@ -102,16 +102,41 @@ export function groupOrderConversationMessages(
 
 /** An order-only link is usable only when it names one observed conversation. */
 export function findOrderConversation<
-  T extends { id: string; orderId: string },
+  T extends { id: string; orderId: string; messages?: ParsedOrderMessage[] },
 >(
   conversations: readonly T[],
   orderId: string,
   conversationId?: string
 ): T | null {
-  const matches = conversations.filter(
-    (conversation) =>
+  const matches = conversations.filter((conversation) => {
+    if (
       conversation.orderId === orderId &&
       (!conversationId || conversation.id === conversationId)
-  )
+    )
+      return true
+    // Numeric wire links name the signed ID; the inbox uses a party-scoped
+    // alias. Resolve only through an authenticated original in this group.
+    return (
+      conversation.messages?.some((message) => {
+        if (
+          message.type !== "order" ||
+          message.wireFormat !== "open_markets" ||
+          message.wireOrderId !== orderId ||
+          message.orderId !== conversation.orderId
+        )
+          return false
+        const parties = {
+          buyerPubkey: message.senderPubkey,
+          merchantPubkey: message.recipientPubkey,
+        }
+        return (
+          conversation.id ===
+            getOrderConversationId({ ...parties, orderId: message.orderId }) &&
+          (!conversationId ||
+            conversationId === getOrderConversationId({ ...parties, orderId }))
+        )
+      }) ?? false
+    )
+  })
   return matches.length === 1 ? matches[0]! : null
 }

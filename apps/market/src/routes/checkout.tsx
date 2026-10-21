@@ -23,6 +23,10 @@ import {
 } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  buildCommerceSupportTags,
+  requiredCommerceFeatures,
+} from "@conduit/core/protocol/commerce-capabilities"
+import {
   isContactFreeEventHandoff,
   getEventGuestReceiptCommitment,
   formatEventMarketPickupDate,
@@ -65,6 +69,7 @@ import {
   validateAddressConsistency,
   useAuth,
   useConduitSession,
+  useInboxDeclaration,
   useProfile,
   type AddressValidityResult,
   type CommercePriceLike,
@@ -98,6 +103,7 @@ import {
   SelectTrigger,
   SignerRecoveryNotice,
   Textarea,
+  OrderMessagingReadinessNotice,
 } from "@conduit/ui"
 import {
   EventGuestReceiptDetails,
@@ -1381,6 +1387,11 @@ function CheckoutPage() {
   const btcUsdRateIsFetching = btcUsdRateQuery.isFetching
   const signerConnected = authSignerReadiness === "ready"
   const signedBuyerPubkey = signerConnected ? accountPubkey : null
+  const checkoutInbox = useInboxDeclaration(signedBuyerPubkey, {
+    enabled: signerConnected && session.relaySettingsReady,
+    relayScope: session.relayScope,
+  })
+
   const draftOwnerIdentity = accountPubkey
   const authPending =
     authSignerReadiness === "pending" || restorePendingPubkey !== null
@@ -3632,6 +3643,13 @@ function CheckoutPage() {
         }
       }
       rumor.tags.push(...buildEventMarketOrderRumorTags(validatedPayload))
+      rumor.tags.push(
+        ...buildCommerceSupportTags({
+          productIds: validatedPayload.items.map((item) => item.productId),
+          products: checkoutAuthorization.listingReadProducts,
+          features: requiredCommerceFeatures(validatedPayload, rumor.tags),
+        })
+      )
       rumor.tags = appendConduitClientTag(rumor.tags, "market")
       rumor.content = serializeOrderRumorContent({
         ...payload,
@@ -3642,6 +3660,7 @@ function CheckoutPage() {
       const addressValidity = computeAddressValidity(shippingAddress)
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        orderWireFormat: "open_markets_v2",
         ...(freePurchaseDelivery
           ? { eventMarketFreePurchaseDelivery: freePurchaseDelivery }
           : {}),
@@ -4333,6 +4352,16 @@ function CheckoutPage() {
       orderRumor.tags.push(
         ...buildEventMarketOrderRumorTags(validatedOrderPayload)
       )
+      orderRumor.tags.push(
+        ...buildCommerceSupportTags({
+          productIds: validatedOrderPayload.items.map((item) => item.productId),
+          products: checkoutAuthorization.listingReadProducts,
+          features: requiredCommerceFeatures(
+            validatedOrderPayload,
+            orderRumor.tags
+          ),
+        })
+      )
       orderRumor.tags = appendConduitClientTag(orderRumor.tags, "market")
       orderRumor.content = serializeOrderRumorContent({
         ...orderPayload,
@@ -4355,6 +4384,7 @@ function CheckoutPage() {
       // Orders can render it immediately, then hand payment to the service.
       const orderLifecycle: StagedOrderLifecycleInput = {
         orderId,
+        orderWireFormat: "open_markets_v2",
         claimedReferralSource: getCheckoutReferralClaim(
           selectedMerchant,
           selectedPurchase?.id,
@@ -5532,6 +5562,16 @@ function CheckoutPage() {
           )}
 
           {/* ── Order action ──────────────────────────────────────────────── */}
+          {!isGuestCheckout && (
+            <OrderMessagingReadinessNotice
+              status={checkoutInbox.status}
+              checking={checkoutInbox.isRefetching}
+              context="checkout"
+              onRetry={() => {
+                void checkoutInbox.refetch()
+              }}
+            />
+          )}
           {
             <>
               {!routerBranchTargetCheckout && !isGuestCheckout && (

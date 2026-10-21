@@ -1,3 +1,4 @@
+import { readDirectMessageReferences } from "./order-note-context"
 import { parseCachedDirectMessage } from "./cached-direct-message"
 import { isCheckoutSparkRecoveryMessageType } from "./checkout-spark-recovery-marker"
 import type { CheckoutRecoveryDescriptor } from "./checkout-spark-recovery"
@@ -111,10 +112,16 @@ export function projectDirectOrFileRumor(
           : principal,
       createdAt: (rumor.created_at ?? 0) * 1000,
       content: decoded.category === "direct" ? decoded.text : "Encrypted file",
+      ...(decoded.category === "direct" && decoded.subject
+        ? { subject: decoded.subject }
+        : {}),
       transport: "nip17",
       participants,
       conversationId: `nip17:${participants.join(":")}`,
       replyTo: decoded.replyTo,
+      ...(decoded.category === "direct"
+        ? readDirectMessageReferences(rumor.tags)
+        : {}),
       file: decoded.category === "file" ? decoded : undefined,
       ...(companion ? { orderCompanionIdentity: companion } : {}),
     },
@@ -166,7 +173,10 @@ export interface InboxDeliveryCheckpointRow {
   id: string
   accountPubkey: string
   value: InboxCipher
-  kind: "merchant_paid_confirmation" | "merchant_stock_recovery"
+  kind:
+    | "merchant_paid_confirmation"
+    | "merchant_stock_recovery"
+    | "merchant_fulfillment_decision"
   updatedAt: number
   /** Absent on checkpoints; keeps Dexie's non-distributive write type explicit. */
   state?: never
@@ -217,7 +227,7 @@ function freezeProjection<T>(value: T): T {
 }
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-export const INBOX_DECODE_RULES_VERSION = 5
+export const INBOX_DECODE_RULES_VERSION = 9
 const LEASE_MS = 60_000
 const KEY_ID = "commerce-inbox-aes-gcm-v1"
 

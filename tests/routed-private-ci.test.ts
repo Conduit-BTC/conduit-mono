@@ -15,9 +15,7 @@ describe("ordinary routed checkout V1 CI acceptance", () => {
       const verification = source.indexOf(
         `      - name: Verify executed ${lane} smoke evidence`
       )
-      const cleanup = source.indexOf(
-        "      - name: Remove raw Playwright output"
-      )
+      const cleanup = source.indexOf("      - name: Remove raw router output")
       expect(selection).toBeGreaterThan(-1)
       expect(execution).toBeGreaterThan(selection)
       expect(verification).toBeGreaterThan(execution)

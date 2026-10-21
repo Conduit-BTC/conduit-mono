@@ -387,6 +387,17 @@ export {
 } from "./hooks/useProgressiveEventMarketDiscovery"
 
 export { useCommerceInbox } from "./hooks/useCommerceInbox"
+export {
+  getOrderWireFormat,
+  pinOrderWireFormat,
+  projectOwnedNumericOrderMessages,
+  type OrderWireFormat,
+} from "./protocol/order-format"
+export { openMarketsLocalOrderId } from "./protocol/open-markets-orders"
+export {
+  encodeOpenMarketsBuyerMessage,
+  MAX_CONDUIT_COMMERCE_EXTENSION_LENGTH,
+} from "./protocol/commerce-wire"
 
 export {
   observeCheckoutSparkOperation,
@@ -394,3 +405,8 @@ export {
   type CheckoutSparkPerformanceObservation,
   type CheckoutSparkPerformanceObserver,
 } from "./protocol/checkout-spark-performance"
+
+export {
+  hasCompleteOrderTerms,
+  getOrderProtocolPayload,
+} from "./protocol/orders"

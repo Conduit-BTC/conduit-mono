@@ -21,7 +21,12 @@ import {
   type CheckoutSparkCommerceVariation,
 } from "./checkout-spark-commerce-pricing"
 import { parseCheckoutSparkSignedProductFields } from "./checkout-spark-product-fields"
-import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import {
+  getOrderProtocolPayload,
+  hasCompleteOrderTerms,
+  parseOrderMessageRumorEvent,
+  type ParsedOrderMessage,
+} from "./orders"
 import { validateAddressConsistency } from "./address-validation"
 import {
   getShippingDestinationEligibility,
@@ -245,7 +250,7 @@ export function readCheckoutSparkMerchantOrderEvidence(
     }
     const message = parseOrderMessageRumorEvent(rumor)
     if (
-      message.type !== "order" ||
+      !hasCompleteOrderTerms(message) ||
       message.checkoutPaymentRoute !== "spark_router_v1" ||
       message.senderPubkey !== rumor.pubkey ||
       !isHex64(message.recipientPubkey) ||
@@ -260,6 +265,7 @@ export function readCheckoutSparkMerchantOrderEvidence(
     ) {
       return null
     }
+    const protocolOrder = getOrderProtocolPayload(message)
     // Validate private input now, then discard it. The later witness comparison
     // verifies these exact public country rules against the signed revision.
     const shippingItems = message.payload.items.filter(
@@ -289,14 +295,14 @@ export function readCheckoutSparkMerchantOrderEvidence(
     const organizerOrderBinding =
       classifyEventMarketOrderHandoff(message.payload) ===
       "reserved_organizer_stock"
-        ? getOrganizerStockOrderBindings(message.payload)
+        ? getOrganizerStockOrderBindings(protocolOrder)
         : undefined
     const evidence: CheckoutSparkMerchantOrderEvidence = {
       buyerPubkey: message.senderPubkey,
       merchantPubkey: message.recipientPubkey,
-      orderId: message.orderId,
+      orderId: protocolOrder.id,
       rumorId: rumor.id,
-      contentHash: contentHash(rumor.content),
+      contentHash: contentHash(message.rawContent),
       orderCreatedAt: message.payload.createdAt,
       commerceTotalSats: message.payload.subtotal,
       ...(organizerOrderBinding
@@ -638,10 +644,10 @@ export function matchesCheckoutSparkMerchantOrderWitness(
   try {
     const exact = restoreCheckoutSparkMerchantOrderWitness(witness)
     if (
-      message.type !== "order" ||
+      !hasCompleteOrderTerms(message) ||
       message.checkoutPaymentRoute !== "spark_router_v1" ||
       message.id !== exact.rumorId ||
-      message.orderId !== exact.orderId ||
+      (message.wireOrderId ?? message.orderId) !== exact.orderId ||
       message.senderPubkey !== exact.buyerPubkey ||
       message.recipientPubkey !== exact.merchantPubkey ||
       contentHash(message.rawContent) !== exact.contentHash
@@ -649,7 +655,11 @@ export function matchesCheckoutSparkMerchantOrderWitness(
       return false
     }
     const parsed = orderSchema.parse(JSON.parse(message.rawContent) as unknown)
-    if (JSON.stringify(parsed) !== JSON.stringify(message.payload)) return false
+    if (
+      JSON.stringify(parsed) !==
+      JSON.stringify(getOrderProtocolPayload(message))
+    )
+      return false
     if (exact.organizerOrderBinding) {
       const binding = getOrganizerStockOrderBindings(parsed)
       return (

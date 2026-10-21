@@ -1,4 +1,11 @@
+import { resolveOrderNoteContexts } from "./order-note-context"
 import type { RelayTarget } from "./relay-authority"
+import { db, type OrderLifecycle } from "../db"
+import {
+  correlateLegacyNumericOrderHistory,
+  projectOwnedNumericOrderMessages,
+} from "./order-format"
+import { getOrderAdapterCounts } from "./open-markets-orders"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -177,6 +184,7 @@ export interface CommerceInboxReadEvidence {
   failure?: RelayFailureCode
 }
 export interface CommerceInboxDiagnostic {
+  orderAdapter?: ReturnType<typeof getOrderAdapterCounts>
   states: Partial<Record<InboxDecodeState, number>>
   transportStates: Record<
     "nip17" | "nip04",
@@ -241,7 +249,12 @@ const emptySnapshot = (): CommerceInboxSnapshot => ({
   },
 })
 function projectRetainedInboxRecords(
-  projections: Array<{ row: InboxProjectionRow; projection: InboxProjection }>
+  projections: Array<{ row: InboxProjectionRow; projection: InboxProjection }>,
+  ownedOrders: readonly Pick<
+    OrderLifecycle,
+    "orderId" | "buyerPubkey" | "merchantPubkey" | "orderWireFormat"
+  >[] = [],
+  principal = ""
 ) {
   const directMessages: ParsedDirectMessage[] = []
   const orderMessages: ParsedOrderMessage[] = []
@@ -258,11 +271,60 @@ function projectRetainedInboxRecords(
       externalRecords.push(projection.record)
     if (row.read === 0) unreadIds.add(row.logicalId)
   }
+  // Kind-14 notes stay in the direct inbox. An authenticated order or exact
+  // saved buyer selection can bind a non-authoritative order preview, even if
+  // the outgoing history copy is missing. The party-scoped alias excludes peers.
+  const contexts = resolveOrderNoteContexts(directMessages, [
+    ...orderMessages.flatMap((message) =>
+      message.type === "order" && message.wireFormat === "open_markets"
+        ? [
+            {
+              wireOrderId: message.wireOrderId!,
+              buyerPubkey: message.senderPubkey,
+              merchantPubkey: message.recipientPubkey,
+            },
+          ]
+        : []
+    ),
+    ...ownedOrders.flatMap((order) =>
+      order.buyerPubkey === principal &&
+      (order.orderWireFormat === "open_markets" ||
+        order.orderWireFormat === "open_markets_v2")
+        ? [
+            {
+              wireOrderId: order.orderId,
+              buyerPubkey: principal,
+              merchantPubkey: order.merchantPubkey,
+            },
+          ]
+        : []
+    ),
+  ])
+  const orderMessageIds = new Set(orderMessages.map((message) => message.id))
+  for (let index = 0; index < directMessages.length; index++) {
+    const message = directMessages[index]!
+    const context = contexts.get(message.id)
+    if (!context) continue
+    directMessages[index] = { ...message, orderContext: context }
+    if (orderMessageIds.has(message.id)) continue
+    orderMessages.push({
+      ...message,
+      type: "message",
+      orderId: context.orderId,
+      rawContent: message.content,
+      wireFormat: "open_markets",
+      wireOrderId: context.wireOrderId,
+      payload: { note: message.content },
+    })
+  }
   // Advisory companion is suppressed only by its exact authenticated order.
   const orders = new Set(
     orderMessages
       .filter((m) => m.type === "order")
-      .map((m) => `${m.id}:${m.orderId}:${m.senderPubkey}:${m.recipientPubkey}`)
+      .map(
+        (m) =>
+          `${m.id}:${m.wireOrderId ?? m.orderId}:${m.senderPubkey}:${m.recipientPubkey}`
+      )
   )
   const visibleDirect = directMessages.filter((m) => {
     const c = m.orderCompanionIdentity
@@ -275,7 +337,11 @@ function projectRetainedInboxRecords(
   })
   return {
     directMessages: visibleDirect.sort((a, b) => a.createdAt - b.createdAt),
-    orderMessages: orderMessages.sort((a, b) => a.createdAt - b.createdAt),
+    orderMessages: projectOwnedNumericOrderMessages(
+      correlateLegacyNumericOrderHistory(orderMessages),
+      ownedOrders,
+      principal
+    ).sort((a, b) => a.createdAt - b.createdAt),
     externalRecords,
     unreadIds,
   }
@@ -285,8 +351,26 @@ function projectRetainedInboxRecords(
 export async function readRetainedCommerceInbox(
   ...args: Parameters<typeof readRetainedInboxProjections>
 ): Promise<CommerceInboxSnapshot> {
-  const projections = await readRetainedInboxProjections(...args)
-  return { ...emptySnapshot(), ...projectRetainedInboxRecords(projections) }
+  const [projections, ownedOrders, choices] = await Promise.all([
+    readRetainedInboxProjections(...args),
+    (args[2] ?? db).orderLifecycles
+      .where("buyerPubkey")
+      .equals(args[0])
+      .toArray(),
+    (args[2] ?? db).orderWireFormats
+      .where("buyerPubkey")
+      .equals(args[0])
+      .toArray(),
+  ])
+  if (!args[1]()) throw new Error("Inbox account session ended")
+  return {
+    ...emptySnapshot(),
+    ...projectRetainedInboxRecords(
+      projections,
+      [...ownedOrders, ...choices],
+      args[0]
+    ),
+  }
 }
 
 const owners = new Map<string, CommerceInbox>()
@@ -342,6 +426,14 @@ export class CommerceInbox {
           .toArray(),
         this.store.database.commerceInboxRanges
           .where("accountPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderLifecycles
+          .where("buyerPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderWireFormats
+          .where("buyerPubkey")
           .equals(this.store.principal)
           .toArray(),
       ])
@@ -413,18 +505,27 @@ export class CommerceInbox {
   }
   private async refreshView(): Promise<void> {
     this.assertCurrent()
-    const [projections, wrappers, ranges, deliveries] = await Promise.all([
-      this.store.projections(),
-      this.store.wrappers(),
-      this.store.database.commerceInboxRanges
-        .where("accountPubkey")
-        .equals(this.store.principal)
-        .toArray(),
-      this.store.database.commerceInboxDeliveries
-        .where("accountPubkey")
-        .equals(this.store.principal)
-        .toArray(),
-    ])
+    const [projections, wrappers, ranges, deliveries, ownedOrders, choices] =
+      await Promise.all([
+        this.store.projections(),
+        this.store.wrappers(),
+        this.store.database.commerceInboxRanges
+          .where("accountPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.commerceInboxDeliveries
+          .where("accountPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderLifecycles
+          .where("buyerPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+        this.store.database.orderWireFormats
+          .where("buyerPubkey")
+          .equals(this.store.principal)
+          .toArray(),
+      ])
     this.assertCurrent()
     const decryptFailures: DecryptFailure[] = []
     const legacyDecryptFailures: LegacyDmDecryptFailure[] = []
@@ -475,14 +576,20 @@ export class CommerceInbox {
       admissionRejected: range.admissionRejected,
       historyAttempted: range.historyAttempted,
     }))
+    const retained = projectRetainedInboxRecords(
+      projections,
+      [...ownedOrders, ...choices],
+      this.store.principal
+    )
     this.snapshot = {
       ...this.snapshot,
       sourceRelays: this.sourceRelays(),
       decryptFailures,
       legacyDecryptFailures,
-      ...projectRetainedInboxRecords(projections),
+      ...retained,
       diagnostics: {
         ...this.snapshot.diagnostics,
+        orderAdapter: getOrderAdapterCounts(retained.orderMessages),
         states,
         transportStates,
         historyRanges,
@@ -786,9 +893,16 @@ export class CommerceInbox {
               projection = { kind: "direct", message }
             }
             phase = "persisting"
-            const expiry = rumor.tags.find(
-              (tag) => tag[0] === "expiration"
-            )?.[1]
+            // Open Markets type-2 expiration is the validated BOLT11 payment
+            // deadline. Keep invoice evidence after that deadline for settlement
+            // and recovery. Outer-wrap expiry and other rumor expiry still apply.
+            const invoiceValidity =
+              record.category === "commerce" &&
+              record.parsedOrderMessage?.wireFormat === "open_markets" &&
+              record.parsedOrderMessage.type === "payment_request"
+            const expiry = invoiceValidity
+              ? undefined
+              : rumor.tags.find((tag) => tag[0] === "expiration")?.[1]
             await this.store.commit(
               row,
               this.claimOwner,

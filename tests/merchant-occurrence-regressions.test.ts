@@ -1,3 +1,9 @@
+import {
+  buildCommerceSupportTags,
+  requiredCommerceFeatures,
+} from "../packages/core/src/protocol/commerce-capabilities"
+import { createPrivateMessageRumor } from "../packages/core/src/protocol/private-message-primitives"
+import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
 import * as eventMarketProtocol from "../packages/core/src/protocol/event-market"
 import { installMerchantAcceptanceTestSession } from "./helpers/merchant-acceptance-session"
 import { __resetProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
@@ -26,7 +32,12 @@ import {
   buildEventMarketCalendarDraft,
   parseEventMarketCalendarEvent,
 } from "../packages/core/src/protocol/event-market"
-import { acceptMerchantOccurrenceOrder } from "../packages/core/src/protocol/merchant-occurrence-workflow"
+import {
+  acceptMerchantOccurrenceOrder,
+  readMerchantOccurrenceAcceptedOrder,
+  matchesMerchantOccurrenceAcceptance,
+} from "../packages/core/src/protocol/merchant-occurrence-workflow"
+import { encodeOpenMarketsBuyerMessage } from "../packages/core/src/protocol/commerce-wire"
 import { commitLocalProductWrite } from "../packages/core/src/protocol/local-product-write"
 import { prepareProductListingDeliveryJob } from "../packages/core/src/protocol/product-listing-delivery"
 import {
@@ -209,6 +220,89 @@ it("already-applied stock action and acceptance consume only once across reload"
   const stock = (await db.merchantInventoryProducts.get(p.id))?.stock
   expect(stock).toBe(9)
 })
+for (const state of ["applied", "pending"] as const) {
+  it(`numeric upgrade refuses an unbound legacy ${state} stock debit before acceptance`, async () => {
+    const original = listing(`numeric-stock-${state}`)
+    const product = await setup(original)
+    const purchase = order([product], `legacy-stock-${state}`)
+    const next = listing(`numeric-stock-${state}`, 9, 10, "SATS", 101)
+    await commitLocalProductWrite({
+      intentId: `legacy-stock-${state}`,
+      merchantPubkey: merchant,
+      expectedRevisions: [{ addressId: product.id, eventId: original.id }],
+      listingJob: job(next),
+      stock: {
+        orderId: purchase.id,
+        adjustment: {
+          key: `${encodeURIComponent(purchase.id)}:${encodeURIComponent(product.id)}`,
+          addressId: product.id,
+          sourceEventId: original.id,
+          title: product.title,
+          quantity: 1,
+          currentStock: 10,
+          nextStock: 9,
+          shortfall: 0,
+        },
+      },
+    })
+    await db.localProductStockCheckpoints.toCollection().modify({ state })
+    const saved = await db.localProductStockCheckpoints.toArray()
+    const numeric = numericOriginal(purchase)
+    db.close({ disableAutoOpen: false })
+    await db.open()
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: numeric.payload,
+        orderMessage: numeric,
+        products: [parseProductEvent(await admitFixtureEvent(next))],
+      })
+    ).rejects.toThrow("Older stock history")
+    expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+    expect(await db.localProductStockCheckpoints.toArray()).toEqual(saved)
+    const otherBuyer = numericOriginal({
+      ...purchase,
+      buyerPubkey: "d".repeat(64),
+    })
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: otherBuyer.payload,
+        orderMessage: otherBuyer,
+        products: [],
+      })
+    ).rejects.toThrow("Older stock history")
+    // A base-created accepted row does bind the buyer and signed terms. Its
+    // existing credit and replay remain valid even with the raw manual journal.
+    const accepted = await acceptMerchantOccurrenceOrder({
+      ...session,
+      order: purchase,
+      products: [parseProductEvent(await admitFixtureEvent(next))],
+    })
+    const acceptedBytes = JSON.stringify(accepted.order)
+    const replay = await acceptMerchantOccurrenceOrder({
+      ...session,
+      order: numeric.payload,
+      orderMessage: numeric,
+      products: [],
+    })
+    expect(replay.replayed).toBe(true)
+    expect(JSON.stringify(replay.order)).toBe(acceptedBytes)
+    expect(
+      JSON.stringify(
+        await readMerchantOccurrenceAcceptedOrder({
+          merchantPubkey: merchant,
+          orderId: numeric.orderId,
+          order: numeric.payload,
+          orderMessage: numeric,
+        })
+      )
+    ).toBe(acceptedBytes)
+    expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+    expect(await db.localProductStockCheckpoints.toArray()).toEqual(saved)
+  })
+}
 it("material product change while a later item loads rejects atomic acceptance", async () => {
   const first = listing("race-first")
   const second = listing("race-second")
@@ -1554,3 +1648,368 @@ for (const quantity of [3, 2]) {
     }
   })
 }
+
+it("accepts numeric inventory without inventing line prices and preserves encrypted replay bindings", async () => {
+  const product = await setup(listing("numeric-acceptance", 3))
+  const buyerPubkey = getPublicKey(generateSecretKey())
+  const parsed = parseOrderMessageRumorEvent(
+    createPrivateMessageRumor({
+      pubkey: buyerPubkey,
+      kind: 16,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [
+        ["p", merchant],
+        ["subject", "Order"],
+        ["type", "1"],
+        ["order", "numeric-acceptance"],
+        ["amount", "100"],
+        ["item", product.id, "1"],
+      ],
+      content: "Review supplied terms",
+    })
+  )
+  if (parsed.type !== "order") throw new Error("Missing order fixture")
+  const input = { ...session, order: parsed.payload, products: [product] }
+  const accepted = await acceptMerchantOccurrenceOrder(input)
+  expect(accepted.replayed).toBe(false)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(2)
+  const evidence = JSON.parse(
+    await openMerchantAcceptanceEvidence(accepted.order)
+  )
+  expect(evidence.items[0].priceAtPurchase).toBeUndefined()
+  expect(evidence.items[0].format).toBeUndefined()
+  const saved = JSON.stringify(
+    await db.merchantInventoryAcceptedOrders.get(parsed.payload.id)
+  )
+  db.close({ disableAutoOpen: false })
+  await db.open()
+  expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(true)
+  expect(
+    JSON.stringify(
+      await db.merchantInventoryAcceptedOrders.get(parsed.payload.id)
+    ) === saved
+  ).toBe(true)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(2)
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...input,
+      order: { ...parsed.payload, subtotal: 101 },
+    })
+  ).rejects.toThrow("conflicting accepted terms")
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...input,
+      order: {
+        ...parsed.payload,
+        buyerPubkey: getPublicKey(generateSecretKey()),
+      },
+    })
+  ).rejects.toThrow("conflicting accepted terms")
+})
+
+function numericOriginal(
+  purchase: ReturnType<typeof order>,
+  version: 1 | 2 = 1
+) {
+  const canonical = createPrivateMessageRumor({
+    kind: 16,
+    pubkey: purchase.buyerPubkey,
+    created_at: Math.floor(purchase.createdAt / 1000),
+    tags: [
+      ["p", purchase.merchantPubkey],
+      ["type", "order"],
+      ["order", purchase.id],
+      ["amount", String(purchase.subtotal)],
+      ["currency", purchase.currency],
+      ...purchase.items.map((item) => [
+        "item",
+        item.productId,
+        String(item.quantity),
+      ]),
+      ...(version === 2
+        ? buildCommerceSupportTags({
+            productIds: purchase.items.map((item) => item.productId),
+            products: purchase.items.map((item) => ({
+              id: item.productId,
+              signedProductEvent:
+                item.fulfillment?.type === "event_market_pickup"
+                  ? item.fulfillment.product.signedEvent
+                  : undefined,
+            })),
+            features: requiredCommerceFeatures(purchase),
+          })
+        : []),
+    ],
+    content: JSON.stringify(purchase),
+  })
+  const parsed = parseOrderMessageRumorEvent(
+    createPrivateMessageRumor(
+      encodeOpenMarketsBuyerMessage(
+        canonical,
+        {
+          orderId: purchase.id,
+          buyerPubkey: purchase.buyerPubkey,
+          merchantPubkey: purchase.merchantPubkey,
+        },
+        version
+      )
+    )
+  )
+  if (parsed.type !== "order") throw new Error("Missing numeric order")
+  return parsed
+}
+
+for (const operation of ["read", "retry"] as const) {
+  it(`preserves a base-created numeric acceptance after failed status delivery on ${operation}`, async () => {
+    const product = await setup(listing(`legacy-numeric-${operation}`))
+    const purchase = order([product])
+    // The installed parser used the extension's raw ID. Inventory commits
+    // before status delivery; leaving publication pending models that failure.
+    const accepted = await acceptMerchantOccurrenceOrder({
+      ...session,
+      order: purchase,
+      products: [product],
+    })
+    const inventory = await db.merchantInventoryProducts.get(product.id)
+    const original = numericOriginal(purchase)
+    expect(original.orderId).not.toBe(purchase.id)
+    db.close({ disableAutoOpen: false })
+    await db.open()
+    const input = {
+      ...session,
+      order: original.payload,
+      orderMessage: original,
+      products: [product],
+    }
+    if (operation === "read") {
+      expect(
+        JSON.stringify(
+          await readMerchantOccurrenceAcceptedOrder({
+            ...input,
+            orderId: original.orderId,
+          })
+        ) === JSON.stringify(accepted.order)
+      ).toBe(true)
+    } else {
+      const replay = await acceptMerchantOccurrenceOrder(input)
+      expect(replay.replayed).toBe(true)
+      expect(
+        JSON.stringify(replay.order) === JSON.stringify(accepted.order)
+      ).toBe(true)
+    }
+    expect(
+      matchesMerchantOccurrenceAcceptance(
+        accepted.order,
+        original.payload,
+        original
+      )
+    ).toBe(true)
+    expect(
+      matchesMerchantOccurrenceAcceptance(accepted.order, original.payload)
+    ).toBe(false)
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+    expect(await db.merchantInventoryProducts.get(product.id)).toEqual(
+      inventory
+    )
+    expect(
+      (await openMerchantAcceptanceEvidence(accepted.order)) ===
+        JSON.stringify(purchase)
+    ).toBe(true)
+  })
+}
+
+it("legacy numeric acceptance rejects changed terms and cannot authorize a named alias or different original", async () => {
+  const product = await setup(listing("legacy-numeric-binding"))
+  const purchase = order([product])
+  const accepted = await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const original = numericOriginal(purchase)
+  const changed = numericOriginal({ ...purchase, note: "changed terms" })
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...session,
+      order: changed.payload,
+      orderMessage: changed,
+      products: [],
+    })
+  ).rejects.toThrow("conflicting accepted terms")
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...session,
+      order: { ...original.payload, buyerPubkey: "d".repeat(64) },
+      orderMessage: original,
+      products: [],
+    })
+  ).rejects.toThrow("authenticated original")
+  expect(
+    matchesMerchantOccurrenceAcceptance(accepted.order, original.payload)
+  ).toBe(false)
+  expect(
+    matchesMerchantOccurrenceAcceptance(accepted.order, original.payload, {
+      ...original,
+      wireOrderId: "another-order",
+    })
+  ).toBe(false)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+})
+
+it("a different buyer's legacy raw ID does not reuse or block a numeric acceptance", async () => {
+  const product = await setup(listing("legacy-numeric-collision"))
+  const purchase = order([product])
+  await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const original = numericOriginal({ ...purchase, buyerPubkey: "d".repeat(64) })
+  const input = {
+    ...session,
+    order: original.payload,
+    orderMessage: original,
+    products: [product],
+  }
+  expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(false)
+  expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(true)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(2)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(8)
+})
+
+async function v2PickupAcceptanceFixture() {
+  const f = createEventMarketOrderFixture({
+    mode: "merchant_present",
+    newAssignment: true,
+  })
+  const source = f.fulfillment.product.signedEvent!
+  const signedProduct = finalizeEvent(
+    {
+      ...source,
+      tags: [
+        ...source.tags,
+        ["a", f.fulfillment.market.coordinate],
+        ["conduit_commerce", "2", "event_pickup"],
+      ],
+    },
+    f.merchantSecret
+  )
+  const fulfillment = {
+    ...f.fulfillment,
+    occurrenceAssignment: undefined,
+    product: {
+      ...f.fulfillment.product,
+      eventId: signedProduct.id,
+      signedEvent: signedProduct,
+    },
+  }
+  const purchase = orderSchema.parse({
+    ...f.order,
+    items: [{ ...f.order.items[0], fulfillment }],
+  })
+  const verified = await admitFixtureEvent(signedProduct)
+  const product = parseProductEvent(verified)
+  await db.products.put(projectSignedProductListingForLocalCommit(verified))
+  await initializeMerchantInventoryProduct({
+    db,
+    merchantPubkey: f.merchant,
+    productCoordinate: product.id,
+    stock: product.stock,
+    signedProductEvent: verified,
+  })
+  return {
+    purchase,
+    product,
+    session: {
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+    },
+  }
+}
+
+it("new v2 pickup acceptance retains the wire commitment and replays after reload without another stock debit", async () => {
+  const { product, purchase, session } = await v2PickupAcceptanceFixture()
+  const original = numericOriginal(purchase, 2)
+  expect(original.commerceExtensionVersion).toBe(2)
+  const input = {
+    ...session,
+    order: original.payload,
+    orderMessage: original,
+    products: [product],
+  }
+  const accepted = await acceptMerchantOccurrenceOrder(input)
+  expect(accepted.replayed).toBe(false)
+  expect(accepted.order.orderId).toBe(purchase.id)
+  expect(await openMerchantAcceptanceEvidence(accepted.order)).toBe(
+    JSON.stringify(purchase)
+  )
+  const stock = await db.merchantInventoryProducts.get(product.id)
+  expect(stock?.stock).toBe(5)
+  db.close({ disableAutoOpen: false })
+  await db.open()
+  expect(
+    await readMerchantOccurrenceAcceptedOrder({
+      ...input,
+      orderId: original.orderId,
+    })
+  ).toEqual(accepted.order)
+  expect((await acceptMerchantOccurrenceOrder(input)).order).toEqual(
+    accepted.order
+  )
+  expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(true)
+  expect(await db.merchantInventoryProducts.get(product.id)).toEqual(stock)
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+  expect(
+    matchesMerchantOccurrenceAcceptance(
+      accepted.order,
+      original.payload,
+      original
+    )
+  ).toBe(true)
+})
+
+it("new v2 ordinary orders retain participant-qualified acceptances for the same raw ID", async () => {
+  const product = await setup(listing("v2-ordinary-collision"))
+  const purchase = order([product])
+  for (const buyerPubkey of [purchase.buyerPubkey, "d".repeat(64)]) {
+    const original = numericOriginal({ ...purchase, buyerPubkey }, 2)
+    const input = {
+      ...session,
+      order: original.payload,
+      orderMessage: original,
+      products: [product],
+    }
+    const accepted = await acceptMerchantOccurrenceOrder(input)
+    expect(accepted.replayed).toBe(false)
+    expect(accepted.order.orderId).toBe(original.orderId)
+    expect((await acceptMerchantOccurrenceOrder(input)).replayed).toBe(true)
+  }
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(2)
+  expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(8)
+})
+
+it("new v2 pickup rejects an occupied raw commitment before another inventory debit", async () => {
+  const { product, purchase, session } = await v2PickupAcceptanceFixture()
+  await acceptMerchantOccurrenceOrder({
+    ...session,
+    order: purchase,
+    products: [product],
+  })
+  const inventory = await db.merchantInventoryProducts.get(product.id)
+  const original = numericOriginal(
+    { ...purchase, buyerPubkey: "d".repeat(64) },
+    2
+  )
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...session,
+      order: original.payload,
+      orderMessage: original,
+      products: [product],
+    })
+  ).rejects.toThrow("wire order ID")
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(1)
+  expect(await db.merchantInventoryProducts.get(product.id)).toEqual(inventory)
+})

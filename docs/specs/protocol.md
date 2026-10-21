@@ -847,39 +847,104 @@ failures must remain retryable and cannot silently produce a complete empty
 conversation for the affected person; logs and diagnostics remain
 content-free.
 
-## Legacy Conduit Order Message Payload (CND-128)
+## Order formats and legacy recovery (CND-128)
 
-Current Conduit writers and readers use kind `16` with JSON `content` and
-explicit `p`, named `type`, and `order` tags. There is no current Conduit kind
-`17` payment-proof writer and no proposed OMF kind-`1327` writer.
+New Market orders use one Open Markets numeric kind-16 type-1 envelope, including
+event pickup and private router checkout. There is no compatibility selector,
+named-format override, feature/size-based format switch, or second representation.
+Common tags and human-readable content accompany a version-2 `conduit` extension
+containing the complete validated payload and canonical tags. Per-item shipping,
+signed quotes, pickup snapshots and router markers remain in that encrypted
+snapshot. This extension does not imply support for richer features in other
+clients. No proposed OMF kind-`1327` writer is enabled.
 
-This legacy format is not wire-compatible with the GammaMarkets order-message
-format. GammaMarkets uses numeric kind-16 `type` values, human-readable
-`content`, and kind `17` for payment proof. Shared use of kind `16` and NIP-17
-transport must not be presented as wire compatibility.
+Ordinary orders need no capability declaration. New orders using distinct shipping
+options, event pickup or router checkout require the corresponding
+`per_item_shipping`, `event_pickup` or `router_checkout` capabilities in a
+`conduit_commerce` version-2 declaration on each exact authorized merchant-signed
+listing revision. Those revisions travel in `conduit_commerce_support` inside the
+extension and are validated by both encoder and receiver. Client brands,
+kind-10050 declarations and relay observations never establish commerce support.
+Missing support requires the seller to update the listings and the buyer to
+refresh checkout before funding; it cannot silently select another writer.
 
-Readers must discriminate kind-16 collisions before order parsing. A kind-16
-rumor is a Conduit order message only when its JSON payload and required explicit
-`p`, `type`, and `order` tags validate as the Conduit shape. NIP-18 generic
-reposts, which also use kind `16`, are ignored by this lane and must not become
-orders, messages, or user-visible parse failures.
+Common identity, amount, currency, item, invoice and status fields must agree with
+the extension. Restored status and shipping tags cannot override validated payload
+terms. Unknown, malformed or conflicting extensions remain non-actionable. The
+historical version-1 extension limit remains unchanged; version 2 preserves larger
+snapshots within its own bound and the independently enforced final encrypted
+transport limit. Oversized orders fail explicitly without truncation or a format
+switch.
+
+The shared [numeric order adapter](../knowledge/open-markets-order-adapter.md)
+reads validated numeric orders into Merchant review and writes numeric follow-ups,
+kind-17 Lightning reports and kind-14 conversation. Persist the new order's ID,
+parties and `open_markets_v2` writer before encrypted staging; routed preparations
+pin that writer before funding preparation. Saved named orders, numeric-v1 orders
+and historical preparations retain their original writers. Missing historical
+format metadata retains the deployed named contract only for those historical
+records. A saved checkpoint cannot change its parties or version. Pending delivery
+reuses the original signed encrypted wrap rather than re-encoding from current
+checkout controls. Existing invoices and their recovery keys remain intact.
+
+Original wire IDs remain distinct from participant-scoped inbox aliases.
+Authenticated legacy numeric originals correlate saved named replies and inventory
+acceptances only through exact participants and unchanged terms, preserving the
+original keys and encrypted evidence. Replay cannot create a second acceptance or
+consume stock again. Older manual stock journals and local decisions lack a buyer
+binding: retain their raw keys and signed product events, expose the need for
+review, and block a fresh debit or acceptance rather than crediting them to an
+unverified buyer. Exact pending stock publications remain retryable under their
+saved authority; verified accepted-order records retain their replay path.
+
+Supported kind-17 receipts, with or without a preimage, remain claims for the
+existing settlement verifier. Type-2 requests may advertise multiple payment
+methods; the adapter selects exactly one Lightning BOLT11 option and retains
+other rails without payment authority. Ambiguous selected options remain
+non-actionable; kind-17 receipts retain their single-report rules. Manual payment
+behavior and profile payment preferences are unchanged. Numeric invoice
+`expiration` must agree with the BOLT11 deadline and does not erase invoice history after payment validity ends;
+ordinary message and wrapper TTLs remain in force. Original
+wire IDs and encrypted originals are preserved; missing historical prices,
+listing revisions and destination terms remain unknown.
+
+Only an exact saved numeric buyer format or an authenticated buyer-authored
+numeric original projects its merchant's common confirmation/fulfillment statuses
+into buyer-facing order state. Conflicting formats and unrelated parties cannot
+gain that authority; lifecycle loss does not erase authenticated history. Generic
+inbound reports do not gain settlement authority on Merchant. Account, party,
+invoice, recovery and guest outbound-only boundaries remain unchanged.
+
+The legacy named Conduit contract uses kind `16` with JSON `content` and explicit
+`p`, named `type`, and `order` tags. It is a different wire grammar from the numeric
+Open Markets order contract derived from GammaMarkets. Shared use of kind `16`
+and NIP-17 transport must not be presented as wire compatibility.
+
+Readers must discriminate kind-16 collisions before order parsing. Numeric rumors
+must validate through the numeric adapter; named rumors require the legacy JSON
+payload and explicit `p`, `type`, and `order` tags. NIP-18 generic reposts, which
+also use kind `16`, are ignored by the order lanes and must not become orders,
+messages, or user-visible parse failures.
 
 ### Migration gate (CND-191)
 
-The OMF order-message proposal remains unaccepted. Conduit must preserve legacy
-writes and must not enable a new-kind writer or dual-write before acceptance.
-After acceptance, migration proceeds in this order:
+The versioned OMF proposal remains experimental. Implementation can proceed from
+a frozen contract using explicit supported-peer selection and Conduit-owned
+correctness, compatibility, cryptographic and recovery evidence. Upstream
+acceptance or another marketplace's adoption is not a universal implementation
+gate. The current numeric adapter enables no kind-1327 writer. Migration proceeds
+in this order:
 
-1. Add a codec for the accepted format.
-2. Add strict dual-read and semantic deduplication across accepted and legacy
+1. Add a codec for the selected format.
+2. Add strict dual-read and semantic deduplication across new and legacy
    representations.
-3. Enable the accepted writer only when peer capability is explicit.
+3. Select one supported representation with explicit capability or authenticated per-order evidence.
 4. Retire legacy writes after compatibility evidence is sufficient, while
    retaining bounded legacy reads for recovery.
 
-### Current tags and message types
+### Legacy named tags and message types
 
-Required tags for all message types:
+Required tags for the legacy named message types below:
 
 - `["p", "<counterparty_pubkey_hex>"]`
 - `["order", "<order_id>"]`

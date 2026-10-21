@@ -328,3 +328,4 @@ export {
   type CommerceInboxRecoveryProps,
 } from "./CommerceInboxRecovery"
 export { PrivateAttachment } from "./PrivateAttachment"
+export { OrderMessagingReadinessNotice } from "./OrderMessagingReadinessNotice"

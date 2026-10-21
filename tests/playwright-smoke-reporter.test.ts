@@ -2463,3 +2463,60 @@ describe("wallet recovery and bounded control diagnostics", () => {
     })
   }
 })
+
+describe("event checkout submit diagnostics", () => {
+  it("retains only booleans from the owning event checkout test", () => {
+    const fields = [
+      "observationAvailable",
+      "pointerDown",
+      "pointerUp",
+      "click",
+      "sendStarted",
+      "sendPending",
+      "buttonPresent",
+      "buttonDisabled",
+      "capabilityMissing",
+      "inboxPending",
+      "inboxBlocked",
+      "shippingUnresolved",
+      "unexpectedError",
+      "inboxPendingObserved",
+      "inboxBlockedObserved",
+      "capabilityMissingObserved",
+      "unexpectedErrorObserved",
+    ]
+    const values = Object.fromEntries(fields.map((field) => [field, true]))
+    const annotation = {
+      type: "smoke:event-checkout-submit",
+      description: JSON.stringify({
+        ...values,
+        orderId: "private-order",
+        errorText: "private-error",
+        plaintext: "private-content",
+      }),
+    }
+    const retained = [{ kind: "event-checkout-submit", ...values }]
+    expect(
+      safeSmokeDiagnostics("e2e/event-market.playwright.ts", [annotation])
+    ).toEqual(retained)
+    expect(
+      safeRetainedSmokeDiagnostics("e2e/event-market.playwright.ts", retained)
+    ).toEqual(retained)
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+    for (const field of fields) {
+      const safe = safeSmokeDiagnostics("e2e/event-market.playwright.ts", [
+        {
+          ...annotation,
+          description: JSON.stringify({
+            ...values,
+            [field]: "private-content",
+          }),
+        },
+      ])
+      expect(safe[0]).not.toHaveProperty(field)
+      expect(JSON.stringify(safe)).not.toContain("private-content")
+    }
+  })
+})
