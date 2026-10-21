@@ -307,12 +307,12 @@ job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
 `pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
-25-minute limit for its serial ordinary, ordinary native-router, and receiver setup
-lanes. Event native-router cases run in a separate parallel, 25-minute job with
-independent app, relay, wallet, signer and browser-storage state. Both jobs remain
-required whenever commerce is selected. Limits include setup, evidence upload,
-and cleanup. Individual test deadlines
-remain unchanged. Job cancellation still fails the aggregate gate, even when
+25-minute limit for its ordinary suite. Ordinary native-router and receiver setup
+lanes run together in a separate parallel, 25-minute job. Event native-router
+cases retain their own parallel, 25-minute job. Each job uses independent app,
+relay, wallet, signer and browser-storage state. All three jobs remain required
+whenever commerce is selected. Limits include setup, evidence upload, and cleanup.
+Individual test deadlines remain unchanged. Job cancellation still fails the aggregate gate, even when
 all test artifacts were uploaded successfully.
 
 A retry-dependent pass still fails the smoke gate. Required CI runs use zero

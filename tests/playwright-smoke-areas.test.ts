@@ -84,7 +84,7 @@ describe("Playwright smoke area validation", () => {
     expect(() => buildPlaywrightSmokeDiscoveryArgs(undefined, "")).toThrow()
   })
 
-  it("requires separate candidate-bound router evidence inside the commerce CI job", () => {
+  it("requires separate candidate-bound router evidence in its required CI job", () => {
     const steps = [
       "Validate isolated router smoke selection",
       "Run isolated router Playwright smoke tests",
@@ -96,7 +96,7 @@ describe("Playwright smoke area validation", () => {
       return ciWorkflow.slice(start, next < 0 ? undefined : next)
     })
     for (const step of steps) {
-      expect(step).toContain("matrix.job.area == 'commerce'")
+      expect(step).not.toContain("matrix.job")
       expect(step).toContain("playwright.router.config.ts")
       expect(step).toContain("PLAYWRIGHT_ROUTER_NATIVE_PROFILE: ordinary")
     }
@@ -111,18 +111,18 @@ describe("Playwright smoke area validation", () => {
       expect(steps[0]).toContain(`PLAYWRIGHT_SMOKE_${field}:`)
       expect(steps[1]).toContain(`PLAYWRIGHT_SMOKE_${field}:`)
     }
-    expect(steps[2]).toContain("if: always() && matrix.job.area == 'commerce'")
+    expect(steps[2]).toContain("if: always()")
     expect(steps[2]).toContain("--expected-manifest")
     expect(steps[2]).toContain("--execution-report")
     const cleanup = ciWorkflow.slice(
-      ciWorkflow.indexOf("      - name: Remove raw Playwright output"),
+      ciWorkflow.indexOf("      - name: Remove raw router output"),
       ciWorkflow.indexOf("\n  e2e-smoke:\n")
     )
     expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_RESULT_FILE"')
     expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_PROGRESS_FILE"')
     expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_MANIFEST"')
     expect(ciWorkflow).toContain(
-      "needs: [smoke-changes, e2e-smoke-shard, e2e-event-router]"
+      "needs: [smoke-changes, e2e-smoke-shard, e2e-router, e2e-event-router]"
     )
   })
 
@@ -428,7 +428,9 @@ describe("Playwright smoke area validation", () => {
     )
     expect(ciWorkflow).not.toContain("Upload Playwright artifacts")
     const uploads = (
-      Bun.YAML.parse(ciWorkflow).jobs["e2e-smoke-shard"].steps as Array<{
+      ["e2e-smoke-shard", "e2e-router"].flatMap(
+        (job) => Bun.YAML.parse(ciWorkflow).jobs[job].steps
+      ) as Array<{
         uses?: string
         with?: Record<string, string>
       }>

@@ -36,8 +36,9 @@ changed test's former owning areas, runtime or dependencies between files. Even
 small test-only edits therefore keep all areas and their existing parallelism.
 Commerce remains complete, including isolated ordinary native-router, Event
 native-router and receiver setup profiles. The Event native profile runs in its
-own required parallel job; the existing Commerce job retains ordinary Commerce,
-ordinary native routing and receiver setup. Both use independent test state.
+own required parallel job. Ordinary native routing and receiver setup run together
+in another required parallel job, leaving the Commerce job its ordinary suite.
+All three jobs use independent test state.
 The native discovery guard compares their project-aware manifests with the full
 native selection and rejects missing or repeated cases before execution. These
 are execution partitions within `@commerce`, not new area ownership tags.
@@ -54,7 +55,8 @@ Measured About and legal source scopes run unsharded. Scopes above 150 project
 cases fall back to full-area partitions as the inventory grows. This count is a
 size guard, not a runtime bound. General test-file edits always keep full-area
 partitions in all areas, regardless of case count. Full areas retain the existing
-five Market, four Merchant, one Commerce and one Event-router jobs. Build runs independently of
+five Market, four Merchant, one Commerce, one ordinary-router/receiver and one
+Event-router jobs. Build runs independently of
 quality checks;
 preview verification still requires the validated build and configuration digest.
 Every required check must pass independently.
@@ -77,9 +79,13 @@ project-aware case multiset across smaller jobs; actual discovery rejects
 missing, repeated or empty partitions. Assertions, retries, browser projects,
 worker counts and deadlines remain unchanged. This scheduling change does not
 establish the cause of a timeout or replace fresh required runtime evidence. The
-bounded Event-router split preserves all native cases while keeping the existing
-Commerce job's serial lanes within their unchanged deadline; it does not increase
-test deadlines or make a failed lane optional. Unit execution
+bounded router splits preserve all native and receiver cases. The ordinary
+Commerce inventory grew from 48 to 72 project cases while its serial native and
+receiver lanes already needed about eight minutes. Moving those two unchanged
+lanes into one required parallel job removes that shared job-budget bottleneck.
+All three Commerce jobs retain a 25-minute cap; individual test deadlines, zero
+retries, single workers, exact execution verification and sanitized artifacts are
+unchanged. A failed or canceled lane still fails the aggregate gate. Unit execution
 and broader preview scheduling remain independent performance limits.
 
 To roll back narrower selection, omit `--inventory` from the selector invocation.

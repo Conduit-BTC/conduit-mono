@@ -38,6 +38,7 @@ const workflow = Bun.YAML.parse(
   >
 }
 const smokeJob = workflow.jobs["e2e-smoke-shard"]!
+const routerJob = workflow.jobs["e2e-router"]!
 const eventRouterJob = workflow.jobs["e2e-event-router"]!
 const aggregateJob = workflow.jobs["e2e-smoke"]!
 const aggregateScript = aggregateJob.steps.find(
@@ -81,56 +82,83 @@ describe("Playwright CI runtime", () => {
     }
   })
 
-  it("runs the Event native partition independently under the same required evidence policy", () => {
-    expect(eventRouterJob.needs).toEqual(["smoke-changes"])
-    expect(aggregateJob.needs).toContain("e2e-event-router")
-    expect(eventRouterJob.container?.image).toMatch(
-      new RegExp(
-        `^mcr\\.microsoft\\.com/playwright:v${playwrightPackage.version.replaceAll(".", "\\.")}-noble@sha256:[a-f0-9]{64}$`
+  it.each([
+    ["e2e-router", routerJob, ["router", "router-receiver-setup"]],
+    ["e2e-event-router", eventRouterJob, ["event-router"]],
+  ] as const)(
+    "runs %s independently under the same required evidence policy",
+    (jobId, job, lanes) => {
+      expect(job.needs).toEqual(["smoke-changes"])
+      expect(aggregateJob.needs).toContain(jobId)
+      expect(job.container?.image).toMatch(
+        new RegExp(
+          `^mcr\\.microsoft\\.com/playwright:v${playwrightPackage.version.replaceAll(".", "\\.")}-noble@sha256:[a-f0-9]{64}$`
+        )
       )
-    )
-    expect(eventRouterJob.defaults?.run.shell).toBe("bash")
-    expect(eventRouterJob["timeout-minutes"]).toBe(25)
-    expect(eventRouterJob.if).toContain(
-      "needs.smoke-changes.result == 'success'"
-    )
-    expect(eventRouterJob.if).toContain("'commerce'")
-    expect(eventRouterJob.env?.PLAYWRIGHT_ROUTER_NATIVE_PROFILE).toBe("event")
-    expect(eventRouterJob.env?.PLAYWRIGHT_SMOKE_AREA).toBe("commerce")
-    expect(
-      eventRouterJob.steps.find((step) =>
-        step.uses?.startsWith("actions/checkout@")
-      )?.with?.["persist-credentials"]
-    ).toBe(false)
-    const uploads = eventRouterJob.steps.filter((step) =>
-      step.uses?.startsWith("actions/upload-artifact@")
-    )
-    expect(uploads).toHaveLength(1)
-    expect(uploads[0]?.uses).toBe(
-      "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
-    )
-    expect(uploads[0]?.if).toBe("always()")
-    expect(uploads[0]?.with).toEqual({
-      name: "smoke-evidence-event-router-${{ github.run_attempt }}",
-      path: "${{ runner.temp }}/playwright-event-router-smoke-evidence.json",
-      "if-no-files-found": "error",
-      "retention-days": 7,
-    })
-    const scripts = eventRouterJob.steps
-      .map((step) => step.run ?? "")
-      .join("\n")
-    expect(scripts).toContain("bun scripts/ci/router_smoke_partition.ts")
-    expect(scripts).toContain(
-      "--expected-manifest playwright-event-router-smoke-manifest.json"
-    )
-    expect(scripts).toContain(
-      '--execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE"'
-    )
-    expect(scripts).toContain(
-      "--config playwright.router.config.ts >/dev/null 2>&1"
-    )
-    expect(scripts).not.toMatch(/playwright install(?:-deps)?\b/)
-  })
+      expect(job.defaults?.run.shell).toBe("bash")
+      expect(job["timeout-minutes"]).toBe(25)
+      expect(job.if).toContain("needs.smoke-changes.result == 'success'")
+      expect(job.if).toContain("'commerce'")
+      expect(job.env?.PLAYWRIGHT_ROUTER_NATIVE_PROFILE).toBe(
+        jobId === "e2e-event-router" ? "event" : undefined
+      )
+      expect(job.env?.PLAYWRIGHT_SMOKE_AREA).toBe("commerce")
+      expect(
+        job.steps.find((step) => step.uses?.startsWith("actions/checkout@"))
+          ?.with?.["persist-credentials"]
+      ).toBe(false)
+      const uploads = job.steps.filter((step) =>
+        step.uses?.startsWith("actions/upload-artifact@")
+      )
+      expect(uploads).toHaveLength(lanes.length)
+      for (const [index, lane] of lanes.entries()) {
+        const file =
+          lane === "router-receiver-setup"
+            ? "playwright-router-receiver-setup"
+            : `playwright-${lane}-smoke`
+        expect(uploads[index]?.uses).toBe(
+          "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+        )
+        expect(uploads[index]?.if).toBe("always()")
+        expect(uploads[index]?.with).toEqual({
+          name: `smoke-evidence-${lane}-\${{ github.run_attempt }}`,
+          path: `\${{ runner.temp }}/${file}-evidence.json`,
+          "if-no-files-found": "error",
+          "retention-days": 7,
+        })
+      }
+      const scripts = job.steps.map((step) => step.run ?? "").join("\n")
+      if (jobId === "e2e-event-router") {
+        expect(scripts).toContain("bun scripts/ci/router_smoke_partition.ts")
+        expect(scripts).toContain(
+          "--expected-manifest playwright-event-router-smoke-manifest.json"
+        )
+      } else {
+        expect(
+          job.steps
+            .filter((step) => step.name?.startsWith("Verify executed"))
+            .every((step) => step.if === "always()")
+        ).toBe(true)
+        expect(
+          job.steps.some(
+            (step) =>
+              step.name === "Remove raw router output" && step.if === "always()"
+          )
+        ).toBe(true)
+        expect(JSON.stringify(job)).not.toContain("matrix.job")
+        expect(JSON.stringify(smokeJob)).not.toContain(
+          "PLAYWRIGHT_ROUTER_NATIVE_PROFILE"
+        )
+      }
+      expect(scripts).toContain(
+        '--execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE"'
+      )
+      expect(scripts).toContain(
+        "--config playwright.router.config.ts >/dev/null 2>&1"
+      )
+      expect(scripts).not.toMatch(/playwright install(?:-deps)?\b/)
+    }
+  )
 
   it.each([
     ["documentation-only", ["docs/knowledge/testing.md"]],
@@ -148,6 +176,7 @@ describe("Playwright CI runtime", () => {
           SHARD_RESULT: "success",
           EVENT_REQUIRED: "false",
           EVENT_RESULT: "skipped",
+          ROUTER_RESULT: "skipped",
           SHARDS: JSON.stringify(shards),
         },
       })
@@ -168,6 +197,7 @@ describe("Playwright CI runtime", () => {
             SHARD_RESULT: "success",
             EVENT_REQUIRED: "false",
             EVENT_RESULT: "skipped",
+            ROUTER_RESULT: "skipped",
             SHARDS: JSON.stringify(expandSmokeMatrix([])),
             [failedStage]: status,
           },
@@ -178,23 +208,48 @@ describe("Playwright CI runtime", () => {
   )
 
   it.each(["failure", "cancelled", "skipped", ""])(
-    "rejects %s Event router execution when commerce is selected",
+    "rejects %s router execution when commerce is selected",
     (status) => {
-      const result = spawnSync("bash", ["-c", aggregateScript], {
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          SELECT_RESULT: "success",
-          SHARD_RESULT: "success",
-          EVENT_REQUIRED: "true",
-          EVENT_RESULT: status,
-          SHARDS: JSON.stringify(expandSmokeMatrix(["commerce"])),
-        },
-      })
-      expect(result.status).toBe(1)
+      for (const failedJob of ["EVENT_RESULT", "ROUTER_RESULT"]) {
+        const result = spawnSync("bash", ["-c", aggregateScript], {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            SELECT_RESULT: "success",
+            SHARD_RESULT: "success",
+            EVENT_REQUIRED: "true",
+            EVENT_RESULT: "success",
+            ROUTER_RESULT: "success",
+            SHARDS: JSON.stringify(expandSmokeMatrix(["commerce"])),
+            [failedJob]: status,
+          },
+        })
+        expect(result.status).toBe(1)
+      }
     }
   )
-  it("accepts selected Event coverage only after both required jobs succeed", () => {
+  it.each(["success", "failure", "cancelled", ""])(
+    "rejects unexpected %s router execution when commerce is not selected",
+    (status) => {
+      for (const unexpectedJob of ["EVENT_RESULT", "ROUTER_RESULT"]) {
+        const result = spawnSync("bash", ["-c", aggregateScript], {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            SELECT_RESULT: "success",
+            SHARD_RESULT: "success",
+            EVENT_REQUIRED: "false",
+            EVENT_RESULT: "skipped",
+            ROUTER_RESULT: "skipped",
+            SHARDS: JSON.stringify(expandSmokeMatrix([])),
+            [unexpectedJob]: status,
+          },
+        })
+        expect(result.status).toBe(1)
+      }
+    }
+  )
+  it("accepts selected commerce coverage only after all required jobs succeed", () => {
     const result = spawnSync("bash", ["-c", aggregateScript], {
       encoding: "utf8",
       env: {
@@ -203,6 +258,7 @@ describe("Playwright CI runtime", () => {
         SHARD_RESULT: "success",
         EVENT_REQUIRED: "true",
         EVENT_RESULT: "success",
+        ROUTER_RESULT: "success",
         SHARDS: JSON.stringify(expandSmokeMatrix(["commerce"])),
       },
     })
