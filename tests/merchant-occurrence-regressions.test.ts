@@ -220,6 +220,89 @@ it("already-applied stock action and acceptance consume only once across reload"
   const stock = (await db.merchantInventoryProducts.get(p.id))?.stock
   expect(stock).toBe(9)
 })
+for (const state of ["applied", "pending"] as const) {
+  it(`numeric upgrade refuses an unbound legacy ${state} stock debit before acceptance`, async () => {
+    const original = listing(`numeric-stock-${state}`)
+    const product = await setup(original)
+    const purchase = order([product], `legacy-stock-${state}`)
+    const next = listing(`numeric-stock-${state}`, 9, 10, "SATS", 101)
+    await commitLocalProductWrite({
+      intentId: `legacy-stock-${state}`,
+      merchantPubkey: merchant,
+      expectedRevisions: [{ addressId: product.id, eventId: original.id }],
+      listingJob: job(next),
+      stock: {
+        orderId: purchase.id,
+        adjustment: {
+          key: `${encodeURIComponent(purchase.id)}:${encodeURIComponent(product.id)}`,
+          addressId: product.id,
+          sourceEventId: original.id,
+          title: product.title,
+          quantity: 1,
+          currentStock: 10,
+          nextStock: 9,
+          shortfall: 0,
+        },
+      },
+    })
+    await db.localProductStockCheckpoints.toCollection().modify({ state })
+    const saved = await db.localProductStockCheckpoints.toArray()
+    const numeric = numericOriginal(purchase)
+    db.close({ disableAutoOpen: false })
+    await db.open()
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: numeric.payload,
+        orderMessage: numeric,
+        products: [parseProductEvent(await admitFixtureEvent(next))],
+      })
+    ).rejects.toThrow("Older stock history")
+    expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+    expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+    expect(await db.localProductStockCheckpoints.toArray()).toEqual(saved)
+    const otherBuyer = numericOriginal({
+      ...purchase,
+      buyerPubkey: "d".repeat(64),
+    })
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: otherBuyer.payload,
+        orderMessage: otherBuyer,
+        products: [],
+      })
+    ).rejects.toThrow("Older stock history")
+    // A base-created accepted row does bind the buyer and signed terms. Its
+    // existing credit and replay remain valid even with the raw manual journal.
+    const accepted = await acceptMerchantOccurrenceOrder({
+      ...session,
+      order: purchase,
+      products: [parseProductEvent(await admitFixtureEvent(next))],
+    })
+    const acceptedBytes = JSON.stringify(accepted.order)
+    const replay = await acceptMerchantOccurrenceOrder({
+      ...session,
+      order: numeric.payload,
+      orderMessage: numeric,
+      products: [],
+    })
+    expect(replay.replayed).toBe(true)
+    expect(JSON.stringify(replay.order)).toBe(acceptedBytes)
+    expect(
+      JSON.stringify(
+        await readMerchantOccurrenceAcceptedOrder({
+          merchantPubkey: merchant,
+          orderId: numeric.orderId,
+          order: numeric.payload,
+          orderMessage: numeric,
+        })
+      )
+    ).toBe(acceptedBytes)
+    expect((await db.merchantInventoryProducts.get(product.id))?.stock).toBe(9)
+    expect(await db.localProductStockCheckpoints.toArray()).toEqual(saved)
+  })
+}
 it("material product change while a later item loads rejects atomic acceptance", async () => {
   const first = listing("race-first")
   const second = listing("race-second")

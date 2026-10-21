@@ -344,6 +344,18 @@ reconciliation. Named orders cannot opt into this compatibility path by choosing
 an alias-shaped ID. Keep this bounded reader until installed raw-ID acceptances no
 longer need recovery; schema upgrades alone cannot retire it.
 
+Older manual stock journals and local stock decisions are different: they record
+the merchant and raw order ID, but no buyer or original-order binding. A numeric
+original can locate that history without proving ownership. Preserve the old keys
+and signed product events. Unbound history requires explicit review and blocks a
+new stock debit or inventory acceptance; it must never silently count as stock
+credit for whichever buyer reused that ID. Exact pending product publications can
+still retry under their saved authority without another debit. Existing verified
+inventory acceptances retain their authenticated replay path. Viewing orders and
+messaging remain available; assigning ambiguous historical stock work to an order
+requires a separately verified resolution, not inference from the currently loaded
+conversation or an incomplete relay search.
+
 Schema version 30 converges main versions 27–29 and adapter versions 27–28,
 preserving format choices, discovery indexes, organizer stock records and exact
 encrypted delivery bytes. Decode rules version 9 combines retained numeric-envelope

@@ -1,3 +1,4 @@
+import { assertNoUnboundLegacyStockHistory } from "./order-stock-history"
 import { sameSignedPublicEvent } from "./verified-public-event"
 import { effectiveAllocation } from "./merchant-inventory"
 import { reconcileKnownOccurrenceLifecycle } from "./merchant-occurrence-lifecycle"
@@ -56,6 +57,8 @@ export interface LocalProductWriteExpectedRevision {
 
 export interface LocalProductWriteStockInput {
   orderId: string
+  /** Refusal-only lookup; never credits or rewrites a legacy decision. */
+  legacyOrderId?: string | null
   adjustment: LocalProductStockCheckpoint["adjustment"]
   /** Only a terminally rejected local revision may be re-signed. */
   replacesSignedEventId?: string
@@ -1658,6 +1661,13 @@ export async function commitLocalProductWrite(
           }
         }
 
+        if (stock)
+          await assertNoUnboundLegacyStockHistory(
+            db,
+            intent.merchantPubkey,
+            stock.orderId,
+            input.stock?.legacyOrderId
+          )
         const priorStock = stock
           ? await db.localProductStockCheckpoints
               .where("orderId")

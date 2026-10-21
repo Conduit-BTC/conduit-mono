@@ -1,3 +1,4 @@
+import { assertNoUnboundLegacyStockHistory } from "./order-stock-history"
 import type {
   ConduitDB,
   MerchantInventoryAcceptedOrder,
@@ -560,6 +561,8 @@ export async function acceptMerchantInventoryOrder(input: {
   assertCurrent?: () => void
   items: MerchantInventoryOrderItem[]
   priorStockAdjustments?: readonly MerchantInventoryPriorStockAdjustment[]
+  /** Refusal-only lookup for old unbound manual stock decisions. */
+  legacyStockOrderId?: string | null
   organizerImport?: VerifiedOrganizerStockImport
   acceptedAt?: number
 }): Promise<{ replayed: boolean; order: MerchantInventoryAcceptedOrder }> {
@@ -752,6 +755,12 @@ export async function acceptMerchantInventoryOrder(input: {
           return { replayed: true, order: prior }
         }
       }
+      await assertNoUnboundLegacyStockHistory(
+        db,
+        merchantPubkey,
+        orderId,
+        input.legacyStockOrderId
+      )
       const products = new Map<string, MerchantInventoryProduct>()
       const assignments = new Map<string, MerchantInventoryAssignment>()
       const debitedProducts = new Set<string>()

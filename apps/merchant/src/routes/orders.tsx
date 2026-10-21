@@ -36,6 +36,8 @@ import {
   getCachedMerchantStorefront,
   getCommerceInbox,
   getLocalProductStockRecoveryForOrder,
+  getLegacyNumericStockOrderId,
+  LEGACY_ORDER_STOCK_REVIEW_MESSAGE,
   confirmLocalProductStockRecovery,
   settleLocalProductStockRecovery,
   getCurrencyAmountStep,
@@ -185,6 +187,7 @@ import {
   runExclusiveOrderAction,
   type MerchantPaymentConfirmationTarget,
 } from "../lib/order-action-view"
+import { readMerchantOrderStockHistory } from "../lib/order-stock-history"
 import { prepareShippingUpdate } from "../lib/shipping-update"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
 import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
@@ -1248,13 +1251,28 @@ function OrdersWorkspace() {
     ? `${pubkey ?? "none"}:${selected.id}:${selectedProtocolOrderId ?? "none"}`
     : null
   const localStockJournalQuery = useQuery({
-    queryKey: ["merchant-order-stock-journal", pubkey, selectedProtocolOrderId],
+    queryKey: [
+      "merchant-order-stock-journal",
+      pubkey,
+      selectedProtocolOrderId,
+      selectedOrderMessage?.id,
+    ],
     queryFn: () =>
-      getLocalProductStockRecoveryForOrder(pubkey!, selectedProtocolOrderId!),
+      readMerchantOrderStockHistory({
+        merchantPubkey: pubkey!,
+        orderId: selectedProtocolOrderId!,
+        original: selectedOrderMessage,
+        decisions: stockDecisionStoreRef.current,
+        pending: pendingStockDeliveryStoreRef.current,
+      }),
     enabled: !!pubkey && !!selected,
   })
   const localStockJournal = useMemo(
-    () => localStockJournalQuery.data ?? [],
+    () => localStockJournalQuery.data?.current ?? [],
+    [localStockJournalQuery.data]
+  )
+  const legacyStockJournal = useMemo(
+    () => localStockJournalQuery.data?.legacy ?? [],
     [localStockJournalQuery.data]
   )
   const unresolvedFulfillmentLines = selectedOrder
@@ -1338,11 +1356,18 @@ function OrdersWorkspace() {
         : undefined,
     [acceptedInventoryQuery.data, selectedOrder, selectedOrderMessage]
   )
+  const legacyStockHistoryNeedsReview =
+    !acceptedInventory &&
+    localStockJournalQuery.data?.hasUnboundLegacyHistory === true
   const inventoryAcceptanceConflict =
+    legacyStockHistoryNeedsReview ||
+    localStockJournalQuery.isError ||
     acceptedInventoryQuery.isError ||
     (!!acceptedInventoryQuery.data && !acceptedInventory)
   const inventoryAcceptanceReady =
-    acceptedInventoryQuery.isSuccess && !inventoryAcceptanceConflict
+    acceptedInventoryQuery.isSuccess &&
+    localStockJournalQuery.isSuccess &&
+    !inventoryAcceptanceConflict
   const [inventoryNotice, setInventoryNotice] = useState("")
   const selectedFuturePickup = selectedConduitOrder?.items.find(
     (item) => item.fulfillment?.type === "event_market_pickup"
@@ -1556,7 +1581,7 @@ function OrdersWorkspace() {
 
   useEffect(() => {
     if (!pubkey || !selected || !localStockJournalQuery.isSuccess) return
-    const pending = localStockJournal.find(
+    const pending = [...localStockJournal, ...legacyStockJournal].find(
       (row) => row.checkpoint.state === "pending"
     )
     if (pending) {
@@ -1572,10 +1597,19 @@ function OrdersWorkspace() {
         next.add(`${pubkey}:${pending.checkpoint.adjustment.key}`)
         return next
       })
+    } else if (localStockJournalQuery.data?.legacyPending[0]) {
+      const saved = localStockJournalQuery.data.legacyPending[0]
+      setStockDelivery({
+        orderId: saved.orderId,
+        adjustment: saved.adjustment,
+        notice: buildLocalProductRetryNotice("publish"),
+        signedEvent: saved.signedEvent,
+      })
     } else {
       setStockDelivery((current) =>
         current?.authority === "journal" &&
-        current.orderId === selectedProtocolOrderId
+        (current.orderId === selectedProtocolOrderId ||
+          current.orderId === localStockJournalQuery.data?.legacyOrderId)
           ? null
           : current
       )
@@ -1585,6 +1619,8 @@ function OrdersWorkspace() {
     selected,
     selectedProtocolOrderId,
     localStockJournal,
+    legacyStockJournal,
+    localStockJournalQuery.data,
     localStockJournalQuery.isSuccess,
   ])
 
@@ -2024,7 +2060,17 @@ function OrdersWorkspace() {
       })
     : null
   const selectedStockDelivery =
-    stockDelivery?.orderId === selectedProtocolOrderId ? stockDelivery : null
+    stockDelivery &&
+    (stockDelivery.orderId === selectedProtocolOrderId ||
+      (stockDelivery.orderId === localStockJournalQuery.data?.legacyOrderId &&
+        (legacyStockJournal.some(
+          (row) => row.checkpoint.signedEventId === stockDelivery.signedEvent.id
+        ) ||
+          localStockJournalQuery.data.legacyPending.some(
+            (row) => row.signedEvent.id === stockDelivery.signedEvent.id
+          ))))
+      ? stockDelivery
+      : null
   const stockDeliveryCanRetry =
     selectedStockDelivery?.notice.state === "partial" ||
     selectedStockDelivery?.notice.state === "retry_needed"
@@ -2198,6 +2244,18 @@ function OrdersWorkspace() {
       }
 
       const authority = captureFreshOrderAuthority()
+      const assertStockHistory = async () => {
+        const history = await readMerchantOrderStockHistory({
+          merchantPubkey: pubkey,
+          orderId: payload.orderId,
+          original: payload.orderMessage,
+          decisions: stockDecisionStoreRef.current,
+          pending: pendingStockDeliveryStoreRef.current,
+        })
+        if (history.hasUnboundLegacyHistory)
+          throw new Error(LEGACY_ORDER_STOCK_REVIEW_MESSAGE)
+      }
+      await assertStockHistory()
 
       const latestLocal = await getCachedMerchantStorefront({
         merchantPubkey: pubkey,
@@ -2294,6 +2352,7 @@ function OrdersWorkspace() {
         throw new Error("This order already consumed inventory at acceptance.")
       const expectedRevision = captureOrderStockRevision(record)
       const assertCurrentWriteBaseline = async () => {
+        await assertStockHistory()
         if (!isCurrentOrderAccount(pubkey)) {
           throw new Error("Stock update belongs to another account.")
         }
@@ -2333,6 +2392,10 @@ function OrdersWorkspace() {
               durableCommit: {
                 stock: {
                   orderId: payload.orderId,
+                  legacyOrderId: getLegacyNumericStockOrderId(
+                    pubkey,
+                    payload.orderMessage
+                  ),
                   adjustment: effectiveAdjustment,
                   ...(payload.action === "republish" &&
                   journalDecision?.kind === "unpublished"
@@ -2561,11 +2624,7 @@ function OrdersWorkspace() {
       }
       await invalidateProductQueries()
       await queryClient.invalidateQueries({
-        queryKey: [
-          "merchant-order-stock-journal",
-          merchantPubkey,
-          payload.orderId,
-        ],
+        queryKey: ["merchant-order-stock-journal", merchantPubkey],
       })
     },
     onError: async (error, payload) => {
@@ -3130,7 +3189,24 @@ function OrdersWorkspace() {
           shouldContinue: () => isCurrentOrderAction(authority),
         })
       : null
-    const result = await withMerchantStockLock(pubkey, () => {
+    const result = await withMerchantStockLock(pubkey, async () => {
+      const savedAcceptance = await readMerchantOccurrenceAcceptedOrder({
+        merchantPubkey: pubkey,
+        orderId: order.id,
+        order,
+        orderMessage,
+      })
+      if (!savedAcceptance) {
+        const history = await readMerchantOrderStockHistory({
+          merchantPubkey: pubkey,
+          orderId: order.id,
+          original: orderMessage,
+          decisions: stockDecisionStoreRef.current,
+          pending: pendingStockDeliveryStoreRef.current,
+        })
+        if (history.hasUnboundLegacyHistory)
+          throw new Error(LEGACY_ORDER_STOCK_REVIEW_MESSAGE)
+      }
       const priorStockAdjustments = productIds.flatMap((productCoordinate) => {
         const decision = stockDecisionStoreRef.current.getPersisted(
           pubkey,
@@ -3990,8 +4066,9 @@ function OrdersWorkspace() {
                 ) : null}
                 {inventoryAcceptanceConflict ? (
                   <p role="alert" className="text-sm text-[var(--error-text)]">
-                    Saved inventory could not be verified for this order. Stock
-                    and fulfillment actions are blocked.
+                    {legacyStockHistoryNeedsReview
+                      ? `${LEGACY_ORDER_STOCK_REVIEW_MESSAGE} Retrying a saved delivery only republishes its original stock update; it does not accept this order or change stock again.`
+                      : "Saved inventory could not be verified for this order. Stock and fulfillment actions are blocked."}
                   </p>
                 ) : null}
                 {acceptedInventory ? (

@@ -588,6 +588,228 @@ async function verifyIndependentOrder(
     console.info(
       "Installed numeric acceptance retries once without another stock debit or evidence rewrite"
     )
+
+    // A pre-upgrade manual debit has no saved buyer binding. Preserve it and
+    // refuse another debit instead of crediting it to this numeric alias.
+    const stockOrderId = `legacy-stock-${crypto.randomUUID()}`
+    const stockProduct = `30402:${merchant.pubkey}:adapter-legacy-stock`
+    const source = signRuntimeTestEvent(merchant, {
+      kind: 30402,
+      created_at: now,
+      tags: [
+        ["d", "adapter-legacy-stock"],
+        ["title", "Legacy stock book"],
+        ["price", "100", "SATS"],
+        ["type", "simple", "digital"],
+        ["stock", "5"],
+      ],
+      content: "",
+    })
+    const changed = signRuntimeTestEvent(merchant, {
+      ...source,
+      created_at: now + 1,
+      tags: source.tags.map((tag) =>
+        tag[0] === "stock" ? ["stock", "4"] : tag
+      ),
+    })
+    const stockPacket = await page.evaluate(
+      async ({
+        root,
+        source,
+        changed,
+        orderId,
+        product,
+        buyer,
+        merchant,
+        relay,
+      }) => {
+        const { db } = await import(`${root}/db/index.ts`)
+        const { admitPublicEvent } = await import(
+          `${root}/protocol/verified-public-event.ts`
+        )
+        const { projectSignedProductListingForLocalCommit } = await import(
+          `${root}/protocol/commerce.ts`
+        )
+        const { commitLocalProductWrite } = await import(
+          `${root}/protocol/local-product-write.ts`
+        )
+        const { prepareProductListingDeliveryJob } = await import(
+          `${root}/protocol/product-listing-delivery.ts`
+        )
+        const { settleLocalProductStockRecovery } = await import(
+          `${root}/protocol/local-product-stock.ts`
+        )
+        const { createPrivateMessageRumor } = await import(
+          `${root}/protocol/private-message-primitives.ts`
+        )
+        const { encodeOpenMarketsBuyerMessage } = await import(
+          `${root}/protocol/commerce-wire.ts`
+        )
+        const admission = await admitPublicEvent(source)
+        if (admission.status !== "verified")
+          throw new Error("Invalid stock fixture")
+        await db.products.put(
+          projectSignedProductListingForLocalCommit(admission.event)
+        )
+        const listingJob = prepareProductListingDeliveryJob({
+          merchantPubkey: merchant,
+          signedEvents: [changed],
+          relayTargets: [{ relayUrl: relay, ownerSelected: true }],
+          readyForDelivery: false,
+        })
+        await commitLocalProductWrite({
+          intentId: `legacy:${changed.id}`,
+          merchantPubkey: merchant,
+          expectedRevisions: [{ addressId: product, eventId: source.id }],
+          listingJob,
+          stock: {
+            orderId,
+            adjustment: {
+              key: `${encodeURIComponent(orderId)}:${encodeURIComponent(product)}`,
+              addressId: product,
+              sourceEventId: source.id,
+              title: "Legacy stock book",
+              quantity: 1,
+              currentStock: 5,
+              nextStock: 4,
+              shortfall: 0,
+            },
+          },
+        })
+        await db.productListingOutbox.update(listingJob.id, {
+          state: "delivered",
+          deliveryAttemptCount: 1,
+          relayDelivery: listingJob.relayDelivery.map((row: object) => ({
+            ...row,
+            status: "acked",
+            attemptCount: 1,
+          })),
+        })
+        if (
+          (await settleLocalProductStockRecovery({
+            merchantPubkey: merchant,
+            orderId,
+            addressId: product,
+            signedEventId: changed.id,
+            kind: "applied",
+          })) !== "saved"
+        )
+          throw new Error("Stock fixture not settled")
+        const purchase = {
+          id: orderId,
+          buyerPubkey: buyer,
+          merchantPubkey: merchant,
+          items: [
+            {
+              productId: product,
+              format: "digital",
+              fulfillment: { type: "digital" },
+              quantity: 1,
+              priceAtPurchase: 100,
+              currency: "SATS",
+            },
+          ],
+          subtotal: 100,
+          currency: "SATS",
+          createdAt: Date.now(),
+        }
+        const packet = encodeOpenMarketsBuyerMessage(
+          createPrivateMessageRumor({
+            kind: 16,
+            pubkey: buyer,
+            created_at: Math.floor(purchase.createdAt / 1000),
+            tags: [
+              ["p", merchant],
+              ["type", "order"],
+              ["order", orderId],
+            ],
+            content: JSON.stringify(purchase),
+          }),
+          { buyerPubkey: buyer, merchantPubkey: merchant, orderId }
+        )
+        return {
+          ...packet,
+          savedBytes: JSON.stringify(
+            (await db.productListingOutbox.get(listingJob.id))!.signedEvents[0]
+          ),
+        }
+      },
+      {
+        root: `/@fs${process.cwd()}/packages/core/src`,
+        source,
+        changed,
+        orderId: stockOrderId,
+        product: stockProduct,
+        buyer: buyer.pubkey,
+        merchant: merchant.pubkey,
+        relay: TEST_RELAY_URL,
+      }
+    )
+    await publishBuyer(16, stockPacket.tags, stockPacket.content)
+    await page.goto(
+      `${url}?order=${encodeURIComponent(stockOrderId)}&counterparty=${buyer.pubkey}`
+    )
+    for (const reload of [false, true]) {
+      if (reload) await page.reload()
+      await expect(
+        page
+          .getByRole("alert")
+          .filter({ hasText: "Older stock history uses this order number" })
+      ).toBeVisible()
+      await expect(
+        page.getByRole("button", { name: "Accept order", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", {
+          name: "Mark picked up / complete",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", {
+          name: "Retry acceptance publication",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      expect(
+        await page.evaluate(
+          async ({ root, product, orderId, savedBytes }) => {
+            const { db } = await import(`${root}/db/index.ts`)
+            const checkpoints = await db.localProductStockCheckpoints
+              .where("orderId")
+              .equals(orderId)
+              .toArray()
+            const saved = checkpoints[0]
+            const listing =
+              saved &&
+              (await db.productListingOutbox.get(
+                `product-listing:${saved.signedEventId}`
+              ))
+            return {
+              stock: (await db.products.get(product))?.stock,
+              checkpoints: checkpoints.length,
+              originalKey: saved?.orderId === orderId,
+              applied: saved?.state === "applied",
+              exact: JSON.stringify(listing?.signedEvents[0]) === savedBytes,
+              accepted: await db.merchantInventoryAcceptedOrders.count(),
+            }
+          },
+          {
+            root: `/@fs${process.cwd()}/packages/core/src`,
+            product: stockProduct,
+            orderId: stockOrderId,
+            savedBytes: stockPacket.savedBytes,
+          }
+        )
+      ).toEqual({
+        stock: 4,
+        checkpoints: 1,
+        originalKey: true,
+        applied: true,
+        exact: true,
+        accepted: 2,
+      })
+    }
   } finally {
     disposeRuntimeSignerIdentity(buyer)
     disposeRuntimeSignerIdentity(merchant)

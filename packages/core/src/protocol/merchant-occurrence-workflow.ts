@@ -1,4 +1,8 @@
 import {
+  assertNoUnboundLegacyStockHistory,
+  getLegacyNumericStockOrderId,
+} from "./order-stock-history"
+import {
   hasCompleteOrderTerms,
   type ParsedOrderMessage,
   type ParsedOrderPayload,
@@ -582,7 +586,16 @@ export async function readMerchantOccurrenceAcceptedOrder(input: {
       )
     : await db.merchantInventoryAcceptedOrders.get(input.orderId)
   store.assertCurrent()
-  if (!saved) return undefined
+  if (!saved) {
+    if (validOrder)
+      await assertNoUnboundLegacyStockHistory(
+        db,
+        input.merchantPubkey,
+        input.orderId,
+        getLegacyNumericStockOrderId(input.merchantPubkey, input.orderMessage)
+      )
+    return undefined
+  }
   if (
     !validOrder ||
     !matchesMerchantOccurrenceAcceptance(
@@ -676,6 +689,16 @@ export async function acceptMerchantOccurrenceOrder(
     store.assertCurrent()
     order = wireOrder
   }
+  const legacyStockOrderId = getLegacyNumericStockOrderId(
+    input.merchantPubkey,
+    input.orderMessage
+  )
+  await assertNoUnboundLegacyStockHistory(
+    db,
+    input.merchantPubkey,
+    order.id,
+    legacyStockOrderId
+  )
   const { identityBinding, termsBinding } =
     merchantOccurrenceAcceptanceBindings(order)
   const eventItems = order.items.filter(
@@ -934,5 +957,6 @@ export async function acceptMerchantOccurrenceOrder(
     },
     items,
     priorStockAdjustments: input.priorStockAdjustments,
+    legacyStockOrderId,
   })
 }
