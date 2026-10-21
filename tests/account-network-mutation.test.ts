@@ -1975,12 +1975,33 @@ describe("account network mutation", () => {
           outcome.readbackStatus === "auth_required"
       )
     ).toBe(true)
+    await execution.baseRepository.recordOutcomes({
+      pubkey: ACCOUNT,
+      kind: EVENT_KINDS.RELAY_LIST,
+      signedEventId: first.checkpoints[0]!.signedEvent.id,
+      update: {
+        observedAt: MUTATION_AT + 1,
+        readback: [
+          {
+            relayUrl: first.checkpoints[0]!.relayOutcomes[0]!.relayUrl,
+            status: "auth_required",
+            authFailure: "rejected",
+          },
+        ],
+      },
+    })
     const persistedSnapshot = JSON.stringify(
       await execution.baseRepository.get(ACCOUNT)
     )
     const saved = JSON.parse(
       persistedSnapshot
     ) as AccountNetworkMutationSnapshot
+    expect(
+      saved.ownerRelayList!.pendingDistribution!.relayOutcomes[0]
+    ).toMatchObject({
+      readbackStatus: "auth_required",
+      readbackAuthFailure: "rejected",
+    })
     const exact = saved.ownerRelayList!.pendingDistribution!.signedEvent
     const restored = createInMemoryAccountNetworkMutationRepository([
       { pubkey: ACCOUNT, snapshot: saved },
@@ -2065,6 +2086,11 @@ describe("account network mutation", () => {
       })
       expect(authReads).toBeGreaterThan(0)
       expect(retry.checkpoints[0]!.pending).toBe(false)
+      expect(
+        retry.checkpoints[0]!.relayOutcomes.every(
+          (outcome) => outcome.readbackAuthFailure === undefined
+        )
+      ).toBe(true)
       expect(JSON.stringify(retry.checkpoints[0]!.signedEvent)).toBe(
         JSON.stringify(exact)
       )

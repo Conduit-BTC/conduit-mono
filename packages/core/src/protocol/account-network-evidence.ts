@@ -374,7 +374,6 @@ export const NETWORK_PREFERENCE_READBACK_STATUSES: readonly NetworkPreferenceRea
     "absent",
     "timed_out",
     "auth_required",
-    "auth_rejected",
     "verification_unavailable",
     "unavailable",
     "policy_blocked",

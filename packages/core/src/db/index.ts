@@ -559,7 +559,6 @@ export type NetworkPreferenceReadbackStatus =
   | "absent"
   | "timed_out"
   | "auth_required"
-  | "auth_rejected"
   | "verification_unavailable"
   | "unavailable"
   | "policy_blocked"
@@ -572,6 +571,8 @@ export interface NetworkPreferenceRelayOutcome {
   publishAttemptCount: number
   publishAttemptedAt?: number
   readbackStatus: NetworkPreferenceReadbackStatus
+  /** Optional diagnostic; older clients can still interpret readbackStatus. */
+  readbackAuthFailure?: "rejected"
   readbackAttemptCount: number
   readbackAttemptedAt?: number
   observedAt?: number

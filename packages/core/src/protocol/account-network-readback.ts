@@ -29,7 +29,7 @@ export async function readExactAccountNetworkPreference(input: {
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
   executor?: CommerceRelayExecutor
   authTimeoutMs?: number
-}): Promise<NetworkPreferenceReadbackObservation["status"]> {
+}): Promise<NetworkPreferenceReadbackObservation["status"] | "auth_rejected"> {
   const { signedEvent, options, relayUrl } = input
   if (
     ![10002, 10050].includes(signedEvent.kind) ||

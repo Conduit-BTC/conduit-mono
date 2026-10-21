@@ -1649,7 +1649,12 @@ async function deliverPendingKind(input: {
         assertContinue(input.dependencies.shouldContinue)
         readbackObservations.push({
           relayUrl,
-          status,
+          ...(status === "auth_rejected"
+            ? {
+                status: "auth_required" as const,
+                authFailure: "rejected" as const,
+              }
+            : { status }),
         })
       } catch (error) {
         assertContinue(input.dependencies.shouldContinue)
