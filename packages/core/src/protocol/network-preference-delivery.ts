@@ -36,6 +36,7 @@ const READBACK_STRENGTH: Record<NetworkPreferenceReadbackStatus, number> = {
   pending: 0,
   timed_out: 1,
   auth_required: 1,
+  auth_rejected: 1,
   verification_unavailable: 1,
   unavailable: 1,
   policy_blocked: 1,

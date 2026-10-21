@@ -559,6 +559,7 @@ export type NetworkPreferenceReadbackStatus =
   | "absent"
   | "timed_out"
   | "auth_required"
+  | "auth_rejected"
   | "verification_unavailable"
   | "unavailable"
   | "policy_blocked"

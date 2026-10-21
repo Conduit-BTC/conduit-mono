@@ -69,6 +69,17 @@ event and no stronger usable retained or pending frontier. It is never proof
 of global absence. Authentication-required and verification-unavailable reads
 remain distinguishable even when anonymous readback cannot complete.
 
+Foreground save/retry confirmation first uses the anonymous exact read. An
+`auth_required` result may use the shared NIP-42 executor with the active
+external account lease, the same target, and the exact owner/kind/event-ID
+filter. Failed authentication stays unresolved: relay rejection is retained as
+`auth_rejected`, signer denial as `cancelled`, and timeouts as `timed_out`.
+These are content-free additions to the existing outcome record, without a
+database schema change. Exact observed evidence remains monotonic. A retry
+uses the saved preference bytes and may request a fresh connection-bound AUTH
+signature; it does not sign a replacement preference. Background discovery
+remains signer-free.
+
 Protected message-history completeness comes from the selected sources' bounded
 history observations and admitted wraps. Declaration lookup freshness does not
 negate a completed history read under surviving signed current authority.
