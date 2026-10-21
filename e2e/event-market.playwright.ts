@@ -949,9 +949,11 @@ function decryptPrivatePublications(
 }
 
 function rumorType(rumor: PrivateRumor): string | undefined {
-  return decodeConduitCommerceExtension(rumor).tags.find(
-    (tag) => tag[0] === "type"
-  )?.[1]
+  // Kind-14 companions also use a conduit marker, but are ordinary chat.
+  // Only commerce envelopes carry the versioned complete-order extension.
+  const message =
+    rumor.kind === 16 ? decodeConduitCommerceExtension(rumor) : rumor
+  return message.tags.find((tag) => tag[0] === "type")?.[1]
 }
 
 function formatPickupClaimCode(claimRef: string): string {
