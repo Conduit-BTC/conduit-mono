@@ -1806,3 +1806,165 @@ test("separate request writes are enabled by default", () => {
     retireAccountSigner(f.signer)
   }
 })
+
+test("slow successful wallet authorization leaves fresh HTTP proofs for submit, status and activation", async () => {
+  const f = fixture()
+  const record = await f.requestRecord()
+  let view: AddressRequestView | undefined
+  let clock = Date.now()
+  const now = Date.now
+  Date.now = () => clock
+  const ages: number[] = []
+  let status = "received"
+  try {
+    const flow = createAddressRequestWorkflow({
+      owner: f.owner,
+      assertCurrent() {},
+      authorize: async () => {
+        clock += 61_000
+      },
+      load: async () => view,
+      save: async (_id, record) => (view = { record, publication: "local" }),
+      signWallet: async () => JSON.parse(record.payload),
+      signAccount: (draft) => f.signer.signEvent(draft),
+      fetch: (async (_url, init) => {
+        const proof = JSON.parse(
+          atob(new Headers(init?.headers).get("Authorization")!.slice(6))
+        )
+        const age = Math.floor(clock / 1000) - proof.created_at
+        ages.push(age)
+        return age > 60
+          ? new Response(null, { status: 401 })
+          : Response.json({ status })
+      }) as typeof fetch,
+      address: async () => ({
+        status: "registered",
+        username: "saved-name",
+        address: "saved-name@conduit.cash",
+        publicLookup: "verified",
+      }),
+      publishProfile: async () => "b".repeat(64),
+    })
+    const walletId = crypto.randomUUID()
+    expect(
+      (
+        await flow.submit(walletId, {
+          desiredName: "saved-name",
+          token: "controlled",
+        })
+      ).record.phase
+    ).toBe("received")
+    expect((await flow.check(walletId))?.status).toBe("received")
+    status = "approved"
+    expect((await flow.activate(walletId)).record.phase).toBe("complete")
+    expect(ages).toEqual([0, 0, 0])
+  } finally {
+    Date.now = now
+  }
+})
+
+test("compatible foreign request progress reconciles a retained operation without changing its bytes or destinations", async () => {
+  const f = fixture()
+  const journal = f.newStore()
+  const recovery = f.service(journal)
+  const walletId = crypto.randomUUID()
+  await backedUp(recovery, walletId)
+  await recovery.deliver(
+    await recovery.prepareRegistry("mainnet", { type: "add", walletId })
+  )
+  const discovery = await recovery.discover(false, "mainnet")
+  const record = await f.requestRecord()
+  const requests = f.requestService(journal)
+  const discoveryOf = () => recovery.discover(false, "mainnet")
+  await requests.save("mainnet", discovery, walletId, record)
+  // A retains a frozen successor after its request reads become unavailable.
+  f.unavailableAddressReads.add(f.relayUrls[0])
+  expect(
+    (
+      await requests.save("mainnet", discovery, walletId, {
+        ...record,
+        phase: "received",
+      })
+    ).confirmed
+  ).toBe(false)
+  const before = (await journal.load(f.owner)).addressRequestSync!.mainnet!
+    .operation!
+  f.unavailableAddressReads.clear()
+  // B independently confirms a compatible successor with a later phase.
+  const second = f.requestService()
+  const approved = { ...record, phase: "approved" as const }
+  expect(
+    (await second.save("mainnet", discovery, walletId, approved)).confirmed
+  ).toBe(true)
+  f.unavailableAddressReads.add(f.relayUrls[0])
+  expect(await requests.syncPending(discoveryOf)).toBe(false)
+  expect(
+    JSON.stringify(
+      (await journal.load(f.owner)).addressRequestSync!.mainnet!.operation
+    ) === JSON.stringify(before)
+  ).toBe(true)
+  f.unavailableAddressReads.clear()
+  const stale = (await journal.load(f.owner)).addressRequestSync!.mainnet!
+    .observed!
+  const relay = f.relays.get(f.relayUrls[0])!
+  const address = addressRequestsDTag("mainnet")
+  const foreign = [...relay.values()].find((event) =>
+    event.tags.some((tag) => tag[0] === "d" && tag[1] === address)
+  )!
+  relay.delete(foreign.id)
+  relay.set(stale.id, stale)
+  expect(await requests.syncPending(discoveryOf)).toBe(false)
+  expect(
+    JSON.stringify(
+      (await journal.load(f.owner)).addressRequestSync!.mainnet!.operation
+    ) === JSON.stringify(before)
+  ).toBe(true)
+  relay.delete(stale.id)
+  relay.set(foreign.id, foreign)
+  await requests.stage("mainnet", walletId, {
+    ...approved,
+    phase: "registered",
+  })
+  const laterRelay = "wss://later.example"
+  f.relays.set(laterRelay, new Map(f.relays.get(f.relayUrls[0])!))
+  const input = Reflect.get(requests, "input")
+  const writes: string[] = []
+  let interrupt = true
+  const resumed = new AddressRequestService({
+    ...input,
+    userRelayUrls: [laterRelay],
+    transport: {
+      ...input.transport,
+      publish: async (url, event, current) => {
+        writes.push(url)
+        if (interrupt) return "timed_out"
+        return input.transport.publish(url, event, current)
+      },
+    },
+  })
+  expect(await resumed.syncPending(discoveryOf)).toBe(false)
+  const interrupted = (await journal.load(f.owner)).addressRequestSync!.mainnet!
+  expect(
+    JSON.stringify(interrupted.reconciledOperations) ===
+      JSON.stringify([before])
+  ).toBe(true)
+  expect(interrupted.operation?.targets).toEqual(before.targets)
+  const successor = interrupted.operation!.event
+  interrupt = false
+  expect(await resumed.syncPending(discoveryOf)).toBe(true)
+  const after = (await journal.load(f.owner)).addressRequestSync!.mainnet!
+  expect(after.observed?.id === successor.id).toBe(true)
+  expect(writes.every((url) => before.targets.includes(url))).toBe(true)
+  expect(writes).not.toContain(laterRelay)
+  expect(after.operation).toBeUndefined()
+  expect(
+    JSON.stringify(after.reconciledOperations) === JSON.stringify([before])
+  ).toBe(true)
+  expect(
+    (await requests.load("mainnet", discovery)).records[walletId].phase
+  ).toBe("registered")
+  const fresh = f.requestService()
+  expect((await fresh.load("mainnet", discovery)).records[walletId].phase).toBe(
+    "registered"
+  )
+})

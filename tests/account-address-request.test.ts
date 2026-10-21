@@ -270,3 +270,48 @@ test("retained valid but conflicting backup blocks selected-wallet authority dur
     await f.close()
   }
 })
+
+test("a local selected request stays local when confirmed membership omits that exact wallet", async () => {
+  const f = await fixture("unavailable")
+  try {
+    const initial = await f
+      .workflow()
+      .submit(f.wallet.id, { desiredName: "existing", token: "controlled" })
+    const complete = {
+      ...initial.record,
+      phase: "complete" as const,
+      profileEventId: "b".repeat(64),
+    }
+    await f.metadata.stage("mainnet", f.wallet.id, complete)
+    const discover = f.recovery.discover.bind(f.recovery)
+    f.recovery.discover = async (...args) => ({
+      ...(await discover(...args)),
+      coverage: "complete",
+      state: "absent_within_scope",
+      registryMembershipReady: true,
+      invalidCount: 0,
+      unresolvedObserved: false,
+      registry: {
+        format: "conduit.spark.registry",
+        version: 1,
+        ownerPubkey: f.signer.pubkey,
+        network: "mainnet",
+        revision: 1,
+        parentEventId: null,
+        activeWalletIds: [],
+        removedWalletIds: [],
+        payInvoiceWalletId: null,
+        receiveWalletId: null,
+        createdAt: 1,
+      },
+    })
+    // An unrelated empty snapshot can be confirmed; it has no selected-wallet receipt.
+    f.metadata.load = async () => ({ records: {}, confirmed: true })
+    const loaded = await f.workflow().load(f.wallet.id)
+    expect(loaded?.record).toEqual(complete)
+    expect(loaded?.publication).toBe("local")
+    expect(loaded?.sync?.reason).toBe("request_contents_unconfirmed")
+  } finally {
+    await f.close()
+  }
+})

@@ -282,10 +282,11 @@ export class AddressRequestService {
   }
   private async read(
     network: AddressRequestNetwork,
-    options: AccountSignerOperationOptions
+    options: AccountSignerOperationOptions,
+    targets = this.targets
   ): Promise<{ heads: (SignedNostrEvent | undefined)[]; complete: boolean }> {
     const reads = await Promise.all(
-      this.targets.map(async (url) => {
+      targets.map(async (url) => {
         this.scope.assertCurrent()
         try {
           const result = await this.input.transport.read(
@@ -499,6 +500,7 @@ export class AddressRequestService {
     })
     const replacedOperationId = event?.id
     let newerProgress = false
+    let reconciledOperation: AddressRequestState["operation"]
     if (event) {
       const pending = await this.decrypt(event, network, options)
       const changed =
@@ -509,14 +511,29 @@ export class AddressRequestService {
           candidate.id !== event!.id &&
           candidate.id !== pending.parentEventId
       )
-      // Ordinary retries must finish the exact staged bytes and delivery plan.
-      // A competing head needs reconciliation; never replace this operation silently.
-      if (foreign) throw new SparkRecoveryError("conflict")
       if (!collected.readComplete) return local("request_read_unavailable")
-      newerProgress = changed
+      if (foreign) {
+        if (!collected.complete || !head) return local("request_heads_disagree")
+        // A compatible agreed head can supersede an undeliverable replaceable
+        // event. Reconcile over that head, retaining the old signed operation.
+        // Confirm consensus on the frozen destinations, not constructor defaults.
+        const frozen = state.operation!
+        const agreed = await this.read(
+          network,
+          options,
+          frozen.relayPolicyTargets ?? frozen.targets
+        )
+        if (!agreed.complete) return local("request_read_unavailable")
+        if (!agreed.heads.every((candidate) => candidate?.id === head.id))
+          return local("request_heads_disagree")
+        reconciledOperation = frozen
+        event = undefined
+        eventSource = undefined
+      } else newerProgress = changed
     }
     if (
       !event &&
+      !reconciledOperation &&
       state.observed &&
       collected.complete &&
       head?.id !== state.observed.id
@@ -545,6 +562,7 @@ export class AddressRequestService {
       if (head) {
         const prior = await this.decrypt(head, network, options)
         if (
+          !reconciledOperation &&
           JSON.stringify(prior.requests) === JSON.stringify(collected.records)
         ) {
           const membership = await this.membershipHeadStatus(
@@ -580,7 +598,8 @@ export class AddressRequestService {
       const createdAt = Math.max(
         Math.floor(Date.now() / 1000),
         (head?.created_at ?? 0) + 1,
-        (state.observed?.created_at ?? 0) + 1
+        (state.observed?.created_at ?? 0) + 1,
+        (state.operation?.event.created_at ?? 0) + 1
       )
       const snapshot: AddressRequestSnapshot = {
         format: "conduit.address-requests",
@@ -623,7 +642,25 @@ export class AddressRequestService {
           throw new SparkRecoveryError("conflict")
         return {
           ...current,
-          operation: { event: event!, targets: [...this.targets] },
+          ...(reconciledOperation
+            ? {
+                reconciledOperations: [
+                  ...(current.reconciledOperations ?? []),
+                  reconciledOperation,
+                ],
+              }
+            : {}),
+          operation: {
+            event: event!,
+            targets: [...(reconciledOperation?.targets ?? this.targets)],
+            ...(reconciledOperation?.relayPolicyTargets
+              ? {
+                  relayPolicyTargets: [
+                    ...reconciledOperation.relayPolicyTargets,
+                  ],
+                }
+              : {}),
+          },
         }
       })
       if (!collected.complete)

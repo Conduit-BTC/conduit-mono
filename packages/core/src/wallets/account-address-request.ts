@@ -198,11 +198,19 @@ export function accountAddressRequests(
         await authorize(walletId, record, priority)
         if (record)
           await metadata.stage("mainnet", walletId, record, { priority })
+        const confirmed =
+          saved.confirmed &&
+          !!record &&
+          JSON.stringify(saved.records[walletId]) === JSON.stringify(record)
         return record
           ? {
               record,
-              publication: saved.confirmed ? "confirmed" : "local",
-              sync: saved.diagnosis,
+              publication: confirmed ? "confirmed" : "local",
+              sync: confirmed
+                ? undefined
+                : (saved.diagnosis ?? {
+                    reason: "request_contents_unconfirmed" as const,
+                  }),
             }
           : undefined
       },

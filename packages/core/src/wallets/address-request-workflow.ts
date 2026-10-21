@@ -86,8 +86,8 @@ export function createAddressRequestWorkflow(
     token?: string
   ): Promise<AddressNameRequestStatus> => {
     const path = ADDRESS_REQUEST_PATH + (check ? "/status" : "")
-    const event = await authorization(record.payload, path)
     await d.authorize?.(walletId, record)
+    const event = await authorization(record.payload, path)
     d.assertCurrent()
     try {
       const result = await d.fetch(ADDRESS_REQUEST_ORIGIN + path, {

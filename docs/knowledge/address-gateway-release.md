@@ -207,3 +207,19 @@ qualification.
 - [Breez signed lifecycle messages](https://github.com/breez/spark-sdk/blob/5ea587cd84f0757a40998d58b46342abde79ce54/crates/breez-sdk/lnurl-models/src/signed_message.rs)
 - [NIP-98 HTTP authentication](https://github.com/nostr-protocol/nips/blob/master/98.md)
 - [Turnstile hostname rules](https://developers.cloudflare.com/turnstile/additional-configuration/hostname-management/)
+
+## Optional request synchronization repair
+
+Selected-wallet authorization completes before a fresh NIP-98 HTTP proof is
+signed. A final current-authority check still precedes delivery. Local request
+progress is relay-confirmed only when that exact selected record is covered by
+the confirmed snapshot. An empty or unrelated membership snapshot is insufficient.
+
+When all relevant relay heads agree on compatible cross-device progress, optional
+synchronization can reconcile a staged operation over that head. The account
+journal retains the old signed operation and its destinations in
+`reconciledOperations`; a new signed successor contains the merged progress and
+inherits the staged delivery plan. Reconciliation confirms consensus at the frozen
+destinations, and interrupted successor delivery retries its exact bytes. Divergent,
+unavailable, or incompatible observations retain the pending operation for repair.
+This device-local journal addition changes no public event format or version.
