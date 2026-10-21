@@ -1863,7 +1863,7 @@ test("slow successful wallet authorization leaves fresh HTTP proofs for submit, 
   }
 })
 
-test("compatible foreign request progress reconciles a retained operation without changing its bytes or destinations", async () => {
+test("compatible foreign request progress reconciles without changing request evidence or retry destinations", async () => {
   const f = fixture()
   const journal = f.newStore()
   const recovery = f.service(journal)
@@ -1944,12 +1944,16 @@ test("compatible foreign request progress reconciles a retained operation withou
   })
   expect(await resumed.syncPending(discoveryOf)).toBe(false)
   const interrupted = (await journal.load(f.owner)).addressRequestSync!.mainnet!
-  expect(
-    JSON.stringify(interrupted.reconciledOperations) ===
-      JSON.stringify([before])
-  ).toBe(true)
   expect(interrupted.operation?.targets).toEqual(before.targets)
   const successor = interrupted.operation!.event
+  const reconciled = JSON.parse(
+    await f.signer.decryptNip44(f.owner, successor.content)
+  )
+  expect(reconciled.parentEventId === foreign.id).toBe(true)
+  expect(reconciled.requests[walletId].payload === record.payload).toBe(true)
+  expect(
+    reconciled.requests[walletId].accountProof === record.accountProof
+  ).toBe(true)
   interrupt = false
   expect(await resumed.syncPending(discoveryOf)).toBe(true)
   const after = (await journal.load(f.owner)).addressRequestSync!.mainnet!
@@ -1958,13 +1962,61 @@ test("compatible foreign request progress reconciles a retained operation withou
   expect(writes).not.toContain(laterRelay)
   expect(after.operation).toBeUndefined()
   expect(
-    JSON.stringify(after.reconciledOperations) === JSON.stringify([before])
-  ).toBe(true)
-  expect(
     (await requests.load("mainnet", discovery)).records[walletId].phase
   ).toBe("registered")
   const fresh = f.requestService()
   expect((await fresh.load("mainnet", discovery)).records[walletId].phase).toBe(
     "registered"
   )
+})
+
+test("confirmed removals bound newly staged request aggregates while preserving the frozen delivery operation", async () => {
+  const f = fixture()
+  const journal = f.newStore()
+  const recovery = f.service(journal)
+  const firstId = crypto.randomUUID()
+  await backedUp(recovery, firstId)
+  await recovery.deliver(
+    await recovery.prepareRegistry("mainnet", {
+      type: "add",
+      walletId: firstId,
+    })
+  )
+  const discovery = await recovery.discover(false, "mainnet")
+  const requests = f.requestService(journal)
+  const first = await f.requestRecord()
+  await requests.save("mainnet", discovery, firstId, first)
+  f.unavailableAddressReads.add(f.relayUrls[0])
+  await requests.save("mainnet", discovery, firstId, {
+    ...first,
+    phase: "received",
+  })
+  const operation = (await journal.load(f.owner)).addressRequestSync!.mainnet!
+    .operation!
+  const removed = [firstId]
+  let historicalBytes = JSON.stringify(first).length
+  let latestId = firstId
+  for (let index = 0; index < 16; index++) {
+    const record = await f.requestRecord()
+    historicalBytes += JSON.stringify(record).length
+    latestId = crypto.randomUUID()
+    const staged = await requests.stage(
+      "mainnet",
+      latestId,
+      record,
+      {},
+      removed
+    )
+    if (index === 15) expect(Object.keys(staged.records)).toEqual([latestId])
+    removed.push(latestId)
+  }
+  expect(historicalBytes).toBeGreaterThan(16_384)
+  const state = (await journal.load(f.owner)).addressRequestSync!.mainnet!
+  expect(JSON.stringify(state.operation) === JSON.stringify(operation)).toBe(
+    true
+  )
+  const local = await requests.loadLocal("mainnet")
+  // Immutable delivery evidence remains retained, even though the active local snapshot is bounded.
+  expect(local.records[latestId]).toBeDefined()
+  expect(local.records[firstId].payload === first.payload).toBe(true)
 })

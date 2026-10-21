@@ -110,6 +110,7 @@ export function accountAddressRequests(
     )
       throw new Error("Wallet identity does not match the signed request.")
     // Retained signed evidence remains authoritative even while discovery is partial.
+    const removedWalletIds = new Set<string>()
     await Promise.all(
       journal.records.map(async (item) => {
         if (
@@ -124,6 +125,8 @@ export function accountAddressRequests(
             item.event
           )
           current()
+          if (snapshot.network === "mainnet")
+            for (const id of snapshot.removedWalletIds) removedWalletIds.add(id)
           if (snapshot.removedWalletIds.includes(walletId))
             throw new Error("This wallet registration was removed.")
         }
@@ -164,12 +167,15 @@ export function accountAddressRequests(
     )
       throw new Error("Wallet authorization changed.")
     current()
+    return [...removedWalletIds]
   }
   const makeWorkflow = (priority: "foreground" | "background") =>
     createAddressRequestWorkflow({
       owner: signer.pubkey,
       assertCurrent: current,
-      authorize: (walletId, record) => authorize(walletId, record, priority),
+      authorize: async (walletId, record) => {
+        await authorize(walletId, record, priority)
+      },
       async load(walletId) {
         await authorize(walletId, undefined, priority)
         const discovery = await service.discover(false, "mainnet", { priority })
@@ -188,16 +194,24 @@ export function accountAddressRequests(
             ? await metadata.load("mainnet", discovery, { priority })
             : await metadata.loadLocal("mainnet", { priority })
         const local = await metadata.loadLocal("mainnet", { priority })
-        const record =
+        let record =
           saved.records[walletId] && local.records[walletId]
             ? mergeAddressRequestRecord(
                 local.records[walletId],
                 saved.records[walletId]
               )
             : (local.records[walletId] ?? saved.records[walletId])
-        await authorize(walletId, record, priority)
+        const legacy = discovery.registry?.addressNameRequests?.[walletId]
+        if (legacy) record = mergeAddressRequestRecord(record, legacy)
+        const removedWalletIds = await authorize(walletId, record, priority)
         if (record)
-          await metadata.stage("mainnet", walletId, record, { priority })
+          await metadata.stage(
+            "mainnet",
+            walletId,
+            record,
+            { priority },
+            removedWalletIds
+          )
         const confirmed =
           saved.confirmed &&
           !!record &&
@@ -216,10 +230,16 @@ export function accountAddressRequests(
       },
       async save(walletId, record) {
         assertWritesEnabled()
-        await authorize(walletId, record, priority)
-        const saved = await metadata.stage("mainnet", walletId, record, {
-          priority,
-        })
+        const removedWalletIds = await authorize(walletId, record, priority)
+        const saved = await metadata.stage(
+          "mainnet",
+          walletId,
+          record,
+          {
+            priority,
+          },
+          removedWalletIds
+        )
         return {
           record: saved.records[walletId],
           publication: "local",

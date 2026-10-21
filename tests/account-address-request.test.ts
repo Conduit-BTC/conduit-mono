@@ -315,3 +315,71 @@ test("a local selected request stays local when confirmed membership omits that 
     await f.close()
   }
 })
+
+test("unresolved recovery resumes the selected wallet's validated legacy request without a replacement intent", async () => {
+  const f = await fixture("unavailable")
+  try {
+    const first = await f
+      .workflow()
+      .submit(f.wallet.id, { desiredName: "existing", token: "controlled" })
+    await f.metadata.syncPending(() => f.recovery.discover(false, "mainnet"))
+    await f.requests.update(f.signer.pubkey, "mainnet", () => ({}))
+    const createdAt = Math.floor(Date.now() / 1000)
+    const snapshot = {
+      format: "conduit.spark.registry",
+      version: 1,
+      ownerPubkey: f.signer.pubkey,
+      network: "mainnet",
+      revision: 1,
+      parentEventId: null,
+      activeWalletIds: [f.wallet.id, crypto.randomUUID()].sort(),
+      removedWalletIds: [],
+      payInvoiceWalletId: null,
+      receiveWalletId: null,
+      addressNameRequests: { [f.wallet.id]: first.record },
+      createdAt,
+    }
+    const event = await f.signer.signEvent({
+      kind: 30078,
+      pubkey: f.signer.pubkey,
+      created_at: createdAt,
+      tags: [["d", "conduit:spark:registry:v1:mainnet"]],
+      content: await f.signer.encryptNip44(
+        f.signer.pubkey,
+        JSON.stringify(snapshot)
+      ),
+    })
+    await f.journal.retain(f.signer.pubkey, [
+      {
+        event,
+        targets: [{ url: "wss://relay.conduit.market", operator: null }],
+        delivery: [
+          {
+            url: "wss://relay.conduit.market",
+            status: "pending",
+            accepted: false,
+            readBack: false,
+            lastRead: "not_queried",
+            checkedAt: 0,
+          },
+        ],
+        exported: false,
+      },
+    ])
+    expect((await f.recovery.discover(false, "mainnet")).state).toBe(
+      "unresolved"
+    )
+    const loaded = await f.workflow().load(f.wallet.id)
+    expect(loaded?.record.payload === first.record.payload).toBe(true)
+    expect(loaded?.record.accountProof === first.record.accountProof).toBe(true)
+    const resumed = await f
+      .workflow()
+      .submit(f.wallet.id, { desiredName: "replacement", token: "controlled" })
+    expect(resumed.record.payload === first.record.payload).toBe(true)
+    expect(resumed.record.accountProof === first.record.accountProof).toBe(true)
+    expect(resumed.record.phase).toBe("received")
+    expect(f.calls).toEqual(["submit", "status", "status"])
+  } finally {
+    await f.close()
+  }
+})

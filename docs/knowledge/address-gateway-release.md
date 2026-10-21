@@ -216,10 +216,17 @@ progress is relay-confirmed only when that exact selected record is covered by
 the confirmed snapshot. An empty or unrelated membership snapshot is insufficient.
 
 When all relevant relay heads agree on compatible cross-device progress, optional
-synchronization can reconcile a staged operation over that head. The account
-journal retains the old signed operation and its destinations in
-`reconciledOperations`; a new signed successor contains the merged progress and
-inherits the staged delivery plan. Reconciliation confirms consensus at the frozen
+synchronization can reconcile a staged operation over that head. A new signed
+successor contains the merged progress, preserves exact request payloads and proofs,
+and inherits the staged delivery plan. The existing journal atomically replaces the
+superseded optional operation; no permanent history store is added. Reconciliation confirms consensus at the frozen
 destinations, and interrupted successor delivery retries its exact bytes. Divergent,
 unavailable, or incompatible observations retain the pending operation for repair.
 This device-local journal addition changes no public event format or version.
+
+Validated legacy registry requests for the selected wallet remain resume evidence
+even when an unrelated wallet backup is missing. Discovery uncertainty never
+authorizes replacing that immutable request. Newly staged local aggregates omit
+requests only for positively signed mainnet removals; omission from a partial
+read does not prune them. Frozen delivery events remain separately retained, so
+removed-wallet history cannot exhaust the active snapshot's size budget.

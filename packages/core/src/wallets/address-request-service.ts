@@ -194,11 +194,17 @@ export class AddressRequestService {
     network: AddressRequestNetwork,
     walletId: string,
     record: AddressRequestRecord,
-    options: AccountSignerOperationOptions = {}
+    options: AccountSignerOperationOptions = {},
+    confirmedRemovedWalletIds: readonly string[] = []
   ): Promise<AddressRequestSyncResult> {
     this.scope.assertCurrent()
     const state = await this.input.store.load(this.scope.owner, network)
     const records = await this.localRecords(state, network, options)
+    // Only positive removal evidence can prune a new local aggregate. The
+    // immutable observed/delivery events remain separately retained.
+    for (const id of confirmedRemovedWalletIds) delete records[id]
+    if (confirmedRemovedWalletIds.includes(walletId))
+      throw new SparkRecoveryError("conflict")
     if (requestEvidence(record).ownerPubkey !== this.scope.owner)
       throw new SparkRecoveryError("identity_mismatch")
     records[walletId] = mergeAddressRequestRecord(records[walletId], record)
@@ -515,7 +521,7 @@ export class AddressRequestService {
       if (foreign) {
         if (!collected.complete || !head) return local("request_heads_disagree")
         // A compatible agreed head can supersede an undeliverable replaceable
-        // event. Reconcile over that head, retaining the old signed operation.
+        // event. Reconcile over that head without changing request evidence.
         // Confirm consensus on the frozen destinations, not constructor defaults.
         const frozen = state.operation!
         const agreed = await this.read(
@@ -642,14 +648,6 @@ export class AddressRequestService {
           throw new SparkRecoveryError("conflict")
         return {
           ...current,
-          ...(reconciledOperation
-            ? {
-                reconciledOperations: [
-                  ...(current.reconciledOperations ?? []),
-                  reconciledOperation,
-                ],
-              }
-            : {}),
           operation: {
             event: event!,
             targets: [...(reconciledOperation?.targets ?? this.targets)],

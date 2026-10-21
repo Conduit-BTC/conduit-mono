@@ -43,18 +43,15 @@ const snapshotSchema = z
 
 export type AddressRequestSnapshot = z.infer<typeof snapshotSchema>
 export type AddressRequestNetwork = AddressRequestSnapshot["network"]
-export interface AddressRequestOperation {
-  event: SignedNostrEvent
-  targets: string[]
-  relayPolicyTargets?: string[]
-}
 export interface AddressRequestState {
   /** Latest encrypted local intent; independent of the immutable delivery attempt. */
   local?: SignedNostrEvent
   observed?: SignedNostrEvent
-  operation?: AddressRequestOperation
-  /** Immutable delivery attempts superseded by explicit compatible-head reconciliation. */
-  reconciledOperations?: AddressRequestOperation[]
+  operation?: {
+    event: SignedNostrEvent
+    targets: string[]
+    relayPolicyTargets?: string[]
+  }
 }
 export type AddressRequestStates = Partial<
   Record<AddressRequestNetwork, AddressRequestState>
@@ -119,11 +116,13 @@ export function validateAddressRequestStates(
         owner,
         network
       )
-    const operation = (
-      value: AddressRequestOperation
-    ): AddressRequestOperation => {
-      const checkedOperation: AddressRequestOperation = {
-        event: validateAddressRequestEvent(value.event, owner, network),
+    if (state.operation) {
+      checked.operation = {
+        event: validateAddressRequestEvent(
+          state.operation.event,
+          owner,
+          network
+        ),
         targets: z
           .array(
             z
@@ -137,24 +136,14 @@ export function validateAddressRequestStates(
           .min(1)
           .max(8)
           .refine((urls) => new Set(urls).size === urls.length)
-          .parse(value.targets),
+          .parse(state.operation.targets),
       }
       const relayPolicyTargets = validateAccountStorageRelayTransition(
-        value.targets,
-        value.relayPolicyTargets
+        state.operation.targets,
+        state.operation.relayPolicyTargets
       )
       if (relayPolicyTargets)
-        checkedOperation.relayPolicyTargets = relayPolicyTargets
-      return checkedOperation
-    }
-    if (state.operation) checked.operation = operation(state.operation)
-    if (state.reconciledOperations) {
-      checked.reconciledOperations = state.reconciledOperations.map(operation)
-      if (
-        new Set(checked.reconciledOperations.map(({ event }) => event.id))
-          .size !== checked.reconciledOperations.length
-      )
-        throw new SparkRecoveryError("invalid_record")
+        checked.operation.relayPolicyTargets = relayPolicyTargets
     }
     result[network] = checked
   }
