@@ -19,6 +19,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -99,9 +100,47 @@ type SparkRecoveryState =
   | { status: "checking" }
   | { status: "ready"; method: "signer" | "password" }
   | { status: "missing"; reason: string }
+  | { status: "unavailable"; reason: string }
 type LegacyPasswordRecoveryState = "checking" | "available" | "unavailable"
 
 const SPARK_HISTORY_LOAD_TIMEOUT_MS = 15_000
+// Bound metadata reads only, never signer approval or provider unlock work.
+const SPARK_RECOVERY_READ_TIMEOUT_MS = 5_000
+const SPARK_RECOVERY_READ_UNAVAILABLE =
+  "The local recovery method is temporarily unavailable. Retry the check; your saved recovery has not been changed."
+
+/** Retire only a metadata observation; this does not cancel storage or wallet work. */
+function readSparkRecoveryMetadata<T>(
+  read: () => Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let current = true
+    const finish = (settle: () => void) => {
+      if (!current) return
+      current = false
+      clearTimeout(timer)
+      signal?.removeEventListener("abort", unavailable)
+      settle()
+    }
+    const unavailable = () =>
+      finish(() => reject(new Error(SPARK_RECOVERY_READ_UNAVAILABLE)))
+    const timer = setTimeout(unavailable, SPARK_RECOVERY_READ_TIMEOUT_MS)
+    signal?.addEventListener("abort", unavailable, { once: true })
+    if (signal?.aborted) {
+      unavailable()
+      return
+    }
+    void (async () => {
+      try {
+        const result = await read()
+        finish(() => resolve(result))
+      } catch {
+        unavailable()
+      }
+    })()
+  })
+}
 
 export function Wallets({
   auth,
@@ -206,29 +245,40 @@ export function Wallets({
   }
   const openWallet: WalletDialogAction = async (wallet, trigger) => {
     const scope = authScopeRef.current
-    const method = await wallets.getSparkRecoveryType(wallet.id)
-    const hasPasswordFallback =
-      method === "signer" &&
-      (await wallets.hasLegacyPasswordRecovery(wallet.id))
-    // Legacy device recovery is available while signed out. The connected-only
-    // signer fence still governs signer actions; every dialog uses a live scope.
-    if (authScopeRef.current !== scope) return
-    if (
-      method !== "password" &&
-      !hasPasswordFallback &&
-      !auth.isAuthGenerationCurrent(scope.generation)
-    )
-      return
-    if (method === "password" || (hasPasswordFallback && !signerReady)) {
-      openWalletDialog(setUnlockWallet, wallet, trigger)
-    } else {
-      try {
-        await wallets.unlockSpark(wallet.id)
-      } catch (error) {
-        if (hasPasswordFallback && authScopeRef.current === scope)
-          openWalletDialog(setUnlockWallet, wallet, trigger)
-        else throw error
+    try {
+      const { method, hasPasswordFallback } = await readSparkRecoveryMetadata(
+        async () => {
+          const method = await wallets.getSparkRecoveryType(wallet.id)
+          const hasPasswordFallback =
+            method === "signer" &&
+            (await wallets.hasLegacyPasswordRecovery(wallet.id))
+          return { method, hasPasswordFallback }
+        }
+      )
+      // Legacy device recovery is available while signed out. The connected-only
+      // signer fence still governs signer actions; every dialog uses a live scope.
+      if (authScopeRef.current !== scope) return
+      if (
+        method !== "password" &&
+        !hasPasswordFallback &&
+        !auth.isAuthGenerationCurrent(scope.generation)
+      )
+        return
+      if (method === "password" || (hasPasswordFallback && !signerReady)) {
+        openWalletDialog(setUnlockWallet, wallet, trigger)
+      } else {
+        try {
+          await wallets.unlockSpark(wallet.id)
+        } catch (error) {
+          if (hasPasswordFallback && authScopeRef.current === scope)
+            openWalletDialog(setUnlockWallet, wallet, trigger)
+          else throw error
+        }
       }
+    } catch (error) {
+      // Retired preflights must not surface an error in a replacement session.
+      if (authScopeRef.current !== scope) return
+      throw error
     }
   }
 
@@ -1056,7 +1106,7 @@ function WalletRow({
   )
   const menuTrigger = useRef<HTMLButtonElement>(null)
   const isSpark = wallet.providerId === "spark"
-  const recoveryState = useSparkRecoveryState(
+  const { state: recoveryState } = useSparkRecoveryState(
     isSpark ? wallet.id : null,
     getSparkRecoveryType
   )
@@ -1674,24 +1724,33 @@ function useSparkRecoveryState(
   walletId: string | null,
   hasRecovery: UseWalletsReturn["getSparkRecoveryType"],
   revision?: WalletDescriptor
-): SparkRecoveryState {
-  const [state, setState] = useState<SparkRecoveryState>({
-    status: "idle",
-  })
+): { state: SparkRecoveryState; retry(): void } {
+  const [attempt, setAttempt] = useState(0)
+  const scope = useMemo(
+    () => ({ walletId, hasRecovery, revision, attempt }),
+    [walletId, hasRecovery, revision, attempt]
+  )
+  const [observation, setObservation] = useState<{
+    scope: typeof scope
+    state: SparkRecoveryState
+  } | null>(null)
+  const retry = useCallback(() => setAttempt((value) => value + 1), [])
 
   useEffect(() => {
-    if (!walletId) {
-      setState({ status: "idle" })
-      return
-    }
-
+    const walletId = scope.walletId
+    if (!walletId) return
     let current = true
-    setState({ status: "checking" })
-    void hasRecovery(walletId)
-      .then((available) => {
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const available = await readSparkRecoveryMetadata(
+          () => scope.hasRecovery(walletId),
+          controller.signal
+        )
         if (!current) return
-        setState(
-          available
+        setObservation({
+          scope,
+          state: available
             ? {
                 status: "ready",
                 method: available,
@@ -1700,24 +1759,34 @@ function useSparkRecoveryState(
                 status: "missing",
                 reason:
                   "No local recovery method was found. Restore this wallet again before using it.",
-              }
-        )
-      })
-      .catch(() => {
-        if (current) {
-          setState({
-            status: "missing",
-            reason:
-              "The local recovery method could not be read. Retry or restore this wallet again.",
-          })
-        }
-      })
+              },
+        })
+      } catch {
+        if (!current) return
+        setObservation({
+          scope,
+          state: {
+            status: "unavailable",
+            reason: SPARK_RECOVERY_READ_UNAVAILABLE,
+          },
+        })
+      }
+    })()
     return () => {
       current = false
+      controller.abort()
     }
-  }, [hasRecovery, walletId, revision])
+  }, [scope])
 
-  return state
+  // Do not expose the previous wallet/attempt's ready state before effects run.
+  return {
+    state: !walletId
+      ? { status: "idle" }
+      : observation?.scope === scope
+        ? observation.state
+        : { status: "checking" },
+    retry,
+  }
 }
 
 function useLegacyPasswordRecoveryState(
@@ -2381,6 +2450,7 @@ function ConnectedWalletDialog({
 
 function WalletRecoveryMethodFields({
   state,
+  onRetry,
   password,
   onPassword,
   pending,
@@ -2390,6 +2460,7 @@ function WalletRecoveryMethodFields({
   children,
 }: {
   state: SparkRecoveryState
+  onRetry(): void
   password: string
   onPassword(value: string): void
   pending: boolean
@@ -2408,14 +2479,24 @@ function WalletRecoveryMethodFields({
         Checking recovery method
       </div>
     )
-  if (state.status === "missing")
+  if (state.status === "missing" || state.status === "unavailable")
     return (
-      <p
-        role="alert"
-        className="text-sm leading-6 text-[var(--text-secondary)]"
-      >
-        {state.reason}
-      </p>
+      <div className="grid gap-3">
+        <p
+          role="alert"
+          className="text-sm leading-6 text-[var(--text-secondary)]"
+        >
+          {state.reason}
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onRetry}
+          disabled={pending}
+        >
+          Retry recovery check
+        </Button>
+      </div>
     )
   return (
     <>
@@ -2455,10 +2536,8 @@ function UnlockWalletDialog({
   const [password, setPassword] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const recoveryState = useSparkRecoveryState(
-    wallet?.id ?? null,
-    wallets.getSparkRecoveryType
-  )
+  const { state: recoveryState, retry: retryRecoveryRead } =
+    useSparkRecoveryState(wallet?.id ?? null, wallets.getSparkRecoveryType)
   const legacyPasswordState = useLegacyPasswordRecoveryState(
     recoveryState.status === "ready" && recoveryState.method === "signer"
       ? (wallet?.id ?? null)
@@ -2512,11 +2591,12 @@ function UnlockWalletDialog({
                 : recoveryState.status === "ready" &&
                     recoveryState.method === "password"
                   ? "Enter the existing wallet password. You can switch this wallet to Nostr sign-in after verifying recovery."
-                  : "Checking this wallet’s recovery method…"}
+                  : "Check this wallet’s local recovery method before opening it."}
           </DialogDescription>
         </DialogHeader>
         <WalletRecoveryMethodFields
           state={recoveryState}
+          onRetry={retryRecoveryRead}
           password={password}
           onPassword={setPassword}
           pending={pending}
@@ -3617,10 +3697,8 @@ function RecoveryWalletDialog({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const recoveryHeadingRef = useRef<HTMLHeadingElement>(null)
-  const recoveryState = useSparkRecoveryState(
-    wallet?.id ?? null,
-    wallets.getSparkRecoveryType
-  )
+  const { state: recoveryState, retry: retryRecoveryRead } =
+    useSparkRecoveryState(wallet?.id ?? null, wallets.getSparkRecoveryType)
   const legacyPasswordState = useLegacyPasswordRecoveryState(
     recoveryState.status === "ready" && recoveryState.method === "signer"
       ? (wallet?.id ?? null)
@@ -3688,6 +3766,7 @@ function RecoveryWalletDialog({
           <>
             <WalletRecoveryMethodFields
               state={recoveryState}
+              onRetry={retryRecoveryRead}
               password={password}
               onPassword={setPassword}
               pending={pending}
@@ -3786,7 +3865,7 @@ function RemoveWalletDialog({
 }) {
   const current = useWalletDialogCurrent(auth, wallet)
   const portable = wallet?.kind === "portable"
-  const recoveryState = useSparkRecoveryState(
+  const { state: recoveryState } = useSparkRecoveryState(
     portable ? (wallet?.id ?? null) : null,
     wallets.getSparkRecoveryType
   )

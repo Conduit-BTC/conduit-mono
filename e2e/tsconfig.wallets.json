@@ -30,6 +30,7 @@
     "wallet-reload.playwright.ts",
     "wallet-registry-removal.playwright.ts",
     "wallet-lifecycle.playwright.ts",
+    "wallet-recovery-read.playwright.ts",
     "shared-ui-composition.playwright.ts",
     "shared-ui-populated-audit.playwright.ts",
     "shared-ui-surface-audit.playwright.ts",
