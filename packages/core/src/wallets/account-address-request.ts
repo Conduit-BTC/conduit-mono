@@ -111,48 +111,46 @@ export function accountAddressRequests(
       throw new Error("Wallet identity does not match the signed request.")
     // Retained signed evidence remains authoritative even while discovery is partial.
     const removedWalletIds = new Set<string>()
-    await Promise.all(
-      journal.records.map(async (item) => {
-        if (
-          item.event.tags.some(
-            (tag) => tag[0] === "d" && isSparkWalletRegistryDTag(tag[1])
-          )
-        ) {
-          const snapshot = parseSparkWalletRegistrySnapshot(
-            await signer.decryptNip44(signer.pubkey, item.event.content, {
-              priority,
-            }),
-            item.event
-          )
-          current()
-          if (snapshot.network === "mainnet")
-            for (const id of snapshot.removedWalletIds) removedWalletIds.add(id)
-          if (snapshot.removedWalletIds.includes(walletId))
-            throw new Error("This wallet registration was removed.")
-        }
-        if (
-          !item.event.tags.some(
-            (tag) =>
-              tag[0] === "d" && tag[1] === `conduit:spark:wallet:v1:${walletId}`
-          )
+    for (const item of journal.records) {
+      if (
+        item.event.tags.some(
+          (tag) => tag[0] === "d" && isSparkWalletRegistryDTag(tag[1])
         )
-          return
-        const backup = await service.restore(
-          {
-            eventId: item.event.id,
-            walletId,
-            source: "conduit_v1",
-          },
-          undefined,
-          { priority }
+      ) {
+        const snapshot = parseSparkWalletRegistrySnapshot(
+          await signer.decryptNip44(signer.pubkey, item.event.content, {
+            priority,
+          }),
+          item.event
         )
-        if (
-          !("identityPublicKey" in backup) ||
-          backup.identityPublicKey !== identity
+        current()
+        if (snapshot.network === "mainnet")
+          for (const id of snapshot.removedWalletIds) removedWalletIds.add(id)
+        if (snapshot.removedWalletIds.includes(walletId))
+          throw new Error("This wallet registration was removed.")
+      }
+      if (
+        !item.event.tags.some(
+          (tag) =>
+            tag[0] === "d" && tag[1] === `conduit:spark:wallet:v1:${walletId}`
         )
-          throw new Error("Conflicting recovery exists for this wallet.")
-      })
-    )
+      )
+        continue
+      const backup = await service.restore(
+        {
+          eventId: item.event.id,
+          walletId,
+          source: "conduit_v1",
+        },
+        undefined,
+        { priority }
+      )
+      if (
+        !("identityPublicKey" in backup) ||
+        backup.identityPublicKey !== identity
+      )
+        throw new Error("Conflicting recovery exists for this wallet.")
+    }
     current()
     const [latest, retained] = await Promise.all([
       store.getSparkRecovery(walletId),

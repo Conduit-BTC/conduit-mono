@@ -383,3 +383,68 @@ test("unresolved recovery resumes the selected wallet's validated legacy request
     await f.close()
   }
 })
+
+test("production signer restores a request with 194 retained registry revisions without overflowing background work", async () => {
+  const f = await fixture("unavailable")
+  try {
+    const first = await f
+      .workflow()
+      .submit(f.wallet.id, { desiredName: "existing", token: "controlled" })
+    await f.settle()
+    let parentEventId: string | null = null
+    const records = []
+    for (let revision = 1; revision <= 194; revision++) {
+      const createdAt = Math.floor(Date.now() / 1000) + revision
+      const snapshot = {
+        format: "conduit.spark.registry",
+        version: 1,
+        ownerPubkey: f.signer.pubkey,
+        network: "mainnet",
+        revision,
+        parentEventId,
+        activeWalletIds: [f.wallet.id],
+        removedWalletIds: [],
+        payInvoiceWalletId: null,
+        receiveWalletId: null,
+        createdAt,
+      }
+      const event = await f.signer.signEvent({
+        kind: 30078,
+        pubkey: f.signer.pubkey,
+        created_at: createdAt,
+        tags: [["d", "conduit:spark:registry:v1:mainnet"]],
+        content: await f.signer.encryptNip44(
+          f.signer.pubkey,
+          JSON.stringify(snapshot)
+        ),
+      })
+      records.push({
+        event,
+        targets: [{ url: "wss://relay.conduit.market", operator: null }],
+        delivery: [
+          {
+            url: "wss://relay.conduit.market",
+            status: "pending" as const,
+            accepted: false,
+            readBack: false,
+            lastRead: "not_queried" as const,
+            checkedAt: 0,
+          },
+        ],
+        exported: false,
+      })
+      parentEventId = event.id
+    }
+    await f.journal.retain(f.signer.pubkey, records)
+    f.database.close()
+    await f.database.open()
+    const loaded = await f.workflow().load(f.wallet.id)
+    expect(loaded?.record.payload === first.record.payload).toBe(true)
+    expect(loaded?.record.accountProof === first.record.accountProof).toBe(true)
+    expect(loaded?.record.phase).toBe("received")
+    expect(f.calls).toEqual(["submit", "status"])
+    expect((await f.journal.load(f.signer.pubkey)).records).toHaveLength(194)
+  } finally {
+    await f.close()
+  }
+}, 30_000)
