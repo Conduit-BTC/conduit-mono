@@ -5438,6 +5438,11 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   await expect(complete).toBeEnabled()
   const completionStart = result.relay.publications.length
   await complete.click()
+  // Settle the initiated action before checking its exact private receipt.
+  await complete.waitFor({ state: "hidden" })
+  await page
+    .getByRole("button", { name: /^(Sending|Recording)…$/ })
+    .waitFor({ state: "hidden" })
   await expect
     .poll(
       () =>
@@ -7063,9 +7068,12 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
     )
   )
   await page.reload()
-  await expect(
-    page.getByRole("button", { name: "Mark picked up / complete", exact: true })
-  ).toBeEnabled()
+  const complete = page.getByRole("button", {
+    name: "Mark picked up / complete",
+    exact: true,
+  })
+  await complete.waitFor({ state: "visible" })
+  await expect(complete).toBeEnabled()
   const before = await occurrenceInventory(
     page,
     eventCoordinate(product),
@@ -7088,9 +7096,11 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await page.clock.setFixedTime(new Date((newStart + 600) * 1000))
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   const from = relay.publications.length
+  await complete.click()
+  await complete.waitFor({ state: "hidden" })
   await page
-    .getByRole("button", { name: "Mark picked up / complete", exact: true })
-    .click()
+    .getByRole("button", { name: /^(Sending|Recording)…$/ })
+    .waitFor({ state: "hidden" })
   await expect
     .poll(
       () =>
