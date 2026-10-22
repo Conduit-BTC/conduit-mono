@@ -37,6 +37,7 @@ import {
   deriveCheckoutSparkNativeTreasuryBudget,
   prepareCheckoutSparkNativeTreasury,
   recordCheckoutSparkNativeTreasuryStatus,
+  recordCheckoutSparkNativeTreasurySubmittedReference,
   type CheckoutSparkNativeTreasuryEvidence,
   type CheckoutSparkNativePreProviderCancellation,
 } from "./checkout-spark-treasury-finalization"
@@ -1445,6 +1446,33 @@ export class DexieCheckoutSparkSettledRepository {
     )
   }
 
+  /** Journal one admitted response, without granting dispatch or receipt authority. */
+  async saveTreasurySubmittedReference(
+    expectedSubmittedState: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    providerTransferId: string,
+    observedAt: number,
+    assertCurrent: () => void
+  ): Promise<CheckoutSparkSettledRepositorySnapshot> {
+    assertCurrent()
+    const previous = projectState(expectedSubmittedState)
+    const next = recordCheckoutSparkNativeTreasurySubmittedReference(
+      previous,
+      providerTransferId,
+      observedAt
+    )
+    return this.saveState(
+      next,
+      expectedRevision,
+      assertCurrent,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      previous
+    )
+  }
+
   /** Exact-intent retry only after Core's durable, positively unsent cancellation. */
   async saveTreasuryPreProviderRetry(
     state: CheckoutSparkSettledReconciliation,
@@ -1765,7 +1793,8 @@ export class DexieCheckoutSparkSettledRepository {
     },
     treasurySettlement?: CheckoutSparkMerchantSettlementRecord,
     cancellation?: CheckoutSparkNativePreProviderCancellation,
-    outgoingCancellation?: CheckoutSparkOutgoingPreProviderCancellation
+    outgoingCancellation?: CheckoutSparkOutgoingPreProviderCancellation,
+    submittedReferencePredecessor?: CheckoutSparkSettledReconciliation
   ): Promise<CheckoutSparkSettledRepositorySnapshot> {
     assertCurrent?.()
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) {
@@ -1790,6 +1819,12 @@ export class DexieCheckoutSparkSettledRepository {
         ) {
           throw new CheckoutSparkSettledRepositoryConflictError()
         }
+        if (
+          submittedReferencePredecessor &&
+          JSON.stringify(current.state) !==
+            JSON.stringify(submittedReferencePredecessor)
+        )
+          throw new CheckoutSparkSettledRepositoryConflictError()
         if (cancellation) {
           assertCheckoutSparkNativePreProviderRetry(
             this.nativeTreasuryAdmissionScope,

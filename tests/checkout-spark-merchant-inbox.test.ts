@@ -3084,6 +3084,10 @@ describe("Merchant checkout Spark payout history inspection", () => {
       expect(result.status).toBe("consumed")
       expect(result.payoutHistory).toMatchObject({
         status: "inspected",
+        commerceSummary: {
+          savedStatusCounts: { paid: 1, prepared: 0, unprepared: 0 },
+          providerObservationCounts: { lookup_unavailable: 1, pending: 0 },
+        },
         nativeSummary: {
           savedStatus: "prepared",
           hasProviderTransferId: false,
@@ -5160,6 +5164,10 @@ describe("Merchant checkout Spark payout history inspection", () => {
         status: "no_intents",
         checkedLegs: 0,
         withoutIntentLegs: 2,
+        commerceSummary: {
+          savedStatusCounts: { unprepared: 1 },
+          providerObservationCounts: { not_found: 0, pending: 0 },
+        },
       })
       expect(opens).toBe(0)
     })
@@ -5254,6 +5262,132 @@ describe("Merchant checkout Spark payout history inspection", () => {
       })
     })
   }
+
+  it.each([
+    "not_found",
+    "lookup_unavailable",
+    "conflicting_evidence",
+    "pending",
+    "terminal_failure",
+    "paid",
+  ] as const)(
+    "retains finite commerce history counts for an actual %s inspection without extra reads",
+    async (observation) => {
+      await withRecoveryDatabase(async (_database, repository) => {
+        const { snapshot, selected, leg, intent, nativeRequest } =
+          await preparedHistoryFixture(repository)
+        const savedStatus =
+          observation === "pending"
+            ? "submitted"
+            : observation === "lookup_unavailable"
+              ? "ambiguous"
+              : "prepared"
+        if (savedStatus !== "prepared") {
+          const loaded = await repository.load(
+            snapshot.plan.checkoutId,
+            snapshot.plan.planDigest
+          )
+          if (loaded.status !== "active") throw new Error("Fixture missing")
+          await repository.importRecoveryState(
+            recordCheckoutSparkSettledLegStatus(loaded.state, {
+              legId: leg.legId,
+              transferId: intent.transferId,
+              paymentHash: intent.paymentHash,
+              status: savedStatus,
+              observedAt: CREATED_AT + 4_000,
+            }),
+            () => {}
+          )
+        }
+        let transferReads = 0
+        let requestReads = 0
+        const request = {
+          ...nativeRequest,
+          ...(observation === "pending" || observation === "terminal_failure"
+            ? {
+                status:
+                  observation === "pending"
+                    ? "LIGHTNING_PAYMENT_PENDING"
+                    : "LIGHTNING_PAYMENT_FAILED",
+                paymentPreimage: undefined,
+              }
+            : {}),
+        }
+        const inspected =
+          await inspectMerchantCheckoutSparkSettledPayoutHistory(
+            MERCHANT,
+            selected,
+            {
+              repository,
+              now: () => snapshot.plan.takeoverAt,
+              deriveIdentity: async () =>
+                snapshot.plan.funding.receiverIdentityPublicKey,
+              openWallet: async () => ({
+                ensurePrivateReady: async () => {},
+                getIdentityPublicKey: async () =>
+                  snapshot.plan.funding.receiverIdentityPublicKey,
+                getLightningReceiveRequest: async () => null,
+                getTransfer: async () => undefined,
+                getTransferFromSsp: async () => {
+                  transferReads += 1
+                  if (observation === "not_found") return undefined
+                  if (observation === "lookup_unavailable")
+                    throw new Error("Synthetic private provider detail")
+                  return {
+                    sparkId: intent.transferId,
+                    totalAmount: {
+                      originalValue: leg.allocationSats!,
+                      originalUnit: "SATOSHI",
+                    },
+                    userRequest: request,
+                  }
+                },
+                getLightningSendRequest: async () => {
+                  requestReads += 1
+                  return observation === "conflicting_evidence"
+                    ? { ...request, idempotencyKey: "foreign-transfer" }
+                    : request
+                },
+                cleanup: async () => {},
+              }),
+            }
+          )
+        const commerce = inspected.payoutHistory?.commerceSummary
+        expect(commerce).toMatchObject({
+          savedStatusCounts: { [savedStatus]: 1, unprepared: 0 },
+          providerObservationCounts: { [observation]: 1 },
+        })
+        expect(
+          Object.values(commerce!.savedStatusCounts).reduce(
+            (total, count) => total + count,
+            0
+          )
+        ).toBe(1)
+        expect(
+          Object.values(commerce!.providerObservationCounts).reduce(
+            (total, count) => total + count,
+            0
+          )
+        ).toBe(1)
+        expect(transferReads).toBe(1)
+        expect(requestReads).toBe(
+          observation === "not_found" || observation === "lookup_unavailable"
+            ? 0
+            : 1
+        )
+        const diagnostic = JSON.stringify(commerce)
+        for (const privateValue of [
+          intent.transferId,
+          intent.paymentRequest,
+          intent.paymentHash,
+          snapshot.plan.funding.receiverIdentityPublicKey,
+          MERCHANT,
+          "Synthetic private provider detail",
+        ])
+          expect(diagnostic).not.toContain(privateValue)
+      })
+    }
+  )
 
   it("keeps a conflicting fresh request unresolved instead of recording a payout", async () => {
     await withRecoveryDatabase(async (_database, repository) => {
@@ -5414,6 +5548,10 @@ describe("Merchant checkout Spark payout history inspection", () => {
         checkedLegs: 1,
         alreadyPaidLegs: 1,
         unresolvedLegs: 0,
+        commerceSummary: {
+          savedStatusCounts: { paid: 1, prepared: 0 },
+          providerObservationCounts: { paid: 1 },
+        },
       })
       expect(historyReads).toBe(1)
       expect(

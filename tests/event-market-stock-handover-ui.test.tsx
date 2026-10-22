@@ -844,6 +844,33 @@ describe("stock grant form composition", () => {
 })
 
 describe("stock pool controls", () => {
+  it("describes an empty pickup browser without treating a missing read as no reservations", () => {
+    const html = renderToStaticMarkup(
+      <EventMarketStockPoolList
+        pools={[]}
+        accountPubkey={"a".repeat(64)}
+        busy={false}
+        onAction={() => undefined}
+      />
+    )
+    expect(html).toContain("No reserved stock is saved here")
+    expect(html).toContain("does not prove there are no earlier reservations")
+    expect(html).not.toContain("grant")
+  })
+  it("gives the seller reservation and unused-stock controls without pickup authority", async () => {
+    const f = await grantFixture()
+    const html = renderToStaticMarkup(
+      <EventMarketStockPoolList
+        pools={[f.pool]}
+        accountPubkey={f.merchantPubkey}
+        busy={false}
+        onAction={() => undefined}
+      />
+    )
+    expect(html).toContain("Retry saved reservation update")
+    expect(html).toContain("Review closed stock and release unused quantity")
+    expect(html).not.toContain("Stop new sales and close reserved stock")
+  })
   it("shows finite remaining stock and a single explicit close on the selected writer", async () => {
     const f = await grantFixture()
     let actions = 0
@@ -858,7 +885,7 @@ describe("stock pool controls", () => {
         }}
       />
     )
-    expect(html).toContain("Stop new sales and close pool")
+    expect(html).toContain("Stop new sales and close reserved stock")
     expect(html).toContain("Remaining")
     expect(html).toContain("<dd>2</dd>")
     expect(html).toContain("complete accepted-order history")
@@ -880,7 +907,7 @@ describe("stock pool controls", () => {
         />
       )
       expect(html).toContain("Read-only here")
-      expect(html).not.toContain("Stop new sales and close pool")
+      expect(html).not.toContain("Stop new sales and close reserved stock")
     }
   })
   it("keeps a retired or target device read-only even when its saved logical writer matches", async () => {
@@ -895,7 +922,7 @@ describe("stock pool controls", () => {
         onAction={() => undefined}
       />
     )
-    expect(html).not.toContain("Stop new sales and close pool")
+    expect(html).not.toContain("Stop new sales and close reserved stock")
     expect(html).toContain("Read-only here")
   })
 })

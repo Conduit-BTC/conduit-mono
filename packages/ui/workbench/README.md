@@ -32,7 +32,7 @@ It binds to loopback. No deployment workflow publishes it.
 | Forms             | Visible labels, help and error associations, required-field focus recovery, textarea, checkbox, reset and submit feedback |
 | Overlays          | Dialog, safe destructive confirmation, sheet, dropdown; focus trap, Escape, focus return and disabled menu entry          |
 | Orders            | Semantic status table, row selection, compact/comfortable density and named horizontal scroll region                      |
-| Event / inventory | Existing EventMarketCard, prepared assignment rows and loading/empty/error/pending states                                 |
+| Event / inventory | EventMarketCard, assignment states, page-scrolling Event Timeline with earlier/later anchors and local detail/back        |
 | Settings / status | Existing PreferenceSectionCard, settings rows, switch, unavailable connection and restore progress                        |
 | Baseline report   | Links to the baseline report and composition guide                                                                        |
 
@@ -49,6 +49,21 @@ The theme control exercises the existing device-local theme preference. It does
 not use a signer or account settings. Fictional fixtures carry no customer data.
 Product media uses the existing public Conduit placeholder; unavailable media
 is an intentional second example. Do not add credentials or live mutations here.
+
+The page-scrolling Event Timeline uses the shared viewport, entries and anchor
+hook. It starts at Now, retains the current position when earlier events are
+inserted, and restores that position after returning from a local sample detail.
+It does not fetch or publish events. The older contained-scroll mode remains
+available to consuming layouts. Run its isolated desktop/phone-width checks in
+both themes with:
+
+```sh
+bunx playwright test --config packages/ui/workbench/playwright.config.ts
+```
+
+This command starts the loopback workbench if it is not already running. These
+checks prove shared scrolling behavior with fictional fixtures, not live Event
+discovery, browser-history navigation, or physical-device behavior.
 
 ## Authoring with shared recipes
 

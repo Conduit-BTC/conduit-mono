@@ -81,6 +81,17 @@ Funding is credit to the isolated wallet, not proof of any recipient payment.
 The funding invoice, supplier payouts and Conduit collection remain private;
 they never become public NIP-57 checkout payments.
 
+New positive-commerce plans explicitly bind `conduitFeePolicy:
+"percentage-only-v1"` into the canonical plan digest. Their Conduit allocation
+is `ceil(commerceTotalSats * 21 / 1000)`, with no 111-sat minimum. The existing
+inbound allowance and per-recipient outgoing reserves remain independent; no
+additional fee-acknowledgement checkbox is required beyond approval of the
+disclosed fixed total. Source-wallet provider approval remains unchanged.
+An omitted policy means the historical floor-bearing rule and retains its
+original digest, even when restored after new authoring changes. Never infer or
+add the new policy while restoring a saved or funded plan. Unsupported policy
+values fail closed.
+
 ## Event Market checkout extension
 
 New coordinated occurrence purchases use frozen plan version five and
@@ -115,11 +126,13 @@ Merchant and optional supplier payouts, pay the organizer, then send the exact
 attributed residual through the existing frozen native Conduit rail. An
 unresolved organizer payout cannot be swept into Conduit's payment.
 
-Zero commerce and zero organizer fee create no funding invoice. A signed
-positive organizer minimum on zero-price goods is not silently waived: use an
+Zero commerce and zero organizer fee create no funding invoice. An existing signed
+positive organizer minimum on zero-price goods is not silently waived: retain the
 explicitly disclosed fee-only event plan with `F`, the existing 111-sat Conduit
 minimum, and its inbound allowance, without a zero-value Merchant invoice.
-Historical and ordinary free orders keep their existing behavior.
+This is a named historical-term compatibility path, not new fee authoring;
+explicit percentage-only organizer edits make zero commerce free. Historical
+and ordinary free orders keep their existing behavior.
 The current Lightning payout policy requires positive room for each leg's own
 send reserve. A new positive one-sat organizer allocation, or a receiving minimum
 that cannot fit within the exact organizer allocation minus its reserve, is
@@ -382,6 +395,16 @@ terminal replay marker and encrypted Merchant progress, preserve active and
 uncertain entries, and resume interrupted cleanup from the saved terminal
 marker. Queue cleanup never deletes the wallet credential or establishes an
 atomic provider-side closure that the adapter has not proven.
+
+The encrypted recovery outbox, snapshot lookup and completed archives use the
+existing device-local IndexedDB database rather than the shared Web Storage
+payload allowance. Legacy bytes are copied and read back before replacement by
+an old-client rejection marker. Preserve exact ciphertext and acknowledgement
+state; changed older-tab data, missing migrated data and failed writes block
+continuation rather than reporting an empty queue. Retain cleanup tombstones
+and same-origin mutation locks. Storage exhaustion never justifies deleting
+active, uncertain or unclaimed recovery, or exposing funding before durability
+and recipient acknowledgement are proven.
 
 ## Privacy, guest scope and compatibility
 

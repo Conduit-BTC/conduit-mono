@@ -107,7 +107,10 @@ async function fixture() {
       publishFn: publish,
     },
   })
-  const saved = getCheckoutSparkRecoveryDelivery(handoff.handoffId, storage)!
+  const saved = (await getCheckoutSparkRecoveryDelivery(
+    handoff.handoffId,
+    storage
+  ))!
   expect(saved.deliveryProgress.acknowledgedRelayRefs.length > 0).toBe(true)
   expect(saved.organizerDelivery!.acknowledgedRelayRefs.length > 0).toBe(true)
   published.length = 0
@@ -386,7 +389,7 @@ describe("selected-order initial recovery delivery replay", () => {
       // ACK reaches the durable handoff. Earlier ACKs and exact bytes survive.
       expect(
         JSON.stringify(
-          getCheckoutSparkRecoveryDelivery(f.handoff.handoffId, f.storage)
+          await getCheckoutSparkRecoveryDelivery(f.handoff.handoffId, f.storage)
         ) === saved
       ).toBe(true)
       expect(
@@ -469,7 +472,7 @@ describe("selected-order initial recovery delivery replay", () => {
       expect(control.dispatches).toBe(1)
       expect(
         JSON.stringify(
-          getCheckoutSparkRecoveryDelivery(f.handoff.handoffId, f.storage)
+          await getCheckoutSparkRecoveryDelivery(f.handoff.handoffId, f.storage)
         ) === saved
       ).toBe(true)
       expect(

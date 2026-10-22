@@ -20,6 +20,7 @@ import {
   type CheckoutSparkSettledRecoveryPayload,
   type CheckoutSparkNativeTreasuryTarget,
   type CheckoutSparkNativeTreasuryStepInput,
+  type CheckoutSparkNativeRetirementObservation,
   type MerchantCheckoutSparkRecoveryCandidate,
   type NostrKeySigner,
 } from "@conduit/core"
@@ -52,6 +53,7 @@ type NativeStore = Pick<
       | "assertInvoiceRecipient"
       | "nativeTreasuryAdmissionScope"
       | "saveTreasuryPreProviderRetry"
+      | "saveTreasurySubmittedReference"
     >
   >
 
@@ -64,6 +66,10 @@ export interface MerchantCheckoutSparkNativeTreasuryContinuationDependencies ext
   assertDispatchPlan?: typeof assertMerchantCheckoutSparkDispatchPlan
   /** Repair saved state from this exact request only; never prepare or send. */
   inspectionOnly?: boolean
+  /** Finite display-only progress from existing work; never payment authority. */
+  onObservation?: (
+    observation: CheckoutSparkNativeRetirementObservation
+  ) => unknown
 }
 
 /** Explicit native finalization; never prepares or reviews a Lightning fee invoice. */
@@ -95,6 +101,15 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
     new DexieMerchantCheckoutSparkProgressRepository()
   const assertDispatchPlan =
     dependencies.assertDispatchPlan ?? assertMerchantCheckoutSparkDispatchPlan
+  const observe = (observation: CheckoutSparkNativeRetirementObservation) => {
+    try {
+      const result = dependencies.onObservation?.(observation)
+      if (result && typeof (result as PromiseLike<unknown>).then === "function")
+        void Promise.resolve(result).catch(() => {})
+    } catch {
+      // A display observer cannot change financial work or wallet cleanup.
+    }
+  }
   let payout: MerchantCheckoutSparkContinuationResult["payout"] = null
   const consume = async (
     initial: CheckoutSparkSettledRecoveryPayload,
@@ -205,6 +220,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
       )
         throw new Error("Merchant native progress binding changed.")
       if (entry.relayAccepted) continue
+      observe({ phase: "recovery_delivery", status: "not_verified" })
       const delivery = await retryMerchantCheckoutSparkProgress({
         record,
         signer,
@@ -222,6 +238,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
         return
       }
     }
+    observe({ phase: "wallet_open", status: "not_verified" })
     const identity = await deriveIdentity(
       initial.wallet.mnemonic,
       initial.wallet.accountNumber
@@ -241,6 +258,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
     })
     try {
       assertEligible()
+      observe({ phase: "privacy_readiness", status: "not_verified" })
       await wallet.ensurePrivateReady()
       assertEligible()
       if (
@@ -285,6 +303,29 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
         now,
         inspectionOnly: dependencies.inspectionOnly,
         store: {
+          ...(repository.saveTreasurySubmittedReference
+            ? {
+                saveSubmittedReference: async (
+                  state: CheckoutSparkSettledReconciliation,
+                  revision: number,
+                  providerTransferId: string,
+                  observedAt: number
+                ) => {
+                  // Pause revokes dispatch, not this exact admitted fact. The
+                  // recovery callback still revokes on logout/account change.
+                  const saved =
+                    await repository.saveTreasurySubmittedReference!(
+                      state,
+                      revision,
+                      providerTransferId,
+                      observedAt,
+                      assertCurrent
+                    )
+                  if (saved.status === "active") expectedState = saved.state
+                  return saved
+                },
+              }
+            : {}),
           ...(repository.nativeTreasuryAdmissionScope &&
           repository.saveTreasuryPreProviderRetry
             ? {
@@ -345,12 +386,14 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
             repository,
             assertCurrent: assertEligible,
             now,
+            onObservation: observe,
           })
         },
         acknowledgeRecoverySnapshot: async (state) => {
           await assertDurable()
           if (JSON.stringify(state) !== JSON.stringify(expectedState))
             throw new CheckoutSparkSettledRepositoryConflictError()
+          observe({ phase: "recovery_delivery", status: "not_verified" })
           const delivery = await publishMerchantCheckoutSparkProgress({
             payload: createCheckoutSparkMerchantProgress({
               initialHandoffId: initial.handoffId,
@@ -382,6 +425,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
                 assertCurrent: assertEligible,
                 now,
                 proofMode: "receipt",
+                onObservation: observe,
               })
               assertEligible()
               await repository.recordMerchantTreasury(
@@ -438,6 +482,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
                   repository,
                   assertCurrent: assertEligible,
                   now,
+                  onObservation: observe,
                 })
                 assertEligible()
                 if (
@@ -448,10 +493,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
                 await assertDurable()
               },
             })
-            assertEligible()
-            return {
-              status: sent.status === "not_sent" ? "not_sent" : "submitted",
-            }
+            return sent
           },
         },
       }
@@ -492,6 +534,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
   return runWithCheckoutSparkMerchantRecoveryLock(
     selected.planDigest,
     async () => {
+      observe({ phase: "recovery_delivery", status: "not_verified" })
       const result = await consumeRecovery(principal, selected, {
         consume: async (initial, guard) => {
           if (initial.schemaVersion !== 2)

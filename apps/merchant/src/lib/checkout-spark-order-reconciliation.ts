@@ -4,6 +4,8 @@ import {
   projectCheckoutSparkMerchantSettlement,
   isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkPerformanceObserver,
+  type CheckoutSparkSettledOutgoingStepResult,
+  type CheckoutSparkNativeRetirementObservation,
   type MerchantCheckoutSparkReconciliationStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
@@ -15,6 +17,7 @@ import {
   continueMerchantCheckoutSparkSettledPayout,
   continueMerchantCheckoutSparkNativeTreasury,
   selectMerchantCheckoutSparkSignedNextPayout,
+  type MerchantCheckoutSparkSignedNextPayoutSelection,
 } from "./checkout-spark-settled-continuation"
 import { prepareNextMerchantCheckoutSparkSettledPayout } from "./checkout-spark-settled-leg-preparation"
 import { queueMerchantCheckoutSparkSupplierNotifications } from "./checkout-spark-supplier-notifications"
@@ -84,7 +87,10 @@ async function inspectMerchantCheckoutSparkOrder(
   candidate: MerchantCheckoutSparkRecoveryCandidate,
   assertActive: () => void,
   dependencies: ReconciliationDependencies,
-  includeRouterPayouts: boolean
+  includeRouterPayouts: boolean,
+  onNextPayout?: (
+    selection: MerchantCheckoutSparkSignedNextPayoutSelection
+  ) => void
 ): Promise<MerchantCheckoutSparkReconciliationStatus> {
   const principal = principalPubkey.trim().toLowerCase()
   candidate = {
@@ -307,11 +313,15 @@ async function inspectMerchantCheckoutSparkOrder(
   const history = await (
     dependencies.inspectPayouts ??
     inspectMerchantCheckoutSparkSettledPayoutHistory
-  )(principal, candidate, options)
+  )(principal, candidate, {
+    ...options,
+    ...(onNextPayout ? { selectNextPayout: true } : {}),
+  })
   assertActive()
   if (history.status !== "consumed") return "unavailable"
   if (!history.payoutHistory) return "unavailable"
   if (history.payoutHistory.status === "credit_needed") return "pending"
+  if (history.nextPayout) onNextPayout?.(history.nextPayout)
   projection = await readProjection()
   if (originNeedsAttention(projection))
     return attributionUnavailable ? "unavailable" : "recipient_unverified"
@@ -334,6 +344,11 @@ async function inspectMerchantCheckoutSparkOrder(
   return "pending"
 }
 
+export type MerchantCheckoutSparkPayoutObservation = Pick<
+  CheckoutSparkSettledOutgoingStepResult,
+  "outcome" | "reason" | "sendAttempted"
+>
+
 interface AdvancementDependencies extends ReconciliationDependencies {
   selectPayout?: typeof selectMerchantCheckoutSparkSignedNextPayout
   preparePayout?: typeof prepareNextMerchantCheckoutSparkSettledPayout
@@ -343,6 +358,13 @@ interface AdvancementDependencies extends ReconciliationDependencies {
   requestRescan: () => void
   /** A newly paid continuation can wake its serialized owner, not bypass it. */
   onProgress?: () => void
+  /** Existing payout result only; no provider call or execution authority. */
+  onPayoutObservation?: (
+    observation: MerchantCheckoutSparkPayoutObservation
+  ) => void
+  onNativeObservation?: (
+    observation: CheckoutSparkNativeRetirementObservation
+  ) => void
   /** Optional bounded, content-free observation of one advancement invocation. */
   observePerformance?: CheckoutSparkPerformanceObserver
 }
@@ -389,18 +411,29 @@ async function advanceMerchantCheckoutSparkOrderPhase(
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now
+  let inspectedPayout:
+    MerchantCheckoutSparkSignedNextPayoutSelection | undefined
   const status = await inspectMerchantCheckoutSparkOrder(
     principal,
     candidate,
     assertActive,
     { ...dependencies, repository, now },
-    true
+    true,
+    dependencies.selectPayout
+      ? undefined
+      : (selection) => {
+          inspectedPayout = selection
+        }
   )
   assertActive()
   if (status !== "progress_pending") return status
-  const selection = await (
-    dependencies.selectPayout ?? selectMerchantCheckoutSparkSignedNextPayout
-  )(principal, candidate, assertActive, { repository, now })
+  // Only a read-only result crosses the history callback. The final phase
+  // still authenticates fresh recovery under its own lock before wallet work.
+  const selection =
+    inspectedPayout ??
+    (await (
+      dependencies.selectPayout ?? selectMerchantCheckoutSparkSignedNextPayout
+    )(principal, candidate, assertActive, { repository, now }))
   assertActive()
   const shouldContinue = () => {
     assertActive()
@@ -431,9 +464,26 @@ async function advanceMerchantCheckoutSparkOrderPhase(
       now,
       shouldContinue,
       inspectionOnly,
+      onObservation(observation) {
+        try {
+          assertActive()
+          dependencies.onNativeObservation?.(observation)
+        } catch {
+          // A stale or failed display cannot change the financial operation.
+        }
+      },
     })
     assertActive()
     if (result.status !== "consumed" || !result.payout) return "unavailable"
+    try {
+      dependencies.onPayoutObservation?.({
+        outcome: result.payout.outcome,
+        ...(result.payout.reason ? { reason: result.payout.reason } : {}),
+        sendAttempted: result.payout.sendAttempted,
+      })
+    } catch {
+      // Existing result only; observer failures do not change scheduling.
+    }
     if (
       result.payout.reason === "terminal_failure" ||
       result.payout.reason === "provider_evidence_conflicting" ||
@@ -443,13 +493,20 @@ async function advanceMerchantCheckoutSparkOrderPhase(
       result.payout.reason === "insufficient_funds" ||
       result.payout.reason === "prerequisite_unpaid" ||
       result.payout.reason === "authority_not_started" ||
-      result.payout.reason === "authority_transferred"
+      result.payout.reason === "authority_transferred" ||
+      result.payout.reason === "native_invoice_rejected" ||
+      result.payout.reason === "native_provider_validation" ||
+      result.payout.reason === "native_provider_authentication" ||
+      result.payout.reason === "native_unrecognized_result"
     )
       return "needs_attention"
     if (
       result.payout.reason === "provider_evidence_unavailable" ||
       result.payout.reason === "recovery_handoff_unavailable" ||
-      result.payout.reason === "fee_unavailable"
+      result.payout.reason === "fee_unavailable" ||
+      result.payout.reason === "native_provider_unavailable" ||
+      result.payout.reason === "native_provider_request" ||
+      result.payout.reason === "native_provider_error"
     )
       return "unavailable"
     if (result.payout.reason === "recipient_unverified")
@@ -540,6 +597,15 @@ async function advanceMerchantCheckoutSparkOrderPhase(
   })
   assertActive()
   if (result.status !== "consumed" || !result.payout) return "unavailable"
+  try {
+    dependencies.onPayoutObservation?.({
+      outcome: result.payout.outcome,
+      ...(result.payout.reason ? { reason: result.payout.reason } : {}),
+      sendAttempted: result.payout.sendAttempted,
+    })
+  } catch {
+    // A display observer must not change provider outcome or scheduling.
+  }
   if (result.payout.reason === "recipient_unverified")
     return "recipient_unverified"
   // Let discovery select a new signed pointer. Never manufacture one from local

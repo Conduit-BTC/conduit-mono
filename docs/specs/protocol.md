@@ -302,6 +302,10 @@ The exception is constrained as follows:
   separate Merchant opt-in or a guest reply inbox. Historical pickup orders
   with one contact method remain readable but do not define the ordinary
   new-order requirement.
+- Contact-free receipt presentation may use an on-screen code or readable
+  private export. The existing v1 receipt commitment and original JSON import
+  remain unchanged. Possession of the matching code does not establish payment,
+  permit a refund, or bypass the exact stock/handout authority checks.
 - Same-session recovery means local invoice/payment-report and bounded router
   continuity only. It does not promise merchant status recovery, a private
   conversation, or durable order history. Merchant router recovery is a
@@ -330,6 +334,14 @@ revisions and original provider-confirmed funding creation time bind its use.
 Restoration never substitutes a current rate or treats the shopper's plan time
 as independent pricing authority. Existing plans without this field retain
 their original digest; unsupported or unverifiable fiat evidence pauses.
+
+New positive-commerce plans carry the explicit digest-bound
+`conduitFeePolicy: "percentage-only-v1"` discriminator. This changes only the
+newly approved Conduit allocation, not the recipient, reserve, source authority
+or delivery format. Omission retains the historical floor-bearing economics
+and canonical digest; never add the field during recovery. Unknown values or a
+policy/digest mismatch reject. Historical signed organizer minimum/expiry terms
+remain independently verifiable after new percentage-only authoring is enabled.
 
 Exact Lightning intents may retain a portable, mode-qualified receiver binding.
 Its canonical endpoint/metadata/verifier facts are untrusted lookup hints until

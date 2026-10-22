@@ -213,7 +213,11 @@ async function fixture(commerceTotalSats = 1_000) {
   })
   const repository = new DexieCheckoutSparkSettledRepository(f.database)
   const issued = new Map<string, ReturnType<typeof qualifiedReceiverFixture>>()
-  const hooks: { beforeProvider?: () => Promise<void> } = {}
+  const hooks: {
+    beforeProvider?: () => Promise<void>
+    beforeNativeFulfill?: () => Promise<void>
+    beforeNativeQuery?: () => void
+  } = {}
   const observations = { lightning: 0, native: 0 }
   const openWallet = async (input: {
     mnemonic: string
@@ -237,9 +241,13 @@ async function fixture(commerceTotalSats = 1_000) {
         getIdentityPublicKey: () => wallet.getIdentityPublicKey(),
         getBalance: () => wallet.getBalance(),
         getTransfer: (id) => wallet.getTransfer(id),
-        querySparkInvoices: (invoices) => wallet.querySparkInvoices!(invoices),
+        querySparkInvoices: (invoices) => {
+          hooks.beforeNativeQuery?.()
+          return wallet.querySparkInvoices!(invoices)
+        },
         fulfillSparkInvoice: async (invoices) => {
           await hooks.beforeProvider?.()
+          await hooks.beforeNativeFulfill?.()
           observations.native++
           return wallet.fulfillSparkInvoice!(invoices)
         },
@@ -457,6 +465,117 @@ async function importBuyerPreparedOrganizerIntent(
 }
 
 describe("designated organizer automatic routing", () => {
+  it("retains only an admitted native reference after Pause without further provider checks or recovery acknowledgments", async () => {
+    const f = await fixture(0)
+    let release!: () => void
+    let running: Promise<unknown> | undefined
+    try {
+      let entered!: () => void
+      let paused = false
+      let queries = 0
+      const admission = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const completion = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      f.hooks.beforeNativeFulfill = async () => {
+        entered()
+        await completion
+      }
+      f.hooks.beforeNativeQuery = () => {
+        queries++
+      }
+      running = routeCheckoutSparkOrganizerOrder(
+        { ...f.session, shouldContinue: () => !paused && f.clock.active },
+        f.dependencies
+      )
+      await admission
+      const admitted = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (admitted.status !== "active")
+        throw new Error("Expected saved admission")
+      const queriesAtPause = queries
+      const acknowledgmentsAtPause = f.progressSends.length
+      paused = true
+      release()
+      await expect(running).rejects.toThrow(
+        "Organizer payment processing is no longer active."
+      )
+      const retained = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (retained.status !== "active")
+        throw new Error("Expected retained admission")
+      const final = retained.state.treasuryFinalization!
+      expect(final.status).toBe("submitted")
+      expect(
+        final.providerTransferId === f.control.nativeSnapshot().transfers[0]!.id
+      ).toBe(true)
+      expect(
+        JSON.stringify(final.intent) ===
+          JSON.stringify(admitted.state.treasuryFinalization!.intent)
+      ).toBe(true)
+      expect(final.finalFeeSats).toBeNull()
+      expect(final.finalDebitSats).toBeNull()
+      expect(
+        JSON.stringify(retained.state.credit) ===
+          JSON.stringify(admitted.state.credit)
+      ).toBe(true)
+      expect(
+        JSON.stringify(retained.state.legs.slice(0, -1)) ===
+          JSON.stringify(admitted.state.legs.slice(0, -1))
+      ).toBe(true)
+      expect(queries).toBe(queriesAtPause)
+      expect(f.progressSends.length).toBe(acknowledgmentsAtPause)
+      expect(f.observations.native).toBe(1)
+    } finally {
+      release?.()
+      await running?.catch(() => {})
+      await f.cleanup()
+    }
+  }, 60_000)
+  it("does not retain a late native reference after the original organizer account is revoked", async () => {
+    const f = await fixture(0)
+    let release!: () => void
+    let running: Promise<unknown> | undefined
+    try {
+      let entered!: () => void
+      const admission = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const completion = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      f.hooks.beforeNativeFulfill = async () => {
+        entered()
+        await completion
+      }
+      running = routeCheckoutSparkOrganizerOrder(f.session, f.dependencies)
+      await admission
+      f.organizerSigner.invalidateLocal()
+      release()
+      await expect(running).rejects.toThrow()
+      const retained = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (retained.status !== "active")
+        throw new Error("Expected retained admission")
+      expect(retained.state.treasuryFinalization!.status).toBe("submitted")
+      expect(retained.state.treasuryFinalization!.providerTransferId).toBeNull()
+      expect(retained.state.treasuryFinalization!.finalFeeSats).toBeNull()
+      expect(retained.state.treasuryFinalization!.finalDebitSats).toBeNull()
+      expect(f.observations.native).toBe(1)
+    } finally {
+      release?.()
+      await running?.catch(() => {})
+      await f.cleanup()
+    }
+  }, 60_000)
   it("retains an actual completed goods proof after the processing deadline while the original authority is current", async () => {
     const f = await fixture()
     try {

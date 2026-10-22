@@ -17,6 +17,7 @@ import {
 } from "@conduit/ui"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { SignerSwitch } from "./SignerSwitch"
+import { getEventParticipationStatus } from "../lib/event-market-enrollment-presentation"
 
 export function FutureEventMerchantParticipation({
   market,
@@ -24,6 +25,9 @@ export function FutureEventMerchantParticipation({
   enrollment,
   busy,
   blocked,
+  error,
+  networkRepair,
+  pendingDelivery = false,
   onSend,
 }: {
   market: ParsedEventMarketRoster
@@ -31,6 +35,9 @@ export function FutureEventMerchantParticipation({
   enrollment?: EventMarketEnrollmentState
   busy: boolean
   blocked: boolean
+  error?: string
+  networkRepair?: boolean
+  pendingDelivery?: boolean
   onSend: (action: "request" | "withdraw", merchant: string) => Promise<void>
 }) {
   const { accountPubkey, authGeneration, isAuthGenerationCurrent } = useAuth()
@@ -68,21 +75,15 @@ export function FutureEventMerchantParticipation({
     auth.data?.resolution.state === "active" &&
     auth.data.actionable === true
   const revoked = auth.data?.resolution.state === "revoked"
-  const status = approved
-    ? "Approved to sell"
-    : revoked
-      ? "Approval revoked"
-      : enrollment?.status === "requested"
-        ? "Request pending"
-        : enrollment?.status === "invited"
-          ? "Invited to join"
-          : enrollment?.status === "declined"
-            ? "Request declined"
-            : enrollment?.status === "withdrawn"
-              ? "Request withdrawn"
-              : "Join this event"
+  const status = getEventParticipationStatus({
+    approved,
+    revoked,
+    busy,
+    pendingDelivery,
+    enrollmentStatus: enrollment?.status,
+  })
   return (
-    <Card>
+    <Card role="region" aria-label="Your participation">
       <CardHeader>
         <CardTitle>Your participation</CardTitle>
         <CardDescription>
@@ -104,6 +105,19 @@ export function FutureEventMerchantParticipation({
             ? status
             : "Connect your signer to request a place or review your invitation."}
         </p>
+        {error ? (
+          <p role="alert" className="text-sm text-[var(--error-text)]">
+            {error}
+            {networkRepair ? (
+              <>
+                {" "}
+                <a className="underline" href="/network">
+                  Open Network settings
+                </a>
+              </>
+            ) : null}
+          </p>
+        ) : null}
         {!authenticatedPubkey ? (
           <SignerSwitch />
         ) : approved ? (
@@ -140,18 +154,20 @@ export function FutureEventMerchantParticipation({
                 disabled={busy || blocked}
                 onClick={() => void onSend("withdraw", authenticatedPubkey)}
               >
-                Withdraw request
+                {busy ? "Sending…" : "Withdraw request"}
               </Button>
             ) : (
               <Button
                 disabled={busy || blocked || auth.isFetching}
                 onClick={() => void onSend("request", authenticatedPubkey)}
               >
-                {enrollment?.status === "invited"
-                  ? "Accept invitation and request approval"
-                  : revoked
-                    ? "Request reapproval"
-                    : "Request to join"}
+                {busy
+                  ? "Sending…"
+                  : enrollment?.status === "invited"
+                    ? "Accept invitation and request approval"
+                    : revoked
+                      ? "Request reapproval"
+                      : "Request to join"}
               </Button>
             )}
             {row && !approved ? (

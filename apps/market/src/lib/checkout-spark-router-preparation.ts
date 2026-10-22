@@ -758,7 +758,10 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
     throw new Error("Checkout Spark funding is no longer safe to expose.")
   }
 
-  const delivery = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+  const delivery = await getCheckoutSparkRecoveryDelivery(handoffId, storage)
+  if (input.shouldContinue?.() === false) {
+    throw new Error("Checkout Spark buyer session changed.")
+  }
   if (
     !delivery ||
     delivery.record.checkoutId !== plan.checkoutId ||
@@ -782,7 +785,13 @@ export async function retryCheckoutSparkRouterRecoveryAndResumeFunding(input: {
   if (!retried.canExposeFundingInvoice) {
     throw new Error("Checkout Spark recovery received no relay ACK.")
   }
-  const acknowledged = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+  const acknowledged = await getCheckoutSparkRecoveryDelivery(
+    handoffId,
+    storage
+  )
+  if (input.shouldContinue?.() === false) {
+    throw new Error("Checkout Spark buyer session changed.")
+  }
   const current = getCheckoutSparkRouterPreparation(input.checkoutId, storage)
   const exposureTime = now()
   if (

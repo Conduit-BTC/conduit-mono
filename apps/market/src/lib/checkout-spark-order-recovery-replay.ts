@@ -179,10 +179,11 @@ function replayContext(
       !preparation.recoveryHandoffId
     )
       throw new Error("This order's initial recovery delivery is unavailable.")
-    const saved = getCheckoutSparkRecoveryDelivery(
+    const saved = await getCheckoutSparkRecoveryDelivery(
       preparation.recoveryHandoffId,
       storage
     )
+    assertCurrent()
     const record = saved?.record
     const organizer = saved?.organizerDelivery
     if (

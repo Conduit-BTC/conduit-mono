@@ -37,6 +37,9 @@ function engine(
     failedProofAt?: number
     notSent?: boolean
     throwSend?: boolean
+    sendResult?: Awaited<
+      ReturnType<CheckoutSparkNativeTreasuryProvider["send"]>
+    >
     cancelSaveFail?: "before" | "after"
     retrySaveFail?: "before" | "after"
   } = {}
@@ -67,6 +70,7 @@ function engine(
       events.push("send")
       if (options.throwSend) throw new Error("Provider result lost")
       if (options.notSent && sends === 1) return { status: "not_sent" }
+      if (options.sendResult) return options.sendResult
       submittedSends++
       return { status: "submitted" }
     },
@@ -327,6 +331,102 @@ describe("Checkout Spark native treasury accounting", () => {
 })
 
 describe("Checkout Spark native treasury durable step", () => {
+  it("reports a finite native rejection without cancelling or replaying the admitted intent", async () => {
+    const e = engine(fixture(), {
+      sendResult: { status: "ambiguous", reason: "provider_request" },
+    })
+    const first = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(first.outcome).toBe("send_ambiguous")
+    expect(first.reason).toBe("native_provider_request")
+    expect(e.state().treasuryFinalization!.status).toBe("submitted")
+    expect(e.state().treasuryFinalization!.providerTransferId).toBeNull()
+    expect(e.sends()).toBe(1)
+    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
+      "prior_possible_send"
+    )
+    expect(e.sends()).toBe(1)
+  })
+
+  it("retains a validated submission reference without inventing a receipt or resending", async () => {
+    const e = engine(fixture(), {
+      sendResult: {
+        status: "submitted",
+        providerTransferId: "actual-native-reference",
+      },
+    })
+    const first = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(first.outcome).toBe("send_ambiguous")
+    expect(e.state().treasuryFinalization!.providerTransferId).toBe(
+      "actual-native-reference"
+    )
+    expect(e.state().treasuryFinalization!.status).toBe("submitted")
+    expect(e.state().treasuryFinalization!.finalDebitSats).toBeNull()
+    await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(e.sends()).toBe(1)
+  })
+
+  it("lets fresh exact payment proof dominate an inconclusive send result", async () => {
+    const e = engine(fixture(), {
+      sendResult: { status: "ambiguous", reason: "provider_request" },
+    })
+    let reads = 0
+    e.input.provider.reconcile = async (target) =>
+      ++reads === 1
+        ? { invoiceId: target.intent.invoiceId, status: "not_found" }
+        : {
+            invoiceId: target.intent.invoiceId,
+            status: "paid",
+            providerTransferId: "exact-native-receipt",
+            finalFeeSats: 0,
+            finalDebitSats: target.intent.amountSats,
+          }
+    const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(result.outcome).toBe("paid")
+    expect(result.reason).toBeUndefined()
+    expect(e.state().treasuryFinalization!.providerTransferId).toBe(
+      "exact-native-receipt"
+    )
+    expect(e.sends()).toBe(1)
+  })
+
+  it.each(["unavailable", "throw"] as const)(
+    "preserves the finite send failure when later reconciliation is %s",
+    async (failure) => {
+      const e = engine(fixture(), {
+        sendResult: { status: "ambiguous", reason: "provider_validation" },
+      })
+      let reads = 0
+      e.input.provider.reconcile = async (target) => {
+        if (++reads === 1)
+          return { invoiceId: target.intent.invoiceId, status: "not_found" }
+        if (failure === "throw") throw new Error("Synthetic lookup failure")
+        return {
+          invoiceId: target.intent.invoiceId,
+          status: "lookup_unavailable",
+        }
+      }
+      const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+      expect(result.outcome).toBe("send_ambiguous")
+      expect(result.reason).toBe("native_provider_validation")
+      expect(e.state().treasuryFinalization!.status).toBe("submitted")
+      expect(e.sends()).toBe(1)
+    }
+  )
+
+  it("does not reflect arbitrary provider reason text", async () => {
+    const e = engine(fixture(), {
+      sendResult: {
+        status: "ambiguous",
+        // @ts-expect-error Deliberate malformed provider result at the public seam.
+        reason: "private-provider-detail-sentinel",
+      },
+    })
+    const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(result.reason).toBe("prior_possible_send")
+    expect(JSON.stringify(result)).not.toContain("sentinel")
+    expect(e.sends()).toBe(1)
+  })
+
   it("does not persist pending phase diagnostics or turn them into send authority", async () => {
     const e = engine()
     e.input.provider.reconcile = async (target) => ({
@@ -666,6 +766,110 @@ describe("Checkout Spark native treasury durable step", () => {
     ).rejects.toThrow()
     database.close()
     await database.delete()
+  })
+  it("journals only a reference on the exact submitted predecessor and refuses stale, malformed, or revoked writes", async () => {
+    const f = fixture()
+    const prepared = prepareCheckoutSparkNativeTreasury(f.state, {
+      settlement: f.record,
+      preparedAt: AT + 4,
+    })
+    const submitted = recordCheckoutSparkNativeTreasuryStatus(prepared, {
+      invoiceId: f.plan.nativeTreasury!.invoiceId,
+      status: "submitted",
+      observedAt: AT + 5,
+    })
+    const database = new ConduitDB(`native-reference-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    const repository = new DexieCheckoutSparkSettledRepository(database)
+    await database.checkoutSparkPlanBindings.add({
+      checkoutId: f.plan.checkoutId,
+      planDigest: f.plan.planDigest,
+      merchantSettlement: f.record,
+    })
+    await database.checkoutSparkReconciliations.add({
+      checkoutId: f.plan.checkoutId,
+      revision: 1,
+      state: submitted,
+    })
+    const reference = crypto.randomUUID()
+    const write = (
+      state = submitted,
+      revision = 1,
+      providerTransferId = reference,
+      observedAt = AT + 6,
+      assertCurrent = () => {}
+    ) =>
+      repository.saveTreasurySubmittedReference(
+        state,
+        revision,
+        providerTransferId,
+        observedAt,
+        assertCurrent
+      )
+    try {
+      await expect(write(submitted, 2)).rejects.toThrow()
+      await expect(write({ ...submitted, updatedAt: AT + 6 })).rejects.toThrow()
+      await expect(write(prepared)).rejects.toThrow()
+      await expect(write(submitted, 1, "")).rejects.toThrow()
+      await expect(write(submitted, 1, reference, AT + 4)).rejects.toThrow()
+      let checks = 0
+      await expect(
+        write(submitted, 1, reference, AT + 6, () => {
+          if (++checks >= 5) throw new Error("Account authority changed")
+        })
+      ).rejects.toThrow()
+      expect(
+        await repository.load(f.plan.checkoutId, f.plan.planDigest)
+      ).toEqual({
+        status: "active",
+        revision: 1,
+        state: submitted,
+      })
+      const saved = await write()
+      if (saved.status !== "active") throw new Error("Missing reference")
+      expect(saved.revision).toBe(2)
+      expect(saved.state).toEqual(
+        recordCheckoutSparkNativeTreasuryStatus(submitted, {
+          invoiceId: f.plan.nativeTreasury!.invoiceId,
+          status: "submitted",
+          providerTransferId: reference,
+          observedAt: AT + 6,
+        })
+      )
+      expect(saved.state.plan).toEqual(submitted.plan)
+      expect(saved.state.credit).toEqual(submitted.credit)
+      expect(saved.state.treasuryFinalization?.finalFeeSats).toBeNull()
+      expect(saved.state.treasuryFinalization?.finalDebitSats).toBeNull()
+      await expect(write()).rejects.toThrow()
+      await expect(write(saved.state, saved.revision)).rejects.toThrow()
+      const stronger = recordCheckoutSparkNativeTreasuryStatus(saved.state, {
+        invoiceId: f.plan.nativeTreasury!.invoiceId,
+        status: "ambiguous",
+        observedAt: AT + 7,
+      })
+      await repository.save(stronger, 2)
+      await expect(write()).rejects.toThrow()
+      expect(
+        await repository.load(f.plan.checkoutId, f.plan.planDigest)
+      ).toEqual({
+        status: "active",
+        revision: 3,
+        state: stronger,
+      })
+      expect(
+        (
+          await repository.loadMerchantSettlement(
+            f.plan.merchantPubkey,
+            f.plan.checkoutId,
+            f.plan.planDigest
+          )
+        )?.nativeTreasury
+      ).toBeNull()
+    } finally {
+      await database.delete()
+    }
   })
   it("CAS-retries a locally cancelled exact intent across repository instances, not storage domains", async () => {
     const f = fixture()

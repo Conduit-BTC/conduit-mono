@@ -387,7 +387,7 @@ describe("completed checkout execution queues", () => {
     const prepared = await f.prepare(1)
     f.setAck(false)
     await expect(f.progress(prepared, 1)).rejects.toThrow("relay ACK")
-    const pending = listCheckoutSparkRecoveryDeliveries(f.storage).find(
+    const pending = (await listCheckoutSparkRecoveryDeliveries(f.storage)).find(
       (delivery) => delivery.deliveryProgress.acknowledgedRelayRefs.length === 0
     )!
     const exactWire = JSON.stringify(pending.record.signedRecipientWrap)
@@ -397,11 +397,11 @@ describe("completed checkout execution queues", () => {
     expect(await f.clean(prepared)).toBe("cleaned")
     expect(f.published.at(-1)).toBe(exactWire)
     expect(f.calls).toEqual({ ...calls, publish: calls.publish + 1 })
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(0)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(0)
     expect(
       getCheckoutSparkSettledPreparation(prepared.plan.checkoutId, f.storage)
     ).toBeNull()
-    const archive = getArchivedCheckoutSparkRecoveryDeliveries(
+    const archive = await getArchivedCheckoutSparkRecoveryDeliveries(
       f.scope(prepared),
       f.storage
     )
@@ -421,7 +421,7 @@ describe("completed checkout execution queues", () => {
     const f = fixture()
     const active = await f.prepare(0)
     await f.progress(active, 1)
-    const activeBefore = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const activeBefore = await listCheckoutSparkRecoveryDeliveries(f.storage)
     for (let index = 1; index <= 72; index += 1) {
       const prepared = await f.prepare(index)
       await f.progress(prepared, 2)
@@ -429,7 +429,7 @@ describe("completed checkout execution queues", () => {
       expect(await f.clean(prepared)).toBe("active")
       f.terminal.add(prepared.plan.checkoutId)
       expect(await f.clean(prepared)).toBe("cleaned")
-      const archive = getArchivedCheckoutSparkRecoveryDeliveries(
+      const archive = await getArchivedCheckoutSparkRecoveryDeliveries(
         f.scope(prepared),
         f.storage
       )
@@ -456,7 +456,9 @@ describe("completed checkout execution queues", () => {
       ).toBeNull()
     }
     expect(listCheckoutSparkSettledPreparations(f.storage)).toHaveLength(1)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toEqual(activeBefore)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toEqual(
+      activeBefore
+    )
     expect(Object.keys(JSON.parse(f.storage.getItem(RETRIES)!))).toHaveLength(1)
     expect(f.calls.wallet).toBe(73)
     expect(f.calls.receive).toBe(73)
@@ -475,10 +477,13 @@ describe("completed checkout execution queues", () => {
       getCheckoutSparkSettledPreparation(completed.plan.checkoutId, f.storage)
     ).toBeNull()
     expect(
-      getArchivedCheckoutSparkRecoveryDeliveries(f.scope(completed), f.storage)
+      await getArchivedCheckoutSparkRecoveryDeliveries(
+        f.scope(completed),
+        f.storage
+      )
     ).toHaveLength(3)
     expect(listCheckoutSparkSettledPreparations(f.storage)).toHaveLength(1)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(1)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(1)
     expect(Object.keys(JSON.parse(f.storage.getItem(RETRIES)!))).toHaveLength(0)
   })
 
@@ -502,7 +507,10 @@ describe("completed checkout execution queues", () => {
       expect(await f.clean(prepared)).toBe("cleaned")
       expect(f.calls).toEqual(calls)
       expect(
-        getArchivedCheckoutSparkRecoveryDeliveries(f.scope(prepared), f.storage)
+        await getArchivedCheckoutSparkRecoveryDeliveries(
+          f.scope(prepared),
+          f.storage
+        )
       ).toHaveLength(2)
     }
   })
@@ -515,11 +523,11 @@ describe("completed checkout execution queues", () => {
     f.storage.failOnce = (key) => key === OUTBOX
     await expect(f.clean(prepared)).rejects.toThrow("Synthetic")
     expect(Object.keys(JSON.parse(f.storage.getItem(RETRIES)!))).toHaveLength(0)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
     const calls = { ...f.calls }
     expect(await f.clean(prepared)).toBe("cleaned")
     expect(f.calls).toEqual(calls)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(0)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(0)
     expect(await f.clean(prepared)).toBe("cleaned")
     expect(() =>
       saveCheckoutSparkSettledPreparation(
@@ -562,7 +570,10 @@ describe("completed checkout execution queues", () => {
     ).not.toBeNull()
     expect(await f.clean(prepared)).toBe("cleaned")
     expect(
-      getArchivedCheckoutSparkRecoveryDeliveries(f.scope(prepared), f.storage)
+      await getArchivedCheckoutSparkRecoveryDeliveries(
+        f.scope(prepared),
+        f.storage
+      )
     ).toHaveLength(2)
   }, 15_000)
 
@@ -572,16 +583,16 @@ describe("completed checkout execution queues", () => {
     f.setAck(false)
     await expect(f.progress(prepared, 1)).rejects.toThrow("relay ACK")
     f.terminal.add(prepared.plan.checkoutId)
-    const before = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const before = await listCheckoutSparkRecoveryDeliveries(f.storage)
     const calls = { ...f.calls }
     expect(await f.clean(prepared)).toBe("delivery_pending")
     expect(f.calls).toEqual({ ...calls, publish: calls.publish + 1 })
     expect(
-      listCheckoutSparkRecoveryDeliveries(f.storage).map(
+      (await listCheckoutSparkRecoveryDeliveries(f.storage)).map(
         (delivery) => delivery.record
       )
     ).toEqual(before.map((delivery) => delivery.record))
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
     expect(
       getCheckoutSparkSettledPreparation(prepared.plan.checkoutId, f.storage)
     ).not.toBeNull()
@@ -599,10 +610,10 @@ describe("completed checkout execution queues", () => {
     f.setAck(true)
     f.storage.failOnce = (key) =>
       key.startsWith("conduit:checkout-spark-completed-recovery:")
-    const before = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const before = await listCheckoutSparkRecoveryDeliveries(f.storage)
     const calls = { ...f.calls }
     await expect(f.clean(prepared)).rejects.toThrow("Synthetic")
-    const afterRetry = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const afterRetry = await listCheckoutSparkRecoveryDeliveries(f.storage)
     expect(afterRetry.map((delivery) => delivery.record)).toEqual(
       before.map((delivery) => delivery.record)
     )
@@ -616,7 +627,10 @@ describe("completed checkout execution queues", () => {
     expect(await f.clean(prepared)).toBe("cleaned")
     expect(f.calls).toEqual({ ...calls, publish: calls.publish + 1 })
     expect(
-      getArchivedCheckoutSparkRecoveryDeliveries(f.scope(prepared), f.storage)
+      await getArchivedCheckoutSparkRecoveryDeliveries(
+        f.scope(prepared),
+        f.storage
+      )
     ).toHaveLength(2)
   })
 
@@ -626,13 +640,13 @@ describe("completed checkout execution queues", () => {
     f.setAck(false)
     for (let stage = 1; stage <= 5; stage += 1)
       await expect(f.progress(prepared, stage)).rejects.toThrow("relay ACK")
-    const before = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const before = await listCheckoutSparkRecoveryDeliveries(f.storage)
     f.terminal.add(prepared.plan.checkoutId)
     f.setAck(true)
     const calls = { ...f.calls }
     expect(await f.clean(prepared)).toBe("delivery_pending")
     expect(f.calls).toEqual({ ...calls, publish: calls.publish + 4 })
-    const remaining = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const remaining = await listCheckoutSparkRecoveryDeliveries(f.storage)
     expect(remaining).toHaveLength(6)
     expect(
       remaining.filter(
@@ -651,7 +665,7 @@ describe("completed checkout execution queues", () => {
     const prepared = await f.prepare(1)
     f.setAck(false)
     await expect(f.progress(prepared, 1)).rejects.toThrow("relay ACK")
-    const pending = listCheckoutSparkRecoveryDeliveries(f.storage).find(
+    const pending = (await listCheckoutSparkRecoveryDeliveries(f.storage)).find(
       (delivery) => !delivery.deliveryProgress.acknowledgedRelayRefs.length
     )!
     f.terminal.add(prepared.plan.checkoutId)
@@ -665,7 +679,7 @@ describe("completed checkout execution queues", () => {
       publish: calls.publish + 1,
     })
     expect(
-      listCheckoutSparkRecoveryDeliveries(f.storage).find(
+      (await listCheckoutSparkRecoveryDeliveries(f.storage)).find(
         (delivery) => delivery.record.handoffId === pending.record.handoffId
       )
     ).toEqual(pending)
@@ -907,6 +921,59 @@ describe("completed checkout execution queues", () => {
           Object.defineProperty(globalThis, "navigator", previousNavigator)
         else Reflect.deleteProperty(globalThis, "navigator")
       }
+    }
+  })
+
+  it("retains exact active recovery when terminal binding changes during asynchronous retry cleanup", async () => {
+    const f = fixture()
+    const prepared = await f.prepare(1)
+    await f.progress(prepared, 1)
+    f.terminal.add(prepared.plan.checkoutId)
+    const exactOutbox = f.storage.getItem(OUTBOX)
+    const calls = { ...f.calls }
+    let release!: () => void
+    let entered!: () => void
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const enteredWrite = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const recoveryStorage = {
+      getItem: (key: string) => f.storage.getItem(key),
+      setItem: async (key: string, value: string) => {
+        f.storage.setItem(key, value)
+        if (key === RETRIES) {
+          entered()
+          await waiting
+        }
+      },
+      removeItem: (key: string) => f.storage.removeItem(key),
+    }
+    const cleaning = f.clean(prepared, { recoveryStorage })
+    const failure = cleaning.then(
+      () => null,
+      (error: unknown) => error
+    )
+    try {
+      await enteredWrite
+      expect(f.storage.getItem(RETRIES)).toBe("{}")
+      expect(f.storage.getItem(OUTBOX)).toBe(exactOutbox)
+      f.terminal.delete(prepared.plan.checkoutId)
+      release()
+      const error = await failure
+      expect(error).toBeInstanceOf(Error)
+      expect((error as Error).message).toContain("binding changed")
+      expect(f.storage.getItem(OUTBOX)).toBe(exactOutbox)
+      expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(
+        2
+      )
+      expect(
+        getCheckoutSparkSettledPreparation(prepared.plan.checkoutId, f.storage)
+      ).not.toBeNull()
+      expect(f.calls).toEqual(calls)
+    } finally {
+      release()
     }
   })
 })

@@ -1,4 +1,7 @@
-import { calculateConduitCheckoutFeeSats } from "./checkout-spark-router-obligations"
+import {
+  calculateConduitCheckoutFeeSats,
+  type CheckoutSparkConduitFeePolicy,
+} from "./checkout-spark-router-obligations"
 
 const MAX_SAFE_SATS = BigInt(Number.MAX_SAFE_INTEGER)
 const INBOUND_ALLOWANCE_NUMERATOR = 15n
@@ -25,7 +28,8 @@ export interface CheckoutSparkEventSettledAllocation extends CheckoutSparkSettle
 /** Event fees are additive, never part of the Conduit percentage base. */
 export function calculateCheckoutSparkEventAllocationWeights(
   commerceTotalSats: number,
-  organizerFeeSats: number
+  organizerFeeSats: number,
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 ): CheckoutSparkEventAllocationWeights {
   if (
     !Number.isSafeInteger(commerceTotalSats) ||
@@ -36,7 +40,8 @@ export function calculateCheckoutSparkEventAllocationWeights(
   )
     throw new Error("Checkout Spark event allocation weights are invalid.")
   const conduitWeightSats = calculateConduitCheckoutFeeSats(
-    commerceTotalSats || 1
+    conduitFeePolicy === undefined ? commerceTotalSats || 1 : commerceTotalSats,
+    conduitFeePolicy
   )
   if (
     BigInt(commerceTotalSats) +
@@ -54,11 +59,13 @@ export function calculateCheckoutSparkEventAllocationWeights(
 
 export function calculateCheckoutSparkEventSettledGrossFundingSats(
   commerceTotalSats: number,
-  organizerFeeSats: number
+  organizerFeeSats: number,
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 ): number {
   const weights = calculateCheckoutSparkEventAllocationWeights(
     commerceTotalSats,
-    organizerFeeSats
+    organizerFeeSats,
+    conduitFeePolicy
   )
   const allowanceBase = commerceTotalSats + organizerFeeSats
   const gross =
@@ -75,11 +82,14 @@ export function allocateCheckoutSparkEventSettledSats(input: {
   settledSats: number
   fundingInvoiceGrossSats: number
   weights: CheckoutSparkEventAllocationWeights
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 }): CheckoutSparkEventSettledAllocation {
-  const { settledSats, fundingInvoiceGrossSats, weights } = input
+  const { settledSats, fundingInvoiceGrossSats, weights, conduitFeePolicy } =
+    input
   const expected = calculateCheckoutSparkEventAllocationWeights(
     weights.commerceWeightSats,
-    weights.organizerWeightSats
+    weights.organizerWeightSats,
+    conduitFeePolicy
   )
   if (
     expected.conduitWeightSats !== weights.conduitWeightSats ||
@@ -93,7 +103,8 @@ export function allocateCheckoutSparkEventSettledSats(input: {
     fundingInvoiceGrossSats !==
       calculateCheckoutSparkEventSettledGrossFundingSats(
         expected.commerceWeightSats,
-        expected.organizerWeightSats
+        expected.organizerWeightSats,
+        conduitFeePolicy
       )
   )
     throw new Error(
@@ -108,6 +119,7 @@ export function allocateCheckoutSparkEventSettledSats(input: {
           fundingInvoiceGrossSats:
             fundingInvoiceGrossSats - weights.organizerWeightSats,
           weights,
+          conduitFeePolicy,
         })
   return Object.freeze({
     ...divided,
@@ -121,9 +133,15 @@ export function allocateCheckoutSparkEventSettledSats(input: {
  * funding gross, recipients, and rounding rule to that plan.
  */
 export function calculateCheckoutSparkAllocationWeights(
-  commerceTotalSats: number
+  commerceTotalSats: number,
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 ): CheckoutSparkAllocationWeights {
-  const conduitWeightSats = calculateConduitCheckoutFeeSats(commerceTotalSats)
+  if (!Number.isSafeInteger(commerceTotalSats) || commerceTotalSats <= 0)
+    throw new Error("Checkout Spark allocation weights are invalid.")
+  const conduitWeightSats = calculateConduitCheckoutFeeSats(
+    commerceTotalSats,
+    conduitFeePolicy
+  )
   if (BigInt(commerceTotalSats) + BigInt(conduitWeightSats) > MAX_SAFE_SATS) {
     throw new Error("Checkout Spark allocation weights are unsafe.")
   }
@@ -149,9 +167,13 @@ export function calculateCheckoutSparkInboundNetworkAllowanceSats(
 }
 
 export function calculateCheckoutSparkSettledGrossFundingSats(
-  commerceTotalSats: number
+  commerceTotalSats: number,
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 ): number {
-  const weights = calculateCheckoutSparkAllocationWeights(commerceTotalSats)
+  const weights = calculateCheckoutSparkAllocationWeights(
+    commerceTotalSats,
+    conduitFeePolicy
+  )
   const gross =
     BigInt(weights.commerceWeightSats) +
     BigInt(weights.conduitWeightSats) +
@@ -182,17 +204,20 @@ export function calculateCheckoutSparkEventBuyerPrice(input: {
   itemSubtotalSats: number
   shippingSubtotalSats: number
   organizerFeeSats: number
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 }): CheckoutSparkEventBuyerPrice {
   const ordinary = calculateCheckoutSparkBuyerPrice(input)
   if (ordinary.commerceTotalSats === 0 && input.organizerFeeSats === 0)
     return Object.freeze({ ...ordinary, organizerFeeSats: 0 })
   const weights = calculateCheckoutSparkEventAllocationWeights(
     ordinary.commerceTotalSats,
-    input.organizerFeeSats
+    input.organizerFeeSats,
+    input.conduitFeePolicy
   )
   const totalSats = calculateCheckoutSparkEventSettledGrossFundingSats(
     ordinary.commerceTotalSats,
-    input.organizerFeeSats
+    input.organizerFeeSats,
+    input.conduitFeePolicy
   )
   return Object.freeze({
     ...ordinary,
@@ -207,14 +232,16 @@ export function calculateCheckoutSparkEventBuyerPrice(input: {
       totalSats - ordinary.commerceTotalSats - weights.organizerWeightSats,
     totalSats,
     minimumApplies:
+      input.conduitFeePolicy === undefined &&
       weights.conduitWeightSats === calculateConduitCheckoutFeeSats(1),
   })
 }
 
-/** Estimate the existing router funding policy once per order, not per item. */
+/** Estimate the selected policy once per order; omission preserves historical totals. */
 export function calculateCheckoutSparkBuyerPrice(input: {
   itemSubtotalSats: number
   shippingSubtotalSats: number
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 }): CheckoutSparkBuyerPrice {
   const { itemSubtotalSats, shippingSubtotalSats } = input
   if (
@@ -230,11 +257,17 @@ export function calculateCheckoutSparkBuyerPrice(input: {
   const totalSats =
     commerceTotalSats === 0
       ? 0
-      : calculateCheckoutSparkSettledGrossFundingSats(commerceTotalSats)
+      : calculateCheckoutSparkSettledGrossFundingSats(
+          commerceTotalSats,
+          input.conduitFeePolicy
+        )
   const conduitFeeSats =
-    commerceTotalSats === 0
+    commerceTotalSats === 0 && input.conduitFeePolicy === undefined
       ? 0
-      : calculateConduitCheckoutFeeSats(commerceTotalSats)
+      : calculateConduitCheckoutFeeSats(
+          commerceTotalSats,
+          input.conduitFeePolicy
+        )
   return Object.freeze({
     itemSubtotalSats,
     shippingSubtotalSats,
@@ -243,7 +276,9 @@ export function calculateCheckoutSparkBuyerPrice(input: {
     networkAllowanceSats: totalSats - commerceTotalSats - conduitFeeSats,
     coordinationFeeSats: totalSats - commerceTotalSats,
     totalSats,
-    minimumApplies: conduitFeeSats === calculateConduitCheckoutFeeSats(1),
+    minimumApplies:
+      input.conduitFeePolicy === undefined &&
+      conduitFeeSats === calculateConduitCheckoutFeeSats(1),
   })
 }
 
@@ -260,8 +295,10 @@ export function allocateCheckoutSparkSettledSats(input: {
   settledSats: number
   fundingInvoiceGrossSats: number
   weights: CheckoutSparkAllocationWeights
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 }): CheckoutSparkSettledAllocation {
-  const { settledSats, fundingInvoiceGrossSats, weights } = input
+  const { settledSats, fundingInvoiceGrossSats, weights, conduitFeePolicy } =
+    input
   if (
     !Number.isSafeInteger(settledSats) ||
     settledSats <= 0 ||
@@ -277,7 +314,10 @@ export function allocateCheckoutSparkSettledSats(input: {
     weights.commerceWeightSats <= 0 ||
     !Number.isSafeInteger(weights.conduitWeightSats) ||
     weights.conduitWeightSats !==
-      calculateConduitCheckoutFeeSats(weights.commerceWeightSats)
+      calculateConduitCheckoutFeeSats(
+        weights.commerceWeightSats,
+        conduitFeePolicy
+      )
   ) {
     throw new Error("Checkout Spark allocation weights are invalid.")
   }

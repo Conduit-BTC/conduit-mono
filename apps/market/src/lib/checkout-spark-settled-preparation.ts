@@ -28,6 +28,7 @@ import {
   observeCheckoutSparkReceiverCapability,
   type CheckoutSparkReceiverContract,
   assertCheckoutSparkSignedCommerceAllocations,
+  calculateConduitCheckoutFeeSats,
   calculateCheckoutSparkSettledGrossFundingSats,
   calculateCheckoutSparkEventSettledGrossFundingSats,
   getCheckoutSparkEventMarketSourceReferences,
@@ -46,6 +47,7 @@ import {
   resolveCheckoutSparkSignedPickup,
   DexieCheckoutSparkSettledRepository,
   type CheckoutSparkNetwork,
+  type CheckoutSparkConduitFeePolicy,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledRecipientInput,
   type CheckoutSparkSettledReconciliation,
@@ -110,6 +112,7 @@ export interface PrepareCheckoutSparkSettledFundingInput {
   network: CheckoutSparkNetwork
   takeoverAt: number
   grossFundingSats: number
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
   fundingExpirySecs: number
   identity: CheckoutSparkRecoverySigningIdentity
   shouldContinue?: () => boolean
@@ -144,6 +147,16 @@ export class CheckoutSparkSettledFundingMetadataPreflightError extends Error {
       "Checkout Spark recipient payment endpoint is not ready. No checkout wallet was created."
     )
     this.name = "CheckoutSparkSettledFundingMetadataPreflightError"
+  }
+}
+
+/** The selected fee cannot use this rail; no wallet or invoice has been created. */
+export class CheckoutSparkSettledFeeRoutePreflightError extends Error {
+  constructor() {
+    super(
+      "This small checkout requires a native Conduit fee route. The current setup cannot route it; no payment was created."
+    )
+    this.name = "CheckoutSparkSettledFeeRoutePreflightError"
   }
 }
 
@@ -226,7 +239,7 @@ export interface PrepareCheckoutSparkSettledFundingDependencies {
     handoffId: string,
     plan: CheckoutSparkSettledPlan,
     storage: CheckoutSparkSettledPreparationStorage | null
-  ) => boolean
+  ) => boolean | Promise<boolean>
 }
 
 /** Terminal cleanup is independent of wallet closing and grants no execution authority. */
@@ -433,12 +446,12 @@ function requireSparkManager() {
   return manager
 }
 
-function recoveryAcked(
+async function recoveryAcked(
   handoffId: string,
   plan: CheckoutSparkSettledPlan,
   storage: CheckoutSparkSettledPreparationStorage | null
-): boolean {
-  const delivery = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+): Promise<boolean> {
+  const delivery = await getCheckoutSparkRecoveryDelivery(handoffId, storage)
   return Boolean(
     delivery &&
     delivery.record.checkoutId === plan.checkoutId &&
@@ -471,6 +484,7 @@ export async function prepareCheckoutSparkSettledFunding(
     network,
     takeoverAt,
     grossFundingSats,
+    conduitFeePolicy,
     fundingExpirySecs,
     shouldContinue: callerShouldContinue,
   } = input
@@ -658,13 +672,28 @@ export async function prepareCheckoutSparkSettledFunding(
     (eventMarket
       ? calculateCheckoutSparkEventSettledGrossFundingSats(
           commerceQuote.commerceTotalSats,
-          eventMarket.organizerFeeSats
+          eventMarket.organizerFeeSats,
+          conduitFeePolicy
         )
       : calculateCheckoutSparkSettledGrossFundingSats(
-          commerceQuote.commerceTotalSats
+          commerceQuote.commerceTotalSats,
+          conduitFeePolicy
         ))
   ) {
     throw new Error("Settled checkout gross funding differs from frozen terms.")
+  }
+  // The retained Lightning fee rail needs a positive invoice plus its reserve.
+  // Do not expose funding for a new one-sat fee that that rail cannot dispatch;
+  // native Spark has zero transfer fees and keeps the approved no-floor amount.
+  if (
+    conduitFeePolicy !== undefined &&
+    !treasuryDestination &&
+    calculateConduitCheckoutFeeSats(
+      commerceQuote.commerceTotalSats,
+      conduitFeePolicy
+    ) <= 1
+  ) {
+    throw new CheckoutSparkSettledFeeRoutePreflightError()
   }
   if (
     !eventMarket &&
@@ -912,6 +941,7 @@ export async function prepareCheckoutSparkSettledFunding(
       createdAt: receive.createdAt,
       takeoverAt,
       commerceQuote,
+      ...(conduitFeePolicy ? { conduitFeePolicy } : {}),
       funding: {
         requestId: receive.id,
         paymentRequest: receive.paymentRequest,
@@ -1034,6 +1064,12 @@ export async function prepareCheckoutSparkSettledFunding(
           })
         : await publishRecovery(recoveryInput)
     assertCurrent()
+    const acknowledged = await verifyAck(
+      handoff.handoffId,
+      plan,
+      recoveryStorage
+    )
+    assertCurrent()
     const persisted = getCheckoutSparkSettledPreparation(
       plan.checkoutId,
       storage
@@ -1043,7 +1079,7 @@ export async function prepareCheckoutSparkSettledFunding(
       !handoff.canExposeFundingInvoice ||
       !persisted ||
       persisted.recoveryHandoffId !== handoff.handoffId ||
-      !verifyAck(handoff.handoffId, plan, recoveryStorage) ||
+      !acknowledged ||
       !Number.isSafeInteger(exposedAt) ||
       exposedAt < plan.createdAt ||
       exposedAt >= plan.funding.expiresAt
@@ -1090,15 +1126,18 @@ export async function prepareCheckoutSparkSettledFunding(
     const noWrap =
       preTransport &&
       !handoffPersisted &&
-      listCheckoutSparkRecoveryDeliveries(recoveryStorage).every(
+      (await listCheckoutSparkRecoveryDeliveries(recoveryStorage)).every(
         (delivery) => delivery.record.checkoutId !== checkoutId
       )
     if (wallet && noWrap) {
       const closingWalletId = wallet.walletId
-      const assertUnexposed = () => {
+      const assertUnexposed = async () => {
+        assertCurrent()
+        const deliveries =
+          await listCheckoutSparkRecoveryDeliveries(recoveryStorage)
         assertCurrent()
         if (
-          listCheckoutSparkRecoveryDeliveries(recoveryStorage).some(
+          deliveries.some(
             (delivery) => delivery.record.checkoutId === checkoutId
           )
         )
@@ -1115,7 +1154,7 @@ export async function prepareCheckoutSparkSettledFunding(
           throw error
       }
       const closeUnexposed = async () => {
-        assertUnexposed()
+        await assertUnexposed()
         try {
           await closeWallet(closingWalletId)
         } catch (closeError) {
@@ -1131,7 +1170,7 @@ export async function prepareCheckoutSparkSettledFunding(
         await withCheckoutSparkStorageLock(
           "conduit:checkout-spark-recovery-outbox:v1",
           async () => {
-            assertUnexposed()
+            await assertUnexposed()
             await repository.abandonPristine!(
               planToAbandon,
               1,
@@ -1203,13 +1242,18 @@ export async function loadAuthorizedCheckoutSparkSettledFunding(
   }
   const plan = snapshot.state.plan
   assertMarketCheckoutSparkDispatchPlan(plan)
-  const currentTime = (options.now ?? Date.now)()
-  const delivery = getCheckoutSparkRecoveryDelivery(
+  const delivery = await getCheckoutSparkRecoveryDelivery(
     stored.recoveryHandoffId,
     recoveryStorage
   )
+  const acknowledged = await recoveryAcked(
+    stored.recoveryHandoffId,
+    plan,
+    recoveryStorage
+  )
+  const currentTime = (options.now ?? Date.now)()
   if (
-    !recoveryAcked(stored.recoveryHandoffId, plan, recoveryStorage) ||
+    !acknowledged ||
     (options.expectedBuyerPubkey !== undefined &&
       delivery?.record.senderPubkey !==
         options.expectedBuyerPubkey.toLowerCase()) ||
@@ -1309,8 +1353,8 @@ export async function resumeCheckoutSparkSettledFunding(
   }
   assertMarketCheckoutSparkDispatchPlan(plan)
   assertUnexpired(plan)
-  const deliveries = listCheckoutSparkRecoveryDeliveries(
-    recoveryStorage
+  const deliveries = (
+    await listCheckoutSparkRecoveryDeliveries(recoveryStorage)
   ).filter(
     ({ record }) =>
       record.checkoutId === plan.checkoutId &&
@@ -1323,6 +1367,8 @@ export async function resumeCheckoutSparkSettledFunding(
       (metadata.recoveryHandoffId === null ||
         record.handoffId === metadata.recoveryHandoffId)
   )
+  assertCurrent()
+  assertUnexpired(plan)
   if (deliveries.length !== 1)
     throw new Error(
       "The exact original recovery wrap is unavailable or ambiguous."
@@ -1338,7 +1384,14 @@ export async function resumeCheckoutSparkSettledFunding(
       storage
     )
   }
-  if (!recoveryAcked(delivery.record.handoffId, plan, recoveryStorage)) {
+  const acknowledged = await recoveryAcked(
+    delivery.record.handoffId,
+    plan,
+    recoveryStorage
+  )
+  assertCurrent()
+  assertUnexpired(plan)
+  if (!acknowledged) {
     await (
       dependencies.retryRecovery ?? retryStoredCheckoutSparkRecoveryHandoff
     )({
@@ -1348,6 +1401,13 @@ export async function resumeCheckoutSparkSettledFunding(
       now,
     })
   }
+  assertCurrent()
+  assertUnexpired(plan)
+  const currentAcknowledged = await recoveryAcked(
+    delivery.record.handoffId,
+    plan,
+    recoveryStorage
+  )
   assertCurrent()
   assertUnexpired(plan)
   const latest = await repository.load(input.checkoutId, input.planDigest)
@@ -1368,7 +1428,7 @@ export async function resumeCheckoutSparkSettledFunding(
     current.planDigest !== plan.planDigest ||
     current.recoveryHandoffId !== delivery.record.handoffId ||
     current.fundingSubmissionState !== "not_started" ||
-    !recoveryAcked(delivery.record.handoffId, plan, recoveryStorage)
+    !currentAcknowledged
   ) {
     throw new Error("The exact recovery acknowledgement was not durably saved.")
   }

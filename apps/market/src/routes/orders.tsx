@@ -1236,8 +1236,11 @@ function OrderDetail({
           : ({ status: "absent" } as const)
         assertCurrent()
         const initialRecovery = preparation?.recoveryHandoffId
-          ? getCheckoutSparkRecoveryDelivery(preparation.recoveryHandoffId)
+          ? await getCheckoutSparkRecoveryDelivery(
+              preparation.recoveryHandoffId
+            )
           : null
+        assertCurrent()
         const manager = getSparkWalletManager()
         const currentGuestIdentity = getCurrentRouterGuestIdentity()
         return {
@@ -1391,6 +1394,7 @@ function OrderDetail({
         currentBuyerPubkey: () =>
           !guestIdentity && approvedSessionIsCurrent() ? buyerPubkey : null,
         shouldContinue: approvedSessionIsCurrent,
+        shouldRetainSubmittedReference: shouldContinueBuyerSession,
         authorization: {
           planDigest: confirmation.control.planDigest,
           walletId: confirmation.control.walletId,

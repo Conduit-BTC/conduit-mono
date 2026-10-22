@@ -3,6 +3,7 @@ import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   type ProductSchema,
+  type ParsedEventMarketCalendar,
   readEventMarketRoster,
   readMerchantOccurrenceInventory,
   saveMerchantOccurrenceAssignment,
@@ -17,6 +18,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
+
+export function formatEventAssignmentDate(
+  entry: Pick<ParsedEventMarketCalendar, "kind" | "start" | "startDate">
+): string {
+  if (entry.kind === 31922)
+    return entry.startDate ?? new Date(entry.start).toISOString().slice(0, 10)
+  return new Date(entry.start).toLocaleDateString()
+}
 
 /** Assignment controls compose shared primitives; ordinary product editing stays separate. */
 export function EventAssignmentPanel(props: {
@@ -186,7 +195,7 @@ export function EventAssignmentPanel(props: {
             <SelectContent>
               {occurrences.map((entry) => (
                 <SelectItem key={entry.coordinate} value={entry.coordinate}>
-                  {entry.title} · {new Date(entry.start).toLocaleDateString()}
+                  {entry.title} · {formatEventAssignmentDate(entry)}
                 </SelectItem>
               ))}
             </SelectContent>

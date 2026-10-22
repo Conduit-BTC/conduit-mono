@@ -55,6 +55,11 @@ interface TimelinePresentationLimits {
   later: number
 }
 
+// Keep revealed pages with the scroll position when an event is opened and
+// the directory is remounted by back navigation. This is browser-memory only.
+const savedPresentationLimits = new Map<string, TimelinePresentationLimits>()
+const savedSectionVisibility = new Map<string, boolean>()
+
 type TimelineRow = {
   entry: FutureMerchantTimelineOccurrence
   start: number
@@ -303,8 +308,17 @@ interface MerchantEventsTimelineProps {
 
 export function MerchantEventsTimeline(props: MerchantEventsTimelineProps) {
   const data = useMerchantEventTimelineData(props.merchantPubkey)
+  const pageRestorationRef = useRef<string | null>(null)
   const relationship =
     props.search.relation === "selling" ? "selling" : "organizing"
+  const pagePositionKey = `merchant-events-page:${props.merchantPubkey}:${relationship}`
+  const pageIsFetching = data[relationship].isFetching || data.all.isFetching
+  const hasMyEvents = data.futureOccurrences.some(({ read }) =>
+    matchesMerchantEventRelationship(read, props.merchantPubkey, relationship)
+  )
+  const mySectionClosed =
+    savedSectionVisibility.get(`${props.merchantPubkey}:${relationship}`) ===
+    false
   return (
     <div className="space-y-6">
       <MerchantEventTimelineSection
@@ -312,12 +326,20 @@ export function MerchantEventsTimeline(props: MerchantEventsTimelineProps) {
         data={{ ...data, ...data[relationship] }}
         title="My Events"
         relationship={relationship}
+        pagePositionKey={pagePositionKey}
+        pageIsFetching={pageIsFetching}
+        pageRestorationRef={pageRestorationRef}
+        restorePageOnMount
       />
       <MerchantEventTimelineSection
         {...props}
         data={{ ...data, ...data.all }}
         title="All Events"
         relationship="all"
+        pagePositionKey={pagePositionKey}
+        pageIsFetching={pageIsFetching}
+        pageRestorationRef={pageRestorationRef}
+        restorePageOnMount={!hasMyEvents || mySectionClosed}
       />
     </div>
   )
@@ -328,6 +350,10 @@ function MerchantEventTimelineSection({
   relationship,
   title,
   data,
+  pagePositionKey,
+  pageIsFetching,
+  pageRestorationRef,
+  restorePageOnMount,
   onSearchChange,
   onOpen,
   onCreate,
@@ -335,6 +361,10 @@ function MerchantEventTimelineSection({
 }: MerchantEventsTimelineProps & {
   relationship: MerchantEventRelationshipFilter
   title: string
+  pagePositionKey: string
+  pageIsFetching: boolean
+  pageRestorationRef: { current: string | null }
+  restorePageOnMount: boolean
   data: ReturnType<typeof useMerchantEventTimelineData> &
     ReturnType<typeof useMerchantEventTimelineData>[
       "organizing" | "selling" | "all"]
@@ -348,7 +378,14 @@ function MerchantEventTimelineSection({
     authGenerationRef,
     isAuthGenerationCurrent,
   } = data
-  const [open, setOpen] = useState(true)
+  const presentationKey = `${merchantPubkey}:${relationship}`
+  const [sectionVisibility, setSectionVisibility] = useState<
+    Record<string, boolean>
+  >({})
+  const open =
+    sectionVisibility[presentationKey] ??
+    savedSectionVisibility.get(presentationKey) ??
+    true
   const [refreshing, setRefreshing] = useState<Record<string, boolean>>({})
   const refreshKey = JSON.stringify([
     data.refreshScope,
@@ -369,18 +406,18 @@ function MerchantEventTimelineSection({
       })
     }
   }
-  const viewportKey = `${merchantPubkey}:${relationship}`
   const [presentationLimits, setPresentationLimits] = useState<
     Record<string, TimelinePresentationLimits>
   >({})
   const activePresentationLimits = useMemo(
     () =>
-      presentationLimits[relationship] ?? {
+      presentationLimits[relationship] ??
+      savedPresentationLimits.get(presentationKey) ?? {
         earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
         key: relationship,
         later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
       },
-    [presentationLimits, relationship]
+    [presentationLimits, presentationKey, relationship]
   )
   const visibleFutureOccurrences = useMemo(
     () =>
@@ -411,10 +448,13 @@ function MerchantEventTimelineSection({
     return paginateEventTimeline(rows, activePresentationLimits, nowMs)
   }, [activePresentationLimits, nowMs, visibleFutureOccurrences])
   const timelineAnchor = useEventTimelineAnchor({
-    isFetching,
+    isFetching: pageIsFetching || isFetching,
     itemCount: open ? visibleFutureOccurrences.length : 0,
     pastCount: presentation.past.length,
-    viewportKey,
+    viewportKey: pagePositionKey,
+    scrollMode: "page",
+    restorationRef: pageRestorationRef,
+    restoreOnMount: restorePageOnMount,
   })
   const organizerPubkeys = useMemo(
     () =>
@@ -461,31 +501,29 @@ function MerchantEventTimelineSection({
     timelineAnchor.prepareForPrepend()
     const totalCount =
       presentation.past.length + presentation.hiddenEarlierCount
-    setPresentationLimits((current) => ({
-      ...current,
-      [relationship]: {
-        ...activePresentationLimits,
-        earlier: getNextMerchantEventTimelineLimit(
-          activePresentationLimits.earlier,
-          totalCount
-        ),
-      },
-    }))
+    const next = {
+      ...activePresentationLimits,
+      earlier: getNextMerchantEventTimelineLimit(
+        activePresentationLimits.earlier,
+        totalCount
+      ),
+    }
+    savedPresentationLimits.set(presentationKey, next)
+    setPresentationLimits((current) => ({ ...current, [relationship]: next }))
   }
 
   function loadLater(): void {
     const totalCount =
       presentation.currentAndFuture.length + presentation.hiddenLaterCount
-    setPresentationLimits((current) => ({
-      ...current,
-      [relationship]: {
-        ...activePresentationLimits,
-        later: getNextMerchantEventTimelineLimit(
-          activePresentationLimits.later,
-          totalCount
-        ),
-      },
-    }))
+    const next = {
+      ...activePresentationLimits,
+      later: getNextMerchantEventTimelineLimit(
+        activePresentationLimits.later,
+        totalCount
+      ),
+    }
+    savedPresentationLimits.set(presentationKey, next)
+    setPresentationLimits((current) => ({ ...current, [relationship]: next }))
   }
 
   function renderFutureEntry({
@@ -532,7 +570,11 @@ function MerchantEventTimelineSection({
       open={open}
       onOpenChange={(next) => {
         timelineAnchor.rememberPosition()
-        setOpen(next)
+        savedSectionVisibility.set(presentationKey, next)
+        setSectionVisibility((current) => ({
+          ...current,
+          [presentationKey]: next,
+        }))
       }}
       className="space-y-4"
     >
@@ -622,6 +664,7 @@ function MerchantEventTimelineSection({
               </p>
             ) : null}
             <EventTimelineViewport
+              scrollMode="page"
               busy={isFetching}
               currentAndFutureEvents={renderMixedEntries(
                 presentation.currentAndFuture

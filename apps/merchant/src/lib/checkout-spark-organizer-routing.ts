@@ -560,10 +560,7 @@ export async function routeCheckoutSparkOrganizerOrder(
                     throw new Error("Organizer final payment amount changed.")
                 },
               })
-              await check()
-              return {
-                status: result.status === "not_sent" ? "not_sent" : "submitted",
-              }
+              return result
             },
           }
           const proveGoods = async () => {
@@ -684,6 +681,23 @@ export async function routeCheckoutSparkOrganizerOrder(
                     store: {
                       load,
                       save,
+                      saveSubmittedReference: async (
+                        state,
+                        revision,
+                        providerTransferId,
+                        observedAt
+                      ) => {
+                        const saved =
+                          await repository.saveTreasurySubmittedReference(
+                            state,
+                            revision,
+                            providerTransferId,
+                            observedAt,
+                            context.assertCurrent
+                          )
+                        if (saved.status === "active") expected = saved.state
+                        return saved
+                      },
                       nativeAdmissionScope:
                         repository.nativeTreasuryAdmissionScope,
                       savePrepared: async (state, revision, settlement) => {
@@ -785,6 +799,9 @@ export async function routeCheckoutSparkOrganizerOrder(
                   "recovery_handoff_unavailable",
                   "fee_unavailable",
                   "prior_possible_send",
+                  "native_provider_unavailable",
+                  "native_provider_request",
+                  "native_provider_error",
                 ].includes(result.step.reason)
               ) {
                 await proveGoods()

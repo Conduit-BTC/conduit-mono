@@ -188,7 +188,7 @@ describe("offline guest supplier settled checkout composition", () => {
       recipientInboxRelays: RELAYS,
       shouldContinue,
       publishFn: async (event: NDKEvent) => {
-        const saved = listCheckoutSparkRecoveryDeliveries(storage).find(
+        const saved = (await listCheckoutSparkRecoveryDeliveries(storage)).find(
           (entry) => entry.record.signedRecipientWrap.id === event.id
         )
         expect(saved).toBeDefined()
@@ -274,7 +274,7 @@ describe("offline guest supplier settled checkout composition", () => {
                         expect(calls.order).toBe(0)
                         expect(calls.sends).toHaveLength(0)
                         expect(
-                          listCheckoutSparkRecoveryDeliveries(storage)
+                          await listCheckoutSparkRecoveryDeliveries(storage)
                         ).toHaveLength(0)
                         expect(requiredAddresses).toContain(lud16)
                         expect(String(url)).toBe(
@@ -435,7 +435,7 @@ describe("offline guest supplier settled checkout composition", () => {
         sends: [],
       })
       expect(getCheckoutSparkSettledPreparation(checkoutId, storage)).toBeNull()
-      expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
+      expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
       expect(await database.checkoutSparkPlanBindings.count()).toBe(0)
       expect(await database.orderLifecycles.get(orderId)).toBeUndefined()
       expect(currentGuest()?.pubkey).toBe(guest.pubkey)
@@ -462,8 +462,10 @@ describe("offline guest supplier settled checkout composition", () => {
       expect(plan.takeoverAt).toBe(createdAt + 2 * 60_000)
       expect(plan.funding.expiresAt - plan.funding.createdAt).toBe(15 * 60_000)
       const initial = await openCheckoutSparkRecoveryDelivery({
-        record: getCheckoutSparkRecoveryDelivery(recoveryHandoffId, storage)!
-          .record,
+        record: (await getCheckoutSparkRecoveryDelivery(
+          recoveryHandoffId,
+          storage
+        ))!.record,
         signer: plainTestSigner(f.merchantSigner),
       })
       expect(initial.schemaVersion).toBe(2)
@@ -797,8 +799,10 @@ describe("offline guest supplier settled checkout composition", () => {
 
       // Only authenticated recovery crosses devices, never the local origin capability.
       const progress = await openCheckoutSparkRecoveryDelivery({
-        record: getCheckoutSparkRecoveryDelivery(lastProgressId!, storage)!
-          .record,
+        record: (await getCheckoutSparkRecoveryDelivery(
+          lastProgressId!,
+          storage
+        ))!.record,
         signer: plainTestSigner(f.merchantSigner),
       })
       if (progress.schemaVersion !== 3)

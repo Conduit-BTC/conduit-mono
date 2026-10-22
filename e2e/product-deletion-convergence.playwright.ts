@@ -818,12 +818,15 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
             "commerceInboxRanges",
             "commerceInboxDeliveries",
           ].every((name) => state.stores.includes(name)),
+          hasCheckoutRecoveryStorage: state.stores.includes(
+            "checkoutRecoveryStorage"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 290,
+      nativeVersion: 300,
       hasDiscoverySizeIndex: true,
       hasOutbox: true,
       hasShopperTrust: true,
@@ -851,6 +854,7 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasLocalProductShippingOutbox: true,
       hasLocalProductStockCheckpoints: true,
       hasCommerceInboxStores: true,
+      hasCheckoutRecoveryStorage: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
