@@ -76,7 +76,11 @@ export function accountAddressRequests(
           removedWalletIds: string[]
         }
       | undefined
-    return async (walletId: string, record?: AddressRequestRecord) => {
+    return async (
+      walletId: string,
+      record?: AddressRequestRecord,
+      refresh = true
+    ) => {
       current()
       const store = walletStore
       const [wallets, recovery, journal] = await Promise.all([
@@ -106,6 +110,8 @@ export function accountAddressRequests(
         verified.recovery !== recoveryKey ||
         verified.records !== recordsKey
       ) {
+        // After proof signing, changed evidence must stop delivery, not decrypt again.
+        if (!refresh) throw new Error("Wallet authorization changed.")
         verified = undefined
         const mnemonic = await openSignerSparkRecovery(
           recovery,
@@ -204,6 +210,9 @@ export function accountAddressRequests(
       assertCurrent: current,
       authorize: async (walletId, record) => {
         await authorize(walletId, record)
+        return async () => {
+          await authorize(walletId, record, false)
+        }
       },
       async load(walletId) {
         await authorize(walletId)

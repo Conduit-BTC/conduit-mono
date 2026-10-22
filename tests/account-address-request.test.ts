@@ -223,55 +223,126 @@ for (const change of [
   "recovery",
   "backup",
   "removal",
+  "retained removal",
   "wallet",
   "native",
   "signer",
 ] as const) {
-  test(`changed ${change} after local staging blocks HTTP despite reused authorization`, async () => {
-    const f = await fixture("unavailable")
-    const stage = f.metadata.stage.bind(f.metadata)
-    f.metadata.stage = async (...args) => {
-      const saved = await stage(...args)
-      if (change === "recovery") {
-        const recovery = await f.store.getSparkRecovery(f.wallet.id)
-        if (recovery?.type !== "signer")
-          throw new Error("Missing fixture recovery")
-        await f.store.putSparkRecovery(f.wallet.id, {
-          ...recovery,
-          ciphertext: recovery.ciphertext.slice(0, -1),
-        })
-      } else if (change === "backup") {
-        await f.recovery.prepare(
-          {
-            mnemonic: generateSparkMnemonic(),
-            network: "mainnet",
-            accountNumber: 1,
-          },
-          f.wallet.id
-        )
-      } else if (change === "removal") {
-        await f.journal.setDeviceRemoved(f.signer.pubkey, f.wallet.id, true)
-      } else if (change === "wallet") {
-        await f.store.delete(f.wallet.id)
-      } else if (change === "native") {
-        f.manager.getAddressIdentity = async () => `02${"ab".repeat(32)}`
-      } else {
-        clearTestAccountSigner()
+  for (const boundary of ["local staging", "transport proof signing"])
+    test(`changed ${change} after ${boundary} blocks HTTP despite reused authorization`, async () => {
+      const f = await fixture("unavailable")
+      const selectedRecovery = await f.store.getSparkRecovery(f.wallet.id)
+      if (selectedRecovery?.type !== "signer")
+        throw new Error("Missing fixture recovery")
+      const decrypt = f.signer.decryptNip44.bind(f.signer)
+      let recoveryDecryptions = 0
+      f.signer.decryptNip44 = async (...args) => {
+        if (args[1] === selectedRecovery.ciphertext) recoveryDecryptions++
+        return decrypt(...args)
       }
-      return saved
-    }
-    try {
-      await expect(
-        f.workflow().submit(f.wallet.id, {
-          desiredName: "existing",
-          token: "controlled",
-        })
-      ).rejects.toThrow()
-      expect(f.calls).toHaveLength(0)
-    } finally {
-      await f.close()
-    }
-  })
+      let changed = false
+      const mutate = async () => {
+        if (change === "recovery") {
+          const recovery = await f.store.getSparkRecovery(f.wallet.id)
+          if (recovery?.type !== "signer")
+            throw new Error("Missing fixture recovery")
+          await f.store.putSparkRecovery(f.wallet.id, {
+            ...recovery,
+            ciphertext: recovery.ciphertext.slice(0, -1),
+          })
+        } else if (change === "backup") {
+          await f.recovery.prepare(
+            {
+              mnemonic: generateSparkMnemonic(),
+              network: "mainnet",
+              accountNumber: 1,
+            },
+            f.wallet.id
+          )
+        } else if (change === "retained removal") {
+          const createdAt = Math.floor(Date.now() / 1000)
+          const event = await f.signer.signEvent({
+            kind: 30078,
+            pubkey: f.signer.pubkey,
+            created_at: createdAt,
+            tags: [["d", "conduit:spark:registry:v1:mainnet"]],
+            content: await f.signer.encryptNip44(
+              f.signer.pubkey,
+              JSON.stringify({
+                format: "conduit.spark.registry",
+                version: 1,
+                ownerPubkey: f.signer.pubkey,
+                network: "mainnet",
+                revision: 1,
+                parentEventId: null,
+                activeWalletIds: [],
+                removedWalletIds: [f.wallet.id],
+                payInvoiceWalletId: null,
+                receiveWalletId: null,
+                createdAt,
+              })
+            ),
+          })
+          await f.journal.retain(f.signer.pubkey, [
+            {
+              event,
+              targets: [{ url: "wss://relay.conduit.market", operator: null }],
+              delivery: [
+                {
+                  url: "wss://relay.conduit.market",
+                  status: "pending",
+                  accepted: false,
+                  readBack: false,
+                  lastRead: "not_queried",
+                  checkedAt: 0,
+                },
+              ],
+              exported: false,
+            },
+          ])
+        } else if (change === "removal") {
+          await f.journal.setDeviceRemoved(f.signer.pubkey, f.wallet.id, true)
+        } else if (change === "wallet") {
+          await f.store.delete(f.wallet.id)
+        } else if (change === "native") {
+          f.manager.getAddressIdentity = async () => `02${"ab".repeat(32)}`
+        } else {
+          clearTestAccountSigner()
+        }
+        changed = true
+      }
+      if (boundary === "local staging") {
+        const stage = f.metadata.stage.bind(f.metadata)
+        f.metadata.stage = async (...args) => {
+          const saved = await stage(...args)
+          await mutate()
+          return saved
+        }
+      } else {
+        const sign = f.signer.signEvent.bind(f.signer)
+        let proofs = 0
+        f.signer.signEvent = async (...args) => {
+          const event = await sign(...args)
+          // The first NIP-98 proof is retained intent; the second is transport.
+          if (args[0].kind === 27235 && ++proofs === 2) await mutate()
+          return event
+        }
+      }
+      try {
+        await expect(
+          f.workflow().submit(f.wallet.id, {
+            desiredName: "existing",
+            token: "controlled",
+          })
+        ).rejects.toThrow()
+        expect(changed).toBe(true)
+        expect(f.calls).toHaveLength(0)
+        if (boundary === "transport proof signing")
+          expect(recoveryDecryptions).toBe(1)
+      } finally {
+        await f.close()
+      }
+    })
 }
 
 for (const coverage of ["partial", "unavailable"] as const) {

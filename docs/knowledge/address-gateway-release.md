@@ -216,7 +216,8 @@ encrypted recovery and signed journal IDs reuse their validated identity and
 removal evidence. Each boundary still checks the current signer, wallet,
 native identity, recovery binding and journal; changed evidence is revalidated.
 No decrypted recovery material or authorization survives into the next action.
-A final current-authority check still precedes delivery. Local request
+After transport-proof signing, a final check rejects changed wallet authority
+without repeating decryption or signing over a stale authorization. Local request
 progress is relay-confirmed only when that exact selected record is covered by
 the confirmed snapshot. An empty or unrelated membership snapshot is insufficient.
 

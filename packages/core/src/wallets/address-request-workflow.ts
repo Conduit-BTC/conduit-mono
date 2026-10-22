@@ -28,7 +28,11 @@ export interface AddressRequestView {
 export interface AddressRequestWorkflowDependencies {
   owner: string
   assertCurrent(): void
-  authorize?(walletId: string, record?: AddressRequestRecord): Promise<void>
+  /** Authorize before timestamping; the returned cheap fence runs after signing. */
+  authorize?(
+    walletId: string,
+    record?: AddressRequestRecord
+  ): Promise<void | (() => Promise<void>)>
   load(walletId: string): Promise<AddressRequestView | undefined>
   /** Must retain encrypted exact bytes locally before attempting relay publication. */
   save(
@@ -86,8 +90,9 @@ export function createAddressRequestWorkflow(
     token?: string
   ): Promise<AddressNameRequestStatus> => {
     const path = ADDRESS_REQUEST_PATH + (check ? "/status" : "")
-    await d.authorize?.(walletId, record)
+    const assertAuthorized = await d.authorize?.(walletId, record)
     const event = await authorization(record.payload, path)
+    await assertAuthorized?.()
     d.assertCurrent()
     try {
       const result = await d.fetch(ADDRESS_REQUEST_ORIGIN + path, {
