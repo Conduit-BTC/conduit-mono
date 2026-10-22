@@ -656,6 +656,233 @@ describe("Merchant native treasury continuation", () => {
       await f.database.delete()
     }
   })
+  it("automatically keeps Merchant observation active after an unrecognized native response until exact sender commitment", async () => {
+    const f = await fixture()
+    const clock = fakeClock(f.plan.takeoverAt + 1)
+    const transferId = UUID.parse(crypto.randomUUID())
+    let phase: "unavailable" | "pending" | "committed" = "unavailable"
+    let fulfills = 0
+    const transfer = (status: string) => ({
+      id: transferId.toString(),
+      type: "TRANSFER",
+      transferDirection: "OUTGOING",
+      status,
+      totalValue: 112,
+      valueSentByWallet: 112,
+      valueReceivedByWallet: 0,
+      sparkInvoice: f.plan.nativeTreasury!.invoiceRequest,
+      senders: [
+        { identityPublicKey: f.plan.nativeTreasury!.senderIdentityPublicKey },
+      ],
+      receivers: [
+        {
+          identityPublicKey: f.plan.nativeTreasury!.receiverIdentityPublicKey,
+          amountSats: 112,
+          status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+        },
+      ],
+    })
+    const treasury = createCheckoutSparkNativeTreasurySdkAdapter({
+      network: "MAINNET",
+      read: (read) => read(),
+      codec: {
+        nativeTreasuryPolicy: CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+        parseTransferId: UUID.parse,
+        encodeSparkAddress: () => f.plan.nativeTreasury!.invoiceRequest,
+        decodeSparkAddress: () => ({
+          identityPublicKey: f.plan.nativeTreasury!.receiverIdentityPublicKey,
+        }),
+        isValidSparkAddress: () => true,
+        getNetworkFromSparkAddress: () => "MAINNET",
+      },
+      wallet: {
+        getIdentityPublicKey: async () =>
+          f.plan.funding.receiverIdentityPublicKey,
+        getBalance: async () => ({
+          satsBalance: { available: 112n, owned: 112n, incoming: 0n },
+        }),
+        querySparkInvoices: async (invoices) => {
+          if (!fulfills)
+            return { invoiceStatuses: [{ invoice: invoices[0]!, status: 0 }] }
+          if (phase === "unavailable")
+            throw new Error("Synthetic exact query unavailable")
+          return {
+            invoiceStatuses: [
+              {
+                invoice: invoices[0]!,
+                status: phase === "committed" ? 2 : 1,
+                transferType: {
+                  $case: "satsTransfer" as const,
+                  satsTransfer: { transferId: transferId.bytes },
+                },
+              },
+            ],
+          }
+        },
+        getTransfer: async () =>
+          transfer(
+            phase === "committed"
+              ? "TRANSFER_STATUS_SENDER_KEY_TWEAKED"
+              : "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK"
+          ),
+        fulfillSparkInvoice: async (invoices) => {
+          fulfills += 1
+          return {
+            satsTransactionSuccess: [
+              {
+                invoice: invoices[0]!.invoice,
+                transferResponse: transfer("TRANSFER_STATUS_FUTURE"),
+              },
+            ],
+            satsTransactionErrors: [],
+            tokenTransactionSuccess: [],
+            tokenTransactionErrors: [],
+            invalidInvoices: [],
+          }
+        },
+      },
+    })
+    const openWallet = f.dependencies.openWallet!
+    f.dependencies.openWallet = async (input) => ({
+      ...(await openWallet(input)),
+      nativeTreasury: treasury,
+    })
+    const runs = [deferred(), deferred(), deferred()]
+    const updates: MerchantCheckoutSparkReconciliationSummary[] = []
+    const results: Array<{
+      outcome: string
+      reason?: string
+      sendAttempted: boolean
+    }> = []
+    let completedRuns = 0
+    let commerceDispatches = 0
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      reconcile: (candidate, assertCurrent) =>
+        advanceMerchantCheckoutSparkOrder(MERCHANT, candidate, assertCurrent, {
+          repository: f.repository,
+          now: clock.now,
+          notifySuppliers: () => {},
+          checkCredit: async () => {
+            throw new Error("Verified funding must not be repeated")
+          },
+          inspectPayouts: async () => ({
+            status: "consumed" as const,
+            coverage: "complete" as const,
+            discoveryCoverage: "complete" as const,
+            declarationState: "declared" as const,
+            candidate,
+            payoutHistory: {
+              status: "inspected" as const,
+              checkedLegs: 1,
+              newlyConfirmedLegs: 0,
+              unresolvedLegs: 0,
+              withoutIntentLegs: 0,
+              alreadyPaidLegs: 1,
+            },
+          }),
+          selectPayout: (principal, selected, guard, dependencies) =>
+            selectMerchantCheckoutSparkSignedNextPayout(
+              principal,
+              selected,
+              guard,
+              {
+                ...dependencies,
+                consumeRecovery: f.dependencies.consumeRecovery,
+              }
+            ),
+          preparePayout: async () => {
+            commerceDispatches += 1
+            throw new Error("Paid commerce must not be prepared again")
+          },
+          continuePayout: async () => {
+            commerceDispatches += 1
+            throw new Error("Paid commerce must not be sent again")
+          },
+          continueNativeTreasury: (principal, selected, dependencies) =>
+            continueMerchantCheckoutSparkNativeTreasury(principal, selected, {
+              ...f.dependencies,
+              ...dependencies,
+              repository: f.repository,
+              now: clock.now,
+            }),
+          onPayoutObservation: (result) => results.push(result),
+          requestRescan: () => {},
+        }),
+      onUpdate(summary) {
+        updates.push(summary)
+        if (summary.checking || summary.lastCheckedAt === null) return
+        runs[completedRuns++]?.resolve()
+      },
+    })
+    const load = async () => {
+      const snapshot = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (snapshot.status !== "active") throw new Error("Missing fixture")
+      return snapshot.state.treasuryFinalization!
+    }
+    try {
+      worker.replaceCandidates([f.selected])
+      await clock.advance(0)
+      await runs[0]!.promise
+      const admitted = await load()
+      expect(results[0]).toEqual({
+        outcome: "send_ambiguous",
+        reason: "native_unrecognized_result",
+        sendAttempted: true,
+      })
+      expect(admitted.status).toBe("submitted")
+      expect(admitted.providerTransferId).toBeNull()
+      expect(admitted.finalFeeSats).toBeNull()
+      expect(admitted.finalDebitSats).toBeNull()
+      // This existing display classification is not terminal to the worker.
+      expect(updates.at(-1)?.counts.needs_attention).toBe(1)
+      expect(clock.nextDelay()).toBe(30_000)
+
+      phase = "pending"
+      await clock.advance(30_000)
+      await runs[1]!.promise
+      const pending = await load()
+      expect(pending.status).toBe("ambiguous")
+      expect(pending.intent).toEqual(admitted.intent)
+      expect(pending.providerTransferId).toBe(transferId.toString())
+      expect(pending.finalFeeSats).toBeNull()
+      expect(pending.finalDebitSats).toBeNull()
+      expect(results[1]?.reason).toBe("prior_possible_send")
+      expect(clock.nextDelay()).toBe(60_000)
+
+      phase = "committed"
+      await clock.advance(60_000)
+      await runs[2]!.promise
+      const paid = await load()
+      expect(paid).toMatchObject({
+        status: "paid",
+        providerTransferId: transferId.toString(),
+        finalFeeSats: 0,
+        finalDebitSats: 112,
+      })
+      expect(paid.intent).toEqual(admitted.intent)
+      expect(results[2]?.outcome).toBe("paid")
+      expect(fulfills).toBe(1)
+      expect(commerceDispatches).toBe(0)
+      expect(
+        (
+          await f.repository.loadMerchantSettlement(
+            MERCHANT,
+            f.plan.checkoutId,
+            f.plan.planDigest
+          )
+        )?.nativeTreasury?.providerTransferId
+      ).toBe(transferId.toString())
+    } finally {
+      await worker.stopAndDrain()
+      await f.database.delete()
+    }
+  }, 15_000)
+
   it("automatically rechecks the same pending native fee until sender commitment without requiring a receiver claim", async () => {
     const f = await fixture({
       restoredStatus: "submitted",
