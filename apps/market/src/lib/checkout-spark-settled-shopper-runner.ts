@@ -241,8 +241,9 @@ export function createCheckoutSparkSettledShopperRunner(
       assertCurrent()
       const preparation = readPreparation(input.checkoutId)
       const initialRecovery = preparation?.recoveryHandoffId
-        ? readInitialRecovery(preparation.recoveryHandoffId)
+        ? await readInitialRecovery(preparation.recoveryHandoffId)
         : null
+      assertCurrent()
       const configuration = sparkConfiguration()
       if (
         configuration.status !== "ready" ||

@@ -33,6 +33,32 @@ export function checkoutSparkConduitFeeRecipient(
 const CONDUIT_FEE_NUMERATOR = 21n
 const CONDUIT_FEE_DENOMINATOR = 1_000n
 const CONDUIT_FEE_FLOOR_SATS = 111n
+/** Omission preserves the economics of plans frozen before this policy. */
+export type CheckoutSparkConduitFeePolicy = "percentage-only-v1"
+export const CHECKOUT_SPARK_CURRENT_CONDUIT_FEE_POLICY =
+  "percentage-only-v1" as const
+
+/**
+ * New authoring uses percentage-only fees, so zero commerce is entirely free.
+ * A retained signed organizer roster can still have a positive minimum on free
+ * goods. Keep that explicit legacy fee-only admission path rather than waive its
+ * signed obligation, invent a one-sat Conduit leg, or reinterpret a funded plan.
+ */
+export function checkoutSparkConduitFeePolicyForNewPlan(
+  commerceTotalSats: number,
+  organizerFeeSats = 0
+): CheckoutSparkConduitFeePolicy | undefined {
+  if (
+    !Number.isSafeInteger(commerceTotalSats) ||
+    commerceTotalSats < 0 ||
+    !Number.isSafeInteger(organizerFeeSats) ||
+    organizerFeeSats < 0
+  )
+    throw new Error("Checkout Spark fee policy amounts are invalid.")
+  return commerceTotalSats === 0 && organizerFeeSats > 0
+    ? undefined
+    : CHECKOUT_SPARK_CURRENT_CONDUIT_FEE_POLICY
+}
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER)
 const MAX_RECIPIENT_ID_LENGTH = 512
 const MAX_PAYMENT_REQUEST_LENGTH = 16_384
@@ -118,12 +144,20 @@ function safeNumber(value: bigint, label: string): number {
 }
 
 /**
- * Compute 2.1% of the authorized commerce base with the fixed 111-sat floor.
+ * Compute 2.1% of the authorized commerce base. Omitted policy retains the
+ * historical 111-sat floor; new plans explicitly bind the percentage-only policy.
  * BigInt arithmetic keeps the ceiling exact before narrowing to a safe number.
  */
 export function calculateConduitCheckoutFeeSats(
-  commerceTotalSats: number
+  commerceTotalSats: number,
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 ): number {
+  if (
+    conduitFeePolicy !== undefined &&
+    conduitFeePolicy !== CHECKOUT_SPARK_CURRENT_CONDUIT_FEE_POLICY
+  )
+    throw new Error("Checkout Spark Conduit fee policy is invalid.")
+  if (conduitFeePolicy !== undefined && commerceTotalSats === 0) return 0
   const commerceTotal = BigInt(
     normalizePositiveSats(commerceTotalSats, "commerce total")
   )
@@ -131,7 +165,7 @@ export function calculateConduitCheckoutFeeSats(
     (commerceTotal * CONDUIT_FEE_NUMERATOR + CONDUIT_FEE_DENOMINATOR - 1n) /
     CONDUIT_FEE_DENOMINATOR
   return safeNumber(
-    percentageFee > CONDUIT_FEE_FLOOR_SATS
+    conduitFeePolicy !== undefined || percentageFee > CONDUIT_FEE_FLOOR_SATS
       ? percentageFee
       : CONDUIT_FEE_FLOOR_SATS,
     "Conduit fee"

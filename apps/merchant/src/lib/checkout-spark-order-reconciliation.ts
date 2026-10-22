@@ -15,6 +15,7 @@ import {
   continueMerchantCheckoutSparkSettledPayout,
   continueMerchantCheckoutSparkNativeTreasury,
   selectMerchantCheckoutSparkSignedNextPayout,
+  type MerchantCheckoutSparkSignedNextPayoutSelection,
 } from "./checkout-spark-settled-continuation"
 import { prepareNextMerchantCheckoutSparkSettledPayout } from "./checkout-spark-settled-leg-preparation"
 import { queueMerchantCheckoutSparkSupplierNotifications } from "./checkout-spark-supplier-notifications"
@@ -84,7 +85,10 @@ async function inspectMerchantCheckoutSparkOrder(
   candidate: MerchantCheckoutSparkRecoveryCandidate,
   assertActive: () => void,
   dependencies: ReconciliationDependencies,
-  includeRouterPayouts: boolean
+  includeRouterPayouts: boolean,
+  onNextPayout?: (
+    selection: MerchantCheckoutSparkSignedNextPayoutSelection
+  ) => void
 ): Promise<MerchantCheckoutSparkReconciliationStatus> {
   const principal = principalPubkey.trim().toLowerCase()
   candidate = {
@@ -307,11 +311,15 @@ async function inspectMerchantCheckoutSparkOrder(
   const history = await (
     dependencies.inspectPayouts ??
     inspectMerchantCheckoutSparkSettledPayoutHistory
-  )(principal, candidate, options)
+  )(principal, candidate, {
+    ...options,
+    ...(onNextPayout ? { selectNextPayout: true } : {}),
+  })
   assertActive()
   if (history.status !== "consumed") return "unavailable"
   if (!history.payoutHistory) return "unavailable"
   if (history.payoutHistory.status === "credit_needed") return "pending"
+  if (history.nextPayout) onNextPayout?.(history.nextPayout)
   projection = await readProjection()
   if (originNeedsAttention(projection))
     return attributionUnavailable ? "unavailable" : "recipient_unverified"
@@ -389,18 +397,29 @@ async function advanceMerchantCheckoutSparkOrderPhase(
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now
+  let inspectedPayout:
+    MerchantCheckoutSparkSignedNextPayoutSelection | undefined
   const status = await inspectMerchantCheckoutSparkOrder(
     principal,
     candidate,
     assertActive,
     { ...dependencies, repository, now },
-    true
+    true,
+    dependencies.selectPayout
+      ? undefined
+      : (selection) => {
+          inspectedPayout = selection
+        }
   )
   assertActive()
   if (status !== "progress_pending") return status
-  const selection = await (
-    dependencies.selectPayout ?? selectMerchantCheckoutSparkSignedNextPayout
-  )(principal, candidate, assertActive, { repository, now })
+  // Only a read-only result crosses the history callback. The final phase
+  // still authenticates fresh recovery under its own lock before wallet work.
+  const selection =
+    inspectedPayout ??
+    (await (
+      dependencies.selectPayout ?? selectMerchantCheckoutSparkSignedNextPayout
+    )(principal, candidate, assertActive, { repository, now }))
   assertActive()
   const shouldContinue = () => {
     assertActive()

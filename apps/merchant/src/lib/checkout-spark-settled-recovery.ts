@@ -49,6 +49,10 @@ import {
   type CheckoutSparkMerchantSettlementRecord,
   type CheckoutSparkNativeTreasuryObservation,
 } from "@conduit/core"
+import {
+  selectMerchantCheckoutSparkPayoutFromRecovery,
+  type MerchantCheckoutSparkSignedNextPayoutSelection,
+} from "./checkout-spark-signed-payout-selection"
 import merchantPackage from "../../package.json"
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 
@@ -320,7 +324,10 @@ interface RecoveryCreditDependencies extends RecoveryKeyVerificationDependencies
   requireCrossTabLock?: boolean
 }
 
-type RecoveryHistoryDependencies = RecoveryCreditDependencies
+interface RecoveryHistoryDependencies extends RecoveryCreditDependencies {
+  /** Compose read-only selection inside this invocation; never dispatch authority. */
+  selectNextPayout?: boolean
+}
 
 export interface MerchantCheckoutSparkNativeHistorySummary {
   savedStatus: NonNullable<
@@ -350,6 +357,7 @@ export interface MerchantCheckoutSparkPayoutHistory {
 
 export interface MerchantCheckoutSparkPayoutHistoryResult extends MerchantCheckoutSparkRecoveryHandoffResult {
   payoutHistory: MerchantCheckoutSparkPayoutHistory | null
+  nextPayout?: MerchantCheckoutSparkSignedNextPayoutSelection
 }
 
 export interface MerchantCheckoutSparkCreditResult extends MerchantCheckoutSparkRecoveryHandoffResult {
@@ -1448,6 +1456,12 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
   dependencies: RecoveryHistoryDependencies = {}
 ): Promise<MerchantCheckoutSparkPayoutHistoryResult> {
   const principal = principalPubkey.trim().toLowerCase()
+  selected = {
+    ...selected,
+    ...(selected.merchantProgress
+      ? { merchantProgress: { ...selected.merchantProgress } }
+      : {}),
+  }
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const deriveIdentity =
@@ -1456,6 +1470,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
     dependencies.openWallet ?? openMerchantCheckoutSparkRecoveryWallet
   const now = dependencies.now ?? Date.now
   let payoutHistory: MerchantCheckoutSparkPayoutHistory | null = null
+  let nextPayout: MerchantCheckoutSparkSignedNextPayoutSelection | undefined
 
   const inspect = async (
     initial: CheckoutSparkSettledRecoveryPayload,
@@ -1776,6 +1791,43 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
     }
   }
 
+  const inspectAndSelect = async (
+    initial: CheckoutSparkSettledRecoveryPayload,
+    state: CheckoutSparkSettledReconciliation,
+    assertCurrent: () => void,
+    progress?: Parameters<
+      typeof selectMerchantCheckoutSparkPayoutFromRecovery
+    >[0]["progress"]
+  ) => {
+    await inspect(initial, state, assertCurrent)
+    if (
+      !dependencies.selectNextPayout ||
+      payoutHistory?.status === "credit_needed"
+    )
+      return
+    nextPayout = await selectMerchantCheckoutSparkPayoutFromRecovery({
+      principal,
+      selected,
+      repository,
+      now,
+      assertActive: () => dependencies.assertActive?.(),
+      assertCurrent,
+      initial: {
+        merchantPubkey: initial.merchantPubkey,
+        senderPubkey: initial.senderPubkey,
+        handoffId: initial.handoffId,
+        plan: initial.plan,
+        state: initial.state,
+        wallet: {
+          walletId: initial.wallet.walletId,
+          network: initial.wallet.network,
+        },
+      },
+      signedState: state,
+      progress,
+    })
+  }
+
   const operation = async () => {
     dependencies.assertActive?.()
     const result = await withMerchantCheckoutSparkRecovery(
@@ -1786,10 +1838,10 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
           if (payload.schemaVersion !== 2) {
             throw new Error("An older checkout recovery has no payout history.")
           }
-          await inspect(payload, payload.state, assertCurrent)
+          await inspectAndSelect(payload, payload.state, assertCurrent)
         },
         async consumeSettled(initial, latest, assertCurrent) {
-          await inspect(initial, latest.state, assertCurrent)
+          await inspectAndSelect(initial, latest.state, assertCurrent)
         },
         async consumeMerchantProgress(
           initial,
@@ -1805,13 +1857,19 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
             assertCurrent,
           })
           dependencies.assertActive?.()
-          await inspect(initial, progress.state, assertCurrent)
+          await inspectAndSelect(
+            initial,
+            progress.state,
+            assertCurrent,
+            progress
+          )
         },
       }
     )
     return {
       ...result,
       payoutHistory: result.status === "consumed" ? payoutHistory : null,
+      ...(result.status === "consumed" && nextPayout ? { nextPayout } : {}),
     }
   }
   dependencies.assertActive?.()

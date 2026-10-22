@@ -355,10 +355,10 @@ it("round-trips the actual USD variation preparation and two-recipient app hando
         }),
     }
   )
-  const saved = getCheckoutSparkRecoveryDelivery(
+  const saved = (await getCheckoutSparkRecoveryDelivery(
     prepared.recoveryHandoffId,
     storage
-  )!
+  ))!
   expect(published.length).toBe(2)
   expect(saved.organizerDelivery !== undefined).toBe(true)
   // Buyer progress uses the same actual app handoff owner, not a fabricated descriptor.

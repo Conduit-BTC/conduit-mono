@@ -278,7 +278,9 @@ export function assessCheckoutSparkSettledOrderControl(input: {
       conduitFeeSats -
       organizerFeeSats,
     ...(plan.schemaVersion === 5 ? { organizerFeeSats } : {}),
-    minimumApplies: conduitFeeSats === calculateConduitCheckoutFeeSats(1),
+    minimumApplies:
+      plan.conduitFeePolicy === undefined &&
+      conduitFeeSats === calculateConduitCheckoutFeeSats(1),
   })
   const treasuryFinalization = state.treasuryFinalization ?? null
   if (isCheckoutSparkNativeTreasuryPlan(plan) && !treasuryFinalization) {

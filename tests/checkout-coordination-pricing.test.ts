@@ -173,7 +173,7 @@ describe("fee-inclusive listing estimates", () => {
         null,
         true
       )
-      expect(display.sats).toBe(1_113)
+      expect(display.sats).toBe(1_023)
       expect(display.feeEstimateIncluded).toBe(true)
       expect(product).toEqual({ price, currency, format: "digital" })
     }
@@ -205,7 +205,7 @@ describe("fee-inclusive listing estimates", () => {
         null,
         true
       )
-      expect(display.sats).toBe(1_113)
+      expect(display.sats).toBe(1_023)
       expect(display.feeEstimateIncluded).toBe(true)
       expect(product.sourcePrice).toBe(sourcePrice)
       expect(product.priceSats).toBe(1_000)
@@ -243,8 +243,8 @@ describe("fee-inclusive listing estimates", () => {
       null,
       true
     )
-    expect(display.sats).toBe(1_113)
-    expect(display.primary).toBe("~ 1,113 sats")
+    expect(display.sats).toBe(1_023)
+    expect(display.primary).toBe("~ 1,023 sats")
     expect(display.feeEstimateIncluded).toBe(true)
     expect(display.approximate).toBe(true)
     expect(product.price).toBe(1_000)
@@ -275,9 +275,9 @@ describe("fee-inclusive listing estimates", () => {
       true,
       { nowMs }
     )
-    expect(display.sats).toBe(1_113)
-    expect(display.primary).toBe("~ $1.11")
-    expect(display.secondary).toBe("1,113 sats")
+    expect(display.sats).toBe(1_023)
+    expect(display.primary).toBe("~ $1.02")
+    expect(display.secondary).toBe("1,023 sats")
     expect(display.feeEstimateIncluded).toBe(true)
   })
 
@@ -373,10 +373,10 @@ describe("fee-inclusive catalog labels", () => {
         true
       )
       expect(card.primary).toEqual({
-        text: "~ 1,113 sats",
-        fullText: "~ 1,113 sats",
+        text: "~ 1,023 sats",
+        fullText: "~ 1,023 sats",
       })
-      expect(card.sats).toBe(1_113)
+      expect(card.sats).toBe(1_023)
       expect(card.feeEstimateIncluded).toBe(true)
       expect(product.sourcePrice).toBe(sourcePrice)
       expect(product.price).toBe(1_000)
@@ -518,21 +518,21 @@ describe("combined cart estimates", () => {
       ])
     ).toBe(false)
   })
-  it("adds one minimum per compatible purchase and never changes cart line prices", () => {
+  it("rounds the fee once per compatible purchase and never changes cart line prices", () => {
     const first = Object.freeze(item())
     const second = Object.freeze(item("a", "other"))
     expect(getCartCoordinationEstimate([first, second], null)).toEqual({
-      totalSats: 2_114,
-      coordinationFeeSats: 114,
+      totalSats: 2_045,
+      coordinationFeeSats: 45,
       shippingPending: false,
     })
     expect(first.priceSats).toBe(1_000)
     expect(second.priceSats).toBe(1_000)
   })
-  it("adds each merchant's separate minimum instead of treating all carts as one order", () => {
+  it("rounds each merchant's separate fee instead of treating all carts as one order", () => {
     expect(getCartCoordinationEstimate([item("a"), item("b")], null)).toEqual({
-      totalSats: 2_226,
-      coordinationFeeSats: 226,
+      totalSats: 2_046,
+      coordinationFeeSats: 46,
       shippingPending: false,
     })
   })
@@ -555,8 +555,8 @@ describe("combined cart estimates", () => {
   it("adds fees only to the routed purchase in a mixed-merchant cart", () => {
     const unsupported = { ...item("b"), familyProductId: "family" }
     expect(getCartCoordinationEstimate([item(), unsupported], null)).toEqual({
-      totalSats: 2_113,
-      coordinationFeeSats: 113,
+      totalSats: 2_023,
+      coordinationFeeSats: 23,
       shippingPending: false,
     })
   })

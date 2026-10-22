@@ -71,10 +71,7 @@ import {
   reconcileMerchantCheckoutSparkSettledCredit,
   type MerchantSparkRecoveryWallet,
 } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
-import {
-  continueMerchantCheckoutSparkSettledPayout,
-  selectMerchantCheckoutSparkSignedNextPayout,
-} from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
+import { continueMerchantCheckoutSparkSettledPayout } from "../apps/merchant/src/lib/checkout-spark-settled-continuation"
 import { continueMerchantCheckoutSparkNativeTreasury } from "../apps/merchant/src/lib/checkout-spark-native-treasury-continuation"
 import { prepareNextMerchantCheckoutSparkSettledPayout } from "../apps/merchant/src/lib/checkout-spark-settled-leg-preparation"
 import { verifySavedMerchantCheckoutSparkRecipients } from "../apps/merchant/src/lib/checkout-spark-invoice-recipient"
@@ -159,6 +156,18 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
   const previousAddress = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
   process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = ADDRESS
   let stage = "setup"
+  // External read budgets cover each actual phase without replacing recovery.
+  type ReadMeasurement = {
+    selectedWrapId: string
+    exactReads: number
+    creditChecked: boolean
+    phase: "preparation" | "dispatch" | null
+  }
+  const readMeasurement: { current: ReadMeasurement | null } = { current: null }
+  const phaseReadCounts: Record<"preparation" | "dispatch", number[]> = {
+    preparation: [],
+    dispatch: [],
+  }
   let f: Awaited<ReturnType<typeof checkoutSparkOrganizerFixture>> | undefined
   let merchantDb: ConduitDB | undefined
   let owner: CommerceInbox | undefined
@@ -539,8 +548,12 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
       checkoutSparkSettledRepository: repository,
       now: () => f!.clock.now,
       resolveInboxRelayUrls: async () => [INBOX],
-      readProtectedInbox: async (options) =>
-        protectedRead(
+      readProtectedInbox: async (options) => {
+        const measurement = readMeasurement.current
+        if (measurement && options.eventId === measurement.selectedWrapId) {
+          measurement.exactReads = measurement.exactReads + 1
+        }
+        return protectedRead(
           [...relayEvents.values()].filter(
             (event) =>
               (!options.eventId || event.id === options.eventId) &&
@@ -548,7 +561,8 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
                 event.created_at >= options.since) &&
               (options.until === undefined || event.created_at <= options.until)
           )
-        ),
+        )
+      },
     })
     discovery = await createMerchantCheckoutSparkRecoveryDiscovery(
       f.merchantPubkey,
@@ -622,31 +636,57 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
           verifyInvoice: (request) =>
             verifyCheckoutSparkInvoiceRecipient(request, receiverDependencies),
         }),
-      checkCredit: (principal, candidate, input) =>
-        reconcileMerchantCheckoutSparkSettledCredit(principal, candidate, {
-          ...input,
-          ...external,
-        }),
+      checkCredit: (principal, candidate, input) => {
+        if (readMeasurement.current)
+          readMeasurement.current.creditChecked = true
+        return reconcileMerchantCheckoutSparkSettledCredit(
+          principal,
+          candidate,
+          {
+            ...input,
+            ...external,
+          }
+        )
+      },
       inspectPayouts: (principal, candidate, input) =>
         inspectMerchantCheckoutSparkSettledPayoutHistory(principal, candidate, {
           ...input,
           ...external,
         }),
-      selectPayout: selectMerchantCheckoutSparkSignedNextPayout,
-      preparePayout: (principal, candidate, input, dependencies) =>
-        prepareNextMerchantCheckoutSparkSettledPayout(
+      preparePayout: async (principal, candidate, input, dependencies) => {
+        const result = await prepareNextMerchantCheckoutSparkSettledPayout(
           principal,
           candidate,
           input,
           { ...dependencies, ...external, resolveInvoice }
-        ),
-      continuePayout: (principal, candidate, review, dependencies) =>
-        continueMerchantCheckoutSparkSettledPayout(
+        )
+        if (
+          readMeasurement.current &&
+          result.status === "attempted" &&
+          result.recovery.status === "consumed" &&
+          result.recovery.preparation?.status === "prepared"
+        ) {
+          readMeasurement.current.phase = "preparation"
+        }
+        return result
+      },
+      continuePayout: async (principal, candidate, review, dependencies) => {
+        const result = await continueMerchantCheckoutSparkSettledPayout(
           principal,
           candidate,
           review,
           { ...dependencies, ...external }
-        ),
+        )
+        if (
+          readMeasurement.current &&
+          result.status === "consumed" &&
+          result.payout?.outcome === "paid" &&
+          result.payout.sendAttempted
+        ) {
+          readMeasurement.current.phase = "dispatch"
+        }
+        return result
+      },
       continueNativeTreasury: (principal, candidate, dependencies) =>
         continueMerchantCheckoutSparkNativeTreasury(principal, candidate, {
           ...dependencies,
@@ -660,13 +700,31 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
       invocation < 32 && statuses.at(-1) !== "verified";
       invocation++
     ) {
-      const status = await advanceMerchantCheckoutSparkOrder(
-        f.merchantPubkey,
-        await discover(),
-        () => {},
-        workerDependencies
-      )
-      statuses.push(status)
+      const selected = await discover()
+      // A separate initial/self-wrap must not alias the counted base-wrap read.
+      expect(selected.initialWrapId !== selected.wrapId).toBe(true)
+      expect(selected.merchantProgress?.wrapId !== selected.wrapId).toBe(true)
+      const measurement: ReadMeasurement = {
+        selectedWrapId: selected.wrapId,
+        exactReads: 0,
+        creditChecked: false,
+        phase: null,
+      }
+      readMeasurement.current = measurement
+      try {
+        const status = await advanceMerchantCheckoutSparkOrder(
+          f.merchantPubkey,
+          selected,
+          () => {},
+          workerDependencies
+        )
+        statuses.push(status)
+        if (!measurement.creditChecked && measurement.phase) {
+          phaseReadCounts[measurement.phase].push(measurement.exactReads)
+        }
+      } finally {
+        readMeasurement.current = null
+      }
     }
     expect(statuses.at(-1)).toBe("verified")
     expect(control.snapshot().sendInvocationCount).toBe(3)
@@ -716,5 +774,13 @@ it("automatically finishes an interrupted Organizer payment through the fresh Me
     if (previousAddress === undefined)
       delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
     else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousAddress
+  }
+  // Keep performance failures content-free and outside the private fixture catch.
+  for (const phase of ["preparation", "dispatch"] as const) {
+    expect(phaseReadCounts[phase].length).toBeGreaterThan(0)
+    for (const count of phaseReadCounts[phase]) {
+      expect(count).toBeGreaterThan(0)
+      expect(count).toBeLessThanOrEqual(2)
+    }
   }
 }, 90_000)

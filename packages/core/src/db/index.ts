@@ -1484,6 +1484,15 @@ export interface EventMarketOrganizerStockWriter {
 }
 
 export class ConduitDB extends Dexie {
+  /** Exact encrypted checkout delivery state; never an evictable cache. */
+  checkoutRecoveryStorage!: EntityTable<
+    {
+      key: string
+      value: string | null
+      legacyDigest: string | null
+    },
+    "key"
+  >
   sparkRecoveryEvidence!: EntityTable<SparkRecoveryState, "ownerPubkey">
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
@@ -1888,6 +1897,7 @@ export class ConduitDB extends Dexie {
       eventMarketOrganizerStockWriters:
         "id, accountPubkey, &[accountPubkey+marketCoordinate]",
     })
+    this.version(30).stores({ checkoutRecoveryStorage: "key" })
   }
 }
 

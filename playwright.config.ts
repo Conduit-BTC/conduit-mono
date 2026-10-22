@@ -68,6 +68,7 @@ const mobileTestFiles = [
   "**/event-sign-preview-mobile.playwright.ts",
 ]
 const responsiveCoverageFiles = [
+  "**/checkout-recovery-storage.playwright.ts",
   "**/event-market.playwright.ts",
   "**/event-market-discovery.playwright.ts",
   "**/wallet-recovery-repair.playwright.ts",

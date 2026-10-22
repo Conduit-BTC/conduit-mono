@@ -166,10 +166,10 @@ describe("checkout Spark router unfunded vertical flow", () => {
                 recoveryWasDurableBeforePublish =
                   frozen?.recoveryHandoffId !== null &&
                   frozen?.fundingInvoiceExposedAt === null &&
-                  getCheckoutSparkRecoveryDelivery(
+                  (await getCheckoutSparkRecoveryDelivery(
                     frozen?.recoveryHandoffId ?? "",
                     storage
-                  ) !== null
+                  )) !== null
                 return relayDelivery(true)
               }) as never,
             },
@@ -182,7 +182,7 @@ describe("checkout Spark router unfunded vertical flow", () => {
       getCheckoutSparkRouterPreparation(checkoutId, storage)
         ?.fundingInvoiceExposedAt
     ).toBe(CREATED_AT + 1_000)
-    const storedRecovery = getCheckoutSparkRecoveryDelivery(
+    const storedRecovery = await getCheckoutSparkRecoveryDelivery(
       prepared.recoveryHandoffId,
       storage
     )
@@ -301,10 +301,10 @@ describe("checkout Spark router unfunded vertical flow", () => {
     )
     expect(stored?.recoveryHandoffId).not.toBeNull()
     expect(stored?.fundingInvoiceExposedAt).toBeNull()
-    const exactWrap = getCheckoutSparkRecoveryDelivery(
+    const exactWrap = (await getCheckoutSparkRecoveryDelivery(
       stored!.recoveryHandoffId!,
       storage
-    )!.record.signedRecipientWrap
+    ))!.record.signedRecipientWrap
     const unsafePublish = mock(async () => relayDelivery(true))
     await expect(
       retryCheckoutSparkRouterRecoveryAndResumeFunding({

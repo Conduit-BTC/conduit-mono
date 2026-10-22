@@ -209,8 +209,13 @@ describe("same-merchant multi-item settled entry", () => {
             "conduit",
           ])
           expect(terms.recipients[0]?.weightSats).toBe(2_750)
+          expect(terms.conduitFeePolicy).toBe("percentage-only-v1")
+          expect(terms.recipients[1]?.weightSats).toBe(58)
           expect(terms.grossFundingSats).toBe(
-            calculateCheckoutSparkSettledGrossFundingSats(2_750)
+            calculateCheckoutSparkSettledGrossFundingSats(
+              2_750,
+              "percentage-only-v1"
+            )
           )
           expect(terms.fundingExpirySecs).toBe(15 * 60)
           expect(terms.takeoverAt).toBe(NOW + 2 * 60_000)
@@ -638,10 +643,18 @@ describe("signed supplier settled entry", () => {
           expect(terms.recipients.at(-1)).toMatchObject({
             kind: "conduit",
             recipientId: checkoutSparkConduitFeeRecipient("production"),
-            weightSats: calculateConduitCheckoutFeeSats(1_301),
+            weightSats: calculateConduitCheckoutFeeSats(
+              1_301,
+              "percentage-only-v1"
+            ),
           })
+          expect(terms.conduitFeePolicy).toBe("percentage-only-v1")
+          expect(terms.recipients.at(-1)?.weightSats).toBe(28)
           expect(terms.grossFundingSats).toBe(
-            calculateCheckoutSparkSettledGrossFundingSats(1_301)
+            calculateCheckoutSparkSettledGrossFundingSats(
+              1_301,
+              "percentage-only-v1"
+            )
           )
           const expectedSources = [
             ...input.quoteAuthority.products.map(

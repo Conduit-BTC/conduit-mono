@@ -173,6 +173,7 @@ export function MarketEventsTimeline({
     itemCount: visibleFutureOccurrences.length,
     pastCount: presentation.past.length,
     viewportKey: filterKey,
+    scrollMode: "page",
   })
   const facets = useMemo(() => {
     return {
@@ -426,6 +427,7 @@ export function MarketEventsTimeline({
         <EventTimelineLoading />
       ) : visibleFutureOccurrences.length > 0 ? (
         <EventTimelineViewport
+          scrollMode="page"
           busy={discovery.isFetching}
           currentAndFutureEvents={renderMixedEntries(
             presentation.currentAndFuture

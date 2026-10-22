@@ -73,7 +73,11 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
   observePerformance?: CheckoutSparkPerformanceObserver
   readOrder?: (orderId: string) => Promise<OrderLifecycle | undefined>
   readPreparation?: typeof getCheckoutSparkSettledPreparation
-  readInitialRecovery?: typeof getCheckoutSparkRecoveryDelivery
+  readInitialRecovery?: (
+    ...args: Parameters<typeof getCheckoutSparkRecoveryDelivery>
+  ) =>
+    | Awaited<ReturnType<typeof getCheckoutSparkRecoveryDelivery>>
+    | Promise<Awaited<ReturnType<typeof getCheckoutSparkRecoveryDelivery>>>
   loadAuthorized?: typeof loadAuthorizedCheckoutSparkSettledFunding
   repository?: Pick<
     DexieCheckoutSparkSettledRepository,
@@ -224,8 +228,9 @@ export async function advanceCheckoutSparkSettledShopper(
     const binding = lifecycle?.checkoutSparkRouterBinding
     const preparation = readPreparation(input.checkoutId)
     const initialRecovery = preparation?.recoveryHandoffId
-      ? readInitialRecovery(preparation.recoveryHandoffId)
+      ? await readInitialRecovery(preparation.recoveryHandoffId)
       : null
+    assertSession()
     const configuration = (
       dependencies.sparkConfiguration ?? getSparkConfiguration
     )()

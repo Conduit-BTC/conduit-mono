@@ -12,6 +12,7 @@ import {
   retryOrderRelayDelivery,
   deriveCheckoutSparkSignedCommerceObligations,
   calculateConduitCheckoutFeeSats,
+  checkoutSparkConduitFeePolicyForNewPlan,
   calculateCheckoutSparkSettledGrossFundingSats,
   calculateCheckoutSparkEventSettledGrossFundingSats,
   isContactFreeEventHandoff,
@@ -48,6 +49,7 @@ import {
 import { readCheckoutSparkRecipientPayoutAddress } from "./checkout-spark-recipient-profile"
 import {
   CheckoutSparkSettledFundingMetadataPreflightError,
+  CheckoutSparkSettledFeeRoutePreflightError,
   CheckoutSparkSettledPreparationAbandonedError,
   prepareCheckoutSparkSettledFunding,
   resumeCheckoutSparkSettledFunding,
@@ -116,7 +118,8 @@ export function canRetryCheckoutSparkSettledPayoutPreflight(input: {
   return (
     (input.cause instanceof CheckoutSparkSettledPayoutPreflightError ||
       input.cause instanceof
-        CheckoutSparkSettledFundingMetadataPreflightError) &&
+        CheckoutSparkSettledFundingMetadataPreflightError ||
+      input.cause instanceof CheckoutSparkSettledFeeRoutePreflightError) &&
     input.recoveryState === "absent"
   )
 }
@@ -371,13 +374,19 @@ async function prepareCheckoutSparkSettledOrderPhase(
   }
   const timing = getCheckoutSparkSettledTiming()
   const takeoverAt = input.nowMs + timing.takeoverAfterMs
+  const conduitFeePolicy = checkoutSparkConduitFeePolicyForNewPlan(
+    commerceQuote.commerceTotalSats,
+    eventMarket?.organizerFeeSats
+  )
   const grossFundingSats = eventMarket
     ? calculateCheckoutSparkEventSettledGrossFundingSats(
         commerceQuote.commerceTotalSats,
-        eventMarket.organizerFeeSats
+        eventMarket.organizerFeeSats,
+        conduitFeePolicy
       )
     : calculateCheckoutSparkSettledGrossFundingSats(
-        commerceQuote.commerceTotalSats
+        commerceQuote.commerceTotalSats,
+        conduitFeePolicy
       )
   if (
     !Number.isSafeInteger(takeoverAt) ||
@@ -423,7 +432,8 @@ async function prepareCheckoutSparkSettledOrderPhase(
     throw new Error("Guest orders require both email and phone.")
   }
   const conduitFeeSats = calculateConduitCheckoutFeeSats(
-    commerceQuote.commerceTotalSats || (eventMarket ? 1 : 0)
+    commerceQuote.commerceTotalSats || (eventMarket ? 1 : 0),
+    conduitFeePolicy
   )
   const policy = canUseCheckoutSparkLocalRouterCanary()
     ? ("local_router_canary" as const)
@@ -547,6 +557,7 @@ async function prepareCheckoutSparkSettledOrderPhase(
             network: input.network,
             takeoverAt,
             grossFundingSats,
+            conduitFeePolicy,
             fundingExpirySecs: timing.fundingExpirySecs,
             identity: buyer,
             shouldContinue,
