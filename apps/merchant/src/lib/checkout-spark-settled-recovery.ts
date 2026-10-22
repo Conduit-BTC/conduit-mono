@@ -37,6 +37,7 @@ import {
   type CheckoutSparkSettledReturnedProof,
   type CheckoutSparkSettledClosedReturnedProof,
   type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledLegStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
   type MerchantCheckoutSparkRecoveryHandoffResult,
   type SparkCheckoutReceiveCreditNativeReceive,
@@ -351,8 +352,19 @@ export interface MerchantCheckoutSparkPayoutHistory {
   withoutIntentLegs: number
   /** Imported paid claims re-attested against exact provider history. */
   alreadyPaidLegs: number
+  /** Optional, content-free facts from this inspection; never payment authority. */
+  commerceSummary?: MerchantCheckoutSparkCommerceHistorySummary
   /** Finite facts from this existing inspection, never payment identifiers. */
   nativeSummary?: MerchantCheckoutSparkNativeHistorySummary
+}
+
+export interface MerchantCheckoutSparkCommerceHistorySummary {
+  readonly savedStatusCounts: Readonly<
+    Record<CheckoutSparkSettledLegStatus, number>
+  >
+  readonly providerObservationCounts: Readonly<
+    Record<CheckoutSparkSettledOutgoingObservation["status"], number>
+  >
 }
 
 export interface MerchantCheckoutSparkPayoutHistoryResult extends MerchantCheckoutSparkRecoveryHandoffResult {
@@ -1513,12 +1525,56 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
         )
     ).length
     const frozenLegs = imported.state.legs.filter((leg) => leg.intent !== null)
+    const commerceLegIds = new Set(
+      plan.recipients
+        .filter((recipient) => recipient.kind !== "conduit")
+        .map((recipient) => recipient.legId)
+    )
+    const savedStatusCounts: Record<CheckoutSparkSettledLegStatus, number> = {
+      unprepared: 0,
+      prepared: 0,
+      submitted: 0,
+      ambiguous: 0,
+      lookup_unavailable: 0,
+      conflicting_evidence: 0,
+      paid: 0,
+      terminal_failure: 0,
+    }
+    const providerObservationCounts: Record<
+      CheckoutSparkSettledOutgoingObservation["status"],
+      number
+    > = {
+      not_found: 0,
+      lookup_unavailable: 0,
+      conflicting_evidence: 0,
+      pending: 0,
+      terminal_failure: 0,
+      paid: 0,
+    }
+    for (const leg of imported.state.legs) {
+      if (
+        commerceLegIds.has(leg.legId) &&
+        Object.hasOwn(savedStatusCounts, leg.status)
+      )
+        savedStatusCounts[leg.status] += 1
+    }
+    const recordCommerceObservation = (
+      legId: string,
+      observation: CheckoutSparkSettledOutgoingObservation
+    ) => {
+      if (
+        commerceLegIds.has(legId) &&
+        Object.hasOwn(providerObservationCounts, observation.status)
+      )
+        providerObservationCounts[observation.status] += 1
+    }
     const base: Omit<MerchantCheckoutSparkPayoutHistory, "status"> = {
       checkedLegs: 0,
       newlyConfirmedLegs: 0,
       unresolvedLegs: 0,
       withoutIntentLegs,
       alreadyPaidLegs: 0,
+      commerceSummary: { savedStatusCounts, providerObservationCounts },
       ...(imported.state.treasuryFinalization
         ? {
             nativeSummary: {
@@ -1599,6 +1655,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
             assertEligible
           )
           assertEligible()
+          recordCommerceObservation(leg.legId, observation)
           summary.checkedLegs += 1
           if (
             observation.status === "paid" &&
@@ -1667,6 +1724,7 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
                 assertEligible
               )
               assertEligible()
+              recordCommerceObservation(leg.legId, observed)
               if (observed.status === "paid") {
                 await repository.recordMerchantPayout(
                   plan,
