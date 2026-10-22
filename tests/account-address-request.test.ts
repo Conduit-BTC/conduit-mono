@@ -160,6 +160,120 @@ async function fixture(coverage: "partial" | "unavailable") {
     },
   }
 }
+test("slow successful authorization creates valid request evidence through the production factory", async () => {
+  const f = await fixture("unavailable")
+  const now = Date.now
+  let clock = now()
+  let identityChecks = 0
+  const identity = f.manager.getAddressIdentity
+  f.manager.getAddressIdentity = async () => {
+    // Initial load has two checks; the next check precedes native signing.
+    if (++identityChecks === 3) clock += 61_000
+    return identity()
+  }
+  Date.now = () => clock
+  try {
+    f.receiveReplies()
+    const result = await f.workflow().submit(f.wallet.id, {
+      desiredName: "existing",
+      token: "controlled",
+    })
+    expect(result.record.phase).toBe("received")
+    expect(JSON.parse(result.record.payload).timestamp).toBe(
+      Math.floor(clock / 1000)
+    )
+    expect(f.calls).toEqual(["submit"])
+    const retained = await f.metadata.loadLocal("mainnet")
+    expect(
+      retained.records[f.wallet.id].payload === result.record.payload
+    ).toBe(true)
+  } finally {
+    Date.now = now
+    await f.close()
+  }
+})
+
+test("unchanged recovery is decrypted once per action and revalidated on the next action", async () => {
+  const f = await fixture("unavailable")
+  const recovery = await f.store.getSparkRecovery(f.wallet.id)
+  if (recovery?.type !== "signer") throw new Error("Missing fixture recovery")
+  const decrypt = f.signer.decryptNip44.bind(f.signer)
+  let recoveryDecryptions = 0
+  f.signer.decryptNip44 = async (...args) => {
+    if (args[1] === recovery.ciphertext) recoveryDecryptions++
+    return decrypt(...args)
+  }
+  try {
+    const flow = f.workflow()
+    await flow.submit(f.wallet.id, {
+      desiredName: "existing",
+      token: "controlled",
+    })
+    expect(recoveryDecryptions).toBe(1)
+    await f.settle()
+    await flow.check(f.wallet.id)
+    expect(recoveryDecryptions).toBe(2)
+    expect(f.calls).toEqual(["submit", "status"])
+  } finally {
+    await f.close()
+  }
+})
+
+for (const change of [
+  "recovery",
+  "backup",
+  "removal",
+  "wallet",
+  "native",
+  "signer",
+] as const) {
+  test(`changed ${change} after local staging blocks HTTP despite reused authorization`, async () => {
+    const f = await fixture("unavailable")
+    const stage = f.metadata.stage.bind(f.metadata)
+    f.metadata.stage = async (...args) => {
+      const saved = await stage(...args)
+      if (change === "recovery") {
+        const recovery = await f.store.getSparkRecovery(f.wallet.id)
+        if (recovery?.type !== "signer")
+          throw new Error("Missing fixture recovery")
+        await f.store.putSparkRecovery(f.wallet.id, {
+          ...recovery,
+          ciphertext: recovery.ciphertext.slice(0, -1),
+        })
+      } else if (change === "backup") {
+        await f.recovery.prepare(
+          {
+            mnemonic: generateSparkMnemonic(),
+            network: "mainnet",
+            accountNumber: 1,
+          },
+          f.wallet.id
+        )
+      } else if (change === "removal") {
+        await f.journal.setDeviceRemoved(f.signer.pubkey, f.wallet.id, true)
+      } else if (change === "wallet") {
+        await f.store.delete(f.wallet.id)
+      } else if (change === "native") {
+        f.manager.getAddressIdentity = async () => `02${"ab".repeat(32)}`
+      } else {
+        clearTestAccountSigner()
+      }
+      return saved
+    }
+    try {
+      await expect(
+        f.workflow().submit(f.wallet.id, {
+          desiredName: "existing",
+          token: "controlled",
+        })
+      ).rejects.toThrow()
+      expect(f.calls).toHaveLength(0)
+    } finally {
+      await f.close()
+    }
+  })
+}
+
 for (const coverage of ["partial", "unavailable"] as const) {
   test(`production name workflow preserves one intent across lost reply/reload with ${coverage} recovery`, async () => {
     const f = await fixture(coverage)

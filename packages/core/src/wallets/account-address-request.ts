@@ -65,117 +65,148 @@ export function accountAddressRequests(
     if (!value) throw new Error("Open this wallet to continue.")
     return value
   }
-  const authorize = async (
-    walletId: string,
-    record?: AddressRequestRecord,
-    priority: "foreground" | "background" = "foreground"
-  ) => {
-    current()
-    const store = walletStore
-    const [wallets, recovery, journal] = await Promise.all([
-      store.list(),
-      store.getSparkRecovery(walletId),
-      journalStore.load(signer.pubkey),
-    ])
-    const wallet = wallets.find((wallet) => wallet.id === walletId)
-    if (
-      !wallet ||
-      wallet.providerId !== "spark" ||
-      wallet.network !== "mainnet" ||
-      recovery?.type !== "signer" ||
-      recovery.ownerPubkey !== signer.pubkey ||
-      journal.removedWalletIds?.includes(walletId) ||
-      journal.registryExcludedWalletIds?.includes(walletId)
-    )
-      throw new Error("Open an available wallet owned by this Nostr identity.")
-    const mnemonic = await openSignerSparkRecovery(
-      recovery,
-      {
-        walletId,
-        providerId: "spark",
-        network: wallet.network,
-        accountNumber: recovery.accountNumber,
-      },
-      signer,
-      { priority }
-    )
-    const identity = await deriveSparkRecoveryIdentity({
-      mnemonic,
-      network: wallet.network,
-      accountNumber: recovery.accountNumber,
-    })
-    if (
-      (await manager().getAddressIdentity(walletId)) !== identity ||
-      (record && requestEvidence(record).sparkIdentity !== identity)
-    )
-      throw new Error("Wallet identity does not match the signed request.")
-    // Retained signed evidence remains authoritative even while discovery is partial.
-    const removedWalletIds = new Set<string>()
-    for (const item of journal.records) {
+  const createAuthorization = (priority: "foreground" | "background") => {
+    // Decrypted evidence belongs to one action, never a later action or session.
+    let verified:
+      | {
+          walletId: string
+          recovery: string
+          records: string
+          identity: string
+          removedWalletIds: string[]
+        }
+      | undefined
+    return async (walletId: string, record?: AddressRequestRecord) => {
+      current()
+      const store = walletStore
+      const [wallets, recovery, journal] = await Promise.all([
+        store.list(),
+        store.getSparkRecovery(walletId),
+        journalStore.load(signer.pubkey),
+      ])
+      const wallet = wallets.find((wallet) => wallet.id === walletId)
       if (
-        item.event.tags.some(
-          (tag) => tag[0] === "d" && isSparkWalletRegistryDTag(tag[1])
+        !wallet ||
+        wallet.providerId !== "spark" ||
+        wallet.network !== "mainnet" ||
+        recovery?.type !== "signer" ||
+        recovery.ownerPubkey !== signer.pubkey ||
+        journal.removedWalletIds?.includes(walletId) ||
+        journal.registryExcludedWalletIds?.includes(walletId)
+      )
+        throw new Error(
+          "Open an available wallet owned by this Nostr identity."
         )
+      const recoveryKey = JSON.stringify(recovery)
+      const recordsKey = JSON.stringify(
+        journal.records.map(({ event }) => event.id)
+      )
+      if (
+        verified?.walletId !== walletId ||
+        verified.recovery !== recoveryKey ||
+        verified.records !== recordsKey
       ) {
-        const snapshot = parseSparkWalletRegistrySnapshot(
-          await signer.decryptNip44(signer.pubkey, item.event.content, {
-            priority,
-          }),
-          item.event
+        verified = undefined
+        const mnemonic = await openSignerSparkRecovery(
+          recovery,
+          {
+            walletId,
+            providerId: "spark",
+            network: wallet.network,
+            accountNumber: recovery.accountNumber,
+          },
+          signer,
+          { priority }
         )
-        current()
-        if (snapshot.network === "mainnet")
-          for (const id of snapshot.removedWalletIds) removedWalletIds.add(id)
-        if (snapshot.removedWalletIds.includes(walletId))
-          throw new Error("This wallet registration was removed.")
+        const identity = await deriveSparkRecoveryIdentity({
+          mnemonic,
+          network: wallet.network,
+          accountNumber: recovery.accountNumber,
+        })
+        // Retained signed evidence remains authoritative even while discovery is partial.
+        const removedWalletIds = new Set<string>()
+        for (const item of journal.records) {
+          if (
+            item.event.tags.some(
+              (tag) => tag[0] === "d" && isSparkWalletRegistryDTag(tag[1])
+            )
+          ) {
+            const snapshot = parseSparkWalletRegistrySnapshot(
+              await signer.decryptNip44(signer.pubkey, item.event.content, {
+                priority,
+              }),
+              item.event
+            )
+            current()
+            if (snapshot.network === "mainnet")
+              for (const id of snapshot.removedWalletIds)
+                removedWalletIds.add(id)
+            if (snapshot.removedWalletIds.includes(walletId))
+              throw new Error("This wallet registration was removed.")
+          }
+          if (
+            !item.event.tags.some(
+              (tag) =>
+                tag[0] === "d" &&
+                tag[1] === `conduit:spark:wallet:v1:${walletId}`
+            )
+          )
+            continue
+          const backup = await service.restore(
+            {
+              eventId: item.event.id,
+              walletId,
+              source: "conduit_v1",
+            },
+            undefined,
+            { priority }
+          )
+          if (
+            !("identityPublicKey" in backup) ||
+            backup.identityPublicKey !== identity
+          )
+            throw new Error("Conflicting recovery exists for this wallet.")
+        }
+        verified = {
+          walletId,
+          recovery: recoveryKey,
+          records: recordsKey,
+          identity,
+          removedWalletIds: [...removedWalletIds],
+        }
       }
       if (
-        !item.event.tags.some(
-          (tag) =>
-            tag[0] === "d" && tag[1] === `conduit:spark:wallet:v1:${walletId}`
-        )
+        (await manager().getAddressIdentity(walletId)) !== verified.identity ||
+        (record && requestEvidence(record).sparkIdentity !== verified.identity)
       )
-        continue
-      const backup = await service.restore(
-        {
-          eventId: item.event.id,
-          walletId,
-          source: "conduit_v1",
-        },
-        undefined,
-        { priority }
-      )
+        throw new Error("Wallet identity does not match the signed request.")
+      current()
+      const [latest, retained] = await Promise.all([
+        store.getSparkRecovery(walletId),
+        journalStore.load(signer.pubkey),
+      ])
       if (
-        !("identityPublicKey" in backup) ||
-        backup.identityPublicKey !== identity
+        JSON.stringify(latest) !== recoveryKey ||
+        JSON.stringify(retained.records.map(({ event }) => event.id)) !==
+          recordsKey ||
+        retained.removedWalletIds?.includes(walletId) ||
+        retained.registryExcludedWalletIds?.includes(walletId)
       )
-        throw new Error("Conflicting recovery exists for this wallet.")
+        throw new Error("Wallet authorization changed.")
+      current()
+      return verified.removedWalletIds
     }
-    current()
-    const [latest, retained] = await Promise.all([
-      store.getSparkRecovery(walletId),
-      journalStore.load(signer.pubkey),
-    ])
-    if (
-      JSON.stringify(latest) !== JSON.stringify(recovery) ||
-      JSON.stringify(retained.records.map(({ event }) => event.id)) !==
-        JSON.stringify(journal.records.map(({ event }) => event.id)) ||
-      retained.removedWalletIds?.includes(walletId) ||
-      retained.registryExcludedWalletIds?.includes(walletId)
-    )
-      throw new Error("Wallet authorization changed.")
-    current()
-    return [...removedWalletIds]
   }
-  const makeWorkflow = (priority: "foreground" | "background") =>
-    createAddressRequestWorkflow({
+  const makeWorkflow = (priority: "foreground" | "background") => {
+    const authorize = createAuthorization(priority)
+    return createAddressRequestWorkflow({
       owner: signer.pubkey,
       assertCurrent: current,
       authorize: async (walletId, record) => {
-        await authorize(walletId, record, priority)
+        await authorize(walletId, record)
       },
       async load(walletId) {
-        await authorize(walletId, undefined, priority)
+        await authorize(walletId)
         const discovery = await service.discover(false, "mainnet", { priority })
         current()
         if (
@@ -201,7 +232,7 @@ export function accountAddressRequests(
             : (local.records[walletId] ?? saved.records[walletId])
         const legacy = discovery.registry?.addressNameRequests?.[walletId]
         if (legacy) record = mergeAddressRequestRecord(record, legacy)
-        const removedWalletIds = await authorize(walletId, record, priority)
+        const removedWalletIds = await authorize(walletId, record)
         if (record)
           await metadata.stage(
             "mainnet",
@@ -228,7 +259,7 @@ export function accountAddressRequests(
       },
       async save(walletId, record) {
         assertWritesEnabled()
-        const removedWalletIds = await authorize(walletId, record, priority)
+        const removedWalletIds = await authorize(walletId, record)
         const saved = await metadata.stage(
           "mainnet",
           walletId,
@@ -245,8 +276,11 @@ export function accountAddressRequests(
         }
       },
       async signWallet(walletId, input) {
-        await authorize(walletId, undefined, priority)
-        return manager().signAddressNameRequest(walletId, input)
+        await authorize(walletId)
+        return manager().signAddressNameRequest(walletId, {
+          ...input,
+          timestamp: Math.floor(Date.now() / 1000),
+        })
       },
       signAccount: (draft) => signer.signEvent(draft, { priority }),
       fetch: (...args) => (dependencies.fetch ?? fetch)(...args),
@@ -298,6 +332,7 @@ export function accountAddressRequests(
         return after.frontier.eventId
       },
     })
+  }
   const synchronize = () => {
     void metadata.syncPending(() =>
       service.discover(false, "mainnet", { priority: "background" })
@@ -310,12 +345,11 @@ export function accountAddressRequests(
       if (writesEnabled) synchronize()
     }
   }
-  const workflow = makeWorkflow("foreground")
-  const background = makeWorkflow("background")
   return {
     writesEnabled,
     load: (walletId) =>
       run(async () => {
+        const background = makeWorkflow("background")
         const view = await background.load(walletId)
         if (
           !writesEnabled ||
@@ -342,12 +376,12 @@ export function accountAddressRequests(
       }),
     submit: (walletId, input) => {
       assertWritesEnabled()
-      return run(() => workflow.submit(walletId, input))
+      return run(() => makeWorkflow("foreground").submit(walletId, input))
     },
-    check: (walletId) => run(() => workflow.check(walletId)),
+    check: (walletId) => run(() => makeWorkflow("foreground").check(walletId)),
     activate: (walletId) => {
       assertWritesEnabled()
-      return run(() => workflow.activate(walletId))
+      return run(() => makeWorkflow("foreground").activate(walletId))
     },
   }
 }
