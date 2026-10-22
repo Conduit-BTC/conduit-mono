@@ -153,12 +153,11 @@ describe("deployment profiles", () => {
     expect(production.publicFeatures.livePresenceEnabled).toBe(true)
     expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
     expect(preview.publicFeatures.quantumRouterEnabled).toBe(true)
-    expect(production.publicFeatures.quantumRouterEnabled).toBe(false)
+    expect(production.publicFeatures.quantumRouterEnabled).toBe(true)
     expect(staging.publicFeatures.quantumRouterEnabled).toBe(false)
     expect(preview.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
-    for (const profile of [production, staging]) {
-      expect(profile.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
-    }
+    expect(production.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
+    expect(staging.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
     expect(preview.lightningNetwork).toBe("mainnet")
     expect(production.lightningNetwork).toBe("mainnet")
     expect(staging.lightningNetwork).toBe("signet")
@@ -166,7 +165,7 @@ describe("deployment profiles", () => {
 
   it("ignores dashboard router overrides for managed public profiles", () => {
     for (const profile of ["preview", "production", "staging"] as const) {
-      const expected = profile === "preview"
+      const expected = profile !== "staging"
       for (const override of ["true", "false"]) {
         expect(
           resolveDeploymentProfile({
@@ -515,8 +514,8 @@ describe("deployment profiles", () => {
       })
       expect(result.exitCode).toBe(0)
       expect(JSON.parse(result.stdout.toString())).toEqual({
-        router: JSON.stringify(profile === "preview" ? "true" : "false"),
-        execution: JSON.stringify(profile === "preview" ? "true" : "false"),
+        router: JSON.stringify(profile !== "staging" ? "true" : "false"),
+        execution: JSON.stringify(profile !== "staging" ? "true" : "false"),
         network: JSON.stringify(profile === "staging" ? "signet" : "mainnet"),
         profile: JSON.stringify(profile),
       })
