@@ -71,4 +71,25 @@ describe("buyer router pause explanation", () => {
     expect(message).not.toContain("sentinel")
     expect(message).toContain("do not pay separately")
   })
+
+  test("native errors remain finite explanations, not receipt or replay claims", () => {
+    for (const reason of [
+      "native_invoice_rejected",
+      "native_provider_validation",
+      "native_provider_request",
+      "native_provider_authentication",
+      "native_provider_error",
+      "native_provider_unavailable",
+      "native_unrecognized_result",
+    ] as const) {
+      const message = getCheckoutSparkSettledOutcomeMessage({
+        status: "paused",
+        reason,
+      })
+      expect(message).toContain("Spark")
+      expect(message).toContain("do not pay again")
+      expect(message).not.toContain("successful")
+      expect(message).not.toContain("offline")
+    }
+  })
 })

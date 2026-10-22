@@ -449,9 +449,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
               },
             })
             assertEligible()
-            return {
-              status: sent.status === "not_sent" ? "not_sent" : "submitted",
-            }
+            return sent
           },
         },
       }

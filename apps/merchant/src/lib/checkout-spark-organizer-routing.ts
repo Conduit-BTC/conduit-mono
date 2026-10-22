@@ -561,9 +561,7 @@ export async function routeCheckoutSparkOrganizerOrder(
                 },
               })
               await check()
-              return {
-                status: result.status === "not_sent" ? "not_sent" : "submitted",
-              }
+              return result
             },
           }
           const proveGoods = async () => {
@@ -785,6 +783,9 @@ export async function routeCheckoutSparkOrganizerOrder(
                   "recovery_handoff_unavailable",
                   "fee_unavailable",
                   "prior_possible_send",
+                  "native_provider_unavailable",
+                  "native_provider_request",
+                  "native_provider_error",
                 ].includes(result.step.reason)
               ) {
                 await proveGoods()

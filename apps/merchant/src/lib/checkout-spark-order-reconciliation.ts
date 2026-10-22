@@ -462,13 +462,20 @@ async function advanceMerchantCheckoutSparkOrderPhase(
       result.payout.reason === "insufficient_funds" ||
       result.payout.reason === "prerequisite_unpaid" ||
       result.payout.reason === "authority_not_started" ||
-      result.payout.reason === "authority_transferred"
+      result.payout.reason === "authority_transferred" ||
+      result.payout.reason === "native_invoice_rejected" ||
+      result.payout.reason === "native_provider_validation" ||
+      result.payout.reason === "native_provider_authentication" ||
+      result.payout.reason === "native_unrecognized_result"
     )
       return "needs_attention"
     if (
       result.payout.reason === "provider_evidence_unavailable" ||
       result.payout.reason === "recovery_handoff_unavailable" ||
-      result.payout.reason === "fee_unavailable"
+      result.payout.reason === "fee_unavailable" ||
+      result.payout.reason === "native_provider_unavailable" ||
+      result.payout.reason === "native_provider_request" ||
+      result.payout.reason === "native_provider_error"
     )
       return "unavailable"
     if (result.payout.reason === "recipient_unverified")

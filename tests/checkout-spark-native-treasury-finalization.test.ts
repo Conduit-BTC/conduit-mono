@@ -37,6 +37,9 @@ function engine(
     failedProofAt?: number
     notSent?: boolean
     throwSend?: boolean
+    sendResult?: Awaited<
+      ReturnType<CheckoutSparkNativeTreasuryProvider["send"]>
+    >
     cancelSaveFail?: "before" | "after"
     retrySaveFail?: "before" | "after"
   } = {}
@@ -67,6 +70,7 @@ function engine(
       events.push("send")
       if (options.throwSend) throw new Error("Provider result lost")
       if (options.notSent && sends === 1) return { status: "not_sent" }
+      if (options.sendResult) return options.sendResult
       submittedSends++
       return { status: "submitted" }
     },
@@ -327,6 +331,102 @@ describe("Checkout Spark native treasury accounting", () => {
 })
 
 describe("Checkout Spark native treasury durable step", () => {
+  it("reports a finite native rejection without cancelling or replaying the admitted intent", async () => {
+    const e = engine(fixture(), {
+      sendResult: { status: "ambiguous", reason: "provider_request" },
+    })
+    const first = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(first.outcome).toBe("send_ambiguous")
+    expect(first.reason).toBe("native_provider_request")
+    expect(e.state().treasuryFinalization!.status).toBe("submitted")
+    expect(e.state().treasuryFinalization!.providerTransferId).toBeNull()
+    expect(e.sends()).toBe(1)
+    expect((await runCheckoutSparkNativeTreasuryStep(e.input)).reason).toBe(
+      "prior_possible_send"
+    )
+    expect(e.sends()).toBe(1)
+  })
+
+  it("retains a validated submission reference without inventing a receipt or resending", async () => {
+    const e = engine(fixture(), {
+      sendResult: {
+        status: "submitted",
+        providerTransferId: "actual-native-reference",
+      },
+    })
+    const first = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(first.outcome).toBe("send_ambiguous")
+    expect(e.state().treasuryFinalization!.providerTransferId).toBe(
+      "actual-native-reference"
+    )
+    expect(e.state().treasuryFinalization!.status).toBe("submitted")
+    expect(e.state().treasuryFinalization!.finalDebitSats).toBeNull()
+    await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(e.sends()).toBe(1)
+  })
+
+  it("lets fresh exact payment proof dominate an inconclusive send result", async () => {
+    const e = engine(fixture(), {
+      sendResult: { status: "ambiguous", reason: "provider_request" },
+    })
+    let reads = 0
+    e.input.provider.reconcile = async (target) =>
+      ++reads === 1
+        ? { invoiceId: target.intent.invoiceId, status: "not_found" }
+        : {
+            invoiceId: target.intent.invoiceId,
+            status: "paid",
+            providerTransferId: "exact-native-receipt",
+            finalFeeSats: 0,
+            finalDebitSats: target.intent.amountSats,
+          }
+    const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(result.outcome).toBe("paid")
+    expect(result.reason).toBeUndefined()
+    expect(e.state().treasuryFinalization!.providerTransferId).toBe(
+      "exact-native-receipt"
+    )
+    expect(e.sends()).toBe(1)
+  })
+
+  it.each(["unavailable", "throw"] as const)(
+    "preserves the finite send failure when later reconciliation is %s",
+    async (failure) => {
+      const e = engine(fixture(), {
+        sendResult: { status: "ambiguous", reason: "provider_validation" },
+      })
+      let reads = 0
+      e.input.provider.reconcile = async (target) => {
+        if (++reads === 1)
+          return { invoiceId: target.intent.invoiceId, status: "not_found" }
+        if (failure === "throw") throw new Error("Synthetic lookup failure")
+        return {
+          invoiceId: target.intent.invoiceId,
+          status: "lookup_unavailable",
+        }
+      }
+      const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+      expect(result.outcome).toBe("send_ambiguous")
+      expect(result.reason).toBe("native_provider_validation")
+      expect(e.state().treasuryFinalization!.status).toBe("submitted")
+      expect(e.sends()).toBe(1)
+    }
+  )
+
+  it("does not reflect arbitrary provider reason text", async () => {
+    const e = engine(fixture(), {
+      sendResult: {
+        status: "ambiguous",
+        // @ts-expect-error Deliberate malformed provider result at the public seam.
+        reason: "private-provider-detail-sentinel",
+      },
+    })
+    const result = await runCheckoutSparkNativeTreasuryStep(e.input)
+    expect(result.reason).toBe("prior_possible_send")
+    expect(JSON.stringify(result)).not.toContain("sentinel")
+    expect(e.sends()).toBe(1)
+  })
+
   it("does not persist pending phase diagnostics or turn them into send authority", async () => {
     const e = engine()
     e.input.provider.reconcile = async (target) => ({

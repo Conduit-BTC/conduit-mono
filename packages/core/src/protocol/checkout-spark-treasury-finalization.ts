@@ -19,6 +19,7 @@ import type {
 } from "./checkout-spark-settled-outgoing"
 import type { CheckoutSparkSettledRepositorySnapshot } from "./checkout-spark-settled-router-repository"
 import { createCheckoutSparkPreProviderCancellationRegistry } from "./checkout-spark-pre-provider-cancellation"
+import type { CheckoutSparkNativeTreasurySdkSendResult } from "./checkout-spark-treasury-sdk"
 
 export interface CheckoutSparkNativeTreasuryPlan {
   readonly schemaVersion: 1
@@ -609,7 +610,7 @@ export interface CheckoutSparkNativeTreasuryProvider {
   /** A response is not proof of payment; the engine queries history afterward. */
   send(
     target: CheckoutSparkNativeTreasuryTarget
-  ): Promise<{ readonly status: "submitted" | "not_sent" }>
+  ): Promise<CheckoutSparkNativeTreasurySdkSendResult>
 }
 
 export interface CheckoutSparkNativeTreasuryStateStore extends CheckoutSparkSettledOutgoingStateStore {
@@ -948,10 +949,42 @@ export async function runCheckoutSparkNativeTreasuryStep(
     await cancelPreProviderAdmission()
     return result("wait", "provider_evidence_unavailable")
   }
+  if (sent.status === "submitted" && sent.providerTransferId) {
+    // The adapter validated this reference against the exact request. Retain
+    // it across a later query outage, but only fresh history can prove paid.
+    await persist(
+      recordCheckoutSparkNativeTreasuryStatus(state, {
+        invoiceId: target.intent.invoiceId,
+        providerTransferId: sent.providerTransferId,
+        status: "submitted",
+        observedAt: now(),
+      })
+    )
+  }
+  // A provider rejection is not pre-provider cancellation proof. Keep its
+  // possible-send marker; expose only an allowlisted explanation, never an
+  // SDK error object, message or caller-supplied string.
+  const failureReasons = {
+    invoice_rejected: "native_invoice_rejected",
+    provider_validation: "native_provider_validation",
+    provider_request: "native_provider_request",
+    provider_authentication: "native_provider_authentication",
+    provider_error: "native_provider_error",
+    provider_unavailable: "native_provider_unavailable",
+    unrecognized_result: "native_unrecognized_result",
+  } as const
+  const failureReason =
+    sent.reason && Object.hasOwn(failureReasons, sent.reason)
+      ? failureReasons[sent.reason]
+      : undefined
   try {
     observation = await input.provider.reconcile(target)
   } catch {
-    return result("send_ambiguous", "provider_evidence_unavailable", true)
+    return result(
+      "send_ambiguous",
+      failureReason ?? "provider_evidence_unavailable",
+      true
+    )
   }
   const final = await observe(observation, true)
   if (final?.outcome === "paid") {
@@ -961,5 +994,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
       /* Exact submitted snapshot already ACKed. */
     }
   }
-  return final ?? result("send_ambiguous", "prior_possible_send", true)
+  if (failureReason && final?.reason === "provider_evidence_unavailable")
+    return result("send_ambiguous", failureReason, true)
+  return (
+    final ??
+    result("send_ambiguous", failureReason ?? "prior_possible_send", true)
+  )
 }

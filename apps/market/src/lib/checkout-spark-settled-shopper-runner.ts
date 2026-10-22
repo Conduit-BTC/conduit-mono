@@ -390,6 +390,9 @@ export function createCheckoutSparkSettledShopperRunner(
         result.step.reason === "recovery_handoff_unavailable" ||
         result.step.reason === "fee_unavailable" ||
         result.step.reason === "prior_possible_send" ||
+        result.step.reason === "native_provider_unavailable" ||
+        result.step.reason === "native_provider_request" ||
+        result.step.reason === "native_provider_error" ||
         (result.step.outcome === "send_ambiguous" && !result.step.reason)
       ) {
         if (await waitForPendingObservation()) continue

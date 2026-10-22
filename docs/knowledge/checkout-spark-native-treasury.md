@@ -70,6 +70,20 @@ that the native fee was committed; earlier sender phases do not. A completed
 parent transfer must still agree with its completed receiver state. Merely
 submitted transfers, unknown states and zero sender balance are not receipts.
 
+The pinned SDK returns separate sats success, sats error, token and invalid-invoice
+arrays. A fulfilled JavaScript promise is not itself a successful submission.
+The adapter accepts only one success bound to the exact invoice, sender,
+receiver, amount, debit and canonical actual transfer ID. Mixed, malformed,
+foreign and error results remain ambiguous. Only finite error categories may
+reach the UI; SDK messages and context never do. A validated submission reference
+is retained before the next history read, but does not establish a receipt.
+
+Read-only provider queries retain their bounded deadlines. Admitted fulfillment
+is awaited separately, so an expiring read timer cannot detach it and let normal
+wallet cleanup close its connections mid-send. Pausing or crossing the actor
+handoff boundary still prevents new dispatch; it cannot cancel an invocation
+already admitted. An eventual error remains query-only, not permission to replay.
+
 The receiving wallet may be offline. In the inspected Spark operator flow,
 sender commitment cannot be cancelled and is excluded from the early-sender
 expiry sweep. Claiming later has no post-commit timeout in that flow, but this
