@@ -26,6 +26,7 @@ import type { InboxProjection } from "../packages/core/src/protocol/commerce-inb
 import { interceptBlossom } from "./helpers/blossom"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
+import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -4869,7 +4870,7 @@ for (const fee of [
   })
 }
 
-test("event product chooses ordinary shipping and changes fulfillment in checkout @market @commerce", async ({
+test("event shopping keeps pickup-only choices and merchant profile navigation @market @commerce @occurrence-orders", async ({
   page,
 }) => {
   const relay = createRelayHarness()
@@ -4948,6 +4949,14 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
     product,
     signedAssignment(market, calendar, product, 5, ["pickup", "shipping"])
   )
+  relay.seed(
+    signEvent(MERCHANT_SECRET, {
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: JSON.stringify({ name: "Choice merchant" }),
+    })
+  )
   const marketRef = nip19.naddrEncode({
     kind: 30409,
     pubkey: ORGANIZER_PUBKEY,
@@ -4966,6 +4975,53 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
   await page.getByRole("button", { name: "Clear filters", exact: true }).click()
   await expect(search).toHaveValue("")
   await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
+  await page
+    .getByRole("button", { name: "Choice merchant", exact: true })
+    .click()
+  await expect
+    .poll(
+      () =>
+        new URL(page.url()).pathname === `/${nip19.npubEncode(MERCHANT_PUBKEY)}`
+    )
+    .toBe(true)
+  await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
+  await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveCount(0)
+  await page.getByRole("heading", { name: "Choice soap" }).click()
+  await expect(page).toHaveURL(/\/products\//)
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveCount(0)
+  await page.getByRole("button", { name: /^Add 1 to cart$/ }).click()
+  await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
+  await page.goto(`${marketUrl}/cart`)
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveCount(0)
+  await expect(page.getByText(/Event pickup/).first()).toBeVisible()
+  await page.goto(`${marketUrl}/checkout`)
+  await expect(
+    page.getByRole("heading", { name: "Checkout", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toHaveCount(0)
+  await page.reload()
+  await expect(
+    page.getByRole("heading", { name: "Checkout", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveCount(0)
+  await expect(
+    page.getByRole("heading", { name: "Delivery details" })
+  ).toHaveCount(0)
+  await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
   const closed = signEvent(ORGANIZER_SECRET, {
     ...market,
     created_at: createdAt + 1,
@@ -4983,56 +5039,306 @@ test("event product chooses ordinary shipping and changes fulfillment in checkou
   await expect(
     page.getByRole("button", { name: /^Add .+ to cart$/ })
   ).toHaveCount(0)
-  await page.getByRole("button", { name: "Ship it", exact: true }).click()
   await expect(
     page.getByRole("button", { name: "Ship it", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-  await expect(
-    page.getByRole("button", { name: /^Add .+ to cart$/ })
-  ).toBeEnabled()
-  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
-  await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
-  relay.seed(
-    signEvent(ORGANIZER_SECRET, {
-      ...market,
-      created_at: createdAt + 2,
-      tags: market.tags.concat([["prev", closed.id]]),
-    })
-  )
-  await page.goto(`${marketUrl}/checkout`)
-  const take = page.getByRole("button", {
-    name: "Take it at the event",
-    exact: true,
-  })
-  await expect(take).toBeVisible()
-  await take.click()
-  await expect(take).toHaveAttribute("aria-pressed", "true")
-  await page.reload()
-  await expect(
-    page.getByRole("button", { name: "Take it at the event", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-  await page.getByRole("button", { name: "Ship it", exact: true }).click()
-  await expect(
-    page.getByRole("button", { name: "Ship it", exact: true })
-  ).toHaveAttribute("aria-pressed", "true")
-  await expect(
-    page.getByRole("heading", { name: "Delivery details" })
-  ).toBeVisible()
+  ).toHaveCount(0)
 })
 
-test("guest retains a private event receipt and merchant verifies it @market @merchant @commerce", async ({
+for (const retention of ["screen", "file"] as const) {
+  test(`guest retains a private event receipt by ${retention} and merchant verifies it @market @merchant @commerce @occurrence-orders`, async ({
+    page,
+  }) => {
+    test.setTimeout(120_000)
+    let receiptStage:
+      | "setup"
+      | "phone-normalization"
+      | "receipt-required"
+      | "receipt-display"
+      | "receipt-export"
+      | "order-submission"
+      | "code-verification"
+      | "text-verification"
+      | "legacy-file-verification"
+      | "mismatch-rejection" = "setup"
+    try {
+      const relay = createRelayHarness()
+      await installSyntheticEnvironment(page, relay)
+      const createdAt = Math.floor(Date.now() / 1000)
+      const calendar = signEvent(ORGANIZER_SECRET, {
+        ...buildEventMarketCalendarDraft({
+          kind: 31923,
+          dTag: "choice-fair",
+          title: "Choice Fair",
+          start: createdAt - 60,
+          end: createdAt + 7200,
+        }),
+        created_at: createdAt,
+      })
+      const market = signEvent(ORGANIZER_SECRET, {
+        kind: 30409,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["d", "choice-fair"],
+          ["a", eventCoordinate(calendar)],
+          ["event_market", "2", "open"],
+          ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+        ],
+      })
+      const grant = signEvent(ORGANIZER_SECRET, {
+        kind: 3841,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["openmarkets", "event-market-auth", "1"],
+          ["a", eventCoordinate(market)],
+          ["p", MERCHANT_PUBKEY],
+          ["state", "active"],
+          ["seq", "0"],
+          ["alt", "Open Markets event merchant authorization"],
+        ],
+      })
+      const shipping = signEvent(MERCHANT_SECRET, {
+        kind: 30406,
+        created_at: createdAt,
+        content: "",
+        tags: [
+          ["d", "choice-shipping"],
+          ["title", "Shop shipping"],
+          ["price", "200", "SAT"],
+          ["country", "US"],
+          ["service", "shipping"],
+        ],
+      })
+      const product = signEvent(MERCHANT_SECRET, {
+        kind: 30402,
+        created_at: createdAt,
+        content: "Receipt soap",
+        tags: [
+          ["d", "choice-soap"],
+          ["title", "Receipt soap"],
+          ["summary", "Handmade soap"],
+          [
+            "image",
+            "https://cdn.conduit.market/conduit-test/template-product.svg",
+          ],
+          ["t", "soap"],
+          ["t", "handmade"],
+          ["t", "home"],
+          ["price", "0", "SAT"],
+          ["conduit_event_guest", "contact_optional"],
+          ["type", "simple", "physical"],
+          ["stock", "5"],
+          ["a", eventCoordinate(market)],
+          ["shipping_option", eventCoordinate(shipping)],
+        ],
+      })
+      relay.seed(
+        calendar,
+        market,
+        grant,
+        shipping,
+        product,
+        signedAssignment(market, calendar, product),
+        createInboxDeclaration("merchant", createdAt)
+      )
+      const marketRef = nip19.naddrEncode({
+        kind: 30409,
+        pubkey: ORGANIZER_PUBKEY,
+        identifier: "choice-fair",
+      })
+      await page.goto(`${marketUrl}/events/${marketRef}`)
+      await expect(
+        page.getByRole("heading", { name: "Receipt soap" })
+      ).toBeVisible()
+      await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
+      await expect(
+        page.getByRole("button", { name: /Cart, 1 item/ })
+      ).toBeVisible()
+      await page.goto(`${marketUrl}/checkout`)
+      receiptStage = "phone-normalization"
+      await expect(
+        page.getByLabel("Phone country", { exact: true })
+      ).toBeVisible()
+      await page.getByLabel("Phone", { exact: true }).fill("202 555 0123")
+      await page.getByLabel("Phone", { exact: true }).blur()
+      expect(
+        (await page.getByLabel("Phone", { exact: true }).inputValue()) ===
+          "+12025550123"
+      ).toBe(true)
+      await page.getByLabel("Phone country", { exact: true }).click()
+      await page.getByRole("option", { name: /United Kingdom/ }).click()
+      await page.getByLabel("Phone", { exact: true }).fill("020 7946 0958")
+      await page.getByLabel("Phone", { exact: true }).blur()
+      expect(
+        (await page.getByLabel("Phone", { exact: true }).inputValue()) ===
+          "+442079460958"
+      ).toBe(true)
+      await page.getByLabel("Phone", { exact: true }).fill("+1 202 555 0123")
+      await page.getByLabel("Phone", { exact: true }).blur()
+      expect(
+        (await page.getByLabel("Phone", { exact: true }).inputValue()) ===
+          "+12025550123"
+      ).toBe(true)
+      receiptStage = "receipt-required"
+      await page
+        .getByRole("checkbox", { name: "Use a name only for handoff" })
+        .check()
+      await expect(page.getByLabel("Phone", { exact: true })).toHaveCount(0)
+      await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
+      await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
+      const before = relay.publications.length
+      await page
+        .getByRole("button", { name: "Send order", exact: true })
+        .click()
+      await expect(
+        page
+          .getByText("Save your event receipt and confirm that you kept it.")
+          .first()
+      ).toBeVisible()
+      const prematureOrderCount = decryptPrivatePublications(
+        relay.publications,
+        MERCHANT_SECRET,
+        before
+      ).filter((message) => rumorType(message.rumor) === "order").length
+      expect(prematureOrderCount).toBe(0)
+      // The private receipt is usable on screen; generating it must not force a file.
+      let automaticDownloads = 0
+      page.on("download", () => {
+        automaticDownloads += 1
+      })
+      receiptStage = "receipt-display"
+      await page
+        .getByRole("button", { name: "Show private receipt", exact: true })
+        .click()
+      await expect(
+        page.getByRole("region", {
+          name: "Private pickup receipt",
+          exact: true,
+        })
+      ).toBeVisible()
+      expect(automaticDownloads).toBe(0)
+      const receiptCode = await page
+        .getByLabel("Private receipt code", { exact: true })
+        .inputValue()
+      let receiptPath: string | null = null
+      if (retention === "file") {
+        receiptStage = "receipt-export"
+        const downloadPending = page.waitForEvent("download")
+        await page
+          .getByRole("button", { name: "Save event receipt", exact: true })
+          .click()
+        const download = await downloadPending
+        receiptPath = await download.path()
+        if (!receiptPath) throw new Error("Receipt download is missing")
+        expect(
+          download.suggestedFilename() === "conduit-event-receipt.txt"
+        ).toBe(true)
+      }
+      receiptStage = "order-submission"
+      await page
+        .getByRole("checkbox", {
+          name: "I saved my private receipt",
+        })
+        .check()
+      await page
+        .getByRole("button", { name: "Send order", exact: true })
+        .click()
+      const orders = () =>
+        uniquePrivatePublications(
+          decryptPrivatePublications(
+            relay.publications,
+            MERCHANT_SECRET,
+            before
+          )
+        ).filter((message) => rumorType(message.rumor) === "order")
+      await expect.poll(() => orders().length).toBe(1)
+      expect(automaticDownloads).toBe(retention === "file" ? 1 : 0)
+      const order = JSON.parse(orders()[0]!.rumor.content) as {
+        id: string
+        buyerIdentityKind: string
+        guestContact?: unknown
+        contactFreePickup: { label: string; receiptCommitment: string }
+      }
+      expect(order.buyerIdentityKind === "guest_ephemeral").toBe(true)
+      expect(order.guestContact === undefined).toBe(true)
+      expect(order.contactFreePickup.label === "Soap fan").toBe(true)
+      expect(
+        /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
+      ).toBe(true)
+      expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      receiptStage = "code-verification"
+      await gotoAs(page, merchantUrl, "/orders", "merchant", {
+        order: order.id,
+      })
+      await expect(page.getByText("Handoff name: Soap fan")).toBeVisible()
+      await page
+        .getByLabel("Or enter the private receipt code")
+        .fill(receiptCode)
+      await page
+        .getByRole("button", { name: "Verify receipt code", exact: true })
+        .click()
+      await expect(page.getByText(/Receipt matches this order\./)).toBeVisible()
+      const originalReceipt = {
+        format: "conduit-event-receipt" as const,
+        version: 1 as const,
+        orderId: order.id,
+        merchantPubkey: MERCHANT_PUBKEY,
+        claimSecret: receiptCode,
+      }
+      receiptStage = "text-verification"
+      await page.getByLabel("Verify customer receipt").setInputFiles(
+        receiptPath ?? {
+          name: "private-receipt.txt",
+          mimeType: "text/plain",
+          buffer: Buffer.from(formatEventGuestReceipt(originalReceipt)),
+        }
+      )
+      await expect(page.getByText(/Receipt matches this order\./)).toBeVisible()
+      receiptStage = "legacy-file-verification"
+      await page.getByLabel("Verify customer receipt").setInputFiles({
+        name: "original-receipt.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(JSON.stringify(originalReceipt)),
+      })
+      await expect(page.getByText(/Receipt matches this order\./)).toBeVisible()
+      receiptStage = "mismatch-rejection"
+      await page.getByLabel("Verify customer receipt").setInputFiles({
+        name: "damaged-receipt.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(
+          JSON.stringify({
+            format: "conduit-event-receipt",
+            version: 1,
+            orderId: order.id,
+            merchantPubkey: MERCHANT_PUBKEY,
+            claimSecret: "0".repeat(64),
+          })
+        ),
+      })
+      await expect(
+        page.getByText("This receipt does not match this order and merchant.")
+      ).toBeVisible()
+    } catch {
+      throw new Error(`Guest receipt journey failed at ${receiptStage}.`)
+    }
+  })
+}
+
+test("organizer fee edits use saved addresses and collapse only after signed publication @merchant @commerce @occurrence-orders", async ({
   page,
 }) => {
+  test.setTimeout(120_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
-  const createdAt = Math.floor(Date.now() / 1000)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
   const calendar = signEvent(ORGANIZER_SECRET, {
     ...buildEventMarketCalendarDraft({
       kind: 31923,
-      dTag: "choice-fair",
-      title: "Choice Fair",
-      start: createdAt - 60,
-      end: createdAt + 7200,
+      dTag: "fee-editor-fair",
+      title: "Fee editor fair",
+      start: createdAt + 7_200,
+      end: createdAt + 10_800,
     }),
     created_at: createdAt,
   })
@@ -5041,147 +5347,147 @@ test("guest retains a private event receipt and merchant verifies it @market @me
     created_at: createdAt,
     content: "",
     tags: [
-      ["d", "choice-fair"],
+      ["d", "fee-editor-fair"],
       ["a", eventCoordinate(calendar)],
       ["event_market", "2", "open"],
-      ["merchant", MERCHANT_PUBKEY, "merchant_present", "Booth 1"],
+      [
+        "conduit_event_fee",
+        "1",
+        "active",
+        "250",
+        "10",
+        "old@example.com",
+        String(createdAt + 3_600),
+      ],
     ],
   })
-  const grant = signEvent(ORGANIZER_SECRET, {
-    kind: 3841,
+  const profile = signEvent(ORGANIZER_SECRET, {
+    kind: 0,
     created_at: createdAt,
-    content: "",
-    tags: [
-      ["openmarkets", "event-market-auth", "1"],
-      ["a", eventCoordinate(market)],
-      ["p", MERCHANT_PUBKEY],
-      ["state", "active"],
-      ["seq", "0"],
-      ["alt", "Open Markets event merchant authorization"],
-    ],
+    tags: [],
+    content: JSON.stringify({ name: "Organizer", lud16: "saved@example.com" }),
   })
-  const shipping = signEvent(MERCHANT_SECRET, {
-    kind: 30406,
-    created_at: createdAt,
-    content: "",
-    tags: [
-      ["d", "choice-shipping"],
-      ["title", "Shop shipping"],
-      ["price", "200", "SAT"],
-      ["country", "US"],
-      ["service", "shipping"],
-    ],
-  })
-  const product = signEvent(MERCHANT_SECRET, {
-    kind: 30402,
-    created_at: createdAt,
-    content: "Receipt soap",
-    tags: [
-      ["d", "choice-soap"],
-      ["title", "Receipt soap"],
-      ["summary", "Handmade soap"],
-      ["image", "https://cdn.conduit.market/conduit-test/template-product.svg"],
-      ["t", "soap"],
-      ["t", "handmade"],
-      ["t", "home"],
-      ["price", "0", "SAT"],
-      ["conduit_event_guest", "contact_optional"],
-      ["type", "simple", "physical"],
-      ["stock", "5"],
-      ["a", eventCoordinate(market)],
-      ["shipping_option", eventCoordinate(shipping)],
-    ],
-  })
-  relay.seed(
-    calendar,
-    market,
-    grant,
-    shipping,
-    product,
-    signedAssignment(market, calendar, product),
-    createInboxDeclaration("merchant", createdAt)
-  )
-  const marketRef = nip19.naddrEncode({
+  relay.seed(calendar, market, profile)
+  const reference = nip19.naddrEncode({
     kind: 30409,
     pubkey: ORGANIZER_PUBKEY,
-    identifier: "choice-fair",
+    identifier: "fee-editor-fair",
   })
-  await page.goto(`${marketUrl}/events/${marketRef}`)
+  await gotoAs(page, merchantUrl, `/events/${reference}`, "organizer")
   await expect(
-    page.getByRole("heading", { name: "Receipt soap" })
+    page.getByText("2.5%, minimum 10 sats", { exact: true })
   ).toBeVisible()
-  await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
-  await expect(page.getByRole("button", { name: /Cart, 1 item/ })).toBeVisible()
-  await page.goto(`${marketUrl}/checkout`)
-  await page
-    .getByRole("checkbox", { name: "Use a name only for handoff" })
-    .check()
-  await expect(page.getByLabel("Phone", { exact: true })).toHaveCount(0)
-  await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
-  await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
-  const before = relay.publications.length
-  await page.getByRole("button", { name: "Send order", exact: true }).click()
   await expect(
-    page
-      .getByText("Save your event receipt and confirm that you kept it.")
-      .first()
+    page.getByRole("button", { name: "Save fee settings", exact: true })
+  ).toHaveCount(0)
+  const before = relay.publications.length
+  await page
+    .getByRole("button", { name: "Edit fee settings", exact: true })
+    .click()
+  await expect(page.getByLabel("Minimum (sats)", { exact: true })).toHaveCount(
+    0
+  )
+  await expect(
+    page.getByLabel("Expiry (UTC, optional)", { exact: true })
+  ).toHaveCount(0)
+  const address = page.getByRole("textbox", {
+    name: "Organizer Lightning address",
+    exact: true,
+  })
+  await expect(address).toHaveValue("old@example.com")
+  await page
+    .getByRole("button", { name: "Use my Lightning address", exact: true })
+    .click()
+  await expect(address).toHaveValue("saved@example.com")
+  await address.fill("custom@example.com")
+  await page.getByRole("button", { name: "Cancel", exact: true }).click()
+  await expect(
+    page.getByText("2.5%, minimum 10 sats", { exact: true })
   ).toBeVisible()
   expect(
-    decryptPrivatePublications(
-      relay.publications,
-      MERCHANT_SECRET,
-      before
-    ).filter((message) => rumorType(message.rumor) === "order")
+    relay.publications
+      .slice(before)
+      .filter((event) => event.event.kind === 30409)
   ).toHaveLength(0)
-  const downloadPending = page.waitForEvent("download")
   await page
-    .getByRole("button", { name: "Save event receipt", exact: true })
+    .getByRole("button", { name: "Edit fee settings", exact: true })
     .click()
-  const download = await downloadPending
-  const receiptPath = await download.path()
-  if (!receiptPath) throw new Error("Receipt download is missing")
+  await expect(address).toHaveValue("old@example.com")
   await page
-    .getByRole("checkbox", {
-      name: "I saved my private receipt",
-    })
-    .check()
-  await page.getByRole("button", { name: "Send order", exact: true }).click()
-  const orders = () =>
-    uniquePrivatePublications(
-      decryptPrivatePublications(relay.publications, MERCHANT_SECRET, before)
-    ).filter((message) => rumorType(message.rumor) === "order")
-  await expect.poll(() => orders().length).toBe(1)
-  const order = JSON.parse(orders()[0]!.rumor.content) as {
-    id: string
-    buyerIdentityKind: string
-    guestContact?: unknown
-    contactFreePickup: { label: string; receiptCommitment: string }
-  }
-  expect(order.buyerIdentityKind).toBe("guest_ephemeral")
-  expect(order.guestContact).toBeUndefined()
-  expect(order.contactFreePickup.label).toBe("Soap fan")
-  expect(order.contactFreePickup.receiptCommitment).toMatch(/^[0-9a-f]{64}$/)
-  expect(orders()[0]!.rumor.content).not.toContain("claimSecret")
-  await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
-  await expect(page.getByText("Handoff name: Soap fan")).toBeVisible()
-  await page.getByLabel("Verify customer receipt").setInputFiles(receiptPath)
-  await expect(page.getByText(/Receipt matches this order\./)).toBeVisible()
-  await page.getByLabel("Verify customer receipt").setInputFiles({
-    name: "damaged-receipt.json",
-    mimeType: "application/json",
-    buffer: Buffer.from(
-      JSON.stringify({
-        format: "conduit-event-receipt",
-        version: 1,
-        orderId: order.id,
-        merchantPubkey: MERCHANT_PUBKEY,
-        claimSecret: "0".repeat(64),
-      })
-    ),
-  })
+    .getByRole("textbox", { name: "Percentage", exact: true })
+    .fill("3.75")
+  await page
+    .getByRole("button", { name: "Use my Lightning address", exact: true })
+    .click()
+  relay.rejectKind(30409, true)
+  await page
+    .getByRole("button", { name: "Save fee settings", exact: true })
+    .click()
   await expect(
-    page.getByText("This receipt does not match this order and merchant.")
+    page.getByRole("button", {
+      name: "Retry current signed settings",
+      exact: true,
+    })
   ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Save fee settings", exact: true })
+  ).toBeDisabled()
+  await expect(
+    page.getByText("Fee settings saved and published.", { exact: true })
+  ).toHaveCount(0)
+  const signedAttempts = uniquePublishedEvents(
+    relay.publications.slice(before)
+  ).filter((event) => event.kind === 30409)
+  expect(signedAttempts).toHaveLength(1)
+  expect(
+    signedAttempts[0]!.tags.find((tag) => tag[0] === "conduit_event_fee")
+  ).toEqual([
+    "conduit_event_fee",
+    "1",
+    "active",
+    "375",
+    "0",
+    "saved@example.com",
+  ])
+  relay.rejectKind(30409, false)
+  await page
+    .getByRole("button", { name: "Retry current signed settings", exact: true })
+    .click()
+  await expect(page.getByText("3.75%", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Edit fee settings", exact: true })
+  ).toBeEnabled()
+  await expect(
+    page.getByRole("button", { name: "Save fee settings", exact: true })
+  ).toHaveCount(0)
+  expect(
+    uniquePublishedEvents(relay.publications.slice(before)).filter(
+      (event) => event.kind === 30409
+    )
+  ).toHaveLength(1)
+  expect(
+    uniquePublishedEvents(relay.publications.slice(before)).some(
+      (event) => event.kind === 0
+    )
+  ).toBe(false)
+  await page.reload()
+  await expect(
+    page.getByRole("button", { name: "Save fee settings", exact: true })
+  ).toHaveCount(0)
+  await page
+    .getByRole("button", { name: "Edit fee settings", exact: true })
+    .click()
+  await expect(address).toHaveValue("saved@example.com")
+  await address.fill("custom@example.com")
+  await page
+    .getByRole("button", { name: "Save fee settings", exact: true })
+    .click()
+  await expect(
+    page.getByText("custom@example.com", { exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Save fee settings", exact: true })
+  ).toHaveCount(0)
 })
 
 test("reserved organizer stock carries a free purchase through pickup and once-only seller reconciliation @market @merchant @commerce @occurrence-orders", async ({
@@ -5204,9 +5510,6 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         .getByRole("textbox", { name: "Percentage", exact: true })
         .fill("2.5")
       await page
-        .getByRole("textbox", { name: "Minimum (sats)", exact: true })
-        .fill("10")
-      await page
         .getByRole("textbox", {
           name: "Organizer Lightning address",
           exact: true,
@@ -5215,9 +5518,7 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
       await page
         .getByRole("button", { name: "Save fee settings", exact: true })
         .click()
-      await expect(
-        page.getByText("2.5%, minimum 10 sats", { exact: true })
-      ).toBeVisible()
+      await expect(page.getByText("2.5%", { exact: true })).toBeVisible()
       expect(
         uniquePublishedEvents(relay.publications)
           .filter((event) => event.kind === 30409)
@@ -5228,9 +5529,12 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         "1",
         "active",
         "250",
-        "10",
+        "0",
         "organizer@example.com",
       ])
+      await page
+        .getByRole("button", { name: "Edit fee settings", exact: true })
+        .click()
       await page
         .getByRole("combobox", { name: "Fee setting", exact: true })
         .click()
@@ -5249,27 +5553,49 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
           .at(-1)
           ?.tags.find((tag) => tag[0] === "conduit_event_fee")
       ).toEqual(["conduit_event_fee", "1", "disabled"])
+      await expect(
+        page.getByRole("button", {
+          name: "Prepare replacement device",
+          exact: true,
+        })
+      ).toBeHidden()
       await page
         .getByRole("button", {
-          name: "Use this device for stock handover",
+          name: "Set up pickup here",
           exact: true,
         })
         .click()
       await expect(
         page.getByText(
-          "This device's handover ID is saved. Share it with the seller.",
+          "Pickup is set up here. Copy the setup code and share it with the seller.",
           { exact: true }
         )
       ).toBeVisible({ timeout: 30_000 })
+      await expect(
+        page.getByRole("button", {
+          name: "Copy pickup setup code",
+          exact: true,
+        })
+      ).toBeVisible()
+      await expect(
+        page.getByRole("textbox", {
+          name: "Pickup setup code",
+          exact: true,
+        })
+      ).toBeHidden()
+      await page.getByText("Technical pickup details", { exact: true }).click()
       const writerId = await page
         .getByRole("textbox", {
-          name: "This device's handover ID",
+          name: "Pickup setup code",
           exact: true,
         })
         .inputValue()
       await gotoAs(page, merchantUrl, eventPath, "merchant")
       await page
-        .getByRole("combobox", { name: "Pickup stock assignment", exact: true })
+        .getByRole("combobox", {
+          name: "Stock for organizer pickup",
+          exact: true,
+        })
         .click()
       await page
         .getByRole("option", { name: /synthetic-existing-product/ })
@@ -5279,13 +5605,13 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         .fill("2")
       await page
         .getByRole("textbox", {
-          name: "Organizer's device handover ID",
+          name: "Pickup setup code from organizer",
           exact: true,
         })
         .fill(writerId)
       await page
         .getByRole("button", {
-          name: "Reserve stock and send grant",
+          name: "Reserve stock for organizer",
           exact: true,
         })
         .click()
@@ -5302,18 +5628,18 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
       await gotoAs(page, merchantUrl, eventPath, "organizer")
       await page
         .getByRole("button", {
-          name: "Check private stock messages",
+          name: "Check for stock updates",
           exact: true,
         })
         .click()
       await page
         .getByRole("button", {
-          name: "Receive reserved stock on this device",
+          name: "Accept reserved stock",
           exact: true,
         })
         .click()
       await expect(
-        page.getByText(/Reserved stock received on this device/)
+        page.getByText(/Reserved stock is ready for pickup here/)
       ).toBeVisible()
       return assignment
     },
@@ -5387,14 +5713,17 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     })
   ).toBeVisible()
   await page
-    .getByRole("button", { name: "Stop new sales and close pool", exact: true })
+    .getByRole("button", {
+      name: "Stop new sales and close reserved stock",
+      exact: true,
+    })
     .click()
   await expect(
     page.getByText(/New sales are stopped for this pool/)
   ).toBeVisible()
   await gotoAs(page, merchantUrl, eventPath, "merchant")
   await page
-    .getByRole("button", { name: "Check private stock messages", exact: true })
+    .getByRole("button", { name: "Check for stock updates", exact: true })
     .click()
   await page
     .getByRole("button", {
@@ -5413,7 +5742,10 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     .click()
   await expect(page.getByText(/already reconciled/)).toBeVisible()
   await page
-    .getByRole("button", { name: "Reconcile organizer close", exact: true })
+    .getByRole("button", {
+      name: "Review closed stock and release unused quantity",
+      exact: true,
+    })
     .click()
   await expect(
     page.getByText(/complete closing history is reconciled/)
@@ -5438,6 +5770,11 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   await expect(complete).toBeEnabled()
   const completionStart = result.relay.publications.length
   await complete.click()
+  // Settle the initiated action before checking its exact private receipt.
+  await complete.waitFor({ state: "hidden" })
+  await page
+    .getByRole("button", { name: /^(Sending|Recording)…$/ })
+    .waitFor({ state: "hidden" })
   await expect
     .poll(
       () =>
@@ -5491,7 +5828,7 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     .getByText("Recover prior organizer stock history", { exact: true })
     .click()
   await history
-    .getByRole("button", { name: "Check private stock messages", exact: true })
+    .getByRole("button", { name: "Check for stock updates", exact: true })
     .click()
   await history
     .getByRole("button", {
@@ -5572,7 +5909,7 @@ async function enablePrivateInbox(page: Page): Promise<void> {
   ).toBeVisible({ timeout: 20_000 })
 }
 
-test("a host and merchant create, request, approve and offer through the screens @market @merchant @commerce", async ({
+test("a host and merchant create, request, approve and offer through the screens @market @merchant @commerce @occurrence-orders", async ({
   page,
 }) => {
   test.setTimeout(180_000)
@@ -5604,16 +5941,78 @@ test("a host and merchant create, request, approve and offer through the screens
   )!
   expect(market).toBeDefined()
   expect(market.tags.some((tag) => tag[0] === "merchant")).toBe(false)
+  const stockControls = page.getByText(
+    "Move pickup to another device (advanced)",
+    { exact: true }
+  )
+  await expect(stockControls).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Organizer-held stock", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", {
+      name: "Prepare replacement device",
+      exact: true,
+    })
+  ).toBeHidden()
+  await stockControls.click()
+  await expect(
+    page.getByRole("button", {
+      name: "Prepare replacement device",
+      exact: true,
+    })
+  ).toBeVisible()
+  await stockControls.click()
+  await expect(
+    page.getByRole("button", {
+      name: "Set up pickup here",
+      exact: true,
+    })
+  ).toBeVisible()
+  const initialCalendar = uniquePublishedEvents(relay.publications).find(
+    (event) => event.kind === 31923
+  )!
+  await page.getByRole("button", { name: "Add by URL", exact: true }).click()
+  const updatedBanner =
+    "https://cdn.conduit.market/conduit-test/updated-event.svg"
+  await page.getByLabel("Banner URL").fill(updatedBanner)
+  await page.getByLabel(/^Start \(/).fill("2030-06-01T11:00")
+  await page
+    .getByRole("button", { name: "Save event details", exact: true })
+    .click()
+  await expect
+    .poll(
+      () =>
+        uniquePublishedEvents(relay.publications).filter(
+          (event) => event.kind === 31923
+        ).length
+    )
+    .toBe(2)
+  const updatedCalendar = uniquePublishedEvents(relay.publications)
+    .filter((event) => event.kind === 31923)
+    .at(-1)!
+  expect(eventCoordinate(updatedCalendar)).toBe(
+    eventCoordinate(initialCalendar)
+  )
+  expect(updatedCalendar.tags.find((tag) => tag[0] === "image")?.[1]).toBe(
+    updatedBanner
+  )
+  expect(
+    Number(updatedCalendar.tags.find((tag) => tag[0] === "start")?.[1])
+  ).toBe(
+    Number(initialCalendar.tags.find((tag) => tag[0] === "start")?.[1]) + 3_600
+  )
+  await expect(page.getByLabel(/^Start \(/)).toHaveValue("2030-06-01T11:00")
 
   await page
     .getByRole("button", { name: "I'm also selling", exact: true })
     .click()
-  await page.getByRole("combobox", { name: "Handoff mode" }).click()
+  await page.getByRole("combobox", { name: "Who holds the stock?" }).click()
   await expect(
-    page.getByRole("option", { name: "Organizer pickup", exact: true })
+    page.getByRole("option", { name: "Organizer-held pickup", exact: true })
   ).toBeDisabled()
   await page
-    .getByRole("option", { name: "Merchant booth", exact: true })
+    .getByRole("option", { name: "Merchant-managed pickup", exact: true })
     .click()
   await page.getByLabel("Public assignment").fill("Host booth")
   await page
@@ -5636,10 +6035,37 @@ test("a host and merchant create, request, approve and offer through the screens
   await gotoAs(page, merchantUrl, "/network", "merchant")
   await enablePrivateInbox(page)
   await page.goto(`${merchantUrl}${eventPath}`)
+  relay.rejectKind(1059, true)
   await page
     .getByRole("button", { name: "Request to join", exact: true })
     .click()
+  const participation = page.getByRole("region", {
+    name: "Your participation",
+    exact: true,
+  })
+  await expect(participation.getByRole("alert")).toBeVisible()
+  await expect(
+    participation.getByText("Participation saved; delivery needs retry.", {
+      exact: true,
+    })
+  ).toBeVisible()
+  await expect(
+    participation.getByText("Approved to sell", { exact: true })
+  ).toHaveCount(0)
+  relay.rejectKind(1059, false)
+  const pendingAck = relay.holdNextPublicationAck(
+    (event) => event.kind === 1059
+  )
+  await page
+    .getByRole("button", { name: "Retry saved participation", exact: true })
+    .click()
+  await pendingAck.captured
+  await expect(
+    participation.getByText("Sending participation…", { exact: true })
+  ).toBeVisible()
+  pendingAck.release()
   await expect(page.getByText("Request pending", { exact: true })).toBeVisible()
+  await expect(participation.getByRole("alert")).toHaveCount(0)
   await page.reload()
   await expect(page.getByText("Request pending", { exact: true })).toBeVisible()
   expect(
@@ -5659,6 +6085,16 @@ test("a host and merchant create, request, approve and offer through the screens
   expect(requests).toHaveLength(1)
 
   await gotoAs(page, merchantUrl, eventPath, "organizer")
+  const pendingRequests = page.getByRole("region", {
+    name: "Pending merchant requests",
+    exact: true,
+  })
+  await expect(pendingRequests).toBeVisible()
+  const requestsBox = await pendingRequests.boundingBox()
+  const eventControlsBox = await page
+    .getByRole("heading", { name: "Event controls", exact: true })
+    .boundingBox()
+  expect(requestsBox!.y).toBeLessThan(eventControlsBox!.y)
   await expect(
     page.getByRole("button", { name: "Decline request" })
   ).toBeVisible()
@@ -5963,7 +6399,7 @@ for (const change of [
   })
 }
 
-test("event variation shipping rejects changed and deleted listings before adding or incrementing @market", async ({
+test("event variation pickup rejects changed and deleted listings before adding or incrementing @market", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -6072,7 +6508,9 @@ test("event variation shipping rejects changed and deleted listings before addin
     "buyer",
     { event: eventCoordinate(market) }
   )
-  await page.getByRole("button", { name: "Ship it", exact: true }).click()
+  await expect(
+    page.getByRole("button", { name: "Ship it", exact: true })
+  ).toHaveCount(0)
   const add = page.getByRole("button", { name: /^Add (1 to cart|more)/ })
   await expect(add).toBeEnabled()
   const revise = (offset: number) =>
@@ -6124,9 +6562,9 @@ test("event variation shipping rejects changed and deleted listings before addin
   const beforeDeletionRead = relay.requests.length
   await add.click()
   await expect(
-    page
-      .getByRole("alert")
-      .filter({ hasText: "Current shipping terms could not be verified" })
+    page.getByRole("alert").filter({
+      hasText: "This product is not currently available for event pickup",
+    })
   ).toBeVisible()
   await gotoAs(page, marketUrl, "/cart", "buyer")
   await expect(
@@ -7063,9 +7501,12 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
     )
   )
   await page.reload()
-  await expect(
-    page.getByRole("button", { name: "Mark picked up / complete", exact: true })
-  ).toBeEnabled()
+  const complete = page.getByRole("button", {
+    name: "Mark picked up / complete",
+    exact: true,
+  })
+  await complete.waitFor({ state: "visible" })
+  await expect(complete).toBeEnabled()
   const before = await occurrenceInventory(
     page,
     eventCoordinate(product),
@@ -7088,9 +7529,11 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await page.clock.setFixedTime(new Date((newStart + 600) * 1000))
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   const from = relay.publications.length
+  await complete.click()
+  await complete.waitFor({ state: "hidden" })
   await page
-    .getByRole("button", { name: "Mark picked up / complete", exact: true })
-    .click()
+    .getByRole("button", { name: /^(Sending|Recording)…$/ })
+    .waitFor({ state: "hidden" })
   await expect
     .poll(
       () =>
@@ -7808,13 +8251,20 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     (key) => localStorage.setItem(key, "1"),
     SYNTHETIC_SIGNER_UNAVAILABLE_KEY
   )
+  const acceptedNotice = page.getByText(
+    "Accepted locally. The buyer notification and inventory publication can be retried.",
+    { exact: true }
+  )
+  const pendingAcceptance = page.getByRole("button", {
+    name: /^(Sending|Recording)…$/,
+  })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
-  await expect(
-    page.getByText(
-      "Accepted locally. The buyer notification and inventory publication can be retried.",
-      { exact: true }
-    )
-  ).toBeVisible()
+  await pendingAcceptance
+    .or(acceptedNotice)
+    .first()
+    .waitFor({ state: "visible" })
+  await pendingAcceptance.waitFor({ state: "hidden" })
+  await expect(acceptedNotice).toBeVisible()
   await expect
     .poll(() =>
       page.evaluate(
@@ -7832,12 +8282,21 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     SYNTHETIC_SIGNER_UNAVAILABLE_KEY
   )
   await page.reload()
-  await page
-    .getByRole("button", { name: "Retry acceptance publication", exact: true })
-    .click()
-  await expect(
-    page.getByText("Accepted inventory updates published.", { exact: true })
-  ).toBeVisible()
+  const retry = page.getByRole("button", {
+    name: "Retry acceptance publication",
+    exact: true,
+  })
+  const publishedNotice = page.getByText(
+    "Accepted inventory updates published.",
+    {
+      exact: true,
+    }
+  )
+  const pendingRetry = retry.and(page.locator(":disabled"))
+  await retry.click()
+  await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
+  await pendingRetry.waitFor({ state: "hidden" })
+  await expect(publishedNotice).toBeVisible()
   const state = await page.evaluate(
     async ({ root, coordinate, orderId }) => {
       const { db } = await import(`${root}/db/index.ts`)

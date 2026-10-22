@@ -1,6 +1,7 @@
 import {
   calculateCheckoutSparkBuyerPrice,
   calculateCheckoutSparkEventBuyerPrice,
+  checkoutSparkConduitFeePolicyForNewPlan,
   isQuantumRouterEnabled,
   isSupportedCommercePriceCurrency,
   getShopperCardPriceDisplay,
@@ -56,18 +57,23 @@ export function getCheckoutCoordinationPriceEstimate(input: {
   organizerFeeSats?: number
 }): (CheckoutSparkBuyerPrice & { readonly organizerFeeSats?: number }) | null {
   try {
+    const conduitFeePolicy = checkoutSparkConduitFeePolicyForNewPlan(
+      input.itemSubtotalSats + input.shippingSubtotalSats,
+      input.organizerFeeSats
+    )
     return input.organizerFeeSats === undefined
-      ? calculateCheckoutSparkBuyerPrice(input)
+      ? calculateCheckoutSparkBuyerPrice({ ...input, conduitFeePolicy })
       : calculateCheckoutSparkEventBuyerPrice({
           ...input,
           organizerFeeSats: input.organizerFeeSats,
+          conduitFeePolicy,
         })
   } catch {
     return null
   }
 }
 
-/** One minimum per actual compatible purchase, including known shipping. */
+/** One rounded percentage per actual compatible purchase, including known shipping. */
 export function getCartCoordinationEstimate(
   items: CartItem[],
   quote: PricingRateInput,
@@ -113,6 +119,10 @@ export function getCartCoordinationEstimate(
       const priceInput = {
         itemSubtotalSats: pricing.itemSubtotalSats,
         shippingSubtotalSats: pricing.shippingCost.totalSats,
+        conduitFeePolicy: checkoutSparkConduitFeePolicyForNewPlan(
+          pricing.itemSubtotalSats + pricing.shippingCost.totalSats,
+          organizerFee
+        ),
       }
       const price = isEvent
         ? calculateCheckoutSparkEventBuyerPrice({
@@ -164,6 +174,7 @@ export function getFeeInclusiveListingPriceDisplay(
     const total = calculateCheckoutSparkBuyerPrice({
       itemSubtotalSats: base.sats,
       shippingSubtotalSats: 0,
+      conduitFeePolicy: checkoutSparkConduitFeePolicyForNewPlan(base.sats),
     })
     const display = getShopperSatsDisplay(
       total.totalSats,

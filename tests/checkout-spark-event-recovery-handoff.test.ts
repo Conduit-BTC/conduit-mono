@@ -19,6 +19,9 @@ import {
   retryStoredCheckoutSparkRecoveryHandoff,
   saveCheckoutSparkRecoveryDelivery,
   acknowledgeOrRetryCheckoutSparkSettledSnapshot,
+  archiveCompletedCheckoutSparkRecovery,
+  getArchivedCheckoutSparkRecoveryDeliveries,
+  retryPendingCompletedCheckoutSparkRecovery,
 } from "../apps/market/src/lib/checkout-spark-recovery-handoff"
 import {
   clearSessionGuestOrderSigningIdentity,
@@ -152,7 +155,283 @@ function publicationGate() {
   }
 }
 
+async function pendingOrganizerProgress() {
+  const f = fixture()
+  const transport = {
+    recipientInboxRelays: relays,
+    publishFn: async () => delivery(),
+  }
+  const initial = await publishCheckoutSparkEventRecoveryHandoff({
+    ...f.input,
+    transport,
+    organizerTransport: transport,
+  })
+  await expect(
+    acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+      initialHandoffId: initial.handoffId,
+      state: { ...f.input.state, updatedAt: AT + 2_000 },
+      identity: f.identity,
+      preparedAt: AT + 2_000,
+      now: () => AT + 2_000,
+      storage: f.storage,
+      transport,
+      organizerTransport: {
+        ...transport,
+        publishFn: async () => delivery(false),
+      },
+      requireCrossTabLock: false,
+    })
+  ).rejects.toThrow("relay ACK")
+  const progress = (await listCheckoutSparkRecoveryDeliveries(f.storage)).find(
+    (item) => item.record.handoffId !== initial.handoffId
+  )!
+  expect(progress.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
+  expect(progress.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
+  return {
+    ...f,
+    initial,
+    progress,
+    scope: {
+      checkoutId: f.plan.checkoutId,
+      planDigest: f.plan.planDigest,
+      orderId: f.plan.orderId,
+      walletId: f.plan.walletId,
+      merchantPubkey: f.plan.merchantPubkey,
+      senderPubkey: f.identity.pubkey,
+    },
+  }
+}
+
 describe("atomic Merchant and organizer checkout recovery handoff", () => {
+  it("retains terminal Event recovery until the exact pending Organizer wrap receives an ACK", async () => {
+    const f = await pendingOrganizerProgress()
+    const before = await listCheckoutSparkRecoveryDeliveries(f.storage)
+    const retriesKey = "conduit:checkout-spark-recovery-snapshot-retries:v1"
+    const retries = f.storage.getItem(retriesKey)
+    const archive = () =>
+      archiveCompletedCheckoutSparkRecovery({
+        scope: f.scope,
+        initialHandoffId: f.initial.handoffId,
+        storage: f.storage,
+      })
+    expect(await archive()).toBe("delivery_pending")
+    expect(
+      JSON.stringify(await listCheckoutSparkRecoveryDeliveries(f.storage)) ===
+        JSON.stringify(before)
+    ).toBe(true)
+    expect(f.storage.getItem(retriesKey) === retries).toBe(true)
+    const archived = await getArchivedCheckoutSparkRecoveryDeliveries(
+      f.scope,
+      f.storage
+    )
+    expect(archived).toHaveLength(2)
+    expect(
+      archived.find(
+        (item) => item.record.handoffId === f.progress.record.handoffId
+      )!.organizerDelivery!.acknowledgedRelayRefs
+    ).toHaveLength(0)
+    const published: string[] = []
+    for (const acknowledged of [false, true]) {
+      await retryPendingCompletedCheckoutSparkRecovery({
+        scope: f.scope,
+        storage: f.storage,
+        assertTerminalCurrent: async () => {},
+        transport: {
+          recipientInboxRelays: relays,
+          publishFn: async () => {
+            throw new Error("Acknowledged Merchant must not be republished")
+          },
+        },
+        organizerTransport: {
+          recipientInboxRelays: relays,
+          publishFn: async (event) => {
+            published.push(event.id)
+            return delivery(acknowledged)
+          },
+        },
+      })
+      expect(
+        published.every(
+          (id) => id === f.progress.organizerDelivery!.signedRecipientWrap.id
+        )
+      ).toBe(true)
+      expect(published).toHaveLength(acknowledged ? 2 : 1)
+      const latest = (await getCheckoutSparkRecoveryDelivery(
+        f.progress.record.handoffId,
+        f.storage
+      ))!
+      expect(
+        JSON.stringify(latest.record) === JSON.stringify(f.progress.record)
+      ).toBe(true)
+      expect(
+        JSON.stringify(latest.organizerDelivery!.signedRecipientWrap) ===
+          JSON.stringify(f.progress.organizerDelivery!.signedRecipientWrap)
+      ).toBe(true)
+      expect(latest.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(
+        acknowledged ? 1 : 0
+      )
+      expect(await archive()).toBe(
+        acknowledged ? "cleaned" : "delivery_pending"
+      )
+      expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(
+        acknowledged ? 0 : 2
+      )
+      if (!acknowledged)
+        expect(f.storage.getItem(retriesKey) === retries).toBe(true)
+    }
+    const completed = await getArchivedCheckoutSparkRecoveryDeliveries(
+      f.scope,
+      f.storage
+    )
+    expect(completed).toHaveLength(2)
+    expect(
+      completed.every(
+        (item) => item.organizerDelivery!.acknowledgedRelayRefs.length > 0
+      )
+    ).toBe(true)
+    expect(f.storage.getItem(retriesKey)).toBe("{}")
+  })
+
+  it("does not checkpoint an Organizer retry after its terminal binding changes", async () => {
+    const f = await pendingOrganizerProgress()
+    const before = f.storage.getItem(outboxKey)
+    let terminal = true
+    let sends = 0
+    await expect(
+      retryPendingCompletedCheckoutSparkRecovery({
+        scope: f.scope,
+        storage: f.storage,
+        assertTerminalCurrent: async () => {
+          if (!terminal) throw new Error("Terminal binding changed")
+        },
+        organizerTransport: {
+          recipientInboxRelays: relays,
+          publishFn: async () => {
+            sends++
+            terminal = false
+            return delivery()
+          },
+        },
+      })
+    ).rejects.toThrow("Terminal binding changed")
+    expect(sends).toBe(1)
+    expect(f.storage.getItem(outboxKey) === before).toBe(true)
+  })
+
+  it("surfaces an Organizer ACK persistence failure and retains its exact pending wrap", async () => {
+    const f = await pendingOrganizerProgress()
+    const before = f.storage.getItem(outboxKey)
+    await expect(
+      retryPendingCompletedCheckoutSparkRecovery({
+        scope: f.scope,
+        storage: f.storage,
+        assertTerminalCurrent: async () => {},
+        organizerTransport: {
+          recipientInboxRelays: relays,
+          publishFn: async () => {
+            f.storage.failWrites = true
+            return delivery()
+          },
+        },
+      })
+    ).rejects.toThrow("Controlled storage failure")
+    expect(f.storage.getItem(outboxKey) === before).toBe(true)
+    expect(
+      (await getCheckoutSparkRecoveryDelivery(
+        f.progress.record.handoffId,
+        f.storage
+      ))!.organizerDelivery!.acknowledgedRelayRefs.length
+    ).toBe(0)
+  })
+
+  it("preserves exact organizer evidence and snapshot mapping when interrupted archive cleanup resumes", async () => {
+    const f = fixture()
+    const transport = {
+      recipientInboxRelays: relays,
+      publishFn: async () => delivery(),
+    }
+    const initial = await publishCheckoutSparkEventRecoveryHandoff({
+      ...f.input,
+      transport,
+      organizerTransport: transport,
+    })
+    const progress = await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+      initialHandoffId: initial.handoffId,
+      state: { ...f.input.state, updatedAt: AT + 2_000 },
+      identity: f.identity,
+      preparedAt: AT + 2_000,
+      now: () => AT + 2_000,
+      storage: f.storage,
+      transport,
+      organizerTransport: transport,
+      requireCrossTabLock: false,
+    })
+    const scope = {
+      checkoutId: f.plan.checkoutId,
+      planDigest: f.plan.planDigest,
+      orderId: f.plan.orderId,
+      walletId: f.plan.walletId,
+      merchantPubkey: f.plan.merchantPubkey,
+      senderPubkey: f.identity.pubkey,
+    }
+    let checks = 0
+    await expect(
+      archiveCompletedCheckoutSparkRecovery({
+        scope,
+        initialHandoffId: initial.handoffId,
+        storage: f.storage,
+        verifyBeforeCommit: async () => {
+          if (++checks === 3)
+            throw new Error("Interrupted before active queue cleanup")
+        },
+      })
+    ).rejects.toThrow("Interrupted before active queue cleanup")
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
+    const retained = (await getCheckoutSparkRecoveryDelivery(
+      progress.handoffId,
+      f.storage
+    ))!
+    const latest = await saveCheckoutSparkRecoveryDelivery(
+      retained.record,
+      retained.deliveryProgress,
+      f.storage,
+      AT + 3_000,
+      undefined,
+      undefined,
+      {
+        ...retained.organizerDelivery!,
+        acknowledgedRelayRefs: [
+          ...retained.organizerDelivery!.acknowledgedRelayRefs,
+          "a".repeat(64),
+        ],
+      },
+      retained.snapshotKey
+    )
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(
+        await archiveCompletedCheckoutSparkRecovery({
+          scope,
+          initialHandoffId: initial.handoffId,
+          storage: f.storage,
+        })
+      ).toBe("cleaned")
+      const archived = (
+        await getArchivedCheckoutSparkRecoveryDeliveries(scope, f.storage)
+      ).find((item) => item.record.handoffId === progress.handoffId)!
+      expect(archived.snapshotKey === latest.snapshotKey).toBe(true)
+      expect(
+        JSON.stringify(archived.organizerDelivery) ===
+          JSON.stringify(latest.organizerDelivery)
+      ).toBe(true)
+      expect(
+        JSON.stringify(archived.record) === JSON.stringify(latest.record)
+      ).toBe(true)
+      expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(
+        0
+      )
+    }
+  })
+
   it("overlaps both durable recovery publications but waits for both relay ACKs", async () => {
     const f = fixture()
     const merchantEntered = deferred<void>()
@@ -160,8 +439,8 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
     const organizerAck = deferred<ReturnType<typeof delivery>>()
     let organizerEntered = false
     let completed = false
-    const assertDurablePair = () => {
-      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const assertDurablePair = async () => {
+      const saved = await listCheckoutSparkRecoveryDeliveries(f.storage)
       expect(saved).toHaveLength(1)
       expect(!!saved[0]!.organizerDelivery).toBe(true)
       expect(saved[0]!.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
@@ -172,7 +451,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       transport: {
         recipientInboxRelays: relays,
         publishFn: async () => {
-          assertDurablePair()
+          await assertDurablePair()
           merchantEntered.resolve()
           return merchantAck.promise
         },
@@ -180,7 +459,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       organizerTransport: {
         recipientInboxRelays: relays,
         publishFn: async () => {
-          assertDurablePair()
+          await assertDurablePair()
           organizerEntered = true
           return organizerAck.promise
         },
@@ -196,7 +475,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       merchantAck.resolve(delivery())
       await nextTurn()
       expect(completed).toBe(false)
-      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      const saved = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
       expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
       expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
       organizerAck.resolve(delivery())
@@ -248,7 +527,9 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         await nextTurn()
         expect(organizer.ids).toHaveLength(1)
         const signedCount = signs
-        const original = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+        const original = (
+          await listCheckoutSparkRecoveryDeliveries(f.storage)
+        )[0]!
         failed.ack.reject(cause)
         await nextTurn()
         expect(completed).toBe(false)
@@ -256,7 +537,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         const outcome = await pending
         expect(outcome.result).toBeNull()
         expect(outcome.error).toBe(cause)
-        const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+        const saved = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
         expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(
           failedRole === "merchant" ? 0 : 1
         )
@@ -280,7 +561,9 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
           true
         )
         expect(signs).toBe(signedCount)
-        const complete = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+        const complete = (
+          await listCheckoutSparkRecoveryDeliveries(f.storage)
+        )[0]!
         expect(complete.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
         expect(complete.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(
           1
@@ -325,12 +608,14 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       organizer.ack.resolve(delivery())
       await nextTurn()
       expect(completed).toBe(false)
-      const partial = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      const partial = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
       expect(partial.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
       expect(partial.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
       merchant.ack.resolve(delivery())
       expect((await pending).canExposeFundingInvoice).toBe(true)
-      const complete = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      const complete = (
+        await listCheckoutSparkRecoveryDeliveries(f.storage)
+      )[0]!
       expect(complete.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
       expect(complete.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
     } finally {
@@ -376,7 +661,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       const outcome = await pending
       expect(outcome.result).toBeNull()
       expect(outcome.error).toBe(merchantFailure)
-      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      const saved = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
       expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
       expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
     } finally {
@@ -424,7 +709,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       const outcome = await pending
       expect(outcome.result).toBeNull()
       expect(outcome.error instanceof Error).toBe(true)
-      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      const saved = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
       expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
       expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
     } finally {
@@ -446,10 +731,10 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         transport,
         organizerTransport: transport,
       })
-      const original = getCheckoutSparkRecoveryDelivery(
+      const original = (await getCheckoutSparkRecoveryDelivery(
         initial.handoffId,
         f.storage
-      )!
+      ))!
       const merchant = publicationGate()
       const organizer = publicationGate()
       const missing = missingRole === "merchant" ? merchant : organizer
@@ -492,10 +777,10 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         const outcome = await pending
         expect(outcome.result).toBeNull()
         expect(outcome.error instanceof Error).toBe(true)
-        const retained = getCheckoutSparkRecoveryDelivery(
+        const retained = (await getCheckoutSparkRecoveryDelivery(
           initial.handoffId,
           f.storage
-        )!
+        ))!
         expect(retained.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
         expect(retained.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(
           1
@@ -533,10 +818,10 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       organizerTransport: transport,
       requireCrossTabLock: false,
     })
-    const saved = getCheckoutSparkRecoveryDelivery(
+    const saved = (await getCheckoutSparkRecoveryDelivery(
       progress.handoffId,
       f.storage
-    )!
+    ))!
     expect(saved.organizerDelivery?.acknowledgedRelayRefs.length).toBe(1)
     const opened = await openCheckoutSparkOrganizerRecoveryMessage({
       signedRecipientWrap: saved.organizerDelivery!.signedRecipientWrap,
@@ -558,7 +843,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
     const f = fixture()
     const publishedIds: string[] = []
     const publishFn = async (event: { id: string }) => {
-      const stored = listCheckoutSparkRecoveryDeliveries(f.storage)
+      const stored = await listCheckoutSparkRecoveryDeliveries(f.storage)
       expect(stored.length).toBe(1)
       const row = stored[0]!
       expect(!!row.organizerDelivery).toBe(true)
@@ -594,7 +879,10 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
     })
     expect(result.canExposeFundingInvoice).toBe(true)
     expect(publishedIds).toHaveLength(2)
-    const row = getCheckoutSparkRecoveryDelivery(result.handoffId, f.storage)!
+    const row = (await getCheckoutSparkRecoveryDelivery(
+      result.handoffId,
+      f.storage
+    ))!
     expect(row.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
     expect(row.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(1)
     expect(row.organizerDelivery!.merchantHandoffId).toBe(row.record.handoffId)
@@ -631,7 +919,9 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       expect(wraps).toBe(failPosition)
       expect(sends).toBe(0)
       expect(f.storage.writes).toBe(0)
-      expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(0)
+      expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(
+        0
+      )
     })
   }
 
@@ -656,7 +946,9 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         })
       ).rejects.toThrow()
       expect(sends).toBe(0)
-      expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(0)
+      expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(
+        0
+      )
     })
   }
 
@@ -691,7 +983,9 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
     }
     expect(failure instanceof Error).toBe(true)
     expect(sends).toBe(0)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage).length).toBe(1)
+    expect((await listCheckoutSparkRecoveryDeliveries(f.storage)).length).toBe(
+      1
+    )
     expect(isCheckoutSparkRecoveryPrePersistenceFailure(failure)).toBe(false)
   })
 
@@ -710,7 +1004,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         },
       })
     ).rejects.toThrow()
-    const saved = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+    const saved = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
     expect(saved.deliveryProgress.acknowledgedRelayRefs).toHaveLength(1)
     expect(saved.organizerDelivery!.acknowledgedRelayRefs).toHaveLength(0)
     const reload = new MemoryStorage()
@@ -729,7 +1023,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
     })
     expect(ids).toEqual([saved.organizerDelivery!.signedRecipientWrap.id])
     expect(retried.canExposeFundingInvoice).toBe(true)
-    const completed = listCheckoutSparkRecoveryDeliveries(reload)[0]!
+    const completed = (await listCheckoutSparkRecoveryDeliveries(reload))[0]!
     expect(completed.record.signedRecipientWrap.id).toBe(
       saved.record.signedRecipientWrap.id
     )
@@ -747,7 +1041,10 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       transport: { recipientInboxRelays: relays, publishFn },
       organizerTransport: { recipientInboxRelays: relays, publishFn },
     })
-    const saved = getCheckoutSparkRecoveryDelivery(result.handoffId, f.storage)!
+    const saved = (await getCheckoutSparkRecoveryDelivery(
+      result.handoffId,
+      f.storage
+    ))!
     const child = saved.organizerDelivery!
     for (const changed of [
       { ...child, checkoutId: crypto.randomUUID() },
@@ -768,10 +1065,10 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
         )
       ).rejects.toThrow()
     }
-    const unchanged = getCheckoutSparkRecoveryDelivery(
+    const unchanged = (await getCheckoutSparkRecoveryDelivery(
       result.handoffId,
       f.storage
-    )!
+    ))!
     expect(unchanged.organizerDelivery!.signedRecipientWrap.id).toBe(
       child.signedRecipientWrap.id
     )
@@ -782,7 +1079,7 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       AT + 1_300
     )
     expect(
-      getCheckoutSparkRecoveryDelivery(result.handoffId, f.storage)!
+      (await getCheckoutSparkRecoveryDelivery(result.handoffId, f.storage))!
         .organizerDelivery!.signedRecipientWrap.id
     ).toBe(child.signedRecipientWrap.id)
   })
@@ -872,9 +1169,12 @@ describe("atomic Merchant and organizer checkout recovery handoff", () => {
       })
     ).rejects.toThrow()
     expect(sends).toBe(1)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage).length).toBe(1)
+    expect((await listCheckoutSparkRecoveryDeliveries(f.storage)).length).toBe(
+      1
+    )
     expect(
-      !!listCheckoutSparkRecoveryDeliveries(f.storage)[0]!.organizerDelivery
+      !!(await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
+        .organizerDelivery
     ).toBe(true)
   })
 })

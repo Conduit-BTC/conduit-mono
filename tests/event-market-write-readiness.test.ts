@@ -17,6 +17,21 @@ import {
   readEventMarketRoster,
   type SignedPublicNostrEvent,
 } from "@conduit/core"
+import {
+  __resetEventMarketTestOverrides,
+  __setEventMarketTestOverrides,
+  getEventMarketDiscoveryReadPlan,
+  getEventMarketReadPlan,
+} from "../packages/core/src/protocol/event-market"
+import {
+  __resetRelayHealth,
+  recordRelayFailure,
+} from "../packages/core/src/protocol/relay-health"
+import {
+  __resetPublicReaderTestState,
+  fetchSignedEventsFanoutDetailed,
+  type PublicRelayReadSocket,
+} from "../packages/core/src/protocol/relay-reader"
 
 function fixture(initiallyApproved = true) {
   const secret = generateSecretKey()
@@ -193,7 +208,329 @@ function fixture(initiallyApproved = true) {
   }
 }
 
+async function expectFeeWriteBlocked(
+  f: ReturnType<typeof fixture>,
+  current: Awaited<ReturnType<typeof readEventMarketRoster>>,
+  reason: string
+) {
+  await expect(
+    publishEventMarketRoster(
+      {
+        organizerPubkey: f.organizer,
+        authenticatedPubkey: f.organizer,
+        dTag: "optional-peer-market",
+        calendarCoordinate: f.calendarCoordinate,
+        state: "open",
+        merchants: [
+          {
+            pubkey: f.merchant,
+            mode: "merchant_present",
+            assignment: "Booth 1",
+          },
+        ],
+        organizerFee: {
+          state: "active",
+          basisPoints: 500,
+          minimumSats: 0,
+          lightningAddress: "organizer@example.com",
+        },
+        expectedPreviousEventId: f.roster.id,
+        onSignedLocal: async () => {
+          f.effects.push("save")
+        },
+      },
+      {
+        read: async () => current,
+        sign: async () => {
+          f.effects.push("sign")
+          throw new Error("Unexpected signing")
+        },
+        publish: async () => {
+          f.effects.push("publish")
+          throw new Error("Unexpected publication")
+        },
+      }
+    )
+  ).rejects.toThrow(
+    `Current signed Event Market authority needs organizer review. ${reason}`
+  )
+  expect(f.effects).toEqual([])
+}
+
 describe("Event Market organizer write readiness", () => {
+  it("keeps a fully observed nine-source roster writable beyond the eight-source prefix", async () => {
+    const f = fixture()
+    const organizerHints = Array.from(
+      { length: 9 },
+      (_, index) => `wss://organizer-source-${index}.relay.dev`
+    )
+    const observed: Awaited<
+      ReturnType<typeof fetchSignedEventsFanoutDetailed>
+    >[] = []
+    __resetRelayHealth()
+    __setEventMarketTestOverrides({
+      getRelayListsDetailed: async () => ({
+        relayLists: new Map([
+          [
+            f.organizer,
+            {
+              pubkey: f.organizer,
+              writeRelayUrls: organizerHints,
+              readRelayUrls: [],
+              eventCreatedAt: 100,
+              cachedAt: Date.now(),
+            },
+          ],
+        ]),
+        resolutionStates: new Map([[f.organizer, "network"]]),
+      }),
+    })
+    try {
+      const plan = await getEventMarketReadPlan({
+        organizerPubkey: f.organizer,
+      })
+      expect(plan.relayUrls).toHaveLength(8)
+      expect(plan.maxRelayAttempts).toBe(8)
+      expect(plan.candidateRelayUrls).toEqual(
+        expect.arrayContaining(organizerHints)
+      )
+      const discoveryPlan = await getEventMarketDiscoveryReadPlan({
+        organizerPubkeys: [f.organizer],
+      })
+      expect(discoveryPlan.candidateRelayUrls).toEqual(
+        expect.arrayContaining(organizerHints)
+      )
+      expect(discoveryPlan.maxRelayAttempts).toBe(8)
+      expect(discoveryPlan.relayHintTruncated).toBe(false)
+      f.dependencies.plan = async () => plan
+      f.dependencies.fetch = async (filter, options) => {
+        const result = await fetchSignedEventsFanoutDetailed(filter, {
+          ...options,
+          reuseRelayConnections: false,
+          connectTimeoutMs: 100,
+          fetchTimeoutMs: 100,
+          socketScope: {
+            createWebSocket: () => {
+              const socket: PublicRelayReadSocket = {
+                readyState: 0,
+                onopen: null,
+                onmessage: null,
+                onerror: null,
+                onclose: null,
+                send: (payload) => {
+                  const [type, id] = JSON.parse(payload)
+                  if (type !== "REQ") return
+                  queueMicrotask(() => {
+                    for (const event of f.live)
+                      if (matchFilter(filter, event))
+                        socket.onmessage?.({
+                          data: JSON.stringify(["EVENT", id, event]),
+                        } as MessageEvent<string>)
+                    socket.onmessage?.({
+                      data: JSON.stringify(["EOSE", id]),
+                    } as MessageEvent<string>)
+                  })
+                },
+                close: () => {
+                  socket.readyState = 3
+                },
+              }
+              queueMicrotask(() => {
+                socket.readyState = 1
+                socket.onopen?.(new Event("open"))
+              })
+              return socket
+            },
+          },
+        })
+        observed.push(result)
+        return result
+      }
+      const read = await f.read({ reference: f.marketCoordinate })
+      expect(observed).toHaveLength(6)
+      for (const result of observed) {
+        expect(result.admittedRelayUrls).toEqual(
+          expect.arrayContaining(organizerHints)
+        )
+        expect(result.attemptedRelayUrls).toEqual(
+          expect.arrayContaining(organizerHints)
+        )
+        expect(result.readCoverage).toBe("complete")
+      }
+      expect(read.resolution.state).toBe("current")
+      expect(read.retained).toBe(true)
+      expect(read.writeObservation?.selectedLive).toBe(true)
+      expect(read.writeObservation?.scopesChecked).toBe(true)
+      expect({
+        relayHintTruncated: plan.relayHintTruncated,
+        limited: read.writeObservation?.limited,
+        writeReady: isEventMarketRosterWriteReady(read),
+      }).toEqual({
+        relayHintTruncated: false,
+        limited: false,
+        writeReady: true,
+      })
+    } finally {
+      __resetEventMarketTestOverrides()
+      __resetPublicReaderTestState()
+      __resetRelayHealth()
+    }
+  })
+
+  it("keeps a genuinely excluded organizer source limited in both plans", async () => {
+    const f = fixture()
+    const healthy = "wss://healthy-organizer.relay.dev"
+    const parked = "wss://parked-organizer.relay.dev"
+    __resetRelayHealth()
+    recordRelayFailure(parked)
+    recordRelayFailure(parked)
+    __setEventMarketTestOverrides({
+      getRelayListsDetailed: async () => ({
+        relayLists: new Map([
+          [
+            f.organizer,
+            {
+              pubkey: f.organizer,
+              writeRelayUrls: [healthy, parked],
+              readRelayUrls: [],
+              eventCreatedAt: 100,
+              cachedAt: Date.now(),
+            },
+          ],
+        ]),
+        resolutionStates: new Map([[f.organizer, "network"]]),
+      }),
+    })
+    try {
+      const plan = await getEventMarketReadPlan({
+        organizerPubkey: f.organizer,
+      })
+      const discoveryPlan = await getEventMarketDiscoveryReadPlan({
+        organizerPubkeys: [f.organizer],
+      })
+      for (const selected of [plan, discoveryPlan]) {
+        expect(selected.candidateRelayUrls).toContain(healthy)
+        expect(selected.candidateRelayUrls).not.toContain(parked)
+        expect(selected.relayHintTruncated).toBe(true)
+      }
+      f.dependencies.plan = async () => plan
+      const read = await f.read({ reference: f.marketCoordinate })
+      expect(read.writeObservation?.selectedLive).toBe(true)
+      expect(read.writeObservation?.scopesChecked).toBe(true)
+      expect(read.writeObservation?.limited).toBe(true)
+      expect(isEventMarketRosterWriteReady(read)).toBe(false)
+    } finally {
+      __resetEventMarketTestOverrides()
+      __resetRelayHealth()
+    }
+  })
+
+  it("explains failed local retention before signing a fee change", async () => {
+    const f = fixture()
+    const current = await f.read({ reference: f.marketCoordinate })
+    current.retained = false
+    await expectFeeWriteBlocked(
+      f,
+      current,
+      "This browser could not read or save the signed event records. No new change was signed. Check browser storage, then refresh event records before trying again."
+    )
+  })
+
+  it.each([
+    [
+      "conflicting",
+      "Conflicting signed event revisions need review. No new change was signed. Refresh event records and review those revisions before trying again.",
+    ],
+    [
+      "malformed",
+      "The current signed event record has invalid details. No new change was signed. Refresh event records and review the organizer's event before trying again.",
+    ],
+    [
+      "deleted",
+      "The current event has a signed deletion. No new change was signed. Refresh event records and review that deletion before making another change.",
+    ],
+  ] as const)(
+    "explains %s signed authority without signing a fee change",
+    async (state, reason) => {
+      const f = fixture()
+      const current = await f.read({ reference: f.marketCoordinate })
+      current.resolution = { state, eventId: f.roster.id }
+      await expectFeeWriteBlocked(f, current, reason)
+    }
+  )
+
+  it.each([
+    [
+      "limited history or sources",
+      {
+        writeObservation: {
+          selectedLive: true,
+          limited: true,
+          scopesChecked: true,
+        },
+      },
+      "The event check reached its history or source limit. No new change was signed. Refresh event records and review the latest signed event before trying again.",
+    ],
+    [
+      "stale selected revision",
+      {
+        coverage: "stale",
+        writeObservation: {
+          selectedLive: false,
+          limited: false,
+          scopesChecked: true,
+        },
+      },
+      "The latest signed event revision was not observed in the current check. No new change was signed. Refresh event records; if offered, retry signed market delivery before trying again.",
+    ],
+    [
+      "selected revision not observed live",
+      {
+        writeObservation: {
+          selectedLive: false,
+          limited: false,
+          scopesChecked: true,
+        },
+      },
+      "The latest signed event revision was not observed in the current check. No new change was signed. Refresh event records; if offered, retry signed market delivery before trying again.",
+    ],
+    [
+      "required scope unchecked",
+      {
+        writeObservation: {
+          selectedLive: true,
+          limited: false,
+          scopesChecked: false,
+        },
+      },
+      "A required signed-event check could not complete. No new change was signed. Refresh event records before trying again.",
+    ],
+    [
+      "unavailable sources",
+      {
+        coverage: "unavailable",
+        writeObservation: {
+          selectedLive: false,
+          limited: false,
+          scopesChecked: false,
+        },
+      },
+      "A required signed-event check could not complete. No new change was signed. Refresh event records before trying again.",
+    ],
+    [
+      "unclassified partial coverage",
+      { writeObservation: undefined },
+      "A required signed-event check could not complete. No new change was signed. Refresh event records before trying again.",
+    ],
+  ] as const)(
+    "explains %s without signing a fee change",
+    async (_condition, observed, reason) => {
+      const f = fixture()
+      const current = await f.read({ reference: f.marketCoordinate })
+      await expectFeeWriteBlocked(f, { ...current, ...observed }, reason)
+    }
+  )
+
   it("publishes the same current causal decision when an optional peer fails", async () => {
     const f = fixture()
     const roster = await f.read({ reference: f.marketCoordinate })
@@ -329,6 +666,29 @@ describe("Event Market organizer write readiness", () => {
       }
     }
   )
+
+  it("keeps history beyond the exact-deletion revision budget limited", async () => {
+    const f = fixture()
+    let previous = f.roster
+    for (let index = 1; index <= 32; index++) {
+      previous = finalizeEvent(
+        {
+          ...f.roster,
+          created_at: 100 + index,
+          tags: [...f.roster.tags, ["prev", previous.id]],
+        },
+        f.secret
+      )
+      f.live.push(previous)
+    }
+    const read = await f.read({ reference: f.marketCoordinate })
+    expect(read.resolution.state).toBe("current")
+    expect(read.writeObservation?.selectedLive).toBe(true)
+    expect(read.writeObservation?.scopesChecked).toBe(true)
+    expect(read.writeObservation?.limited).toBe(true)
+    expect(isEventMarketRosterWriteReady(read)).toBe(false)
+    expect(f.effects).toEqual([])
+  })
 
   it("keeps a stale or deleted calendar unavailable without erasing its signed evidence", async () => {
     const f = fixture()

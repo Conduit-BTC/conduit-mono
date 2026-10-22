@@ -110,7 +110,21 @@ it("round-trips open-amount native fulfillment and byte-accurate invoice query o
     ).toBe(0)
     control.setNativeCompletion(false)
     control.setNativeSenderCommitment(false)
-    await wallet.fulfillSparkInvoice([{ invoice, amount: 113n }])
+    const fulfillment = await wallet.fulfillSparkInvoice([
+      { invoice, amount: 113n },
+    ])
+    expect(fulfillment).toMatchObject({
+      satsTransactionSuccess: [
+        {
+          invoice,
+          transferResponse: { sparkInvoice: invoice, totalValue: 113 },
+        },
+      ],
+      satsTransactionErrors: [],
+      tokenTransactionSuccess: [],
+      tokenTransactionErrors: [],
+      invalidInvoices: [],
+    })
     const queried = (await wallet.querySparkInvoices([invoice]))
       .invoiceStatuses[0]!
     expect(queried.status).toBe(1)

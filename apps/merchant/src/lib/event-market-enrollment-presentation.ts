@@ -1,8 +1,51 @@
 import {
   PrivateMessageRelayReadinessError,
   type EventMarketEnrollmentPayload,
+  type EventMarketEnrollmentState,
+  type EventMarketMerchantRow,
   type PrivateMessageRelayReadinessReason,
 } from "@conduit/core"
+
+/** Requests are an organizer queue, not evidence of permission to sell. */
+export function getPendingEventMerchantRequests(
+  merchants: readonly Pick<EventMarketMerchantRow, "pubkey">[],
+  states?: readonly Pick<
+    EventMarketEnrollmentState,
+    "merchantPubkey" | "status"
+  >[]
+): string[] {
+  const roster = new Set(merchants.map((merchant) => merchant.pubkey))
+  return (states ?? [])
+    .filter(
+      (state) =>
+        state.status === "requested" && !roster.has(state.merchantPubkey)
+    )
+    .map((state) => state.merchantPubkey)
+}
+
+export function getEventParticipationStatus({
+  approved,
+  revoked,
+  busy,
+  pendingDelivery,
+  enrollmentStatus,
+}: {
+  approved: boolean
+  revoked: boolean
+  busy: boolean
+  pendingDelivery: boolean
+  enrollmentStatus?: EventMarketEnrollmentState["status"]
+}): string {
+  if (busy) return "Sending participation…"
+  if (pendingDelivery) return "Participation saved; delivery needs retry."
+  if (approved) return "Approved to sell"
+  if (revoked) return "Approval revoked"
+  if (enrollmentStatus === "requested") return "Request pending"
+  if (enrollmentStatus === "invited") return "Invited to join"
+  if (enrollmentStatus === "declined") return "Request declined"
+  if (enrollmentStatus === "withdrawn") return "Request withdrawn"
+  return "Join this event"
+}
 
 /** Keep bounded observations and explicit signed inbox states distinct. */
 export function getEventMarketEnrollmentError(

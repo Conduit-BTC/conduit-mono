@@ -33,8 +33,11 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
     expect(detail).toContain("let candidate = productCartCandidate")
-    expect(detail).toContain("await readEventShippingProduct({")
-    expect(detail).toContain("expectedEventId: candidate.productEventId")
+    expect(detail).toContain("await readEventMarketProduct({")
+    expect(detail).toContain(
+      "productRead.resolution.revision.id !== candidate.productEventId"
+    )
+    expect(detail).not.toContain("EventFulfillmentChoice")
     expect(detail).toContain("if (!shouldContinue()) return")
     expect(detail).toContain("cart.addItem(candidate, quantity)")
     expect(detail).toContain(

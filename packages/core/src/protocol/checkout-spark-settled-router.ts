@@ -54,6 +54,7 @@ import {
 import {
   checkoutSparkConduitFeeRecipient,
   type CheckoutSparkConduitDestinationPolicy,
+  type CheckoutSparkConduitFeePolicy,
 } from "./checkout-spark-router-obligations"
 import {
   decodeLightningInvoiceMetadata,
@@ -129,6 +130,8 @@ export interface FreezeCheckoutSparkSettledPlanInput {
   readonly funding: CheckoutSparkSettledFundingPlan
   readonly recipients: readonly CheckoutSparkSettledRecipientInput[]
   readonly merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
+  /** Absent on historical plans; when present, committed by the plan digest. */
+  readonly conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 }
 
 /** V3 freezes identities, endpoints and weights, but no outgoing invoice. */
@@ -383,6 +386,9 @@ function canonicalPlanValue(
           ),
         ]
       : []),
+    ...(plan.conduitFeePolicy !== undefined
+      ? [["conduit-fee-policy", plan.conduitFeePolicy]]
+      : []),
   ]
 }
 
@@ -446,9 +452,13 @@ function freezeCheckoutSparkSettledPlanInternal(
   const weights = eventMarket
     ? calculateCheckoutSparkEventAllocationWeights(
         commerceQuote.commerceTotalSats,
-        eventMarket.organizerFeeSats
+        eventMarket.organizerFeeSats,
+        input.conduitFeePolicy
       )
-    : calculateCheckoutSparkAllocationWeights(commerceQuote.commerceTotalSats)
+    : calculateCheckoutSparkAllocationWeights(
+        commerceQuote.commerceTotalSats,
+        input.conduitFeePolicy
+      )
   const grossFundingSats = sats(input.funding.grossFundingSats, "Gross funding")
   const preAllowanceGrossSats =
     weights.commerceWeightSats + weights.conduitWeightSats
@@ -457,12 +467,16 @@ function freezeCheckoutSparkSettledPlanInternal(
       (eventMarket
         ? calculateCheckoutSparkEventSettledGrossFundingSats(
             commerceQuote.commerceTotalSats,
-            eventMarket.organizerFeeSats
+            eventMarket.organizerFeeSats,
+            input.conduitFeePolicy
           )
         : calculateCheckoutSparkSettledGrossFundingSats(
-            commerceQuote.commerceTotalSats
+            commerceQuote.commerceTotalSats,
+            input.conduitFeePolicy
           )) &&
-    (!allowPreAllowanceV3 || grossFundingSats !== preAllowanceGrossSats)
+    (!allowPreAllowanceV3 ||
+      input.conduitFeePolicy !== undefined ||
+      grossFundingSats !== preAllowanceGrossSats)
   ) {
     throw new Error("Checkout Spark gross funding differs from frozen terms.")
   }
@@ -646,6 +660,9 @@ function freezeCheckoutSparkSettledPlanInternal(
     commerceQuote,
     funding,
     recipients: Object.freeze(recipients),
+    ...(input.conduitFeePolicy !== undefined
+      ? { conduitFeePolicy: input.conduitFeePolicy }
+      : {}),
     ...(eventMarket ? { eventMarket } : {}),
     ...(input.merchantPublicZapPolicy
       ? {
@@ -767,6 +784,9 @@ export function restoreCheckoutSparkSettledPlan(
       commerceQuote: plan.commerceQuote,
       funding: plan.funding,
       recipients: plan.recipients,
+      ...(plan.conduitFeePolicy !== undefined
+        ? { conduitFeePolicy: plan.conduitFeePolicy }
+        : {}),
       ...(plan.merchantPublicZapPolicy
         ? { merchantPublicZapPolicy: plan.merchantPublicZapPolicy }
         : {}),
@@ -863,22 +883,26 @@ function allocatedLegs(
   const weights = eventMarket
     ? calculateCheckoutSparkEventAllocationWeights(
         plan.commerceQuote.commerceTotalSats,
-        eventMarket.organizerFeeSats
+        eventMarket.organizerFeeSats,
+        plan.conduitFeePolicy
       )
     : calculateCheckoutSparkAllocationWeights(
-        plan.commerceQuote.commerceTotalSats
+        plan.commerceQuote.commerceTotalSats,
+        plan.conduitFeePolicy
       )
   const allocationInput = {
     settledSats: creditedSats,
     fundingInvoiceGrossSats: plan.funding.grossFundingSats,
     weights,
+    conduitFeePolicy: plan.conduitFeePolicy,
   }
   const divided = eventMarket
     ? allocateCheckoutSparkEventSettledSats({
         ...allocationInput,
         weights: calculateCheckoutSparkEventAllocationWeights(
           plan.commerceQuote.commerceTotalSats,
-          eventMarket.organizerFeeSats
+          eventMarket.organizerFeeSats,
+          plan.conduitFeePolicy
         ),
       })
     : allocateCheckoutSparkSettledSats(allocationInput)
@@ -1316,10 +1340,12 @@ export function assertCheckoutSparkSettledFundingCoverage(
     plan.schemaVersion === 5
       ? calculateCheckoutSparkEventAllocationWeights(
           plan.commerceQuote.commerceTotalSats,
-          plan.eventMarket!.organizerFeeSats
+          plan.eventMarket!.organizerFeeSats,
+          plan.conduitFeePolicy
         )
       : calculateCheckoutSparkAllocationWeights(
-          plan.commerceQuote.commerceTotalSats
+          plan.commerceQuote.commerceTotalSats,
+          plan.conduitFeePolicy
         )
   if (
     !Number.isSafeInteger(creditedSats) ||

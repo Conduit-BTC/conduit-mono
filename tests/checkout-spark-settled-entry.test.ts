@@ -21,6 +21,7 @@ import {
 import type { PrepareCheckoutSparkSettledOrderInput } from "../apps/market/src/lib/checkout-spark-settled-entry"
 import {
   CheckoutSparkSettledFundingMetadataPreflightError,
+  CheckoutSparkSettledFeeRoutePreflightError,
   type PreparedCheckoutSparkSettledFunding,
 } from "../apps/market/src/lib/checkout-spark-settled-preparation"
 import type { PublishedCheckoutSparkBoundOrder } from "../apps/market/src/lib/checkout-spark-bound-order"
@@ -228,7 +229,10 @@ describe("settled Spark checkout entry", () => {
 
   it("freezes only the signed merchant endpoint and Conduit allowlist before gross funding", async () => {
     const input = request()
-    const conduitFee = calculateConduitCheckoutFeeSats(1_000)
+    const conduitFee = calculateConduitCheckoutFeeSats(
+      1_000,
+      "percentage-only-v1"
+    )
     const gross =
       1_000 +
       conduitFee +
@@ -264,7 +268,8 @@ describe("settled Spark checkout entry", () => {
           input.quoteAuthority.products[0]!.supplierAllocation!.revisionEvent
         )
         expect(terms.grossFundingSats).toBe(gross)
-        expect(terms.grossFundingSats).toBe(1_113)
+        expect(terms.grossFundingSats).toBe(1_023)
+        expect(terms.conduitFeePolicy).toBe("percentage-only-v1")
         expect(terms.fundingExpirySecs).toBe(15 * 60)
         expect(terms.takeoverAt).toBe(NOW + 2 * 60_000)
         expect(terms.recipients).toEqual([
@@ -362,29 +367,35 @@ describe("settled Spark checkout entry", () => {
     ).toBe(false)
   })
 
-  it("allows metadata preflight retry only when no recovery is present", () => {
-    const cause = new CheckoutSparkSettledFundingMetadataPreflightError()
-    expect(
-      canRetryCheckoutSparkSettledPayoutPreflight({
-        cause,
-        recoveryState: "absent",
-      })
-    ).toBe(true)
-    for (const recoveryState of ["present", "unreadable"] as const) {
+  it.each([
+    CheckoutSparkSettledFundingMetadataPreflightError,
+    CheckoutSparkSettledFeeRoutePreflightError,
+  ])(
+    "allows typed payout preflight retry only when no recovery is present",
+    (ErrorType) => {
+      const cause = new ErrorType()
       expect(
         canRetryCheckoutSparkSettledPayoutPreflight({
           cause,
-          recoveryState,
+          recoveryState: "absent",
+        })
+      ).toBe(true)
+      for (const recoveryState of ["present", "unreadable"] as const) {
+        expect(
+          canRetryCheckoutSparkSettledPayoutPreflight({
+            cause,
+            recoveryState,
+          })
+        ).toBe(false)
+      }
+      expect(
+        canRetryCheckoutSparkSettledPayoutPreflight({
+          cause: new Error("Provider work may have started."),
+          recoveryState: "absent",
         })
       ).toBe(false)
     }
-    expect(
-      canRetryCheckoutSparkSettledPayoutPreflight({
-        cause: new Error("Provider work may have started."),
-        recoveryState: "absent",
-      })
-    ).toBe(false)
-  })
+  )
 
   it("retries a failed admission before wallet preparation but not uncertain wallet work", () => {
     const cause = new Error("The cart changed during checkout preparation.")

@@ -29,6 +29,7 @@ export function smokeNeedsBothApps(
   files: readonly string[] | undefined
 ): boolean {
   const appLocalFiles = new Set([
+    "e2e/checkout-recovery-storage.playwright.ts",
     "e2e/about-page.playwright.ts",
     "e2e/product-legal.playwright.ts",
     "e2e/not-found.playwright.ts",

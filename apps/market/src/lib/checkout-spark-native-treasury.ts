@@ -406,7 +406,7 @@ export function createBuyerCheckoutSparkNativeTreasuryProvider(input: {
             throw new Error("Checkout Spark final amount changed.")
         },
       })
-      return { status: result.status === "not_sent" ? "not_sent" : "submitted" }
+      return result
     },
   }
 }

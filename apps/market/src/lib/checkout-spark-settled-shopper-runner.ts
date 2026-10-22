@@ -241,8 +241,9 @@ export function createCheckoutSparkSettledShopperRunner(
       assertCurrent()
       const preparation = readPreparation(input.checkoutId)
       const initialRecovery = preparation?.recoveryHandoffId
-        ? readInitialRecovery(preparation.recoveryHandoffId)
+        ? await readInitialRecovery(preparation.recoveryHandoffId)
         : null
+      assertCurrent()
       const configuration = sparkConfiguration()
       if (
         configuration.status !== "ready" ||
@@ -389,6 +390,10 @@ export function createCheckoutSparkSettledShopperRunner(
         result.step.reason === "recovery_handoff_unavailable" ||
         result.step.reason === "fee_unavailable" ||
         result.step.reason === "prior_possible_send" ||
+        result.step.reason === "native_provider_unavailable" ||
+        result.step.reason === "native_provider_request" ||
+        result.step.reason === "native_provider_error" ||
+        result.step.reason === "native_unrecognized_result" ||
         (result.step.outcome === "send_ambiguous" && !result.step.reason)
       ) {
         if (await waitForPendingObservation()) continue

@@ -34,12 +34,12 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(eventRoute).toContain(
       "decodeEventMarketReference(collectionRef, [30409])"
     )
-    expect(eventPage).toContain(
-      'allowZeroPrice={choice === "event_market_pickup" && canPurchase}'
-    )
+    expect(eventPage).toContain("allowZeroPrice={canPurchase}")
     expect(eventPage).toContain("cartActionDisabled={checking || !canAdd}")
+    expect(eventPage).toContain("const canAdd = canPurchase")
+    expect(eventPage).not.toContain("hasEventShippingChoice")
     expect(eventPage).toContain(
-      'choice === "shipping" ? hasEventShippingChoice(product) : canPurchase'
+      "if (!market || !shouldContinue() || !canPurchase) return"
     )
     expect(eventPage).toContain('productRead.resolution.state !== "eligible"')
     expect(eventPage).toContain("!productRead.actionable")

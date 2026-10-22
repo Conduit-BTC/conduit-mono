@@ -173,6 +173,28 @@ export function summarizeEventMarketPublishDelivery(
   }
 }
 
+function rosterWriteReviewReason(
+  current: Awaited<ReturnType<typeof readEventMarketRoster>>
+): string {
+  if (!current.retained)
+    return "This browser could not read or save the signed event records. No new change was signed. Check browser storage, then refresh event records before trying again."
+  if (current.resolution.state === "conflicting")
+    return "Conflicting signed event revisions need review. No new change was signed. Refresh event records and review those revisions before trying again."
+  if (current.resolution.state === "malformed")
+    return "The current signed event record has invalid details. No new change was signed. Refresh event records and review the organizer's event before trying again."
+  if (current.resolution.state === "deleted")
+    return "The current event has a signed deletion. No new change was signed. Refresh event records and review that deletion before making another change."
+  if (current.writeObservation?.limited)
+    return "The event check reached its history or source limit. No new change was signed. Refresh event records and review the latest signed event before trying again."
+  if (
+    current.coverage !== "unavailable" &&
+    (current.coverage === "stale" ||
+      current.writeObservation?.selectedLive === false)
+  )
+    return "The latest signed event revision was not observed in the current check. No new change was signed. Refresh event records; if offered, retry signed market delivery before trying again."
+  return "A required signed-event check could not complete. No new change was signed. Refresh event records before trying again."
+}
+
 /** Compare the strongest known signed head before requesting an organizer signature. */
 export async function publishEventMarketRoster(
   input: {
@@ -221,7 +243,7 @@ export async function publishEventMarketRoster(
     current.resolution.state === "deleted"
   ) {
     throw new Error(
-      "Current signed Event Market authority needs organizer review."
+      `Current signed Event Market authority needs organizer review. ${rosterWriteReviewReason(current)}`
     )
   }
   const previous =

@@ -4,7 +4,12 @@ import {
   encodeSparkAddress,
   getNetworkFromSparkAddress,
   isValidSparkAddress,
+  SparkAuthenticationError,
+  SparkRequestError,
+  SparkValidationError,
+  SparkWallet,
   UUID,
+  type TransferWithInvoiceParams,
 } from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.browser.js"
 import {
   adaptFirstPartySparkWallet,
@@ -59,12 +64,27 @@ function module(overrides: Partial<SparkNativeModule> = {}): SparkNativeModule {
   }
 }
 
+function successfulFulfillment(
+  transfer: NonNullable<Awaited<ReturnType<SparkNativeWallet["getTransfer"]>>>
+) {
+  return {
+    satsTransactionSuccess: [
+      { invoice: transfer.sparkInvoice, transferResponse: transfer },
+    ],
+    satsTransactionErrors: [],
+    tokenTransactionSuccess: [],
+    tokenTransactionErrors: [],
+    invalidInvoices: [],
+  }
+}
+
 function fixture(
   options: {
     transfer?: Partial<
       NonNullable<Awaited<ReturnType<SparkNativeWallet["getTransfer"]>>>
     >
     queryStatus?: number
+    retirementReadTimeoutMs?: number
     module?: Partial<SparkNativeModule>
     wallet?: Partial<SparkNativeWallet>
   } = {}
@@ -155,7 +175,7 @@ function fixture(
     },
     fulfillSparkInvoice: async (invoices) => {
       fulfills.push(invoices)
-      return {}
+      return successfulFulfillment(transfer)
     },
     ...options.wallet,
   }
@@ -165,7 +185,7 @@ function fixture(
     module: nativeModule,
     network: "MAINNET",
     pollIntervalMs: 1,
-    retirementReadTimeoutMs: 1_000,
+    retirementReadTimeoutMs: options.retirementReadTimeoutMs ?? 1_000,
     transferCompletionTimeoutSecs: 1,
     wait: async () => {},
     now: () => 1_800_000_000_000,
@@ -186,6 +206,304 @@ function fixture(
 }
 
 describe("native checkout treasury SDK boundary", () => {
+  it("does not report the real pinned SDK's structured sats rejection as submitted", async () => {
+    let transferCalls = 0
+    // Execute the installed public method without constructing a wallet, signer
+    // or connection. Only its financial execution seam is synthetic.
+    const sdkWallet = Object.assign(Object.create(SparkWallet.prototype), {
+      config: { getNetworkType: () => "MAINNET" },
+      getIdentityPublicKey: async () => SENDER,
+      transferWithInvoiceInternal: async (
+        params: TransferWithInvoiceParams[]
+      ) => {
+        transferCalls += 1
+        return params.map((param) => ({
+          ok: false,
+          param,
+          error: new Error("Synthetic provider rejection"),
+        }))
+      },
+    }) as SparkWallet
+    const f = fixture({
+      queryStatus: 0,
+      wallet: {
+        fulfillSparkInvoice: (invoices) =>
+          sdkWallet.fulfillSparkInvoice(invoices),
+      },
+    })
+    const request = { ...f.request, priorSendMayHaveOccurred: false }
+    expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+      status: "ambiguous",
+      reason: "provider_error",
+    })
+    expect(transferCalls).toBe(1)
+    expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+      status: "ambiguous",
+    })
+    expect(transferCalls).toBe(1)
+  })
+
+  it("classifies the real SDK's rejected sender without executing a transfer or authorizing replay", async () => {
+    let transferCalls = 0
+    const sdkWallet = Object.assign(Object.create(SparkWallet.prototype), {
+      config: { getNetworkType: () => "MAINNET" },
+      getIdentityPublicKey: async () => RECEIVER,
+      transferWithInvoiceInternal: async () => {
+        transferCalls += 1
+        throw new Error("Unexpected transfer boundary")
+      },
+    }) as SparkWallet
+    const f = fixture({
+      queryStatus: 0,
+      wallet: {
+        fulfillSparkInvoice: (invoices) =>
+          sdkWallet.fulfillSparkInvoice(invoices),
+      },
+    })
+    const request = { ...f.request, priorSendMayHaveOccurred: false }
+    expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+      status: "ambiguous",
+      reason: "invoice_rejected",
+    })
+    expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+      status: "ambiguous",
+    })
+    expect(transferCalls).toBe(0)
+  })
+
+  it.each([1n, 8n])(
+    "accepts the current invoice shape and %d-sat amount through actual SDK validation without executing leaves",
+    async (amount) => {
+      const f = fixture()
+      const targets: number[][] = []
+      const sdkWallet = Object.assign(Object.create(SparkWallet.prototype), {
+        config: { getNetworkType: () => "MAINNET" },
+        getIdentityPublicKey: async () => SENDER,
+        leafManager: {
+          selectLeavesAndExecute: async (amounts: number[]) => {
+            targets.push(amounts)
+            return []
+          },
+        },
+      }) as SparkWallet
+      const result = await sdkWallet.fulfillSparkInvoice([
+        { invoice: f.request.nativeTreasury.invoiceRequest, amount },
+      ])
+      expect(result.invalidInvoices).toEqual([])
+      expect(targets).toEqual([[Number(amount)]])
+      expect(result.satsTransactionSuccess).toEqual([])
+    }
+  )
+
+  it("retains an exact singleton pending success ID without treating the response as a receipt", async () => {
+    const f = fixture({
+      queryStatus: 0,
+      transfer: { status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK" },
+    })
+    expect(
+      await f.client.sendCheckoutTreasury!({
+        ...f.request,
+        priorSendMayHaveOccurred: false,
+      })
+    ).toEqual({ status: "submitted", providerTransferId: TRANSFER_ID })
+    expect((await f.client.inspectCheckoutTreasury!(f.request)).status).toBe(
+      "not_found"
+    )
+    expect(f.reads).toEqual([])
+  })
+
+  it("drains an admitted SDK fulfillment beyond the real client's bounded read deadline", async () => {
+    let finish!: () => void
+    let invoked = false
+    const f = fixture({
+      queryStatus: 0,
+      retirementReadTimeoutMs: 1,
+      wallet: {
+        fulfillSparkInvoice: () => {
+          invoked = true
+          return new Promise<ReturnType<typeof successfulFulfillment>>(
+            (resolve) => {
+              finish = () => resolve(successfulFulfillment(f.transfer))
+            }
+          )
+        },
+      },
+    })
+    let settled = false
+    const sending = f.client.sendCheckoutTreasury!({
+      ...f.request,
+      priorSendMayHaveOccurred: false,
+    }).then((result) => {
+      settled = true
+      return result
+    })
+    for (let index = 0; index < 40 && !invoked; index += 1)
+      await Promise.resolve()
+    expect(invoked).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const settledBeforeProvider = settled
+    finish()
+    const result = await sending
+    expect(settledBeforeProvider).toBe(false)
+    expect(result).toEqual({
+      status: "submitted",
+      providerTransferId: TRANSFER_ID,
+    })
+    const blockedRead = fixture({
+      retirementReadTimeoutMs: 1,
+      wallet: { querySparkInvoices: () => new Promise(() => {}) },
+    })
+    expect(
+      (await blockedRead.client.inspectCheckoutTreasury!(blockedRead.request))
+        .status
+    ).toBe("lookup_unavailable")
+  })
+
+  it("rejects malformed, foreign, extra and mixed fulfillment results without enabling another invocation", async () => {
+    const base = fixture()
+    const exact = successfulFulfillment(base.transfer)
+    const success = exact.satsTransactionSuccess[0]!
+    const error = new Error("Synthetic detail that must not escape")
+    for (const response of [
+      undefined,
+      null,
+      {},
+      { sats: [base.transfer] },
+      { ...exact, invalidInvoices: undefined },
+      { ...exact, satsTransactionSuccess: [] },
+      { ...exact, satsTransactionSuccess: [success, success] },
+      {
+        ...exact,
+        satsTransactionSuccess: [{ ...success, invoice: "foreign-request" }],
+      },
+      ...[
+        { id: "not-a-transfer-id" },
+        { sparkInvoice: "foreign-request" },
+        { valueSentByWallet: 58 },
+        { senders: undefined },
+        { receivers: undefined },
+        { status: "UNKNOWN" },
+      ].map((transfer) => ({
+        ...exact,
+        satsTransactionSuccess: [
+          {
+            ...success,
+            transferResponse: { ...base.transfer, ...transfer },
+          },
+        ],
+      })),
+      {
+        ...exact,
+        satsTransactionErrors: [{ invoice: success.invoice, error }],
+      },
+      {
+        ...exact,
+        invalidInvoices: [{ invoice: success.invoice, error }],
+      },
+      { ...exact, tokenTransactionSuccess: [{ txid: "foreign-token-result" }] },
+      { ...exact, tokenTransactionErrors: [{ error }] },
+      {
+        ...exact,
+        satsTransactionSuccess: [],
+        satsTransactionErrors: [{ invoice: "foreign-request", error }],
+      },
+      {
+        ...exact,
+        satsTransactionSuccess: [],
+        invalidInvoices: [{ invoice: success.invoice }],
+      },
+    ]) {
+      let calls = 0
+      const f = fixture({
+        queryStatus: 0,
+        wallet: {
+          fulfillSparkInvoice: async () => {
+            calls += 1
+            return response
+          },
+        },
+      })
+      const request = { ...f.request, priorSendMayHaveOccurred: false }
+      expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+        status: "ambiguous",
+        reason: "unrecognized_result",
+      })
+      expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+        status: "ambiguous",
+      })
+      expect(calls).toBe(1)
+    }
+  })
+
+  it("projects only allowlisted error names and never accesses provider messages or context", async () => {
+    for (const [error, reason] of [
+      [
+        new SparkValidationError("Synthetic private detail"),
+        "provider_validation",
+      ],
+      [new SparkRequestError("Synthetic private detail"), "provider_request"],
+      [
+        new SparkAuthenticationError("Synthetic private detail"),
+        "provider_authentication",
+      ],
+      [new Error("Synthetic private detail"), "provider_error"],
+      [
+        Object.defineProperty(new Error("Synthetic private detail"), "name", {
+          get() {
+            throw new Error("Opaque provider error name")
+          },
+        }),
+        "provider_error",
+      ],
+    ] as const) {
+      Object.defineProperty(error, "message", {
+        get() {
+          throw new Error("Provider message must not be read")
+        },
+      })
+      Object.defineProperty(error, "originalError", {
+        get() {
+          throw new Error("Provider context must not be read")
+        },
+      })
+      for (const throws of [false, true]) {
+        let calls = 0
+        const f = fixture({
+          queryStatus: 0,
+          wallet: {
+            fulfillSparkInvoice: async (invoices) => {
+              calls += 1
+              if (throws) throw error
+              return {
+                satsTransactionSuccess: [],
+                satsTransactionErrors: [
+                  { invoice: invoices[0]!.invoice, error },
+                ],
+                tokenTransactionSuccess: [],
+                tokenTransactionErrors: [],
+                invalidInvoices: [],
+              }
+            },
+          },
+        })
+        const request = { ...f.request, priorSendMayHaveOccurred: false }
+        const result = await f.client.sendCheckoutTreasury!(request)
+        expect(result).toEqual({
+          status: "ambiguous",
+          reason:
+            throws && reason === "provider_error"
+              ? "provider_unavailable"
+              : reason,
+        })
+        expect(JSON.stringify(result)).not.toContain("Synthetic")
+        expect(await f.client.sendCheckoutTreasury!(request)).toEqual({
+          status: "ambiguous",
+        })
+        expect(calls).toBe(1)
+      }
+    }
+  })
+
   it("leaves every unreviewed SDK version without native send capability", async () => {
     expect(getCheckoutSparkNativeTreasuryPolicyForSdkVersion("0.13.0")).toBe(
       SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY
@@ -321,9 +639,11 @@ describe("native checkout treasury SDK boundary", () => {
       wallet: {
         fulfillSparkInvoice: () => {
           admissions += 1
-          return new Promise<void>((resolve) => {
-            finish = resolve
-          })
+          return new Promise<ReturnType<typeof successfulFulfillment>>(
+            (resolve) => {
+              finish = () => resolve(successfulFulfillment(f.transfer))
+            }
+          )
         },
       },
     })
@@ -334,7 +654,10 @@ describe("native checkout treasury SDK boundary", () => {
       await Promise.resolve()
     expect(admissions).toBe(1)
     finish()
-    expect(await first).toEqual({ status: "submitted" })
+    expect(await first).toEqual({
+      status: "submitted",
+      providerTransferId: TRANSFER_ID,
+    })
     expect(await second).toEqual({ status: "ambiguous" })
     expect(admissions).toBe(1)
   })
@@ -610,7 +933,7 @@ describe("native checkout treasury SDK boundary", () => {
         ...f.request,
         priorSendMayHaveOccurred: false,
       })
-    ).toEqual({ status: "submitted" })
+    ).toEqual({ status: "ambiguous", reason: "unrecognized_result" })
     expect(f.fulfills).toEqual([
       [{ invoice: f.request.nativeTreasury.invoiceRequest, amount: 57n }],
     ])
@@ -759,6 +1082,7 @@ describe("native checkout treasury SDK boundary", () => {
     }
     expect(await f.client.sendCheckoutTreasury!(first)).toEqual({
       status: "ambiguous",
+      reason: "provider_unavailable",
     })
     expect(await f.client.sendCheckoutTreasury!(first)).toEqual({
       status: "ambiguous",

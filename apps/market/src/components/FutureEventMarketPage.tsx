@@ -24,8 +24,6 @@ import {
   Button,
   Combobox,
   EventPageHeader,
-  EventFulfillmentChoice,
-  type EventFulfillmentSelection,
   Input,
   Label,
   QRCodeSVG,
@@ -35,10 +33,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@conduit/ui"
-import {
-  hasEventShippingChoice,
-  readEventShippingProduct,
-} from "../lib/event-fulfillment-choice"
 import { useCart } from "../hooks/useCart"
 import { useMerchantIdentities } from "../hooks/useMerchantIdentities"
 import { useShopperPricing } from "../hooks/useShopperPricing"
@@ -64,7 +58,6 @@ function FutureEventProductCard({
   quote,
   preference,
   onAdd,
-  onMerchantChange,
 }: {
   entry: EventMarketCatalogCandidate
   merchantName: string
@@ -75,23 +68,17 @@ function FutureEventProductCard({
   preference: ReturnType<typeof useShopperPricing>["preference"]
   onAdd: (
     entry: EventMarketCatalogCandidate,
-    selected: Product,
-    choice: EventFulfillmentSelection
+    selected: Product
   ) => Promise<void>
-  onMerchantChange: (pubkey: string) => void
 }) {
   const navigate = useNavigate()
   const [selectedProductId, setSelectedProductId] = useState("")
-  const [choice, setChoice] = useState<EventFulfillmentSelection>(
-    "event_market_pickup"
-  )
   const [checking, setChecking] = useState(false)
   const [error, setError] = useState("")
   if (entry.resolution.state !== "candidate") return null
   const { product, merchant } = entry.resolution
   const activeProductId = selectedProductId || product.id
-  const canAdd =
-    choice === "shipping" ? hasEventShippingChoice(product) : canPurchase
+  const canAdd = canPurchase
   return (
     <ProductGridCard
       className="h-auto"
@@ -107,11 +94,6 @@ function FutureEventProductCard({
               : "Organizer pickup"}
             : {merchant.assignment}
           </span>
-          <EventFulfillmentChoice
-            value={choice}
-            onChange={setChoice}
-            shippingAvailable={hasEventShippingChoice(product)}
-          />
           {error ? (
             <span role="alert" className="block text-[var(--error-text)]">
               {error}
@@ -119,7 +101,6 @@ function FutureEventProductCard({
           ) : null}
         </div>
       }
-      onMerchantActivate={() => onMerchantChange(merchant.pubkey)}
       onProductActivate={() =>
         void navigate({
           to: "/products/$productId",
@@ -137,7 +118,7 @@ function FutureEventProductCard({
               setChecking(true)
               setError("")
               try {
-                await onAdd(entry, selected, choice)
+                await onAdd(entry, selected)
               } catch (cause) {
                 setError(
                   cause instanceof Error
@@ -154,7 +135,7 @@ function FutureEventProductCard({
       cartActionDisabledLabel={
         checking ? "Checking product…" : "Event pickup unavailable"
       }
-      allowZeroPrice={choice === "event_market_pickup" && canPurchase}
+      allowZeroPrice={canPurchase}
       btcUsdRate={quote}
       pricePreference={preference}
     />
@@ -318,11 +299,9 @@ export function FutureEventMarketPage({
 
   async function addProduct(
     entry: EventMarketCatalogCandidate,
-    selected: Product,
-    choice: EventFulfillmentSelection
+    selected: Product
   ): Promise<void> {
-    if (!market || !shouldContinue()) return
-    if (choice === "event_market_pickup" && !canPurchase) return
+    if (!market || !shouldContinue() || !canPurchase) return
     // Choose a purchasable variation on the existing detail surface. The
     // variable parent is a catalog entry and must never enter the cart.
     if (
@@ -330,37 +309,6 @@ export function FutureEventMarketPage({
       selected.id !== entry.productCoordinate
     ) {
       navigateToProduct(selected.id)
-      return
-    }
-    if (choice === "shipping") {
-      let product: Product
-      try {
-        product = await readEventShippingProduct({
-          productId: entry.productCoordinate,
-          merchantPubkey: selected.pubkey,
-          authenticatedPubkey,
-          expectedEventId: entry.resolution.revision.id,
-          shouldContinue,
-        })
-      } catch (cause) {
-        void query.refetch()
-        throw cause
-      }
-      await cart.addItem(
-        {
-          ...cartItemInputFromProductSelection(product, product, {
-            type: "shipping",
-          }),
-          eventMarketContext:
-            calendar && (!series || selectedDate)
-              ? {
-                  marketCoordinate: market.coordinate,
-                  calendarCoordinate: calendar.coordinate,
-                }
-              : undefined,
-        },
-        1
-      )
       return
     }
     const marketRead = await readEventMarketRoster({
@@ -632,7 +580,6 @@ export function FutureEventMarketPage({
                       quote={pricing.quote}
                       preference={pricing.preference}
                       onAdd={addProduct}
-                      onMerchantChange={(pubkey) => onMerchantChange(pubkey)}
                     />
                   </li>
                 )

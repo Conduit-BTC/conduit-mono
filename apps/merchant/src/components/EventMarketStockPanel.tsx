@@ -114,8 +114,8 @@ export function EventMarketStockPoolList(props: {
     <div className="space-y-3">
       {props.pools.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">
-          No reserved stock is saved on this device. Checking messages cannot
-          prove there are no older grants.
+          No reserved stock is saved here. Check for stock updates; an empty
+          check does not prove there are no earlier reservations.
         </p>
       ) : null}
       {props.pools.map((pool) => {
@@ -150,8 +150,8 @@ export function EventMarketStockPoolList(props: {
             </p>
             {organizer && !ownWriter ? (
               <p className="text-sm text-[var(--warning-text)]">
-                Read-only here. Continue on the designated handover device or
-                recover its complete journal.
+                Read-only here. Continue in the designated pickup browser or
+                recover its complete saved history.
               </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
@@ -162,7 +162,7 @@ export function EventMarketStockPoolList(props: {
                   disabled={props.busy || (organizer && props.writerBlocked)}
                   onClick={() => props.onAction(pool, "retry")}
                 >
-                  Retry saved {organizer ? "closing" : "grant"} delivery
+                  Retry saved {organizer ? "closing" : "reservation"} update
                 </Button>
               ) : null}
               {ownWriter && pool.state === "active" ? (
@@ -172,7 +172,7 @@ export function EventMarketStockPoolList(props: {
                   disabled={props.busy}
                   onClick={() => props.onAction(pool, "close")}
                 >
-                  Stop new sales and close pool
+                  Stop new sales and close reserved stock
                 </Button>
               ) : null}
               {!organizer && pool.state !== "closed" ? (
@@ -182,7 +182,7 @@ export function EventMarketStockPoolList(props: {
                   disabled={props.busy}
                   onClick={() => props.onAction(pool, "reconcile")}
                 >
-                  Reconcile organizer close
+                  Review closed stock and release unused quantity
                 </Button>
               ) : null}
             </div>
@@ -556,7 +556,7 @@ export function EventMarketStockPanel(props: {
     })
     if (shouldContinue())
       setNotice(
-        "The exact stock reservation is saved and its grant delivery was attempted. The organizer must receive it on the selected device."
+        "The exact stock reservation is saved; delivery to the organizer was attempted. They must accept it in the selected pickup browser."
       )
   }
   async function receive(packet: AuthenticatedEventMarketStockPacket) {
@@ -588,7 +588,7 @@ export function EventMarketStockPanel(props: {
     })
     if (shouldContinue())
       setNotice(
-        "Reserved stock received on this device. Payment verification is still required before each physical handout."
+        "Reserved stock is ready for pickup here. Payment verification is still required before each physical handout."
       )
   }
   async function resumeStockPublication(
@@ -810,42 +810,48 @@ export function EventMarketStockPanel(props: {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Organizer stock handover</CardTitle>
+        <CardTitle>Organizer-held stock</CardTitle>
         <CardDescription>
-          Reserve a finite quantity for one organizer device. This does not
-          share wallet keys, change product ownership, or confirm payment.
+          The seller reserves a quantity; the organizer holds the goods and
+          handles pickup. Sellers managing their own pickup do not need this
+          setup. Stock ownership and payment checks stay unchanged.
         </CardDescription>
       </CardHeader>
       <CardContent className="min-w-0 space-y-4">
         {organizer ? (
           <div className="space-y-3">
             <p className="text-sm text-[var(--text-secondary)]">
-              Use one designated browser for stock sales and pickup. A
-              replacement must be prepared first, then receive the original
-              device's complete saved history. A grant alone cannot restart a
-              stock writer.
+              Choose one browser for pickup, then share its setup code with the
+              seller. Keep using that browser to accept reserved stock and hand
+              out orders. To move pickup elsewhere, use the advanced controls
+              below; do not start over.
             </p>
             {device ? (
               <>
-                <Field
-                  label={
-                    device.mode === "target"
-                      ? "Replacement device handover ID"
-                      : "This device's handover ID"
-                  }
-                >
-                  {(control) => (
-                    <Input
-                      {...control}
-                      readOnly
-                      value={
-                        device.mode === "target"
-                          ? organizerStockDeviceId(device)
-                          : device.writerId
-                      }
-                    />
-                  )}
-                </Field>
+                <details className="space-y-3">
+                  <summary className="cursor-pointer text-sm">
+                    Technical pickup details
+                  </summary>
+                  <Field
+                    label={
+                      device.mode === "target"
+                        ? "Replacement device handover ID"
+                        : "Pickup setup code"
+                    }
+                  >
+                    {(control) => (
+                      <Input
+                        {...control}
+                        readOnly
+                        value={
+                          device.mode === "target"
+                            ? organizerStockDeviceId(device)
+                            : device.writerId
+                        }
+                      />
+                    )}
+                  </Field>
+                </details>
                 <Button
                   variant="outline"
                   type="button"
@@ -857,13 +863,17 @@ export function EventMarketStockPanel(props: {
                           ? organizerStockDeviceId(device)
                           : device.writerId
                       )
-                      setNotice("Device handover ID copied.")
+                      setNotice(
+                        device.mode === "target"
+                          ? "Replacement setup code copied. Enter it in the original pickup browser's advanced controls."
+                          : "Pickup setup code copied. Share it with the seller."
+                      )
                     })
                   }
                 >
                   {device.mode === "target"
-                    ? "Copy replacement device ID"
-                    : "Copy handover ID"}
+                    ? "Copy replacement setup code"
+                    : "Copy pickup setup code"}
                 </Button>
                 {device.mode !== "target" &&
                 !registration &&
@@ -877,12 +887,12 @@ export function EventMarketStockPanel(props: {
                         await registerDevice(device)
                         if (shouldContinue())
                           setNotice(
-                            "This original device and its complete saved stock journal are verified."
+                            "Saved pickup setup and complete stock history are verified here."
                           )
                       })
                     }
                   >
-                    Verify this original device
+                    Verify saved pickup setup
                   </Button>
                 ) : null}
               </>
@@ -909,42 +919,26 @@ export function EventMarketStockPanel(props: {
                     )!
                     await registerDevice(selected)
                     setNotice(
-                      "This device's handover ID is saved. Share it with the seller."
+                      "Pickup is set up here. Copy the setup code and share it with the seller."
                     )
                   })
                 }
               >
-                Use this device for stock handover
-              </Button>
-            ) : null}
-            {!device || (device.mode === "target" && !registration) ? (
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  busy ||
-                  !!deviceError ||
-                  !local.isSuccess ||
-                  local.data.hasRetainedPools ||
-                  !!registration
-                }
-                onClick={() => void run(prepareReplacement)}
-              >
-                Prepare replacement device
+                Set up pickup here
               </Button>
             ) : null}
             {device?.mode === "target" && registration?.state === "target" ? (
               <p role="status" className="text-sm text-[var(--info-text)]">
                 This replacement is prepared, not active. Copy its ID to the
-                original device, then check private stock messages and verify
-                the complete handover here.
+                original device, then check for stock updates and use the
+                advanced recovery controls to verify the complete history here.
               </p>
             ) : null}
             {writerRetired ? (
               <div className="space-y-3">
                 <p role="status" className="text-sm text-[var(--warning-text)]">
-                  This device's stock writer has moved. Continue on the
-                  replacement device.
+                  Pickup has moved from this browser. Continue on the
+                  replacement; do not hand out orders here.
                 </p>
                 <Button
                   type="button"
@@ -963,58 +957,86 @@ export function EventMarketStockPanel(props: {
                     })
                   }
                 >
-                  Retry saved device handover
+                  Retry saved pickup transfer
                 </Button>
               </div>
             ) : null}
-            {deviceReady && local.data?.hasRetainedPools ? (
-              <section className="space-y-3 border-t border-[var(--border)] pt-3">
-                <h3 className="font-medium">Move stock to another device</h3>
-                <p className="text-sm text-[var(--text-secondary)]">
-                  Prepare the replacement first. Moving freezes this device
-                  before sending the complete journal, including accepted orders
-                  and previous handouts. It does not restart payments.
-                </p>
-                <p className="text-sm text-[var(--text-secondary)]">
-                  If the complete history exceeds the safe transfer limit, this
-                  device stays active for normal work. Moving a larger history
-                  needs expanded transfer support; never prune, reset or move
-                  only part of the history.
-                </p>
-                <Field label="Replacement device ID">
-                  {(control) => (
-                    <Input
-                      {...control}
-                      value={replacementId}
-                      disabled={busy}
-                      autoCapitalize="none"
-                      autoComplete="off"
-                      onChange={(event) => setReplacementId(event.target.value)}
-                    />
-                  )}
-                </Field>
-                <label className="flex items-start gap-3 text-sm">
-                  <Checkbox
-                    checked={confirmMove}
-                    onCheckedChange={setConfirmMove}
-                    disabled={busy}
-                    aria-label="I understand this stops stock sales and pickup on this device"
-                  />
-                  <span>
-                    I understand this stops stock sales and pickup on this
-                    device
-                  </span>
-                </label>
+            <details className="space-y-3 border-t border-[var(--border)] pt-3">
+              <summary className="cursor-pointer text-sm">
+                Move pickup to another device (advanced)
+              </summary>
+              <p className="text-sm text-[var(--text-secondary)]">
+                A replacement must receive the original browser's complete
+                history. A setup code or reservation alone cannot restart
+                pickup.
+              </p>
+              {!device || (device.mode === "target" && !registration) ? (
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={busy || !confirmMove || !replacementId.trim()}
-                  onClick={() => void run(moveWriter)}
+                  disabled={
+                    busy ||
+                    !!deviceError ||
+                    !local.isSuccess ||
+                    local.data.hasRetainedPools ||
+                    !!registration
+                  }
+                  onClick={() => void run(prepareReplacement)}
                 >
-                  Freeze this device and send handover
+                  Prepare replacement device
                 </Button>
-              </section>
-            ) : null}
+              ) : null}
+              {deviceReady && local.data?.hasRetainedPools ? (
+                <section className="space-y-3">
+                  <h3 className="font-medium">Move stock to another device</h3>
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    Prepare the replacement first. Moving freezes this device
+                    before sending the complete journal, including accepted
+                    orders and previous handouts. It does not restart payments.
+                  </p>
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    If the complete history exceeds the safe transfer limit,
+                    this device stays active for normal work. Moving a larger
+                    history needs expanded transfer support; never prune, reset
+                    or move only part of the history.
+                  </p>
+                  <Field label="Replacement device ID">
+                    {(control) => (
+                      <Input
+                        {...control}
+                        value={replacementId}
+                        disabled={busy}
+                        autoCapitalize="none"
+                        autoComplete="off"
+                        onChange={(event) =>
+                          setReplacementId(event.target.value)
+                        }
+                      />
+                    )}
+                  </Field>
+                  <label className="flex items-start gap-3 text-sm">
+                    <Checkbox
+                      checked={confirmMove}
+                      onCheckedChange={setConfirmMove}
+                      disabled={busy}
+                      aria-label="I understand this stops stock sales and pickup on this device"
+                    />
+                    <span>
+                      I understand this stops stock sales and pickup on this
+                      device
+                    </span>
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={busy || !confirmMove || !replacementId.trim()}
+                    onClick={() => void run(moveWriter)}
+                  >
+                    Freeze this device and send handover
+                  </Button>
+                </section>
+              ) : null}
+            </details>
           </div>
         ) : occurrence && merchant?.mode === "organizer_handoff" ? (
           <form
@@ -1027,7 +1049,12 @@ export function EventMarketStockPanel(props: {
               if (assignment) void run(() => grant(assignment))
             }}
           >
-            <Field label="Pickup stock assignment">
+            <p className="text-sm text-[var(--text-secondary)]">
+              Ask the organizer to set up pickup and send you the setup code.
+              Choose the stock and quantity to reserve for that pickup browser.
+              The organizer must accept it before selling or handing it out.
+            </p>
+            <Field label="Stock for organizer pickup">
               {(control) => (
                 <Select
                   value={assignmentId}
@@ -1070,7 +1097,7 @@ export function EventMarketStockPanel(props: {
                   />
                 )}
               </Field>
-              <Field label="Organizer's device handover ID">
+              <Field label="Pickup setup code from organizer">
                 {(control) => (
                   <Input
                     {...control}
@@ -1083,15 +1110,15 @@ export function EventMarketStockPanel(props: {
               </Field>
             </div>
             <p className="text-sm text-[var(--text-secondary)]">
-              This stock stays held until the organizer closes the pool and
-              every accepted order is reconciled, even after the date ends. New
-              sales stop at the selected date's end.
+              This stock stays reserved until the organizer closes it and every
+              accepted order is reconciled, even after the date ends. New sales
+              stop at the selected date's end.
             </p>
             <Button
               type="submit"
               disabled={busy || !assignmentId || !quantity || !writerId}
             >
-              Reserve stock and send grant
+              Reserve stock for organizer
             </Button>
           </form>
         ) : null}
@@ -1102,9 +1129,7 @@ export function EventMarketStockPanel(props: {
             disabled={busy}
             onClick={() => void run(discover)}
           >
-            {hasMore
-              ? "Check more stock history"
-              : "Check private stock messages"}
+            {hasMore ? "Check more stock history" : "Check for stock updates"}
           </Button>
           <Button
             type="button"
@@ -1144,9 +1169,9 @@ export function EventMarketStockPanel(props: {
             className="space-y-2 border-t border-[var(--border)] pt-3"
           >
             <p className="text-sm">
-              A seller's reserved stock grant is available for{" "}
+              A seller has reserved{" "}
               {packet.payload.type === "grant" ? packet.payload.quantity : ""}{" "}
-              items.
+              items for organizer pickup. Accept only after receiving the goods.
             </p>
             <Button
               type="button"
@@ -1159,98 +1184,117 @@ export function EventMarketStockPanel(props: {
               }
               onClick={() => void run(() => receive(packet))}
             >
-              Receive reserved stock on this device
+              Accept reserved stock
             </Button>
             {packet.payload.type === "grant" &&
             packet.payload.writerId !== device?.writerId ? (
               <p className="text-sm text-[var(--warning-text)]">
-                This grant selects a different handover device.
+                This reservation is for another pickup browser. Continue there;
+                do not accept it here.
               </p>
             ) : null}
           </section>
         ))}
-        {organizer &&
-          device &&
-          writerHandovers.map((selection) => (
-            <section
-              key={selection.transferId}
-              className="space-y-3 border-t border-[var(--border)] pt-3"
-            >
-              <p className="text-sm">
-                A complete private handover for this replacement is available
-                for {selection.poolCount} stock{" "}
-                {selection.poolCount === 1 ? "pool" : "pools"}. Verification
-                preserves accepted orders, previous handouts and the original
-                stock writer.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={busy || writerRetired}
-                onClick={() => void run(() => restoreWriter(selection))}
+        {(organizer && device && writerHandovers.length > 0) ||
+        checkpoints.length > 0 ||
+        closedRecoveries.length > 0 ? (
+          <p role="status" className="text-sm text-[var(--info-text)]">
+            Saved stock history is available. Open advanced recovery below to
+            verify it; existing reservations and prior handouts remain
+            unchanged.
+          </p>
+        ) : null}
+        <details className="space-y-3 border-t border-[var(--border)] pt-3">
+          <summary className="cursor-pointer text-sm">
+            Recover saved stock history (advanced)
+          </summary>
+          <p className="text-sm text-[var(--text-secondary)]">
+            Check for stock updates first. Recovery preserves existing orders
+            and prior handouts; it never creates another stock allowance.
+          </p>
+          {organizer &&
+            device &&
+            writerHandovers.map((selection) => (
+              <section
+                key={selection.transferId}
+                className="space-y-3 border-t border-[var(--border)] pt-3"
               >
-                Verify and restore complete handover
-              </Button>
-            </section>
-          ))}
-        {checkpoints.map((packet) => (
-          <section
-            key={packet.rumor.id}
-            className="space-y-2 border-t border-[var(--border)] pt-3"
-          >
-            <p className="text-sm">
-              An encrypted seller stock checkpoint is available. Recovery
-              preserves entrusted stock, accepted orders and prior handouts; it
-              never resets them.
-            </p>
-            {packet.payload.type === "merchant_checkpoint" && (
-              <p className="text-sm text-[var(--text-muted)]">
-                {merchantStockCheckpointSummaryNotice({
-                  sequence: packet.payload.sequence,
-                  orderCount: packet.payload.snapshot.orders.length,
-                })}
-              </p>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void run(() => restoreCheckpoint(packet))}
-            >
-              Recover saved seller stock history
-            </Button>
-          </section>
-        ))}
-        {closedRecoveries.map((packet) =>
-          packet.payload.type === "closed" ? (
+                <p className="text-sm">
+                  A complete private handover for this replacement is available
+                  for {selection.poolCount} stock{" "}
+                  {selection.poolCount === 1 ? "pool" : "pools"}. Verification
+                  preserves accepted orders, previous handouts and the original
+                  stock writer.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy || writerRetired}
+                  onClick={() => void run(() => restoreWriter(selection))}
+                >
+                  Verify and restore complete handover
+                </Button>
+              </section>
+            ))}
+          {checkpoints.map((packet) => (
             <section
               key={packet.rumor.id}
               className="space-y-2 border-t border-[var(--border)] pt-3"
             >
               <p className="text-sm">
-                Saved closing history can recover stock use and prior handouts
-                on a replacement device. It cannot reopen this pool for new
-                sales.
+                An encrypted seller stock checkpoint is available. Recovery
+                preserves entrusted stock, accepted orders and prior handouts;
+                it never resets them.
               </p>
+              {packet.payload.type === "merchant_checkpoint" && (
+                <p className="text-sm text-[var(--text-muted)]">
+                  {merchantStockCheckpointSummaryNotice({
+                    sequence: packet.payload.sequence,
+                    orderCount: packet.payload.snapshot.orders.length,
+                  })}
+                </p>
+              )}
               <Button
                 type="button"
                 variant="outline"
                 disabled={busy}
-                onClick={() =>
-                  void run(() =>
-                    restoreClosedHistory(
-                      packet.payload.type === "closed"
-                        ? packet.payload.poolId
-                        : ""
-                    )
-                  )
-                }
+                onClick={() => void run(() => restoreCheckpoint(packet))}
               >
-                Recover completed organizer stock history
+                Recover saved seller stock history
               </Button>
             </section>
-          ) : null
-        )}
+          ))}
+          {closedRecoveries.map((packet) =>
+            packet.payload.type === "closed" ? (
+              <section
+                key={packet.rumor.id}
+                className="space-y-2 border-t border-[var(--border)] pt-3"
+              >
+                <p className="text-sm">
+                  Saved closing history can recover stock use and prior handouts
+                  on a replacement device. It cannot reopen this pool for new
+                  sales.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() =>
+                    void run(() =>
+                      restoreClosedHistory(
+                        packet.payload.type === "closed"
+                          ? packet.payload.poolId
+                          : ""
+                      )
+                    )
+                  }
+                >
+                  Recover completed organizer stock history
+                </Button>
+              </section>
+            ) : null
+          )}
+        </details>
         {stockImports.map((selection) => (
           <section
             key={selection.orderId}

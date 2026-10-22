@@ -5,6 +5,7 @@ import {
   retainSignedEventMarketEvidence,
   retryEventMarketRosterDelivery,
   useAuth,
+  useProfile,
   type EventMarketOrganizerFeeResolution,
   type ParsedEventMarketRoster,
   type SignedPublicNostrEvent,
@@ -27,6 +28,7 @@ import {
 import {
   createEventMarketOrganizerFeeFormValues,
   formatOrganizerFeePercent,
+  getOrganizerFeeProfileAddress,
   parseEventMarketOrganizerFeeForm,
   type EventMarketOrganizerFeeFormValues,
 } from "../lib/event-market-organizer-fee-form"
@@ -37,13 +39,19 @@ export function EventMarketOrganizerFeeForm(props: {
   canEdit: boolean
   canRetry: boolean
   busy: boolean
+  editing: boolean
+  editLocked?: boolean
+  profileAddress?: string
   notice?: string
   error?: string
   onChange: (values: EventMarketOrganizerFeeFormValues) => void
   onSave: () => void
   onRetry: () => void
+  onEdit: () => void
+  onCancel: () => void
 }) {
   const { fee, values } = props
+  const disabled = props.busy || props.editLocked
   const update = (
     field: keyof EventMarketOrganizerFeeFormValues,
     value: string
@@ -68,8 +76,10 @@ export function EventMarketOrganizerFeeForm(props: {
             <div>
               <dt className="text-[var(--text-secondary)]">Current fee</dt>
               <dd>
-                {formatOrganizerFeePercent(fee.basisPoints)}%, minimum{" "}
-                {fee.minimumSats.toLocaleString()} sats
+                {formatOrganizerFeePercent(fee.basisPoints)}%
+                {fee.minimumSats > 0
+                  ? `, minimum ${fee.minimumSats.toLocaleString()} sats`
+                  : ""}
               </dd>
             </div>
             <div className="min-w-0">
@@ -99,7 +109,7 @@ export function EventMarketOrganizerFeeForm(props: {
                 : "No organizer fee has been set."}
           </p>
         )}
-        {props.canEdit ? (
+        {props.canEdit && props.editing ? (
           <form
             className="space-y-4"
             onSubmit={(event) => {
@@ -111,7 +121,7 @@ export function EventMarketOrganizerFeeForm(props: {
               {(control) => (
                 <Select
                   value={values.state}
-                  disabled={props.busy}
+                  disabled={disabled}
                   onValueChange={(value) => update("state", value)}
                 >
                   <SelectTrigger {...control}>
@@ -141,45 +151,48 @@ export function EventMarketOrganizerFeeForm(props: {
             </Field>
             {values.state === "active" ? (
               <>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field
-                    label="Percentage"
-                    description="Of merchandise and shipping only; no fee on other fees."
-                  >
-                    {(control) => (
-                      <Input
-                        {...control}
-                        inputMode="decimal"
-                        value={values.percent}
-                        disabled={props.busy}
-                        onChange={(event) =>
-                          update("percent", event.target.value)
-                        }
-                        placeholder="2.5"
-                      />
-                    )}
-                  </Field>
-                  <Field
-                    label="Minimum (sats)"
-                    description="The larger of this minimum or the percentage applies."
-                  >
-                    {(control) => (
-                      <Input
-                        {...control}
-                        inputMode="numeric"
-                        value={values.minimumSats}
-                        disabled={props.busy}
-                        onChange={(event) =>
-                          update("minimumSats", event.target.value)
-                        }
-                        placeholder="0"
-                      />
-                    )}
-                  </Field>
-                </div>
+                <Field
+                  label="Percentage"
+                  description="Of merchandise and shipping only; no fee on other fees. Set to zero to disable the fee."
+                >
+                  {(control) => (
+                    <Input
+                      {...control}
+                      inputMode="decimal"
+                      value={values.percent}
+                      disabled={disabled}
+                      onChange={(event) =>
+                        update("percent", event.target.value)
+                      }
+                      placeholder="2.5"
+                    />
+                  )}
+                </Field>
+                {props.profileAddress ? (
+                  <div className="space-y-2">
+                    <p className="break-all text-sm text-[var(--text-secondary)]">
+                      Your saved profile address: {props.profileAddress}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={disabled}
+                      onClick={() =>
+                        update("lightningAddress", props.profileAddress!)
+                      }
+                    >
+                      Use my Lightning address
+                    </Button>
+                  </div>
+                ) : (
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    No saved profile address is available here. Enter a
+                    receiving Lightning address below.
+                  </p>
+                )}
                 <Field
                   label="Organizer Lightning address"
-                  description="Use your own supported receiving wallet. Its outgoing fee stays within the organizer allocation."
+                  description="Use your saved address or enter a different supported receiving wallet. This does not change your profile or wallet settings."
                 >
                   {(control) => (
                     <Input
@@ -189,7 +202,7 @@ export function EventMarketOrganizerFeeForm(props: {
                       autoCorrect="off"
                       spellCheck={false}
                       value={values.lightningAddress}
-                      disabled={props.busy}
+                      disabled={disabled}
                       onChange={(event) =>
                         update("lightningAddress", event.target.value)
                       }
@@ -197,29 +210,39 @@ export function EventMarketOrganizerFeeForm(props: {
                     />
                   )}
                 </Field>
-                <Field
-                  label="Expiry (UTC, optional)"
-                  description="Leave empty for no separate fee expiry. Setting both amounts to zero disables the fee."
-                >
-                  {(control) => (
-                    <Input
-                      {...control}
-                      type="datetime-local"
-                      step={1}
-                      value={values.expiresAtUtc}
-                      disabled={props.busy}
-                      onChange={(event) =>
-                        update("expiresAtUtc", event.target.value)
-                      }
-                    />
-                  )}
-                </Field>
+                {fee.state === "active" &&
+                (fee.minimumSats > 0 || fee.expiresAt !== undefined) ? (
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    Saving replaces the current minimum and expiry with a
+                    percentage-only fee. Existing orders keep their original
+                    terms.
+                  </p>
+                ) : null}
               </>
             ) : null}
-            <Button type="submit" disabled={props.busy || values.state === ""}>
-              {props.busy ? "Saving fee settings…" : "Save fee settings"}
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button type="submit" disabled={disabled || values.state === ""}>
+                {props.busy ? "Saving fee settings…" : "Save fee settings"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={disabled}
+                onClick={props.onCancel}
+              >
+                Cancel
+              </Button>
+            </div>
           </form>
+        ) : props.canEdit ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={disabled}
+            onClick={props.onEdit}
+          >
+            Edit fee settings
+          </Button>
         ) : (
           <p className="text-sm text-[var(--text-secondary)]">
             Only the authenticated organizer with current event authority can
@@ -270,15 +293,53 @@ export function EventMarketOrganizerFeeEditor(props: {
   const [values, setValues] = useState(() =>
     createEventMarketOrganizerFeeFormValues(fee)
   )
+  const [editing, setEditing] = useState(
+    () => fee.state === "absent" || fee.state === "invalid"
+  )
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState("")
   const [error, setError] = useState("")
   const [saved, setSaved] = useState<SignedPublicNostrEvent | null>(null)
+  const [published, setPublished] = useState(false)
   const inFlight = useRef(false)
   const owner = props.authenticatedPubkey === market.organizerPubkey
   const shouldContinue = () => owner && isAuthGenerationCurrent(authGeneration)
+  const profileQuery = useProfile(owner ? market.organizerPubkey : null, {
+    accountPubkey: props.authenticatedPubkey,
+    authenticatedPubkey: props.authenticatedPubkey,
+    shouldContinue,
+    enabled: owner && props.canManage && editing,
+    maxUnresolvedRefetches: 2,
+    evidenceScope: "payment",
+  })
+  const profileAddress = getOrganizerFeeProfileAddress(
+    profileQuery.profileContext,
+    market.organizerPubkey
+  )
+  const displayedFee = useMemo(
+    () =>
+      published && saved
+        ? parseEventMarketOrganizerFeeTerms({
+            event: saved,
+            marketCoordinate: market.coordinate,
+          })
+        : fee,
+    [fee, market.coordinate, published, saved]
+  )
+  function changeEditing(next: boolean) {
+    if (inFlight.current || saved) return
+    setValues(createEventMarketOrganizerFeeFormValues(fee))
+    setNotice("")
+    setError("")
+    setEditing(next)
+  }
   async function mutate(retry: boolean) {
-    if (inFlight.current || !owner || (!retry && !props.canManage)) return
+    if (
+      inFlight.current ||
+      !owner ||
+      (!retry && (!props.canManage || !editing || saved))
+    )
+      return
     inFlight.current = true
     setBusy(true)
     setNotice("")
@@ -300,7 +361,7 @@ export function EventMarketOrganizerFeeEditor(props: {
           state: market.state,
           merchants: market.merchants,
           expectedPreviousEventId: market.eventId,
-          organizerFee: parseEventMarketOrganizerFeeForm(values, Date.now()),
+          organizerFee: parseEventMarketOrganizerFeeForm(values),
           shouldContinue,
           onSignedLocal: async (event) => {
             await retainSignedEventMarketEvidence(market.coordinate, event)
@@ -308,8 +369,17 @@ export function EventMarketOrganizerFeeEditor(props: {
           },
         })
       if (shouldContinue()) {
+        setPublished(true)
+        setEditing(false)
         setNotice("Fee settings saved and published.")
-        await props.onChanged()
+        try {
+          await props.onChanged()
+        } catch {
+          if (shouldContinue())
+            setError(
+              "The fee settings were published, but the event could not refresh. Refresh the event before editing again."
+            )
+        }
       }
     } catch (cause) {
       if (shouldContinue())
@@ -325,16 +395,26 @@ export function EventMarketOrganizerFeeEditor(props: {
   }
   return (
     <EventMarketOrganizerFeeForm
-      fee={fee}
+      fee={displayedFee}
       values={values}
-      canEdit={owner && props.canManage && !saved}
-      canRetry={owner}
+      canEdit={owner && props.canManage}
+      canRetry={owner && !!saved && !published && !!error}
       busy={busy}
+      editing={editing}
+      editLocked={!!saved}
+      profileAddress={profileAddress}
       notice={notice}
       error={error}
-      onChange={setValues}
+      onChange={(next) => {
+        if (inFlight.current || saved) return
+        setValues(next)
+        setNotice("")
+        setError("")
+      }}
       onSave={() => void mutate(false)}
       onRetry={() => void mutate(true)}
+      onEdit={() => changeEditing(true)}
+      onCancel={() => changeEditing(false)}
     />
   )
 }

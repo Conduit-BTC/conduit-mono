@@ -111,7 +111,7 @@ export interface CheckoutSparkSettledFundingDependencies {
     initialHandoffId: string,
     buyerPubkey: string,
     storage: CheckoutSparkSettledPreparationStorage | null | undefined
-  ) => boolean
+  ) => boolean | Promise<boolean>
   /** Tests may provide the shared local-storage lock; production requires it. */
   withStoreWriteLock?: <T>(operation: () => Promise<T>) => Promise<T>
 }
@@ -163,11 +163,11 @@ export function createCheckoutSparkSettledFundingBridge(
   const now = dependencies.now ?? Date.now
   const verifyBuyerAuthority =
     dependencies.verifyBuyerAuthority ??
-    ((initialHandoffId: string, buyerPubkey: string) => {
+    (async (initialHandoffId: string, buyerPubkey: string) => {
       const delivery =
         dependencies.recoveryStorage === undefined
-          ? getCheckoutSparkRecoveryDelivery(initialHandoffId)
-          : getCheckoutSparkRecoveryDelivery(
+          ? await getCheckoutSparkRecoveryDelivery(initialHandoffId)
+          : await getCheckoutSparkRecoveryDelivery(
               initialHandoffId,
               dependencies.recoveryStorage
             )
@@ -192,23 +192,33 @@ export function createCheckoutSparkSettledFundingBridge(
     if (exposeExternalInvoice && input.paymentTarget.type !== "manual") {
       throw new Error("External funding requires an explicit manual choice.")
     }
-    const assertCurrentBuyer = (initialHandoffId?: string) => {
+    const assertBuyerSession = () => {
       if (
         !/^[0-9a-f]{64}$/.test(input.buyerPubkey) ||
-        !input.shouldContinue() ||
-        (initialHandoffId !== undefined &&
-          !verifyBuyerAuthority(
-            initialHandoffId,
-            input.buyerPubkey,
-            dependencies.recoveryStorage
-          ))
+        !input.shouldContinue()
       ) {
         throw new Error(
           "Settled checkout buyer session or recovery sender changed."
         )
       }
     }
-    assertCurrentBuyer()
+    const assertCurrentBuyer = async (initialHandoffId?: string) => {
+      assertBuyerSession()
+      if (
+        initialHandoffId !== undefined &&
+        !(await verifyBuyerAuthority(
+          initialHandoffId,
+          input.buyerPubkey,
+          dependencies.recoveryStorage
+        ))
+      ) {
+        throw new Error(
+          "Settled checkout buyer session or recovery sender changed."
+        )
+      }
+      assertBuyerSession()
+    }
+    await assertCurrentBuyer()
     const prepared = await loadAuthorized(checkoutId, {
       storage: dependencies.storage,
       recoveryStorage: dependencies.recoveryStorage,
@@ -217,7 +227,7 @@ export function createCheckoutSparkSettledFundingBridge(
       expectedBuyerPubkey: input.buyerPubkey,
     })
     const { plan } = prepared
-    assertCurrentBuyer(prepared.recoveryHandoffId)
+    await assertCurrentBuyer(prepared.recoveryHandoffId)
     const readMetadata = () => {
       const metadata = getCheckoutSparkSettledPreparation(
         checkoutId,
@@ -235,7 +245,7 @@ export function createCheckoutSparkSettledFundingBridge(
     }
     readMetadata()
     const snapshot = await repository.load(checkoutId, plan.planDigest)
-    assertCurrentBuyer(prepared.recoveryHandoffId)
+    await assertCurrentBuyer(prepared.recoveryHandoffId)
     if (snapshot.status !== "active") {
       throw new Error("Settled checkout funding state is unavailable.")
     }
@@ -244,7 +254,7 @@ export function createCheckoutSparkSettledFundingBridge(
     try {
       proof = await attestCredit(plan.walletId, prepared.fundingReceive)
     } catch {
-      assertCurrentBuyer(prepared.recoveryHandoffId)
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
       if (snapshot.state.credit) {
         return { status: "funded", reconciliation: snapshot.state }
       }
@@ -254,7 +264,7 @@ export function createCheckoutSparkSettledFundingBridge(
         reconciliation: snapshot.state,
       }
     }
-    assertCurrentBuyer(prepared.recoveryHandoffId)
+    await assertCurrentBuyer(prepared.recoveryHandoffId)
     if (proof) {
       const admitted = await runCheckoutSparkFinancialWorkflow(
         {
@@ -269,13 +279,20 @@ export function createCheckoutSparkSettledFundingBridge(
           now,
           credit: {
             proof,
-            record: (creditPlan, creditProof) =>
-              repository.recordMerchantCredit(
+            record: async (creditPlan, creditProof) => {
+              // The repository transaction guard is synchronous. Read the exact
+              // recovery sender before entry, then recheck live session/metadata.
+              await assertCurrentBuyer(prepared.recoveryHandoffId)
+              return repository.recordMerchantCredit(
                 creditPlan,
                 creditProof,
                 now(),
-                () => assertCurrentBuyer(prepared.recoveryHandoffId)
-              ),
+                () => {
+                  assertBuyerSession()
+                  readMetadata()
+                }
+              )
+            },
           },
           acknowledgeRecoverySnapshot: async () => {},
         }
@@ -327,8 +344,8 @@ export function createCheckoutSparkSettledFundingBridge(
       throw new Error("Settled checkout funding amount is unsafe.")
     }
     if (exposeExternalInvoice) {
-      const assertDisclosureWindow = () => {
-        assertCurrentBuyer(prepared.recoveryHandoffId)
+      const assertDisclosureWindow = async () => {
+        await assertCurrentBuyer(prepared.recoveryHandoffId)
         const time = now()
         if (
           !Number.isSafeInteger(time) ||
@@ -339,9 +356,9 @@ export function createCheckoutSparkSettledFundingBridge(
         }
       }
       await input.beforeSend?.()
-      assertDisclosureWindow()
+      await assertDisclosureWindow()
       metadata = await withStoreWriteLock(async () => {
-        assertDisclosureWindow()
+        await assertDisclosureWindow()
         const current = readMetadata()
         if (
           current.fundingSubmissionState === "provisional" &&
@@ -371,9 +388,9 @@ export function createCheckoutSparkSettledFundingBridge(
         now,
         expectedBuyerPubkey: input.buyerPubkey,
       })
-      assertDisclosureWindow()
+      await assertDisclosureWindow()
       await input.beforeSend?.()
-      assertDisclosureWindow()
+      await assertDisclosureWindow()
       const reserved = readMetadata()
       if (
         authorized.plan.planDigest !== plan.planDigest ||
@@ -406,7 +423,7 @@ export function createCheckoutSparkSettledFundingBridge(
       }
     }
     if (input.paymentTarget.type === "manual") {
-      assertCurrentBuyer(prepared.recoveryHandoffId)
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
       const manual = await payInvoice({
         invoice: plan.funding.paymentRequest,
         amountMsats,
@@ -414,7 +431,7 @@ export function createCheckoutSparkSettledFundingBridge(
         timeoutMs: input.timeoutMs,
         appId: input.appId,
       })
-      assertCurrentBuyer(prepared.recoveryHandoffId)
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
       if (manual.status !== "manual_required") {
         throw new Error("Manual funding unexpectedly used an automatic rail.")
       }
@@ -441,7 +458,7 @@ export function createCheckoutSparkSettledFundingBridge(
     if (metadata.fundingSubmissionState !== "provisional") {
       throw new Error("Settled checkout funding was not durably reserved.")
     }
-    assertCurrentBuyer(prepared.recoveryHandoffId)
+    await assertCurrentBuyer(prepared.recoveryHandoffId)
     let payment: CheckoutInvoicePaymentResult | null
     try {
       payment = await payInvoice({
@@ -451,9 +468,9 @@ export function createCheckoutSparkSettledFundingBridge(
         walletPaymentAttemptId: input.walletPaymentAttemptId,
         approveFee: input.approveFee,
         beforeSend: async () => {
-          assertCurrentBuyer(prepared.recoveryHandoffId)
+          await assertCurrentBuyer(prepared.recoveryHandoffId)
           await input.beforeSend?.()
-          assertCurrentBuyer(prepared.recoveryHandoffId)
+          await assertCurrentBuyer(prepared.recoveryHandoffId)
           // Wallet setup and Spark fee approval can outlive the invoice. This
           // callback runs again at the provider's final pre-publish boundary.
           const sendTime = now()
@@ -473,7 +490,7 @@ export function createCheckoutSparkSettledFundingBridge(
     } catch {
       payment = null
     }
-    assertCurrentBuyer(prepared.recoveryHandoffId)
+    await assertCurrentBuyer(prepared.recoveryHandoffId)
     // A provider may report a definitive refusal after publishing a request.
     // That is retryable for ordinary checkout, but cannot prove this exact
     // Spark funding invoice was never paid; keep the durable reservation.
@@ -506,7 +523,7 @@ export function createCheckoutSparkSettledFundingBridge(
     } catch {
       proof = null
     }
-    assertCurrentBuyer(prepared.recoveryHandoffId)
+    await assertCurrentBuyer(prepared.recoveryHandoffId)
     if (proof) {
       const admitted = await runCheckoutSparkFinancialWorkflow(
         {
@@ -521,13 +538,18 @@ export function createCheckoutSparkSettledFundingBridge(
           now,
           credit: {
             proof,
-            record: (creditPlan, creditProof) =>
-              repository.recordMerchantCredit(
+            record: async (creditPlan, creditProof) => {
+              await assertCurrentBuyer(prepared.recoveryHandoffId)
+              return repository.recordMerchantCredit(
                 creditPlan,
                 creditProof,
                 now(),
-                () => assertCurrentBuyer(prepared.recoveryHandoffId)
-              ),
+                () => {
+                  assertBuyerSession()
+                  readMetadata()
+                }
+              )
+            },
           },
           acknowledgeRecoverySnapshot: async () => {},
         }

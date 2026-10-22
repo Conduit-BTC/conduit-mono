@@ -85,6 +85,48 @@ export const eventGuestReceiptSchema = z.strictObject({
 })
 export type EventGuestReceipt = z.infer<typeof eventGuestReceiptSchema>
 
+/** A human-readable private export; the signed receipt commitment is unchanged. */
+export function formatEventGuestReceipt(receipt: EventGuestReceipt): string {
+  const parsed = eventGuestReceiptSchema.parse(receipt)
+  return [
+    "Conduit private event receipt (v1)",
+    `Order: ${parsed.orderId}`,
+    `Merchant: ${parsed.merchantPubkey}`,
+    `Private receipt code: ${parsed.claimSecret}`,
+    "",
+    "Keep this receipt private. Anyone with this code can present it.",
+    "Show it to the seller or organizer for pickup or support.",
+    "This receipt is not proof of payment and does not guarantee a refund.",
+  ].join("\n")
+}
+
+/** Accept original JSON exports and the bounded readable v1 export. */
+export function parseEventGuestReceipt(text: string): EventGuestReceipt | null {
+  if (new TextEncoder().encode(text).length > 4096) return null
+  try {
+    const trimmed = text.trim()
+    const lines = trimmed.split(/\r?\n/)
+    const value: unknown = trimmed.startsWith("{")
+      ? JSON.parse(trimmed)
+      : lines[0] === "Conduit private event receipt (v1)" &&
+          lines[1]?.startsWith("Order: ") &&
+          lines[2]?.startsWith("Merchant: ") &&
+          lines[3]?.startsWith("Private receipt code: ")
+        ? {
+            format: "conduit-event-receipt",
+            version: 1,
+            orderId: lines[1].slice(7),
+            merchantPubkey: lines[2].slice(10),
+            claimSecret: lines[3].slice(22),
+          }
+        : null
+    const parsed = eventGuestReceiptSchema.safeParse(value)
+    return parsed.success ? parsed.data : null
+  } catch {
+    return null
+  }
+}
+
 /** This bearer receipt proves possession of the buyer's receipt, never payment. */
 export function createEventGuestReceipt(
   merchantPubkey: string

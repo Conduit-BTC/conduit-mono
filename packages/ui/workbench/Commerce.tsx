@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { ArrowRight, Package } from "lucide-react"
 import { getShopperCardPriceDisplay } from "@conduit/core"
+import { EventTimelineExample } from "./EventTimelineExample"
 import {
   ActionRow,
   Button,
@@ -454,89 +455,92 @@ export function Events({
 }) {
   const [notice, setNotice] = useState("")
   return (
-    <SectionGrid>
-      <section className="space-y-4" aria-labelledby="event-heading">
-        <h2 id="event-heading" className="text-balance text-xl font-semibold">
-          Event Market
-        </h2>
-        <EventMarketCard
-          title={
-            long
-              ? "Saturday neighborhood market, independent makers and seasonal food collective"
-              : "Saturday neighborhood market"
-          }
-          summary="Meet local makers, browse seasonal produce and pick up your weekly coffee."
-          organizerName="Sample community collective"
-          schedule="Saturday, October 17 · 10 am–4 pm"
-          location="Community hall · North entrance"
-          statusLabel="Upcoming"
-          topics={["Coffee", "Crafts", "Local pickup"]}
-          action={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setNotice("Sample event selected")}
-            >
-              View event
-            </Button>
-          }
-        />
-        <p role="status" className="text-sm text-[var(--text-secondary)]">
-          {notice}
-        </p>
-      </section>
-      <Card>
-        <CardHeader>
-          <CardTitle>Inventory assignment</CardTitle>
-          <CardDescription>
-            Presentation of occurrence-specific stock. These controls are sample
-            state only.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {state === "loading" ? (
-            <>
-              <ProductCardSkeleton />
-              <p role="status">Loading sample inventory…</p>
-            </>
-          ) : state === "empty" ? (
-            <StatePanel
-              title="No products assigned"
-              description="Choose existing inventory for this occurrence."
-              action={
-                <Button
-                  onClick={() => setNotice("Sample inventory picker opened")}
-                >
-                  Choose inventory
-                </Button>
-              }
-            />
-          ) : state === "error" ? (
-            <StatePanel
-              tone="error"
-              title="Inventory is unavailable"
-              description="Stock could not be loaded. Refresh to check availability; unavailable data must not be treated as zero inventory."
-              action={
-                <Button
-                  variant="outline"
-                  onClick={() => setNotice("Sample refresh requested")}
-                >
-                  Refresh inventory
-                </Button>
-              }
-            />
-          ) : (
-            <>
-              <InventoryRows
-                state={state}
-                compact={compact}
-                onNotice={setNotice}
+    <div className="space-y-6">
+      <SectionGrid>
+        <section className="space-y-4" aria-labelledby="event-heading">
+          <h2 id="event-heading" className="text-balance text-xl font-semibold">
+            Event Market
+          </h2>
+          <EventMarketCard
+            title={
+              long
+                ? "Saturday neighborhood market, independent makers and seasonal food collective"
+                : "Saturday neighborhood market"
+            }
+            summary="Meet local makers, browse seasonal produce and pick up your weekly coffee."
+            organizerName="Sample community collective"
+            schedule="Saturday, October 17 · 10 am–4 pm"
+            location="Community hall · North entrance"
+            statusLabel="Upcoming"
+            topics={["Coffee", "Crafts", "Local pickup"]}
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setNotice("Sample event selected")}
+              >
+                View event
+              </Button>
+            }
+          />
+          <p role="status" className="text-sm text-[var(--text-secondary)]">
+            {notice}
+          </p>
+        </section>
+        <Card>
+          <CardHeader>
+            <CardTitle>Inventory assignment</CardTitle>
+            <CardDescription>
+              Presentation of occurrence-specific stock. These controls are
+              sample state only.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {state === "loading" ? (
+              <>
+                <ProductCardSkeleton />
+                <p role="status">Loading sample inventory…</p>
+              </>
+            ) : state === "empty" ? (
+              <StatePanel
+                title="No products assigned"
+                description="Choose existing inventory for this occurrence."
+                action={
+                  <Button
+                    onClick={() => setNotice("Sample inventory picker opened")}
+                  >
+                    Choose inventory
+                  </Button>
+                }
               />
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </SectionGrid>
+            ) : state === "error" ? (
+              <StatePanel
+                tone="error"
+                title="Inventory is unavailable"
+                description="Stock could not be loaded. Refresh to check availability; unavailable data must not be treated as zero inventory."
+                action={
+                  <Button
+                    variant="outline"
+                    onClick={() => setNotice("Sample refresh requested")}
+                  >
+                    Refresh inventory
+                  </Button>
+                }
+              />
+            ) : (
+              <>
+                <InventoryRows
+                  state={state}
+                  compact={compact}
+                  onNotice={setNotice}
+                />
+              </>
+            )}
+          </CardContent>
+        </Card>
+      </SectionGrid>
+      <EventTimelineExample state={state} long={long} />
+    </div>
   )
 }
 

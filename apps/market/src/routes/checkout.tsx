@@ -178,6 +178,7 @@ import {
   getShippingRegionRequirement,
   getValidationErrorFields,
   sanitizeShippingPhoneInput,
+  normalizeCheckoutPhone,
   SHIPPING_EMAIL_ERROR_ID,
   SHIPPING_PHONE_ERROR_ID,
   shippingFieldLabel,
@@ -5390,6 +5391,29 @@ function CheckoutPage() {
                         className={`${isShippingCheckout ? "mt-4" : ""} grid gap-4 sm:grid-cols-2`}
                       >
                         <div className="grid gap-1 [&>p]:mt-1">
+                          {!isShippingCheckout ? (
+                            <>
+                              <Label htmlFor="phone-country">
+                                Phone country
+                              </Label>
+                              <Combobox
+                                id="phone-country"
+                                value={shipping.country}
+                                selectedLabel={getCountryLabel(
+                                  shipping.country
+                                )}
+                                options={COUNTRY_COMBOBOX_OPTIONS}
+                                onValueChange={(countryCode) =>
+                                  updateShipping("country", countryCode)
+                                }
+                                placeholder="Choose country for a local number"
+                                searchPlaceholder="Search countries..."
+                                emptyText="No supported countries found."
+                                triggerClassName="h-10 rounded-[var(--radius-md)] bg-[var(--surface-elevated)]"
+                                contentClassName="rounded-[var(--radius-md)] border-[var(--border-overlay)] bg-[var(--surface-overlay)]"
+                              />
+                            </>
+                          ) : null}
                           <Label htmlFor="ship-phone">
                             Phone
                             {requiresBothContactMethods && (
@@ -5409,9 +5433,18 @@ function CheckoutPage() {
                             onChange={(e) =>
                               updateShipping("phone", e.target.value)
                             }
-                            onBlur={() => markShippingFieldTouched("phone")}
+                            onBlur={() => {
+                              updateShipping(
+                                "phone",
+                                normalizeCheckoutPhone(
+                                  shipping.phone,
+                                  shipping.country
+                                )
+                              )
+                              markShippingFieldTouched("phone")
+                            }}
                             autoComplete="tel"
-                            placeholder="555 123 4567"
+                            placeholder="Local or + country code number"
                             aria-invalid={fieldInvalid("phone")}
                             aria-required={requiresBothContactMethods}
                             required={requiresBothContactMethods}
@@ -5422,6 +5455,13 @@ function CheckoutPage() {
                             }
                             className={fieldClassName("phone")}
                           />
+                          <p className="text-sm text-[var(--text-muted)]">
+                            {isShippingCheckout
+                              ? "Local numbers use your delivery country. "
+                              : "Local numbers use the country selected above. "}
+                            Or include + and the country code for another
+                            country.
+                          </p>
                           {fieldInvalid("phone") && (
                             <p
                               id={SHIPPING_PHONE_ERROR_ID}

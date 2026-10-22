@@ -316,8 +316,10 @@ describe("offline cold Merchant guest supplier recovery", () => {
           },
         })
         expect(
-          getCheckoutSparkRecoveryDelivery(handoff.handoffId, buyerStorage)!
-            .deliveryProgress.acknowledgedRelayRefs
+          (await getCheckoutSparkRecoveryDelivery(
+            handoff.handoffId,
+            buyerStorage
+          ))!.deliveryProgress.acknowledgedRelayRefs
         ).toHaveLength(1)
         const order = orderSchema.parse({
           id: plan.orderId,
