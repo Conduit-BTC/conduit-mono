@@ -84,6 +84,19 @@ wallet cleanup close its connections mid-send. Pausing or crossing the actor
 handoff boundary still prevents new dispatch; it cannot cancel an invocation
 already admitted. An eventual error remains query-only, not permission to replay.
 
+If an admitted send returns its validated actual transfer reference after normal
+Pause, a narrow journal can retain that reference against the exact submitted
+predecessor and repository revision. It changes only the reference and monotonic
+observation time, never a receipt, amount, debit or payment status. Account
+replacement, logout and expired guest/recovery authority still revoke the write.
+No later query, recovery acknowledgment or new dispatch is permitted by this
+journal; normal execution checks remain required for further work.
+
+Explicit Merchant details can show the last preparation stage and finite proof
+comparisons from existing work, including waiting for an earlier check to drain.
+A passed remaining-funds proof is not a payment receipt. These local display
+observations add no provider reads and cannot authorize payment or retry.
+
 The receiving wallet may be offline. In the inspected Spark operator flow,
 sender commitment cannot be cancelled and is excluded from the early-sender
 expiry sweep. Claiming later has no post-commit timeout in that flow, but this

@@ -43,6 +43,7 @@ import {
   type SparkCheckoutReceiveCreditNativeReceive,
   type SparkCheckoutReceiveCreditNativeTransfer,
   type CheckoutSparkNativeRetirementReader,
+  type CheckoutSparkNativeRetirementObservation,
   type SparkCheckoutLightningReturnedInspection,
   type SparkCheckoutLightningReturnedInspectionInput,
   type SparkCheckoutLightningClosedReturnedInspection,
@@ -722,20 +723,39 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
   assertCurrent(): void
   now(): number
   proofMode?: "pre_send" | "receipt"
+  onObservation?: (
+    observation: CheckoutSparkNativeRetirementObservation
+  ) => unknown
 }): Promise<CheckoutSparkMerchantSettlementRecord> {
   const { state, wallet, repository, assertCurrent, now } = input
   const { plan } = state
+  const observe = (
+    phase: CheckoutSparkNativeRetirementObservation["phase"],
+    status: CheckoutSparkNativeRetirementObservation["status"]
+  ) => {
+    try {
+      const result = input.onObservation?.({ phase, status })
+      if (result && typeof (result as PromiseLike<unknown>).then === "function")
+        void Promise.resolve(result).catch(() => {})
+    } catch {
+      // Display-only observers cannot change proof, reads or payment authority.
+    }
+  }
   assertCurrent()
+  observe("input_validation", "not_verified")
   if (
     !isCheckoutSparkNativeTreasuryPlan(plan) ||
     !state.credit ||
     (input.proofMode !== "receipt" && !wallet.openRetirementReader)
   )
     throw new Error("Native treasury commerce proof is unavailable.")
+  observe("wallet_validation", "not_verified")
   const identity = (await wallet.getIdentityPublicKey()).toLowerCase()
   assertCurrent()
   if (identity !== plan.funding.receiverIdentityPublicKey)
     throw new Error("Checkout Spark wallet identity changed.")
+  observe("wallet_validation", "verified")
+  observe("funding_proof", "not_verified")
   const receive = await wallet.getLightningReceiveRequest(
     plan.funding.requestId
   )
@@ -771,6 +791,8 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
   assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
   await repository.recordMerchantCredit(plan, proof, now(), assertCurrent)
   assertCurrent()
+  observe("funding_proof", "verified")
+  observe("commerce_proof", "not_verified")
   const expectedTransferIds = [proof.transferId]
   const closedReturnedProofs: CheckoutSparkSettledClosedReturnedProof[] = []
   for (const leg of state.legs) {
@@ -837,7 +859,9 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
   if (!record)
     throw new Error("Checkout Spark independent ledger is unavailable.")
   const budget = deriveCheckoutSparkNativeTreasuryBudget(state, record)
+  observe("commerce_proof", "verified")
   if (input.proofMode === "receipt") return record
+  observe("history_first_read", "not_verified")
   const session = await wallet.openRetirementReader!()
   assertCurrent()
   if (
@@ -852,6 +876,7 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
       authorizedDebitSats: budget.authorizedDebitSats,
       now,
       assertCurrent,
+      onObservation: input.onObservation,
     }))
   )
     throw new Error("Checkout Spark native residual history is unavailable.")

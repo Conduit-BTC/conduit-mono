@@ -20,6 +20,14 @@ describe("Merchant finite payout observation display", () => {
       "recovery_handoff_unavailable",
       "The required recovery handoff could not be confirmed.",
     ],
+    [
+      "provider_evidence_unavailable",
+      "The required provider proof could not be confirmed.",
+    ],
+    [
+      "prerequisite_unpaid",
+      "Earlier recipient payments still need verified proof.",
+    ],
   ] as const)("explains only the finite %s blocker", (reason, message) => {
     for (const outcome of ["wait", "send_ambiguous"]) {
       for (const sendAttempted of [false, true]) {
@@ -59,7 +67,6 @@ describe("Merchant finite payout observation display", () => {
       undefined,
       null,
       "private-reason-sentinel",
-      "provider_evidence_unavailable",
       "constructor",
       "toString",
       "__proto__",

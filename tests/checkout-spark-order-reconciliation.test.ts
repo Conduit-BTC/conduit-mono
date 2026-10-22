@@ -412,6 +412,79 @@ function interruptedNativeFixture(
 }
 
 describe("automatic checkout Spark order reconciliation adapter", () => {
+  it("forwards existing native proof stages and finite results without changing advancement", async () => {
+    const context = interruptedNativeFixture("prepared", "not_found", {
+      noSavedReceipt: true,
+    })
+    const stages: unknown[] = []
+    const results: unknown[] = []
+    context.options.onNativeObservation = (value) => {
+      stages.push(value)
+    }
+    context.options.onPayoutObservation = (value) => {
+      results.push(value)
+    }
+    context.options.continueNativeTreasury = async (
+      _principal,
+      _candidate,
+      input
+    ) => {
+      input?.onObservation?.({ phase: "funding_proof", status: "not_verified" })
+      return {
+        ...consumed,
+        payout: {
+          outcome: "wait",
+          reason: "provider_evidence_unavailable",
+          sendAttempted: false,
+        },
+      }
+    }
+    expect(await context.run()).toBe("unavailable")
+    expect(stages).toEqual([{ phase: "funding_proof", status: "not_verified" }])
+    expect(results).toEqual([
+      {
+        outcome: "wait",
+        reason: "provider_evidence_unavailable",
+        sendAttempted: false,
+      },
+    ])
+    expect(context.counts().sends).toBe(0)
+    expect(context.counts().preparations).toBe(0)
+  })
+
+  it("does not expose a native stage after the captured session is revoked", async () => {
+    const context = interruptedNativeFixture("prepared", "not_found", {
+      noSavedReceipt: true,
+    })
+    let active = true
+    const stages: unknown[] = []
+    context.options.onNativeObservation = (value) => {
+      stages.push(value)
+    }
+    context.options.continueNativeTreasury = async (
+      _principal,
+      _candidate,
+      input
+    ) => {
+      active = false
+      input?.onObservation?.({ phase: "funding_proof", status: "not_verified" })
+      return {
+        ...consumed,
+        payout: {
+          outcome: "wait",
+          reason: "provider_evidence_unavailable",
+          sendAttempted: false,
+        },
+      }
+    }
+    await expect(
+      context.run(() => {
+        if (!active) throw new Error("Session revoked")
+      })
+    ).rejects.toThrow("Session revoked")
+    expect(stages).toEqual([])
+  })
+
   it.each([
     "fee_over_cap",
     "insufficient_funds",

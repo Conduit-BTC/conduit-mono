@@ -560,7 +560,6 @@ export async function routeCheckoutSparkOrganizerOrder(
                     throw new Error("Organizer final payment amount changed.")
                 },
               })
-              await check()
               return result
             },
           }
@@ -682,6 +681,23 @@ export async function routeCheckoutSparkOrganizerOrder(
                     store: {
                       load,
                       save,
+                      saveSubmittedReference: async (
+                        state,
+                        revision,
+                        providerTransferId,
+                        observedAt
+                      ) => {
+                        const saved =
+                          await repository.saveTreasurySubmittedReference(
+                            state,
+                            revision,
+                            providerTransferId,
+                            observedAt,
+                            context.assertCurrent
+                          )
+                        if (saved.status === "active") expected = saved.state
+                        return saved
+                      },
                       nativeAdmissionScope:
                         repository.nativeTreasuryAdmissionScope,
                       savePrepared: async (state, revision, settlement) => {

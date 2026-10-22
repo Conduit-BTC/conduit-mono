@@ -767,6 +767,110 @@ describe("Checkout Spark native treasury durable step", () => {
     database.close()
     await database.delete()
   })
+  it("journals only a reference on the exact submitted predecessor and refuses stale, malformed, or revoked writes", async () => {
+    const f = fixture()
+    const prepared = prepareCheckoutSparkNativeTreasury(f.state, {
+      settlement: f.record,
+      preparedAt: AT + 4,
+    })
+    const submitted = recordCheckoutSparkNativeTreasuryStatus(prepared, {
+      invoiceId: f.plan.nativeTreasury!.invoiceId,
+      status: "submitted",
+      observedAt: AT + 5,
+    })
+    const database = new ConduitDB(`native-reference-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    const repository = new DexieCheckoutSparkSettledRepository(database)
+    await database.checkoutSparkPlanBindings.add({
+      checkoutId: f.plan.checkoutId,
+      planDigest: f.plan.planDigest,
+      merchantSettlement: f.record,
+    })
+    await database.checkoutSparkReconciliations.add({
+      checkoutId: f.plan.checkoutId,
+      revision: 1,
+      state: submitted,
+    })
+    const reference = crypto.randomUUID()
+    const write = (
+      state = submitted,
+      revision = 1,
+      providerTransferId = reference,
+      observedAt = AT + 6,
+      assertCurrent = () => {}
+    ) =>
+      repository.saveTreasurySubmittedReference(
+        state,
+        revision,
+        providerTransferId,
+        observedAt,
+        assertCurrent
+      )
+    try {
+      await expect(write(submitted, 2)).rejects.toThrow()
+      await expect(write({ ...submitted, updatedAt: AT + 6 })).rejects.toThrow()
+      await expect(write(prepared)).rejects.toThrow()
+      await expect(write(submitted, 1, "")).rejects.toThrow()
+      await expect(write(submitted, 1, reference, AT + 4)).rejects.toThrow()
+      let checks = 0
+      await expect(
+        write(submitted, 1, reference, AT + 6, () => {
+          if (++checks >= 5) throw new Error("Account authority changed")
+        })
+      ).rejects.toThrow()
+      expect(
+        await repository.load(f.plan.checkoutId, f.plan.planDigest)
+      ).toEqual({
+        status: "active",
+        revision: 1,
+        state: submitted,
+      })
+      const saved = await write()
+      if (saved.status !== "active") throw new Error("Missing reference")
+      expect(saved.revision).toBe(2)
+      expect(saved.state).toEqual(
+        recordCheckoutSparkNativeTreasuryStatus(submitted, {
+          invoiceId: f.plan.nativeTreasury!.invoiceId,
+          status: "submitted",
+          providerTransferId: reference,
+          observedAt: AT + 6,
+        })
+      )
+      expect(saved.state.plan).toEqual(submitted.plan)
+      expect(saved.state.credit).toEqual(submitted.credit)
+      expect(saved.state.treasuryFinalization?.finalFeeSats).toBeNull()
+      expect(saved.state.treasuryFinalization?.finalDebitSats).toBeNull()
+      await expect(write()).rejects.toThrow()
+      await expect(write(saved.state, saved.revision)).rejects.toThrow()
+      const stronger = recordCheckoutSparkNativeTreasuryStatus(saved.state, {
+        invoiceId: f.plan.nativeTreasury!.invoiceId,
+        status: "ambiguous",
+        observedAt: AT + 7,
+      })
+      await repository.save(stronger, 2)
+      await expect(write()).rejects.toThrow()
+      expect(
+        await repository.load(f.plan.checkoutId, f.plan.planDigest)
+      ).toEqual({
+        status: "active",
+        revision: 3,
+        state: stronger,
+      })
+      expect(
+        (
+          await repository.loadMerchantSettlement(
+            f.plan.merchantPubkey,
+            f.plan.checkoutId,
+            f.plan.planDigest
+          )
+        )?.nativeTreasury
+      ).toBeNull()
+    } finally {
+      await database.delete()
+    }
+  })
   it("CAS-retries a locally cancelled exact intent across repository instances, not storage domains", async () => {
     const f = fixture()
     const database = new ConduitDB(`native-retry-${crypto.randomUUID()}`, {

@@ -48,7 +48,65 @@ const PAYOUT_OBSERVATION_REASON_MESSAGES = {
   fee_unavailable: "The provider fee could not be verified for this payout.",
   recovery_handoff_unavailable:
     "The required recovery handoff could not be confirmed.",
+  provider_evidence_unavailable:
+    "The required provider proof could not be confirmed.",
+  prerequisite_unpaid: "Earlier recipient payments still need verified proof.",
 } as const
+
+const NATIVE_CHECK_PHASE_LABELS = {
+  waiting_for_current_check: "waiting for the previous check",
+  recovery_delivery: "recovery delivery",
+  wallet_open: "wallet opening",
+  privacy_readiness: "wallet privacy readiness",
+  input_validation: "proof input validation",
+  wallet_validation: "wallet identity",
+  funding_proof: "original funding proof",
+  commerce_proof: "recipient payment proofs",
+  history_first_read: "exact transfer history",
+  funds_read: "remaining funds",
+  history_second_read: "history stability",
+  freshness: "proof freshness",
+  complete: "remaining-funds proof",
+} as const
+
+/** Local preparation details only; a passed proof is not a payment receipt. */
+export function formatMerchantCheckoutSparkNativeObservation(
+  observation: unknown
+): string | null {
+  try {
+    if (
+      !observation ||
+      typeof observation !== "object" ||
+      Array.isArray(observation)
+    )
+      return null
+    const own = (key: string): unknown =>
+      Object.getOwnPropertyDescriptor(observation, key)?.value
+    const phase = own("phase")
+    const status = own("status")
+    if (
+      typeof phase !== "string" ||
+      !Object.hasOwn(NATIVE_CHECK_PHASE_LABELS, phase) ||
+      (status !== "not_verified" && status !== "verified")
+    )
+      return null
+    const label =
+      NATIVE_CHECK_PHASE_LABELS[phase as keyof typeof NATIVE_CHECK_PHASE_LABELS]
+    let text = `Last Conduit check: ${label} (${status === "verified" ? "passed" : "checking"}).`
+    for (const [key, comparison] of [
+      ["availableMatchesAuthorized", "Approved remainder match"],
+      ["ownedMatchesAvailable", "Ownership match"],
+      ["pendingEmpty", "No pending transfers confirmed"],
+    ]) {
+      const value = own(key)
+      if (typeof value === "boolean")
+        text += ` ${comparison}: ${value ? "confirmed" : "not confirmed"}.`
+    }
+    return text
+  } catch {
+    return null
+  }
+}
 
 /** A finite check result is informational, never payment or retry authority. */
 export function formatMerchantCheckoutSparkPayoutObservation(

@@ -53,6 +53,8 @@ export interface AdvanceCheckoutSparkSettledShopperInput {
   guestIdentity?: GuestOrderSigningIdentity | null
   currentGuestIdentity?: () => GuestOrderSigningIdentity | null
   shouldContinue: () => boolean
+  /** Account/session only: permits no new work after a foreground Pause. */
+  shouldRetainSubmittedReference?: () => boolean
   /** Null for a funding step; one exact plan leg otherwise. */
   legId: string | null
   /** Inspect a frozen payout without preparing, preflighting, or sending it. */
@@ -99,6 +101,7 @@ export interface AdvanceCheckoutSparkSettledShopperDependencies {
         | "hasInvoiceRecipientSettlement"
         | "nativeTreasuryAdmissionScope"
         | "saveTreasuryPreProviderRetry"
+        | "saveTreasurySubmittedReference"
         | "outgoingAdmissionScope"
         | "saveOutgoingPreProviderRetry"
       >
@@ -133,9 +136,8 @@ export async function advanceCheckoutSparkSettledShopper(
     pubkey: input.buyerPubkey,
   }
   const currentGuestIdentity = input.currentGuestIdentity
-  function currentSessionMatches(): boolean {
-    if (!input.shouldContinue()) return false
-    if (!guestIdentity) return input.currentBuyerPubkey() === input.buyerPubkey
+  function currentGuestIdentityMatches(): boolean {
+    if (!guestIdentity) return true
     const current = currentGuestIdentity?.() ?? null
     const time = now()
     return (
@@ -145,8 +147,22 @@ export async function advanceCheckoutSparkSettledShopper(
       current.expiresAt === guestIdentity.expiresAt
     )
   }
+  function currentSessionMatches(): boolean {
+    if (!input.shouldContinue()) return false
+    return guestIdentity
+      ? currentGuestIdentityMatches()
+      : input.currentBuyerPubkey() === input.buyerPubkey
+  }
   function assertSession(): void {
     if (!currentSessionMatches()) {
+      throw new Error("Checkout Spark shopper session changed.")
+    }
+  }
+  function assertSubmittedReferenceAccount(): void {
+    if (
+      input.shouldRetainSubmittedReference?.() !== true ||
+      !currentGuestIdentityMatches()
+    ) {
       throw new Error("Checkout Spark shopper session changed.")
     }
   }
@@ -387,6 +403,24 @@ export async function advanceCheckoutSparkSettledShopper(
       })
     : null
   const nativeStore = {
+    ...(input.shouldRetainSubmittedReference &&
+    repository.saveTreasurySubmittedReference
+      ? {
+          saveSubmittedReference: (
+            state: CheckoutSparkSettledReconciliation,
+            revision: number,
+            providerTransferId: string,
+            observedAt: number
+          ) =>
+            repository.saveTreasurySubmittedReference!(
+              state,
+              revision,
+              providerTransferId,
+              observedAt,
+              assertSubmittedReferenceAccount
+            ),
+        }
+      : {}),
     ...(repository.nativeTreasuryAdmissionScope &&
     repository.saveTreasuryPreProviderRetry
       ? {

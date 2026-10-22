@@ -1394,6 +1394,7 @@ function OrderDetail({
         currentBuyerPubkey: () =>
           !guestIdentity && approvedSessionIsCurrent() ? buyerPubkey : null,
         shouldContinue: approvedSessionIsCurrent,
+        shouldRetainSubmittedReference: shouldContinueBuyerSession,
         authorization: {
           planDigest: confirmation.control.planDigest,
           walletId: confirmation.control.walletId,

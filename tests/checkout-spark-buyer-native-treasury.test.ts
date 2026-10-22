@@ -747,6 +747,118 @@ function holdNativeSenderCommitment(f: Awaited<ReturnType<typeof fixture>>) {
 
 describe("Market native treasury composed provider evidence", () => {
   it(
+    "retains only the validated native reference after Pause while the original account session remains current",
+    async () =>
+      runForeground(async (f) => {
+        let entered!: () => void
+        let release!: () => void
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve
+        })
+        const completion = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        f.hooks.beforeNativeFulfill = async () => {
+          entered()
+          await completion
+        }
+        let queries = 0
+        f.hooks.beforeNativeQuery = () => {
+          queries++
+        }
+        const { runner, input, acknowledged } = await createForegroundRunner(f)
+        const running = runner.run({
+          ...input,
+          shouldRetainSubmittedReference: () => true,
+        })
+        let pausing: Promise<void> | undefined
+        try {
+          await admission
+          const admitted = structuredClone((await f.loadState()).state)
+          const queriesAtPause = queries
+          const acknowledgementsAtPause = acknowledged.length
+          pausing = runner.pause()
+          release()
+          expect(await running).toEqual({ status: "paused", reason: "paused" })
+          await pausing
+          const retained = (await f.loadState()).state
+          const actual = f.control.nativeSnapshot().transfers[0]!.id
+          expect(retained.treasuryFinalization!.status).toBe("submitted")
+          expect(
+            retained.treasuryFinalization!.providerTransferId === actual
+          ).toBe(true)
+          expect(
+            JSON.stringify(retained.treasuryFinalization!.intent) ===
+              JSON.stringify(admitted.treasuryFinalization!.intent)
+          ).toBe(true)
+          expect(retained.treasuryFinalization!.finalFeeSats).toBeNull()
+          expect(retained.treasuryFinalization!.finalDebitSats).toBeNull()
+          expect(
+            JSON.stringify(retained.credit) === JSON.stringify(admitted.credit)
+          ).toBe(true)
+          expect(
+            JSON.stringify(retained.legs.slice(0, -1)) ===
+              JSON.stringify(admitted.legs.slice(0, -1))
+          ).toBe(true)
+          expect(queries).toBe(queriesAtPause)
+          expect(acknowledged.length).toBe(acknowledgementsAtPause)
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        } finally {
+          release()
+          await running
+          await pausing
+        }
+      }),
+    15_000
+  )
+  it.each(["no callback", "revoked account"] as const)(
+    "does not retain a late native reference after Pause with %s authority",
+    async (authority) =>
+      runForeground(async (f) => {
+        let entered!: () => void
+        let release!: () => void
+        let accountCurrent = true
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve
+        })
+        const completion = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        f.hooks.beforeNativeFulfill = async () => {
+          entered()
+          await completion
+        }
+        const { runner, input } = await createForegroundRunner(f)
+        const running = runner.run({
+          ...input,
+          ...(authority === "revoked account"
+            ? { shouldRetainSubmittedReference: () => accountCurrent }
+            : {}),
+        })
+        let pausing: Promise<void> | undefined
+        try {
+          await admission
+          accountCurrent = false
+          pausing = runner.pause()
+          release()
+          expect(await running).toMatchObject({ status: "paused" })
+          await pausing
+          const retained = (await f.loadState()).state.treasuryFinalization!
+          expect(retained.status).toBe("submitted")
+          expect(retained.providerTransferId).toBeNull()
+          expect(retained.finalFeeSats).toBeNull()
+          expect(retained.finalDebitSats).toBeNull()
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+          expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+        } finally {
+          release()
+          await running
+          await pausing
+        }
+      }),
+    15_000
+  )
+  it(
     "finishes routing on exact sender commitment while the native receiver remains offline, retaining recovery",
     async () =>
       runForeground(async (f) => {

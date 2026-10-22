@@ -57,6 +57,7 @@ async function fixture(
     ambiguous?: boolean
     preflight?: "ready" | "fee_over_cap" | "unavailable"
     pendingUntilSenderCommitted?: boolean
+    assertRecoveryCurrent?: () => void
   } = {}
 ) {
   const f = nativeTreasuryFixture(undefined, undefined, MERCHANT)
@@ -224,7 +225,10 @@ async function fixture(
       return wallet
     },
     consumeRecovery: async (_principal, candidate, adapter) => {
-      await adapter.consume(payload, () => {})
+      await adapter.consume(
+        payload,
+        options.assertRecoveryCurrent ?? (() => {})
+      )
       return {
         status: "consumed",
         coverage: "complete",
@@ -358,6 +362,164 @@ function fakeClock(start: number) {
 }
 
 describe("Merchant native treasury continuation", () => {
+  it.each(["pause", "logout", "account_replacement"] as const)(
+    "retains an admitted native transfer reference only for an account-current %s before fulfillment returns",
+    async (revocation) => {
+      let accountCurrent = true
+      const f = await fixture({
+        assertRecoveryCurrent() {
+          if (!accountCurrent) throw new Error("Recovery account changed")
+        },
+      })
+      const entered = deferred()
+      const release = deferred()
+      const transferId = UUID.parse(crypto.randomUUID()).toString()
+      let active = true
+      let sends = 0
+      let invoiceQueries = 0
+      let transferReads = 0
+      const treasury = createCheckoutSparkNativeTreasurySdkAdapter({
+        network: "MAINNET",
+        read: (read) => read(),
+        codec: {
+          nativeTreasuryPolicy: CHECKOUT_SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY,
+          parseTransferId: UUID.parse,
+          encodeSparkAddress: () => f.plan.nativeTreasury!.invoiceRequest,
+          decodeSparkAddress: () => ({
+            identityPublicKey: f.plan.nativeTreasury!.receiverIdentityPublicKey,
+          }),
+          isValidSparkAddress: () => true,
+          getNetworkFromSparkAddress: () => "MAINNET",
+        },
+        wallet: {
+          getIdentityPublicKey: async () =>
+            f.plan.funding.receiverIdentityPublicKey,
+          getBalance: async () => ({
+            satsBalance: { available: 112n, owned: 112n, incoming: 0n },
+          }),
+          querySparkInvoices: async (invoices) => {
+            invoiceQueries += 1
+            return { invoiceStatuses: [{ invoice: invoices[0]!, status: 0 }] }
+          },
+          getTransfer: async () => {
+            transferReads += 1
+            return undefined
+          },
+          fulfillSparkInvoice: async (invoices) => {
+            sends += 1
+            entered.resolve()
+            await release.promise
+            return {
+              satsTransactionSuccess: [
+                {
+                  invoice: invoices[0]!.invoice,
+                  transferResponse: {
+                    id: transferId,
+                    type: "TRANSFER",
+                    transferDirection: "OUTGOING",
+                    status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+                    totalValue: 112,
+                    valueSentByWallet: 112,
+                    valueReceivedByWallet: 0,
+                    sparkInvoice: f.plan.nativeTreasury!.invoiceRequest,
+                    senders: [
+                      {
+                        identityPublicKey:
+                          f.plan.nativeTreasury!.senderIdentityPublicKey,
+                      },
+                    ],
+                    receivers: [
+                      {
+                        identityPublicKey:
+                          f.plan.nativeTreasury!.receiverIdentityPublicKey,
+                        amountSats: 112,
+                        status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+                      },
+                    ],
+                  },
+                },
+              ],
+              satsTransactionErrors: [],
+              tokenTransactionSuccess: [],
+              tokenTransactionErrors: [],
+              invalidInvoices: [],
+            }
+          },
+        },
+      })
+      const openWallet = f.dependencies.openWallet!
+      f.dependencies.openWallet = async (input) => ({
+        ...(await openWallet(input)),
+        nativeTreasury: treasury,
+      })
+      f.dependencies.shouldContinue = () => active
+      const work = f.run().catch(() => null)
+      try {
+        await entered.promise
+        const admitted = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        expect(
+          admitted.status === "active" && admitted.state.treasuryFinalization
+        ).toMatchObject({ status: "submitted", providerTransferId: null })
+        expect(sends).toBe(1)
+        const queriesBeforeRevocation = { invoiceQueries, transferReads }
+        const progressBeforeRevocation = f.progress.length
+
+        // Pause prevents new dispatch, not retention of this admitted response.
+        active = false
+        accountCurrent = revocation === "pause"
+        release.resolve()
+        await work
+        expect(f.calls.at(-1)).toBe("cleanup")
+        const drained = await f.repository.load(
+          f.plan.checkoutId,
+          f.plan.planDigest
+        )
+        if (drained.status !== "active") throw new Error("Fixture missing")
+        expect(drained.state.treasuryFinalization?.status).not.toBe("paid")
+        expect(drained.state.treasuryFinalization?.finalFeeSats).toBeNull()
+        expect(drained.state.treasuryFinalization?.finalDebitSats).toBeNull()
+        expect(drained.state.treasuryFinalization?.providerTransferId).toBe(
+          revocation === "pause" ? transferId : null
+        )
+        expect({ invoiceQueries, transferReads }).toEqual(
+          queriesBeforeRevocation
+        )
+        expect(f.progress).toHaveLength(progressBeforeRevocation)
+        expect(
+          (
+            await f.repository.loadMerchantSettlement(
+              MERCHANT,
+              f.plan.checkoutId,
+              f.plan.planDigest
+            )
+          )?.nativeTreasury
+        ).toBeNull()
+
+        if (revocation !== "pause") return
+
+        // A later fresh activation still reconciles the original possible send.
+        active = true
+        expect((await f.run()).payout).toMatchObject({
+          reason: "provider_evidence_unavailable",
+          sendAttempted: false,
+        })
+        expect(sends).toBe(1)
+        expect(drained.state.plan).toEqual(f.plan)
+        expect(drained.state.treasuryFinalization?.providerTransferId).toBe(
+          transferId
+        )
+      } finally {
+        release.resolve()
+        await work
+        await f.database.delete()
+      }
+    },
+    15_000
+  )
+
   it("completes a restored native fee on exact sender commitment without an online receiver or another send", async () => {
     const f = await fixture({ restoredStatus: "submitted" })
     const transferId = UUID.parse("0197f9a0-0000-7000-8000-000000000003")
@@ -466,6 +628,34 @@ describe("Merchant native treasury continuation", () => {
     }
   }, 15_000)
 
+  it("keeps native continuation and cleanup unchanged when finite progress observers fail", async () => {
+    const f = await fixture()
+    const phases: string[] = []
+    let observations = 0
+    f.dependencies.onObservation = (observation) => {
+      phases.push(observation.phase)
+      observations += 1
+      if (observations % 2 === 0)
+        return Promise.reject(new Error("Observer failed"))
+      throw new Error("Observer failed")
+    }
+    f.dependencies.proveCommerce = async (input) => {
+      input.onObservation?.({ phase: "funding_proof", status: "not_verified" })
+      return f.record
+    }
+    try {
+      expect((await f.run()).payout?.outcome).toBe("paid")
+      expect(phases).toContain("recovery_delivery")
+      expect(phases).toContain("wallet_open")
+      expect(phases).toContain("privacy_readiness")
+      expect(phases).toContain("funding_proof")
+      expect(f.sends()).toBe(1)
+      expect(f.calls.at(-1)).toBe("cleanup")
+      await Promise.resolve()
+    } finally {
+      await f.database.delete()
+    }
+  })
   it("automatically rechecks the same pending native fee until sender commitment without requiring a receiver claim", async () => {
     const f = await fixture({
       restoredStatus: "submitted",

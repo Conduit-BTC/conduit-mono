@@ -106,6 +106,35 @@ describe("Merchant saved payout confirmation", () => {
     expect(source).toContain("if (next) setLastPayoutObservation(null)")
   })
 
+  it("static source guard: keeps native proof stages display-only and distinguishes draining earlier work", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx"
+    ).text()
+    const automatic = source.slice(
+      source.indexOf("onNativeObservation(observation)"),
+      source.indexOf("onPayoutObservation(observation)")
+    )
+    expect(automatic).toContain("assertActive()")
+    expect(automatic).toContain("if (!isPayoutSelectionCurrent()) return")
+    expect(automatic).toContain("formatMerchantCheckoutSparkNativeObservation")
+    expect(automatic).toContain("planDigest: candidate.planDigest")
+    expect(automatic).not.toMatch(
+      /preflight|openWallet|sendFrozen|stopDiscovery/
+    )
+    const manual = source.slice(
+      source.indexOf("async function finalizeNativeTreasury"),
+      source.indexOf("async function reviewPayout")
+    )
+    expect(manual).toContain(
+      "if (!current.isCurrent() || !isPayoutSelectionCurrent()) return"
+    )
+    expect(manual.indexOf('phase: "waiting_for_current_check"')).toBeLessThan(
+      manual.indexOf("await stopDiscovery()")
+    )
+    expect(manual).toContain("onObservation: showObservation")
+    expect(manual).toContain("formatMerchantCheckoutSparkPayoutObservation")
+  })
+
   it("shows the exact destination, amount and full allocation limit without recovery material", () => {
     const markup = renderReview(cutoff - 10 * 60_000)
     expect(markup).toContain("merchant@example.test")

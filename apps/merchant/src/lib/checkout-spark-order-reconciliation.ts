@@ -5,6 +5,7 @@ import {
   isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkPerformanceObserver,
   type CheckoutSparkSettledOutgoingStepResult,
+  type CheckoutSparkNativeRetirementObservation,
   type MerchantCheckoutSparkReconciliationStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
@@ -357,9 +358,12 @@ interface AdvancementDependencies extends ReconciliationDependencies {
   requestRescan: () => void
   /** A newly paid continuation can wake its serialized owner, not bypass it. */
   onProgress?: () => void
-  /** Existing commerce result only; no provider call or execution authority. */
+  /** Existing payout result only; no provider call or execution authority. */
   onPayoutObservation?: (
     observation: MerchantCheckoutSparkPayoutObservation
+  ) => void
+  onNativeObservation?: (
+    observation: CheckoutSparkNativeRetirementObservation
   ) => void
   /** Optional bounded, content-free observation of one advancement invocation. */
   observePerformance?: CheckoutSparkPerformanceObserver
@@ -460,9 +464,26 @@ async function advanceMerchantCheckoutSparkOrderPhase(
       now,
       shouldContinue,
       inspectionOnly,
+      onObservation(observation) {
+        try {
+          assertActive()
+          dependencies.onNativeObservation?.(observation)
+        } catch {
+          // A stale or failed display cannot change the financial operation.
+        }
+      },
     })
     assertActive()
     if (result.status !== "consumed" || !result.payout) return "unavailable"
+    try {
+      dependencies.onPayoutObservation?.({
+        outcome: result.payout.outcome,
+        ...(result.payout.reason ? { reason: result.payout.reason } : {}),
+        sendAttempted: result.payout.sendAttempted,
+      })
+    } catch {
+      // Existing result only; observer failures do not change scheduling.
+    }
     if (
       result.payout.reason === "terminal_failure" ||
       result.payout.reason === "provider_evidence_conflicting" ||

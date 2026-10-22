@@ -21,6 +21,7 @@ import {
 import { CheckoutSparkMerchantPayoutReview } from "./CheckoutSparkMerchantPayoutReview"
 import { CheckoutSparkMerchantPaymentCard } from "./CheckoutSparkMerchantPaymentCard"
 import {
+  formatMerchantCheckoutSparkNativeObservation,
   formatMerchantCheckoutSparkPayoutHistory,
   formatMerchantCheckoutSparkPayoutObservation,
 } from "../lib/checkout-spark-payout-history-display"
@@ -459,6 +460,20 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                   {
                     repository,
                     assertNotificationActive,
+                    onNativeObservation(observation) {
+                      assertActive()
+                      if (!isPayoutSelectionCurrent()) return
+                      const message =
+                        formatMerchantCheckoutSparkNativeObservation(
+                          observation
+                        )
+                      if (message)
+                        setLastPayoutObservation({
+                          message,
+                          planDigest: candidate.planDigest,
+                          isSelectionCurrent: isPayoutSelectionCurrent,
+                        })
+                    },
                     onPayoutObservation(observation) {
                       assertActive()
                       if (!isPayoutSelectionCurrent()) return
@@ -1024,15 +1039,45 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     const current = beginManualAction(candidate.orderId, true)
     if (current === null) return
     setNotice(null)
+    const isPayoutSelectionCurrent = reviewSelection.capture(candidate.orderId)
+    const showObservation = (observation: unknown) => {
+      if (!current.isCurrent() || !isPayoutSelectionCurrent()) return
+      const message = formatMerchantCheckoutSparkNativeObservation(observation)
+      if (message)
+        setLastPayoutObservation({
+          message,
+          planDigest: candidate.planDigest,
+          isSelectionCurrent: isPayoutSelectionCurrent,
+        })
+    }
+    showObservation({
+      phase: "waiting_for_current_check",
+      status: "not_verified",
+    })
     try {
       await stopDiscovery()
       if (!current.isCurrent()) return
       const continued = await continueMerchantCheckoutSparkNativeTreasury(
         principalPubkey,
         candidate,
-        { shouldContinue: current.isCurrent }
+        {
+          shouldContinue: current.isCurrent,
+          onObservation: showObservation,
+        }
       )
       if (!current.isCurrent()) return
+      const resultMessage = formatMerchantCheckoutSparkPayoutObservation(
+        continued.payout
+      )
+      setLastPayoutObservation(
+        resultMessage
+          ? {
+              message: resultMessage,
+              planDigest: candidate.planDigest,
+              isSelectionCurrent: isPayoutSelectionCurrent,
+            }
+          : null
+      )
       await refreshVerifiedStatus([candidate], current)
       if (!current.isCurrent()) return
       if (continued.status !== "consumed") {

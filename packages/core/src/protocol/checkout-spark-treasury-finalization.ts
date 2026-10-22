@@ -555,6 +555,31 @@ export function recordCheckoutSparkNativeTreasuryStatus(
   return mirror(state, next)
 }
 
+/** An admitted SDK response adds a reference, never a payment receipt. */
+export function recordCheckoutSparkNativeTreasurySubmittedReference(
+  input: CheckoutSparkSettledReconciliation,
+  providerTransferId: string,
+  observedAt: number
+): CheckoutSparkSettledReconciliation {
+  const state = restoreCheckoutSparkSettledReconciliation(input)
+  const previous = state.treasuryFinalization
+  if (
+    previous?.status !== "submitted" ||
+    !previous.intent ||
+    previous.providerTransferId !== null ||
+    previous.finalFeeSats !== null ||
+    previous.finalDebitSats !== null ||
+    !id(providerTransferId)
+  )
+    invalid()
+  return recordCheckoutSparkNativeTreasuryStatus(state, {
+    invoiceId: previous.intent.invoiceId,
+    status: "submitted",
+    providerTransferId,
+    observedAt,
+  })
+}
+
 export interface CheckoutSparkNativeTreasuryTarget {
   readonly walletId: string
   readonly network: CheckoutSparkNetwork
@@ -616,6 +641,17 @@ export interface CheckoutSparkNativeTreasuryProvider {
 export interface CheckoutSparkNativeTreasuryStateStore extends CheckoutSparkSettledOutgoingStateStore {
   /** Stable for this repository process only; never serialized or imported. */
   readonly nativeAdmissionScope?: object
+  /**
+   * Exact submitted predecessor + CAS; only the returned reference and time may
+   * change. Captured account/recovery authority, not dispatch permission, guards
+   * this facts-only write after an admitted provider promise drains.
+   */
+  saveSubmittedReference?(
+    expectedSubmittedState: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    providerTransferId: string,
+    observedAt: number
+  ): Promise<CheckoutSparkSettledRepositorySnapshot>
   savePreProviderRetry?(
     state: CheckoutSparkSettledReconciliation,
     expectedRevision: number,
@@ -689,6 +725,19 @@ export async function runCheckoutSparkNativeTreasuryStep(
       return false
     }
   }
+  function acceptSaved(
+    saved: CheckoutSparkSettledRepositorySnapshot,
+    next: CheckoutSparkSettledReconciliation
+  ) {
+    if (
+      saved.status !== "active" ||
+      saved.revision !== revision + 1 ||
+      JSON.stringify(saved.state) !== JSON.stringify(next)
+    )
+      invalid()
+    revision = saved.revision
+    state = restoreCheckoutSparkSettledReconciliation(saved.state)
+  }
   async function persist(
     next: CheckoutSparkSettledReconciliation,
     settlement?: CheckoutSparkMerchantSettlementRecord,
@@ -699,17 +748,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
       : settlement
         ? await input.store.savePrepared(next, revision, settlement)
         : await input.store.save(next, revision)
-    if (
-      saved.status !== "active" ||
-      saved.revision !== revision + 1 ||
-      saved.state.plan.planDigest !== state.plan.planDigest ||
-      JSON.stringify(saved.state.treasuryFinalization) !==
-        JSON.stringify(next.treasuryFinalization) ||
-      saved.state.updatedAt !== next.updatedAt
-    )
-      invalid()
-    revision = saved.revision
-    state = restoreCheckoutSparkSettledReconciliation(saved.state)
+    acceptSaved(saved, next)
   }
   async function cancelPreProviderAdmission(): Promise<void> {
     // Called only while Core has positively not called send, or when the pinned
@@ -952,14 +991,23 @@ export async function runCheckoutSparkNativeTreasuryStep(
   if (sent.status === "submitted" && sent.providerTransferId) {
     // The adapter validated this reference against the exact request. Retain
     // it across a later query outage, but only fresh history can prove paid.
-    await persist(
-      recordCheckoutSparkNativeTreasuryStatus(state, {
-        invoiceId: target.intent.invoiceId,
-        providerTransferId: sent.providerTransferId,
-        status: "submitted",
-        observedAt: now(),
-      })
+    const observedAt = now()
+    const next = recordCheckoutSparkNativeTreasurySubmittedReference(
+      state,
+      sent.providerTransferId,
+      observedAt
     )
+    if (input.store.saveSubmittedReference) {
+      acceptSaved(
+        await input.store.saveSubmittedReference(
+          state,
+          revision,
+          sent.providerTransferId,
+          observedAt
+        ),
+        next
+      )
+    } else await persist(next)
   }
   // A provider rejection is not pre-provider cancellation proof. Keep its
   // possible-send marker; expose only an allowlisted explanation, never an
