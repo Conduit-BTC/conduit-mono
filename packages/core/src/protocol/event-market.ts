@@ -1086,7 +1086,7 @@ function mergeRelayUrlsWithOwnerAuthority(
 }
 
 export interface EventMarketReadPlan {
-  /** Bounded prefix used for coverage and truncation reporting. */
+  /** Priority prefix; reads and truncation use the full candidate list. */
   relayUrls: string[]
   /** Full ordered candidates passed to final source-policy admission. */
   candidateRelayUrls: string[]
@@ -1204,7 +1204,7 @@ export async function getEventMarketDiscoveryReadPlan(input: {
     independentRelayUrls: plan.independentRelayUrls ?? [],
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
-      (url) => !plan.relayUrls.includes(url)
+      (url) => !plan.candidateRelayUrls.includes(url)
     ),
   }
 }
@@ -1374,8 +1374,8 @@ export async function getEventMarketReadPlan(input: {
     planFallbackRelayUrls,
     plan.candidateRelayUrls
   )
-  const selectedRelays = new Set(
-    selectedRelayUrls.map((relayUrl) => relayUrl.toLowerCase())
+  const candidateRelays = new Set(
+    relayUrls.map((relayUrl) => relayUrl.toLowerCase())
   )
   return {
     relayUrls: selectedRelayUrls,
@@ -1396,7 +1396,7 @@ export async function getEventMarketReadPlan(input: {
     ),
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
-      (relayUrl) => !selectedRelays.has(relayUrl.toLowerCase())
+      (relayUrl) => !candidateRelays.has(relayUrl.toLowerCase())
     ),
   }
 }
