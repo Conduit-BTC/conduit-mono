@@ -393,6 +393,7 @@ export function createCheckoutSparkSettledShopperRunner(
         result.step.reason === "native_provider_unavailable" ||
         result.step.reason === "native_provider_request" ||
         result.step.reason === "native_provider_error" ||
+        result.step.reason === "native_unrecognized_result" ||
         (result.step.outcome === "send_ambiguous" && !result.step.reason)
       ) {
         if (await waitForPendingObservation()) continue

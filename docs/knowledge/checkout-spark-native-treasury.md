@@ -70,6 +70,12 @@ that the native fee was committed; earlier sender phases do not. A completed
 parent transfer must still agree with its completed receiver state. Merely
 submitted transfers, unknown states and zero sender balance are not receipts.
 
+An unrecognized immediate SDK result does not end Buyer's bounded automatic
+observation of that saved attempt. The runner may recheck its exact request
+under the existing session, authority, deadline and step limits; it cannot
+fulfill the invoice again or promote unknown evidence to a receipt. Strong
+conflicts and terminal failures still require attention.
+
 The pinned SDK returns separate sats success, sats error, token and invalid-invoice
 arrays. A fulfilled JavaScript promise is not itself a successful submission.
 The adapter accepts only one success bound to the exact invoice, sender,
