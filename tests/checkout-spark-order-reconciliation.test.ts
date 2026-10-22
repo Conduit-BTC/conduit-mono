@@ -147,6 +147,71 @@ function fixture() {
   }
 }
 
+function payoutObservationFixture(
+  reason:
+    | "fee_over_cap"
+    | "insufficient_funds"
+    | "fee_unavailable"
+    | "recovery_handoff_unavailable"
+) {
+  const context = fixture()
+  context.setRecord(providerRecord(true))
+  const calls = { history: 0, selection: 0, continuation: 0, rescans: 0 }
+  const payout = { outcome: "wait" as const, reason, sendAttempted: false }
+  const options: Parameters<typeof advanceMerchantCheckoutSparkOrder>[3] = {
+    repository: context.repository,
+    now: () => 2_000,
+    notifySuppliers: () => {},
+    inspectPayouts: async () => {
+      calls.history += 1
+      return inspected
+    },
+    selectPayout: async () => {
+      calls.selection += 1
+      return {
+        status: "ready",
+        review: {
+          checkoutId: candidate.checkoutId,
+          planDigest: candidate.planDigest,
+          legId: merchantLeg,
+          recipientId: merchant,
+          destination: "merchant@example.test",
+          allocationSats: 500,
+          intent: {
+            legId: merchantLeg,
+            transferId: "synthetic-transfer",
+            paymentHash: "synthetic-hash",
+            paymentRequest: "synthetic-invoice",
+            invoiceAmountSats: 499,
+            maxFeeSats: 1,
+            preparedAt: 1_500,
+          },
+        },
+      }
+    },
+    continuePayout: async () => {
+      calls.continuation += 1
+      return { ...consumed, payout }
+    },
+    requestRescan: () => {
+      calls.rescans += 1
+    },
+  }
+  return {
+    context,
+    options,
+    calls,
+    payout,
+    run: (assertActive = () => {}) =>
+      advanceMerchantCheckoutSparkOrder(
+        merchant,
+        candidate,
+        assertActive,
+        options
+      ),
+  }
+}
+
 const consumed = {
   status: "consumed" as const,
   coverage: "complete" as const,
@@ -347,6 +412,93 @@ function interruptedNativeFixture(
 }
 
 describe("automatic checkout Spark order reconciliation adapter", () => {
+  it.each([
+    "fee_over_cap",
+    "insufficient_funds",
+    "fee_unavailable",
+    "recovery_handoff_unavailable",
+  ] as const)(
+    "observes the existing %s continuation result without changing calls or the old return",
+    async (reason) => {
+      const baseline = payoutObservationFixture(reason)
+      const expected = await baseline.run()
+      const context = payoutObservationFixture(reason)
+      const observations: unknown[] = []
+      context.options.onPayoutObservation = (observation) => {
+        observations.push(observation)
+      }
+      expect(await context.run()).toBe(expected)
+      expect(expected).toBe("progress_pending")
+      expect(observations).toEqual([context.payout])
+      expect(context.calls).toEqual(baseline.calls)
+      expect(context.calls).toEqual({
+        history: 1,
+        selection: 1,
+        continuation: 1,
+        rescans: 1,
+      })
+      expect(Object.keys(observations[0] as object)).toEqual([
+        "outcome",
+        "reason",
+        "sendAttempted",
+      ])
+    }
+  )
+
+  it("does not publish a delayed payout observation after session revocation", async () => {
+    const context = payoutObservationFixture("fee_unavailable")
+    let active = true
+    let observed = false
+    context.options.continuePayout = async () => {
+      context.calls.continuation += 1
+      active = false
+      return { ...consumed, payout: context.payout }
+    }
+    context.options.onPayoutObservation = () => {
+      observed = true
+    }
+    await expect(
+      context.run(() => {
+        if (!active) throw new Error("Synthetic signer session changed")
+      })
+    ).rejects.toThrow("Synthetic signer session changed")
+    expect(observed).toBe(false)
+    expect(context.calls.continuation).toBe(1)
+    expect(context.calls.rescans).toBe(0)
+  })
+
+  it("does not turn a diagnostic observer failure into a different payout outcome", async () => {
+    const context = payoutObservationFixture("fee_over_cap")
+    context.options.onPayoutObservation = () => {
+      throw new Error("Synthetic display failure")
+    }
+    expect(await context.run()).toBe("progress_pending")
+    expect(context.calls.continuation).toBe(1)
+    expect(context.calls.rescans).toBe(1)
+  })
+
+  it("copies only finite result fields without giving its observer the continuation object", async () => {
+    const context = payoutObservationFixture("fee_over_cap")
+    Object.assign(context.payout, {
+      privateDetail: "private-provider-sentinel",
+    })
+    let snapshot: unknown
+    context.options.onPayoutObservation = (observation) => {
+      snapshot = { ...observation }
+      // Mutation of the diagnostic copy cannot affect the original policy path.
+      Object.assign(observation, { reason: "invoice_window_insufficient" })
+    }
+    expect(await context.run()).toBe("progress_pending")
+    expect(snapshot).toEqual({
+      outcome: "wait",
+      reason: "fee_over_cap",
+      sendAttempted: false,
+    })
+    expect(JSON.stringify(snapshot)).not.toContain("sentinel")
+    expect(context.payout.reason).toBe("fee_over_cap")
+    expect(context.calls.continuation).toBe(1)
+  })
+
   it("keeps post-takeover observation query-only when execution is disabled", async () => {
     const context = fixture()
     Object.assign(context.repository, {

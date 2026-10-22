@@ -41,6 +41,55 @@ const PENDING_PHASE_LABELS = {
   receiver: "Receiver completion pending",
 } as const
 
+const PAYOUT_OBSERVATION_REASON_MESSAGES = {
+  fee_over_cap: "The provider fee exceeded this payout's approved cap.",
+  insufficient_funds:
+    "The provider reported insufficient available checkout funds.",
+  fee_unavailable: "The provider fee could not be verified for this payout.",
+  recovery_handoff_unavailable:
+    "The required recovery handoff could not be confirmed.",
+} as const
+
+/** A finite check result is informational, never payment or retry authority. */
+export function formatMerchantCheckoutSparkPayoutObservation(
+  observation: unknown
+): string | null {
+  try {
+    if (
+      typeof observation !== "object" ||
+      observation === null ||
+      Array.isArray(observation)
+    )
+      return null
+    const outcome: unknown = Object.getOwnPropertyDescriptor(
+      observation,
+      "outcome"
+    )?.value
+    const reason: unknown = Object.getOwnPropertyDescriptor(
+      observation,
+      "reason"
+    )?.value
+    const sendAttempted: unknown = Object.getOwnPropertyDescriptor(
+      observation,
+      "sendAttempted"
+    )?.value
+    if (
+      (outcome !== "wait" && outcome !== "send_ambiguous") ||
+      typeof reason !== "string" ||
+      !Object.hasOwn(PAYOUT_OBSERVATION_REASON_MESSAGES, reason) ||
+      typeof sendAttempted !== "boolean"
+    )
+      return null
+    const message =
+      PAYOUT_OBSERVATION_REASON_MESSAGES[
+        reason as keyof typeof PAYOUT_OBSERVATION_REASON_MESSAGES
+      ]
+    return `${message} ${sendAttempted ? "Funds may have moved; inspect exact history." : "No new provider send was entered by that check."}`
+  } catch {
+    return null
+  }
+}
+
 function formatStatusCounts(
   counts: unknown,
   labels: Readonly<Record<string, string>>,

@@ -1,6 +1,159 @@
 import { describe, expect, it } from "bun:test"
-import { formatMerchantCheckoutSparkPayoutHistory } from "../apps/merchant/src/lib/checkout-spark-payout-history-display"
+import {
+  formatMerchantCheckoutSparkPayoutHistory,
+  formatMerchantCheckoutSparkPayoutObservation,
+} from "../apps/merchant/src/lib/checkout-spark-payout-history-display"
 import type { MerchantCheckoutSparkPayoutHistory } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
+
+describe("Merchant finite payout observation display", () => {
+  it.each([
+    ["fee_over_cap", "The provider fee exceeded this payout's approved cap."],
+    [
+      "insufficient_funds",
+      "The provider reported insufficient available checkout funds.",
+    ],
+    [
+      "fee_unavailable",
+      "The provider fee could not be verified for this payout.",
+    ],
+    [
+      "recovery_handoff_unavailable",
+      "The required recovery handoff could not be confirmed.",
+    ],
+  ] as const)("explains only the finite %s blocker", (reason, message) => {
+    for (const outcome of ["wait", "send_ambiguous"]) {
+      for (const sendAttempted of [false, true]) {
+        expect(
+          formatMerchantCheckoutSparkPayoutObservation({
+            outcome,
+            reason,
+            sendAttempted,
+          })
+        ).toBe(
+          `${message} ${sendAttempted ? "Funds may have moved; inspect exact history." : "No new provider send was entered by that check."}`
+        )
+      }
+    }
+  })
+
+  it("clears the hint for ordinary outcomes and unknown reasons", () => {
+    for (const outcome of [
+      "paid",
+      "already_paid",
+      "invoice_needed",
+      "funding_wait",
+      "terminal_failure",
+      "private-outcome-sentinel",
+      "constructor",
+      "toString",
+      "__proto__",
+    ])
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation({
+          outcome,
+          reason: "fee_over_cap",
+          sendAttempted: false,
+        })
+      ).toBeNull()
+    for (const reason of [
+      undefined,
+      null,
+      "private-reason-sentinel",
+      "provider_evidence_unavailable",
+      "constructor",
+      "toString",
+      "__proto__",
+    ])
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation({
+          outcome: "wait",
+          reason,
+          sendAttempted: false,
+        })
+      ).toBeNull()
+    expect(formatMerchantCheckoutSparkPayoutObservation(null)).toBeNull()
+  })
+
+  it("ignores malformed and inherited observation fields without coercion", () => {
+    const unsafe = {
+      toString: () => {
+        throw new Error("No observation coercion")
+      },
+      valueOf: () => {
+        throw new Error("No observation coercion")
+      },
+    }
+    const valid = {
+      outcome: "wait",
+      reason: "fee_over_cap",
+      sendAttempted: false,
+    }
+    for (const observation of [
+      undefined,
+      false,
+      "private-result-sentinel",
+      [],
+      {},
+      { ...valid, outcome: unsafe },
+      { ...valid, reason: unsafe },
+      { ...valid, sendAttempted: unsafe },
+      { ...valid, sendAttempted: undefined },
+      { ...valid, sendAttempted: 0 },
+      { ...valid, sendAttempted: 1 },
+      { ...valid, sendAttempted: "false" },
+      Object.assign(Object.create({ outcome: "wait" }), {
+        reason: "fee_over_cap",
+        sendAttempted: false,
+      }),
+      Object.assign(Object.create({ reason: "fee_over_cap" }), {
+        outcome: "wait",
+        sendAttempted: false,
+      }),
+      Object.assign(Object.create({ sendAttempted: false }), {
+        outcome: "wait",
+        reason: "fee_over_cap",
+      }),
+    ])
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation(observation)
+      ).toBeNull()
+    for (const field of ["outcome", "reason", "sendAttempted"]) {
+      const observation = { ...valid }
+      Object.defineProperty(observation, field, {
+        get() {
+          throw new Error("No observation getter access")
+        },
+      })
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation(observation)
+      ).toBeNull()
+    }
+  })
+
+  it("ignores extra private fields and raw errors rather than rendering or reading them", () => {
+    const observation = {
+      outcome: "send_ambiguous",
+      reason: "fee_unavailable",
+      sendAttempted: true,
+      providerTransferId: "private-reference-sentinel",
+      paymentRequest: "private-invoice-sentinel",
+      get error() {
+        throw new Error("No private error access")
+      },
+      get message() {
+        throw new Error("No private message access")
+      },
+    }
+    expect(formatMerchantCheckoutSparkPayoutObservation(observation)).toBe(
+      "The provider fee could not be verified for this payout. Funds may have moved; inspect exact history."
+    )
+    expect(
+      formatMerchantCheckoutSparkPayoutObservation(
+        new Error("private-error-sentinel")
+      )
+    ).toBeNull()
+  })
+})
 
 describe("Merchant exact payout history display", () => {
   it("separates saved commerce statuses from this check's exact provider observations", () => {

@@ -4,6 +4,7 @@ import {
   projectCheckoutSparkMerchantSettlement,
   isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkPerformanceObserver,
+  type CheckoutSparkSettledOutgoingStepResult,
   type MerchantCheckoutSparkReconciliationStatus,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
@@ -342,6 +343,11 @@ async function inspectMerchantCheckoutSparkOrder(
   return "pending"
 }
 
+export type MerchantCheckoutSparkPayoutObservation = Pick<
+  CheckoutSparkSettledOutgoingStepResult,
+  "outcome" | "reason" | "sendAttempted"
+>
+
 interface AdvancementDependencies extends ReconciliationDependencies {
   selectPayout?: typeof selectMerchantCheckoutSparkSignedNextPayout
   preparePayout?: typeof prepareNextMerchantCheckoutSparkSettledPayout
@@ -351,6 +357,10 @@ interface AdvancementDependencies extends ReconciliationDependencies {
   requestRescan: () => void
   /** A newly paid continuation can wake its serialized owner, not bypass it. */
   onProgress?: () => void
+  /** Existing commerce result only; no provider call or execution authority. */
+  onPayoutObservation?: (
+    observation: MerchantCheckoutSparkPayoutObservation
+  ) => void
   /** Optional bounded, content-free observation of one advancement invocation. */
   observePerformance?: CheckoutSparkPerformanceObserver
 }
@@ -566,6 +576,15 @@ async function advanceMerchantCheckoutSparkOrderPhase(
   })
   assertActive()
   if (result.status !== "consumed" || !result.payout) return "unavailable"
+  try {
+    dependencies.onPayoutObservation?.({
+      outcome: result.payout.outcome,
+      ...(result.payout.reason ? { reason: result.payout.reason } : {}),
+      sendAttempted: result.payout.sendAttempted,
+    })
+  } catch {
+    // A display observer must not change provider outcome or scheduling.
+  }
   if (result.payout.reason === "recipient_unverified")
     return "recipient_unverified"
   // Let discovery select a new signed pointer. Never manufacture one from local

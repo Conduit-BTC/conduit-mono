@@ -73,6 +73,39 @@ describe("Merchant saved payout confirmation", () => {
     )
   })
 
+  it("static source guard: binds existing-result diagnostics to the selected plan and live account generation without new provider work", async () => {
+    const source = await Bun.file(
+      "apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx"
+    ).text()
+    const observation = source.slice(
+      source.indexOf("onPayoutObservation(observation)"),
+      source.indexOf(
+        "onProgress:",
+        source.indexOf("onPayoutObservation(observation)")
+      )
+    )
+    expect(observation).toContain("assertActive()")
+    expect(observation).toContain("if (!isPayoutSelectionCurrent()) return")
+    expect(observation).toContain(
+      "formatMerchantCheckoutSparkPayoutObservation"
+    )
+    expect(observation).toContain("planDigest: candidate.planDigest")
+    expect(observation).not.toMatch(
+      /preflight|openWallet|sendFrozen|stopDiscovery/
+    )
+    expect(source).toContain("lastPayoutObservation?.isSelectionCurrent()")
+    expect(source).toContain(
+      "lastPayoutObservation.planDigest === candidate.planDigest"
+    )
+    expect(source).toContain("[reviewSelectionRevision, candidate?.planDigest]")
+    const manual = source.slice(
+      source.indexOf("function beginManualAction"),
+      source.indexOf("async function refreshVerifiedStatus")
+    )
+    expect(manual).toContain("setLastPayoutObservation(null)")
+    expect(source).toContain("if (next) setLastPayoutObservation(null)")
+  })
+
   it("shows the exact destination, amount and full allocation limit without recovery material", () => {
     const markup = renderReview(cutoff - 10 * 60_000)
     expect(markup).toContain("merchant@example.test")

@@ -20,7 +20,10 @@ import {
 } from "@conduit/ui"
 import { CheckoutSparkMerchantPayoutReview } from "./CheckoutSparkMerchantPayoutReview"
 import { CheckoutSparkMerchantPaymentCard } from "./CheckoutSparkMerchantPaymentCard"
-import { formatMerchantCheckoutSparkPayoutHistory } from "../lib/checkout-spark-payout-history-display"
+import {
+  formatMerchantCheckoutSparkPayoutHistory,
+  formatMerchantCheckoutSparkPayoutObservation,
+} from "../lib/checkout-spark-payout-history-display"
 import {
   readMerchantCheckoutSparkVerification,
   type MerchantCheckoutSparkRetirementRead,
@@ -221,6 +224,11 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   }
   const [notice, setNotice] = useState<string | null>(null)
   const [noticeOrderId, setNoticeOrderId] = useState<string | null>(null)
+  const [lastPayoutObservation, setLastPayoutObservation] = useState<{
+    message: string
+    planDigest: string
+    isSelectionCurrent: () => boolean
+  } | null>(null)
   const [outcomes, setOutcomes] = useState<
     Record<string, MerchantCheckoutSparkReconciliationStatus>
   >({})
@@ -279,6 +287,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   )
   // Never choose one conflicting recovery plan arbitrarily for an order.
   const candidate = orderCandidates.length === 1 ? orderCandidates[0] : null
+  useEffect(() => {
+    setLastPayoutObservation(null)
+  }, [reviewSelectionRevision, candidate?.planDigest])
   const manualControlsDisabled =
     busy || automaticTransition !== null || !hasCurrentSession()
   const manualExecutionDisabled =
@@ -438,6 +449,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             try {
               let outcome: MerchantCheckoutSparkReconciliationStatus
               if (automaticDispatch) {
+                const isPayoutSelectionCurrent = reviewSelection.capture(
+                  candidate.orderId
+                )
                 outcome = await advanceMerchantCheckoutSparkOrder(
                   principalPubkey,
                   candidate,
@@ -445,6 +459,23 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                   {
                     repository,
                     assertNotificationActive,
+                    onPayoutObservation(observation) {
+                      assertActive()
+                      if (!isPayoutSelectionCurrent()) return
+                      const message =
+                        formatMerchantCheckoutSparkPayoutObservation(
+                          observation
+                        )
+                      setLastPayoutObservation(
+                        message
+                          ? {
+                              message,
+                              planDigest: candidate.planDigest,
+                              isSelectionCurrent: isPayoutSelectionCurrent,
+                            }
+                          : null
+                      )
+                    },
                     onProgress: () => {
                       assertActive()
                       reportProgress()
@@ -578,6 +609,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     automaticScope,
     automaticTransition,
     automaticSession,
+    reviewSelection,
     executionEnabled,
     hasCurrentSession,
     applySavedVerification,
@@ -605,6 +637,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     setAutomaticTransition(automaticTransitionRef.current)
     setAutomaticPayouts(false)
     setNotice(null)
+    if (next) setLastPayoutObservation(null)
     setNoticeOrderId(selectedOrderId ?? null)
     try {
       // change() revokes synchronously and drains before granting the new mode.
@@ -669,6 +702,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     )
       return null
     generation.current += 1
+    setLastPayoutObservation(null)
     setNoticeOrderId(orderId)
     automaticSession.revoke()
     setAutomaticPayouts(false)
@@ -1246,6 +1280,11 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               payments. Opening the wallet may claim pending inbound funds.
               Balance and history checks do not create invoices or send payouts.
             </p>
+            {lastPayoutObservation?.isSelectionCurrent() &&
+              hasCurrentSession() &&
+              lastPayoutObservation.planDigest === candidate.planDigest && (
+                <p role="status">{lastPayoutObservation.message}</p>
+              )}
             {verificationReadUnavailable && (
               <p>
                 Saved verification could not be refreshed. Previous verified
