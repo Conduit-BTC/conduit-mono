@@ -101,15 +101,23 @@ parent. Save the exact signed revision before publication, and retry its same
 bytes. Unrelated open/close, booth and merchant-approval/revocation edits preserve
 existing fee tags, including unsupported versions, rather than silently
 dropping them. Disabling or revoking is an explicit newly signed revision.
-Expiry must be later than a new active revision's signing time. Current
-financial admission checks signed creation time and exclusive expiry; historical
-parsing must not apply today's clock to correctly retained funded evidence.
+New or deliberately edited fee settings are percentage-only: emit minimum zero
+and omit expiry. Offer the organizer's selected profile receiving address as an
+explicit shortcut, alongside custom entry; saving freezes the actual normalized
+destination rather than a live profile reference. Existing minimum/expiry terms
+remain visible and unchanged until deliberately edited. Retained signed expiry
+must be later than that revision's signing time. Current financial admission
+checks signed creation time and exclusive expiry when present; historical parsing
+must not apply today's clock to correctly retained funded evidence.
 
 The fee is `max(minimumSats, ceil(commerceTotalSats * basisPoints / 10000))`.
 Its base is the approved merchandise plus shipping total, excluding organizer,
-Conduit and network fees. Do not charge a fee on another fee or change the
-independent Conduit floor. A coordinated fee-bearing plan must disclose the
-organizer, rate/minimum, exact fee and complete fixed funding total before
+Conduit and network fees. Do not charge a fee on another fee. New percentage-only
+terms reduce this to `ceil(commerceTotalSats * basisPoints / 10000)`; the minimum
+field remains readable for historical terms. The independent Conduit policy is
+frozen separately as described in the router contract. A coordinated fee-bearing
+plan must disclose the organizer, applicable rate/minimum, exact fee and complete
+fixed funding total before
 payment. Freeze the exact signed terms revision and destination. Later edits,
 revocation, profile changes or expiry cannot reprice or redirect that funded
 plan.
@@ -301,7 +309,19 @@ Checkout compares material accepted terms and retains the latest authenticated e
 
 Handoff delivery retains exact encrypted operations for retry. Completed delivery leaves the bounded pending queue without erasing claim identity or stronger authenticated evidence. Merchant inbox self-copies participate in duplicate-issuance protection on a fresh device. An exact authenticated handoff acknowledgement may support completion despite an incomplete unrelated inbox read; known conflicting or revoked evidence still blocks.
 
-Finite recurrence and event pickup versus ordinary shipping compose with these workflows. New assignment purchases permit pseudonymous contact-free pickup without a separate product opt-in until the selected date ends; the buyer must retain their private receipt. Historical pre-assignment immediate pickup retains its currently-occurring-date and merchant opt-in checks. Ordinary contact-based pickup and shipping contact requirements remain available. Organizer fees and checkout-wallet recovery require the exact payment-router and stock authority described above; a historical physical-release receipt alone does not imply those capabilities.
+Finite recurrence and event pickup versus ordinary shipping compose with these workflows. New event-context purchases are event pickup: catalog, product, cart and checkout do not offer a switch to shipping. Ordinary storefront shipping and historical saved fulfillment remain readable and keep their original terms. New assignment purchases permit pseudonymous contact-free pickup without a separate product opt-in until the selected date ends; the buyer must retain their private receipt. Historical pre-assignment immediate pickup retains its currently-occurring-date and merchant opt-in checks. Ordinary contact-based pickup and shipping contact requirements remain available. Organizer fees and checkout-wallet recovery require the exact payment-router and stock authority described above; a historical physical-release receipt alone does not imply those capabilities.
+
+Contact-free buyers may retain the visible private receipt (including its code)
+as a screenshot or save a readable text export; a raw JSON download is not
+required. They must explicitly confirm keeping it before ordering. Original
+JSON exports remain verifiable. The code is a bearer possession proof bound to
+the exact merchant, order and signed commitment, never proof of payment or an
+automatic refund or stock-release authorization. Receipt verification accepts
+the private file or code only against the selected order. Receipt codes and QR
+images must not enter diagnostics, telemetry or public demo evidence. For
+contact-based pickup, a visible country choice supports locally parsed phone
+numbers without a network lookup; explicit international numbers remain valid
+independently of the selected country.
 
 ## Validation boundary
 

@@ -82,8 +82,8 @@ describe("Event Market schema lineage upgrades", () => {
       const warnings = spyOn(console, "warn").mockImplementation(() => {})
       try {
         await upgraded.open()
-        expect(upgraded.verno).toBe(29)
-        expect(upgraded.backendDB().version).toBe(290)
+        expect(upgraded.verno).toBe(30)
+        expect(upgraded.backendDB().version).toBe(300)
         expect(warnings).not.toHaveBeenCalled()
         for (const [table, rows] of retained) {
           expect(

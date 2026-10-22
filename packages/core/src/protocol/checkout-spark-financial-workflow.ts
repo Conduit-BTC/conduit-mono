@@ -483,11 +483,17 @@ export async function runCheckoutSparkFinancialWorkflow(
           ),
         preflight: (...args) =>
           checked(() => ports.native!.provider.preflight(...args)),
-        send: (target) =>
-          checked(
-            () => ports.native!.provider.send(target),
-            "router_native_commitment"
-          ),
+        send: async (target) => {
+          await ports.assertCurrent()
+          // An admitted response must reach its reference-only journal before
+          // dispatch revocation is checked again. Later reads retain checked().
+          return observeCheckoutSparkOperation({
+            app: input.actor === "shopper" ? "market" : "merchant",
+            step: "router_native_commitment",
+            operation: () => ports.native!.provider.send(target),
+            observe: ports.observePerformance,
+          })
+        },
       },
       proveCommerce: (state) =>
         checked(

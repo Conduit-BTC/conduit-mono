@@ -164,10 +164,10 @@ it("composes interrupted Buyer checkout, cold Organizer routing, one physical cl
     expect(sellerLeg.intent?.transferId).toBeTruthy()
     const sellerTransferId = sellerLeg.intent!.transferId
     const sellerPaymentHash = sellerLeg.intent!.paymentHash
-    const initial = getCheckoutSparkRecoveryDelivery(
+    const initial = (await getCheckoutSparkRecoveryDelivery(
       f.prepared.recoveryHandoffId,
       f.storage
-    )!
+    ))!
     const stockPool = await f.database.eventMarketOrganizerStockPools.get(
       `${f.merchantPubkey}:${f.stockGrant!.id}`
     )
@@ -190,7 +190,7 @@ it("composes interrupted Buyer checkout, cold Organizer routing, one physical cl
       authenticatedPubkey: f.organizerPubkey,
       writerId: f.writerId,
       initialWrap: initial.organizerDelivery!.signedRecipientWrap,
-      buyerProgressWraps: listCheckoutSparkRecoveryDeliveries(f.storage)
+      buyerProgressWraps: (await listCheckoutSparkRecoveryDeliveries(f.storage))
         .filter((row) => row.record.handoffId !== initial.record.handoffId)
         .sort((a, b) => a.savedAt - b.savedAt)
         .map((row) => row.organizerDelivery!.signedRecipientWrap),
@@ -943,7 +943,7 @@ async function fixture(
     ).rejects.toThrow("preparation was safely closed")
     expect(calls.published.length).toBe(0)
     expect(calls.organizerPublished.length).toBe(0)
-    expect(listCheckoutSparkRecoveryDeliveries(storage).length).toBe(0)
+    expect((await listCheckoutSparkRecoveryDeliveries(storage)).length).toBe(0)
     expect(
       getCheckoutSparkSettledPreparation(request.checkoutId, storage)
     ).toBeNull()
@@ -1206,7 +1206,7 @@ describe("composed event checkout preparation and execution", () => {
         getCheckoutSparkSettledPreparation(f.plan.checkoutId, f.storage)
           ?.fundingInvoiceExposedAt
       ).toBeGreaterThanOrEqual(AT)
-      const deliveries = listCheckoutSparkRecoveryDeliveries(f.storage)
+      const deliveries = await listCheckoutSparkRecoveryDeliveries(f.storage)
       expect(deliveries.length).toBe(1)
       expect(deliveries[0]!.deliveryProgress.acknowledgedRelayRefs.length).toBe(
         1
@@ -1228,7 +1228,9 @@ describe("composed event checkout preparation and execution", () => {
     })
     try {
       expect(f.plan.schemaVersion).toBe(5)
-      expect(listCheckoutSparkRecoveryDeliveries(f.storage).length).toBe(1)
+      expect(
+        (await listCheckoutSparkRecoveryDeliveries(f.storage)).length
+      ).toBe(1)
       expect(
         getCheckoutSparkSettledPreparation(f.plan.checkoutId, f.storage)
           ?.recoveryHandoffId
@@ -1331,9 +1333,9 @@ describe("composed event checkout preparation and execution", () => {
     let providerInvocations = 0
     try {
       const assertBothAcknowledged = async () => {
-        const current = listCheckoutSparkRecoveryDeliveries(f.storage).sort(
-          (a, b) => b.savedAt - a.savedAt
-        )[0]!
+        const current = (
+          await listCheckoutSparkRecoveryDeliveries(f.storage)
+        ).sort((a, b) => b.savedAt - a.savedAt)[0]!
         expect(current.record.handoffId === f.prepared.recoveryHandoffId).toBe(
           false
         )
@@ -1441,13 +1443,13 @@ describe("composed event checkout preparation and execution", () => {
           witness!,
           () => {}
         )
-        const deliveries = listCheckoutSparkRecoveryDeliveries(f.storage).sort(
-          (a, b) => b.savedAt - a.savedAt
-        )
-        const initialDelivery = getCheckoutSparkRecoveryDelivery(
+        const deliveries = (
+          await listCheckoutSparkRecoveryDeliveries(f.storage)
+        ).sort((a, b) => b.savedAt - a.savedAt)
+        const initialDelivery = (await getCheckoutSparkRecoveryDelivery(
           f.prepared.recoveryHandoffId,
           f.storage
-        )!
+        ))!
         const initial = await openCheckoutSparkRecoveryDelivery({
           record: initialDelivery.record,
           signer: f.merchantSigner,

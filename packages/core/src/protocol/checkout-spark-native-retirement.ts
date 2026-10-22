@@ -121,6 +121,12 @@ export interface CollectCheckoutSparkNativeRetirementEvidenceInput {
 export type CheckoutSparkNativeRetirementObservation = {
   phase:
     | "input_validation"
+    | "recovery_delivery"
+    | "wallet_open"
+    | "privacy_readiness"
+    | "wallet_validation"
+    | "funding_proof"
+    | "commerce_proof"
     | "history_first_read"
     | "funds_read"
     | "history_second_read"
@@ -130,6 +136,8 @@ export type CheckoutSparkNativeRetirementObservation = {
   availableZero?: boolean
   ownedZero?: boolean
   pendingEmpty?: boolean
+  availableMatchesAuthorized?: boolean
+  ownedMatchesAvailable?: boolean
 }
 
 function observeRetirement(
@@ -498,6 +506,10 @@ export async function proveCheckoutSparkNativeTreasuryHistory(
   }
 ): Promise<boolean> {
   try {
+    observeRetirement(input, {
+      phase: "input_validation",
+      status: "not_verified",
+    })
     if (
       !isIdentifier(input.walletId) ||
       !isIdentifier(input.sparkAddress) ||
@@ -544,24 +556,54 @@ export async function proveCheckoutSparkNativeTreasuryHistory(
     const startedAt = input.now()
     if (!Number.isSafeInteger(startedAt) || startedAt < input.stateUpdatedAt)
       return false
+    observeRetirement(input, {
+      phase: "history_first_read",
+      status: "not_verified",
+    })
     if (!(await readStableHistoryScope(input, closed))) return false
+    observeRetirement(input, {
+      phase: "history_first_read",
+      status: "verified",
+    })
+    observeRetirement(input, { phase: "funds_read", status: "not_verified" })
     const available = await guardedRead(input, () =>
       input.authenticatedReader.getAvailableBalance(input.sparkAddress)
     )
+    const availableMatchesAuthorized =
+      available === BigInt(input.authorizedDebitSats)
+    observeRetirement(input, {
+      phase: "funds_read",
+      status: "not_verified",
+      availableMatchesAuthorized,
+    })
     const owned = await guardedRead(input, () =>
       input.authenticatedReader.getOwnedBalance(input.sparkAddress)
     )
+    const ownedMatchesAvailable = owned === available
+    observeRetirement(input, {
+      phase: "funds_read",
+      status: "not_verified",
+      availableMatchesAuthorized,
+      ownedMatchesAvailable,
+    })
     const pending = await guardedRead(input, () =>
       input.authenticatedReader.getPendingTransfers(input.sparkAddress)
     )
+    const pendingEmpty = Array.isArray(pending) && pending.length === 0
+    observeRetirement(input, {
+      phase: "funds_read",
+      status: "not_verified",
+      availableMatchesAuthorized,
+      ownedMatchesAvailable,
+      pendingEmpty,
+    })
     input.assertCurrent?.()
     verifyReturns()
-    return (
-      available === BigInt(input.authorizedDebitSats) &&
-      owned === available &&
-      Array.isArray(pending) &&
-      pending.length === 0
-    )
+    const verified =
+      availableMatchesAuthorized && ownedMatchesAvailable && pendingEmpty
+    if (verified)
+      observeRetirement(input, { phase: "complete", status: "verified" })
+    return verified
   } catch {
     return false
   }

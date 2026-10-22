@@ -186,3 +186,28 @@ requests. Production submission additionally needs the deployed gateway, real
 database bindings/migrations, Turnstile configuration, allowed origins and the
 signed status endpoint. Those are operator validation requirements, not evidence
 provided by controlled transport tests.
+
+## Explicit additional-wallet creation
+
+The Create wallet action is distinct from automatic discovery and explicit phrase
+restore. It does not substitute a discovered wallet for the requested new wallet.
+Partial or unavailable unrelated sources do not veto this explicit operation.
+Automatic recovery and account pointer changes retain their stronger evidence gates.
+
+Before native initialization, the existing wallet transaction retains the descriptor
+and verified signer-encrypted credential with a device-local `creationPending` marker.
+Failure, reload, or interrupted relay backup resumes that exact identity. Multiple
+unfinished identities require review; retained removals and conflicting backups
+cannot be silently bypassed. Account/session replacement fences asynchronous work.
+The marker clears only after the setup surface acknowledges recovery export; a
+failed acknowledgement write leaves the identity resumable.
+
+Additional creation preserves existing defaults. Incomplete discovery neither
+selects another wallet nor changes account primary/default pointers. The setup
+surface reports native usability, retained/exported recovery and optional account
+synchronization separately. Recovery export remains required before inviting funding.
+
+Automatic public-address defaults additionally require verified first-wallet evidence
+from before creation. An empty device wallet list or a complete read of an unresolved
+registry cannot establish that evidence. Additional creation under uncertainty leaves
+the public profile unchanged and offers an explicit address choice instead.

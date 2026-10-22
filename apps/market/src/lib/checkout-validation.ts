@@ -45,6 +45,14 @@ const SHIPPING_COUNTRY_CODES = new Set(
 
 export const sanitizeShippingPhoneInput = sanitizePhoneInput
 
+/** Format only a valid locally parsed number; never guess the buyer's country. */
+export function normalizeCheckoutPhone(phone: string, country: string): string {
+  const result = validateAddressConsistency({ phone, country })
+  return result.issues.some((issue) => issue.field === "phone")
+    ? phone
+    : (result.normalized.phone ?? phone)
+}
+
 export const SHIPPING_PHONE_ERROR_ID = "ship-phone-error"
 export const SHIPPING_EMAIL_ERROR_ID = "ship-email-error"
 

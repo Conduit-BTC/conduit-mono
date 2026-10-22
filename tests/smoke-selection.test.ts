@@ -242,6 +242,9 @@ describe("bounded smoke ownership", () => {
   it("retains both services for cross-app and unqualified test files", () => {
     expect(smokeNeedsBothApps(undefined)).toBe(true)
     expect(
+      smokeNeedsBothApps(["e2e/checkout-recovery-storage.playwright.ts"])
+    ).toBe(false)
+    expect(
       smokeNeedsBothApps(["e2e/wallet-cross-app.playwright.ts", ...baseline])
     ).toBe(true)
     expect(

@@ -22,8 +22,11 @@ export function CheckoutEventOrganizerFeeDisclosure({
           getEventActorIdentityView({ pubkey: terms.organizerPubkey })
         }
       />
-      : {terms.basisPoints / 100}% of items and shipping, minimum{" "}
-      {terms.minimumSats.toLocaleString()} sats.
+      : {terms.basisPoints / 100}% of items and shipping
+      {terms.minimumSats > 0
+        ? `, minimum ${terms.minimumSats.toLocaleString()} sats`
+        : ""}
+      .
     </p>
   )
 }

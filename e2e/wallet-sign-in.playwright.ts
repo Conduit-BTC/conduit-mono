@@ -114,7 +114,16 @@ test("creation retry retains its encrypted wallet identity after provider openin
           return (
             rows.length === 1 &&
             rows[0].walletId === original.id &&
-            rows[0].credential === original.credential
+            (() => {
+              const { creationPending, ...retained } = JSON.parse(
+                original.credential
+              )
+              return (
+                creationPending === true &&
+                JSON.stringify(JSON.parse(rows[0].credential)) ===
+                  JSON.stringify(retained)
+              )
+            })()
           )
         },
         { moduleUrl: core, original }

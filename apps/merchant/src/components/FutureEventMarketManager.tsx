@@ -84,6 +84,7 @@ import { getEventActorDisplayName } from "../lib/event-actor-identity"
 import { FutureEventMerchantParticipation } from "./FutureEventMerchantParticipation"
 import { EventMarketOrganizerFeeEditor } from "./EventMarketOrganizerFeeEditor"
 import { EventMarketStockPanel } from "./EventMarketStockPanel"
+import { getPendingEventMerchantRequests } from "../lib/event-market-enrollment-presentation"
 
 function errorText(error: unknown): string {
   return error instanceof Error
@@ -1429,7 +1430,7 @@ function MerchantAuthorityRow({
       <CardContent className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="grid grid-cols-1 gap-1 [&>p]:mt-1">
-            <Label htmlFor={`mode-${merchant}`}>Handoff mode</Label>
+            <Label htmlFor={`mode-${merchant}`}>Who holds the stock?</Label>
             <Select
               value={mode}
               onValueChange={(value) =>
@@ -1440,15 +1441,22 @@ function MerchantAuthorityRow({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="merchant_present">Merchant booth</SelectItem>
+                <SelectItem value="merchant_present">
+                  Merchant-managed pickup
+                </SelectItem>
                 <SelectItem
                   value="organizer_handoff"
                   disabled={merchant === organizerPubkey}
                 >
-                  Organizer pickup
+                  Organizer-held pickup
                 </SelectItem>
               </SelectContent>
             </Select>
+            <p className="text-sm text-[var(--text-secondary)]">
+              {mode === "merchant_present"
+                ? "The seller keeps the stock and handles pickup. No organizer stock reservation is needed."
+                : "The seller reserves a quantity for the organizer, who holds the goods and handles pickup from one designated browser."}
+            </p>
             {merchant === organizerPubkey ? (
               <p className="text-xs text-[var(--text-secondary)]">
                 When you're selling, buyers collect directly from your booth.
@@ -1720,6 +1728,55 @@ export function FutureEventMarketManager({
     market.organizerPubkey === authenticatedPubkey &&
     isEventMarketRosterWriteReady(result) &&
     isEventMarketCalendarWriteReady(result)
+  const pendingMerchantRequests = getPendingEventMerchantRequests(
+    market?.merchants ?? [],
+    enrollment.query.data?.states
+  )
+
+  function renderMerchantRow(merchant: string) {
+    if (!market) return null
+    const row = market.merchants.find((entry) => entry.pubkey === merchant)
+    return (
+      <MerchantAuthorityRow
+        key={`${merchant}:${row?.mode ?? "new"}:${row?.assignment ?? ""}`}
+        enrollmentStatus={
+          enrollment.query.data?.states.find(
+            (state) => state.merchantPubkey === merchant
+          )?.status
+        }
+        displayName={getEventActorDisplayName(
+          merchant,
+          profiles.data?.[merchant]
+        )}
+        picture={
+          profiles.data?.[merchant]?.pubkey === merchant
+            ? (normalizePublicMediaUrl(profiles.data[merchant]?.picture) ??
+              undefined)
+            : undefined
+        }
+        onEnrollment={enrollment.send}
+        enrollmentBlocked={
+          enrollment.busy || !!enrollment.pending || !!enrollment.storageError
+        }
+        coordinate={market.coordinate}
+        merchant={merchant}
+        row={row}
+        calendarCoordinate={market.calendarCoordinate}
+        marketEventId={market.eventId}
+        marketState={market.state}
+        allRows={market.merchants}
+        decisionPending={
+          pendingDecisions.isPending || (pendingDecisions.data?.length ?? 0) > 0
+        }
+        authenticatedPubkey={authenticatedPubkey}
+        onChanged={() => {
+          void query.refetch()
+          void pendingDecisions.refetch()
+          void queryClient.invalidateQueries({ queryKey: ["future-market"] })
+        }}
+      />
+    )
+  }
 
   async function retryRoster(): Promise<void> {
     if (!market || !authenticatedPubkey) return
@@ -1854,7 +1911,8 @@ export function FutureEventMarketManager({
           {decisionError}
         </p>
       ) : null}
-      {enrollment.error ? (
+      {enrollment.error &&
+      (isOrganizer || !market || (!calendar && !series)) ? (
         <p role="alert" className="text-sm text-[var(--error-text)]">
           {enrollment.error}
           {enrollment.networkRepair ? (
@@ -1929,6 +1987,61 @@ export function FutureEventMarketManager({
                 : "Closed for new sales"}
             </p>
           </EventPageHeader>
+          {canManage && pendingMerchantRequests.length > 0 ? (
+            <section
+              aria-label="Pending merchant requests"
+              className="space-y-4"
+            >
+              <h2 className="text-xl font-semibold">
+                Pending merchant requests
+              </h2>
+              <p className="text-sm text-[var(--text-muted)]">
+                Review these requests before merchants can sell at this event. A
+                request is not an approval.
+              </p>
+              <div className="grid gap-4">
+                {pendingMerchantRequests.map(renderMerchantRow)}
+              </div>
+            </section>
+          ) : null}
+          {!isOrganizer ? (
+            <FutureEventMerchantParticipation
+              market={market}
+              authenticatedPubkey={authenticatedPubkey}
+              enrollment={enrollment.query.data?.states.find(
+                (state) => state.merchantPubkey === authenticatedPubkey
+              )}
+              busy={enrollment.busy}
+              blocked={!!enrollment.pending || !!enrollment.storageError}
+              pendingDelivery={!!enrollment.pending}
+              error={enrollment.error}
+              networkRepair={enrollment.networkRepair}
+              onSend={enrollment.send}
+            />
+          ) : null}
+          {canManage && authenticatedPubkey && !series && calendar ? (
+            <MarketLifecycleEditor
+              key={`${calendar.eventId}:${market.eventId}`}
+              market={market}
+              calendar={calendar}
+              authenticatedPubkey={authenticatedPubkey}
+              onChanged={() => void query.refetch()}
+            />
+          ) : null}
+          {authenticatedPubkey === market.organizerPubkey && series ? (
+            <SeriesDateManager
+              key={`${series.series.eventId}:${selectedOccurrence ?? "default"}`}
+              market={market}
+              schedule={series}
+              calendarCoverage={result?.calendarCoverage}
+              scheduleCoverage={result?.scheduleCoverage}
+              canEdit={!!canManage}
+              selectedOccurrence={selectedOccurrence}
+              onSelectOccurrence={onSelectOccurrence}
+              authenticatedPubkey={authenticatedPubkey}
+              onChanged={() => query.refetch()}
+            />
+          ) : null}
           <div className="flex flex-wrap gap-3">
             {sheets[0] ? (
               <div
@@ -1977,7 +2090,7 @@ export function FutureEventMarketManager({
             market={market}
             authenticatedPubkey={authenticatedPubkey}
             canManage={!!canManage}
-            onChanged={() => query.refetch()}
+            onChanged={() => query.refetch({ throwOnError: true })}
           />
           {authenticatedPubkey && result ? (
             authenticatedPubkey === market.organizerPubkey ||
@@ -2008,15 +2121,6 @@ export function FutureEventMarketManager({
               </details>
             )
           ) : null}
-          {canManage && authenticatedPubkey && !series && calendar ? (
-            <MarketLifecycleEditor
-              key={`${calendar.eventId}:${market.eventId}`}
-              market={market}
-              calendar={calendar}
-              authenticatedPubkey={authenticatedPubkey}
-              onChanged={() => void query.refetch()}
-            />
-          ) : null}
           {!canManage &&
           authenticatedPubkey === market.organizerPubkey &&
           !series &&
@@ -2035,32 +2139,6 @@ export function FutureEventMarketManager({
             <p role="alert" className="text-sm text-[var(--error-text)]">
               {calendarRetryError}
             </p>
-          ) : null}
-          {authenticatedPubkey === market.organizerPubkey && series ? (
-            <SeriesDateManager
-              key={`${series.series.eventId}:${selectedOccurrence ?? "default"}`}
-              market={market}
-              schedule={series}
-              calendarCoverage={result?.calendarCoverage}
-              scheduleCoverage={result?.scheduleCoverage}
-              canEdit={!!canManage}
-              selectedOccurrence={selectedOccurrence}
-              onSelectOccurrence={onSelectOccurrence}
-              authenticatedPubkey={authenticatedPubkey}
-              onChanged={() => query.refetch()}
-            />
-          ) : null}
-          {!isOrganizer ? (
-            <FutureEventMerchantParticipation
-              market={market}
-              authenticatedPubkey={authenticatedPubkey}
-              enrollment={enrollment.query.data?.states.find(
-                (state) => state.merchantPubkey === authenticatedPubkey
-              )}
-              busy={enrollment.busy}
-              blocked={!!enrollment.pending || !!enrollment.storageError}
-              onSend={enrollment.send}
-            />
           ) : null}
           {canManage ? (
             <section className="space-y-4">
@@ -2105,54 +2183,11 @@ export function FutureEventMarketManager({
                 </Button>
               </div>
               <div className="grid gap-4">
-                {merchantIds.map((merchant) => (
-                  <MerchantAuthorityRow
-                    key={`${merchant}:${market.merchants.find((row) => row.pubkey === merchant)?.mode ?? "new"}:${market.merchants.find((row) => row.pubkey === merchant)?.assignment ?? ""}`}
-                    enrollmentStatus={
-                      enrollment.query.data?.states.find(
-                        (state) => state.merchantPubkey === merchant
-                      )?.status
-                    }
-                    displayName={getEventActorDisplayName(
-                      merchant,
-                      profiles.data?.[merchant]
-                    )}
-                    picture={
-                      profiles.data?.[merchant]?.pubkey === merchant
-                        ? (normalizePublicMediaUrl(
-                            profiles.data[merchant]?.picture
-                          ) ?? undefined)
-                        : undefined
-                    }
-                    onEnrollment={enrollment.send}
-                    enrollmentBlocked={
-                      enrollment.busy ||
-                      !!enrollment.pending ||
-                      !!enrollment.storageError
-                    }
-                    coordinate={market.coordinate}
-                    merchant={merchant}
-                    row={market.merchants.find(
-                      (row) => row.pubkey === merchant
-                    )}
-                    calendarCoordinate={market.calendarCoordinate}
-                    marketEventId={market.eventId}
-                    marketState={market.state}
-                    allRows={market.merchants}
-                    decisionPending={
-                      pendingDecisions.isPending ||
-                      (pendingDecisions.data?.length ?? 0) > 0
-                    }
-                    authenticatedPubkey={authenticatedPubkey}
-                    onChanged={() => {
-                      void query.refetch()
-                      void pendingDecisions.refetch()
-                      void queryClient.invalidateQueries({
-                        queryKey: ["future-market"],
-                      })
-                    }}
-                  />
-                ))}
+                {merchantIds
+                  .filter(
+                    (merchant) => !pendingMerchantRequests.includes(merchant)
+                  )
+                  .map(renderMerchantRow)}
               </div>
             </section>
           ) : null}

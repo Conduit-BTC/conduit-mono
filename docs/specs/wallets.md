@@ -498,6 +498,13 @@ Retain encrypted Merchant progress and the replay-blocking tombstone; active
 or uncertain entries and wallet credentials are not removed by queue cleanup.
 Interrupted cleanup resumes from that marker without sending another payment.
 
+Encrypted checkout recovery payloads and completed evidence use the existing
+device-local IndexedDB owner, with verified copy-before-marker migration from
+the prior Web Storage outbox. Exact bytes, recipient acknowledgements, pending
+work and terminal replay protection survive migration; conflicting older-tab
+writes or unavailable migrated records fail closed. This storage change grants
+no wallet, payment or expiry authority and does not delete unclaimed recovery.
+
 Funding below the frozen commerce-plus-Conduit weights requires reconciliation,
 not proportional commerce haircuts. Existing historical short-funded evidence
 remains inspectable, without new preparation or dispatch authority.
