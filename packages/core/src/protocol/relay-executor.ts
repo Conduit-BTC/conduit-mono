@@ -57,6 +57,7 @@ export interface RelayRequest {
     | "private_inbox_read"
     | "legacy_inbox_read"
     | "account_recovery_read"
+    | "account_network_preference_read"
 }
 
 export type RelayQuery = RelayRequest
@@ -486,6 +487,26 @@ function assertRequest(
     throw new Error("Private inbox read requires active authorization")
   }
   assertProtectedReadAuthorization(authorization, authorization.expectedPubkey)
+  if (request.operation === "account_network_preference_read") {
+    const filter = request.filters[0]
+    if (
+      request.relayUrls.length !== 1 ||
+      request.filters.length !== 1 ||
+      !filter ||
+      Object.keys(filter).some(
+        (key) => !["authors", "ids", "kinds", "limit"].includes(key)
+      ) ||
+      filter.authors?.length !== 1 ||
+      filter.authors[0] !== authorization.expectedPubkey ||
+      filter.kinds?.length !== 1 ||
+      ![10002, 10050].includes(filter.kinds[0]!) ||
+      filter.ids?.length !== 1 ||
+      !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? "") ||
+      filter.limit !== 1
+    )
+      throw new Error("Network confirmation requires an exact owner preference")
+    return
+  }
   if (request.operation === "account_recovery_read") {
     for (const filter of request.filters) {
       if (
@@ -678,7 +699,8 @@ class RelayConnection {
     now: () => number,
     timeoutMs: number,
     signal?: AbortSignal,
-    onSignerInvoked?: () => void
+    onSignerInvoked?: () => void,
+    admitRelay?: () => Promise<boolean>
   ): Promise<void> {
     assertProtectedReadAuthorization(
       authorization,
@@ -742,6 +764,8 @@ class RelayConnection {
         authorization.sessionScope,
         async () => {
           throwIfCancelled()
+          if (admitRelay && !(await admitRelay()))
+            throw new RelayAuthError("authority_changed")
           const suppressed = getProtectedReadAuthenticationSuppression(
             authorization,
             this.url
@@ -777,6 +801,13 @@ class RelayConnection {
           }
           let signed: SignedNostrEvent
           try {
+            if (admitRelay && !(await admitRelay()))
+              throw new RelayAuthError("authority_changed")
+            throwIfCancelled()
+            assertProtectedReadAuthorization(
+              authorization,
+              authorization.expectedPubkey
+            )
             authenticationPhase = "signer_pending"
             this.authSignerInvoked = true
             for (const listener of this.signerInvocationListeners) listener()
@@ -827,6 +858,9 @@ class RelayConnection {
             })
             throw new RelayAuthError("signer_unavailable")
           }
+          throwIfCancelled()
+          if (admitRelay && !(await admitRelay()))
+            throw new RelayAuthError("authority_changed")
           throwIfCancelled()
           if (this.challenge !== challenge) {
             throw new RelayAuthError("challenge_superseded")
@@ -1773,7 +1807,20 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         }
       }
 
-      const issueRequest = (): void => {
+      const issueRequest = async (): Promise<void> => {
+        if (finished) return
+        startQueryTimer()
+        try {
+          if (options.admitRelay && !(await options.admitRelay(relayUrl))) {
+            auth = "authority_changed"
+            finish("authority_changed")
+            return
+          }
+        } catch {
+          auth = "authority_changed"
+          finish("authority_changed")
+          return
+        }
         if (finished) return
         if (authorization) {
           try {
@@ -1859,7 +1906,8 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             options.signal,
             () => {
               signerInvoked = true
-            }
+            },
+            options.admitRelay ? () => options.admitRelay!(relayUrl) : undefined
           )
           .then(() => {
             if (finished) return
@@ -1869,7 +1917,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             auth = "succeeded"
             this.recordEvidence(authorization.sessionScope, relayUrl, auth)
             observe({ type: "auth", relayIndex, state: "succeeded" })
-            issueRequest()
+            void issueRequest()
           })
           .catch((error: unknown) => {
             if (finished) return
@@ -1968,6 +2016,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             if (
               authorization &&
               request.operation !== "account_recovery_read" &&
+              request.operation !== "account_network_preference_read" &&
               event.tags.filter((tag) => tag[0] === "p").length !== 1
             ) {
               unusableCount += 1
@@ -2082,7 +2131,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
       } else if (authorization && connection.currentChallenge) {
         authenticateAndRetry()
       } else {
-        issueRequest()
+        void issueRequest()
       }
     })
   }

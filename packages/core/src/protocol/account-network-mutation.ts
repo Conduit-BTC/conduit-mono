@@ -5,7 +5,6 @@ import {
   type RelayOperation,
 } from "./relay-authority"
 import {
-  classifyAccountNetworkReadback,
   ownerRelayListEvidenceFacts,
   inboxDeclarationEvidenceFacts,
 } from "./account-network-evidence"
@@ -69,6 +68,9 @@ import {
   type ExclusiveRelayPublishStatus,
 } from "./relay-publish"
 import { fetchSignedEventsFanoutDetailed } from "./relay-reader"
+import { readExactAccountNetworkPreference } from "./account-network-readback"
+import type { CommerceRelayExecutor } from "./relay-executor"
+import { clearProtectedReadAuthenticationSuppression } from "./protected-read-authorization"
 import {
   assertSafeNip65RelayList,
   normalizeOwnerSelectedRelayUrls,
@@ -231,6 +233,7 @@ export interface AccountNetworkMutationDependencies {
   }) => Promise<readonly RelayTarget[]> | readonly RelayTarget[]
   publishToRelay?: typeof publishSignedEventToRelay
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
+  readbackExecutor?: CommerceRelayExecutor
   shouldContinue?: () => boolean
   now?: () => number
   onPhase?: (
@@ -1589,8 +1592,6 @@ async function deliverPendingKind(input: {
   const readbackObservations: NetworkPreferenceReadbackObservation[] = []
   if (readbackTargets.length > 0) {
     input.dependencies.onPhase?.("confirming")
-    const fetchEvents =
-      input.dependencies.fetchEvents ?? fetchSignedEventsFanoutDetailed
     for (const relayUrl of readbackTargets) {
       assertContinue(input.dependencies.shouldContinue)
       const eligible = await eligibleDistributionTargets({
@@ -1606,14 +1607,23 @@ async function deliverPendingKind(input: {
         continue
       }
       try {
-        const result = await fetchEvents(
-          {
-            ids: [signedEvent.id],
-            kinds: [input.kind],
-            authors: [input.pubkey],
-            limit: 1,
-          },
-          {
+        const status = await readExactAccountNetworkPreference({
+          signedEvent,
+          relayUrl,
+          authenticatedPubkey: input.authenticatedPubkey,
+          fetchEvents: input.dependencies.fetchEvents,
+          executor: input.dependencies.readbackExecutor,
+          admitRelay: async () =>
+            (
+              await eligibleDistributionTargets({
+                ...input,
+                operation: "read",
+                targets: confirmationTargets.filter(
+                  (target) => target.url === relayUrl
+                ),
+              })
+            ).some((target) => target.url === relayUrl),
+          options: {
             relayUrls: [relayUrl],
             connectTimeoutMs: 4_000,
             fetchTimeoutMs: 6_000,
@@ -1634,16 +1644,17 @@ async function deliverPendingKind(input: {
                 (await input.repository.get(input.pubkey)).inboxDeclaration,
             },
             shouldContinue: input.dependencies.shouldContinue,
-          }
-        )
+          },
+        })
         assertContinue(input.dependencies.shouldContinue)
         readbackObservations.push({
           relayUrl,
-          status: classifyAccountNetworkReadback({
-            relayUrl,
-            signedEvent,
-            result,
-          }),
+          ...(status === "auth_rejected"
+            ? {
+                status: "auth_required" as const,
+                authFailure: "rejected" as const,
+              }
+            : { status }),
         })
       } catch (error) {
         assertContinue(input.dependencies.shouldContinue)
@@ -1918,6 +1929,9 @@ export async function retryAccountNetworkMutation(input: {
         "No exact signed Network event is waiting to be retried."
       )
     }
+    assertContinue(dependencies.shouldContinue)
+    if (authenticatedPubkey)
+      clearProtectedReadAuthenticationSuppression(authenticatedPubkey)
     let snapshot = initial
     for (const kind of kinds) {
       snapshot = await deliverPendingKind({
