@@ -103,11 +103,12 @@ const protectedSmokeFiles = new Set([
 ])
 
 function credentialRulesForFile(file: string): readonly StaticCredentialRule[] {
-  // These two tightly scoped import fixtures generate disposable identities at
+  // These tightly scoped import fixtures generate disposable identities at
   // runtime. Encoding is the behavior under test; fixed credential rules still
   // apply, including to every authored commit. Protected smoke is unchanged.
   const runtimeImportFixture = new Set([
     "tests/local-key-signer.test.ts",
+    "tests/local-key-lifecycle-regression.test.ts",
     "e2e/helpers/local-key-test-identity.ts",
   ]).has(file)
   const baseRules = runtimeImportFixture
@@ -640,6 +641,17 @@ describe("Playwright smoke credential fixtures", () => {
         credentialRulesForFile("e2e/harmless.playwright.ts")
       )
     ).toEqual(expectedStaticRuleSnapshots)
+    for (const file of [
+      "tests/local-key-signer.test.ts",
+      "tests/local-key-lifecycle-regression.test.ts",
+      "e2e/helpers/local-key-test-identity.ts",
+    ]) {
+      expect(snapshotCredentialRules(credentialRulesForFile(file))).toEqual(
+        expectedStaticRuleSnapshots.filter(
+          ([rule]) => rule !== "secret-key encoding"
+        )
+      )
+    }
     expect(
       findStaticCredentialFixtures(
         "e2e/public-identifiers.playwright.ts",
