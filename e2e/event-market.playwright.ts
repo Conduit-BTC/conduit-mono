@@ -3949,6 +3949,11 @@ for (const newFollow of [false, true])
     await expect(
       my.getByRole("heading", { name: "You aren’t selling at any events" })
     ).toBeVisible()
+    // Empty relationship rows can render before perspective discovery settles.
+    // This scenario refreshes healthy sources, so wait for all initial reads.
+    await expect(
+      page.getByRole("button", { name: "Refresh All Events", exact: true })
+    ).toBeEnabled()
     relay.seed(calendar, market)
     if (newFollow)
       relay.seed(
