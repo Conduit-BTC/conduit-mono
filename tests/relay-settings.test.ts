@@ -199,16 +199,15 @@ describe("relay settings protocol helpers", () => {
     ).toEqual(["wss://relay.damus.io"])
   })
 
-  it("keeps Congee primary, Ditto secondary, and excludes removed default domains", () => {
+  it("keeps Conduit primary, Ditto secondary, and excludes removed default domains", () => {
     const normalizedRelays = (urls: readonly string[]) =>
       urls.map((url) => new URL(url).origin)
     expect(CANONICAL_APP_BACKPLANE_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
     ])
     expect(CANONICAL_APP_WRITE_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://relay.primal.net",
     ])
     expect(
       CANONICAL_APP_RELAY_DEFINITIONS.map(({ fallbackName, url }) => ({
@@ -218,24 +217,26 @@ describe("relay settings protocol helpers", () => {
     ).toEqual([
       {
         fallbackName: "Conduit Marketplace Relay",
-        url: "wss://conduit-congee.fly.dev",
+        url: "wss://relay.conduit.market",
+      },
+      {
+        fallbackName: "Brainstorm Search",
+        url: "wss://search.brainstorm.world",
       },
       {
         fallbackName: "Ditto Relay",
         url: "wss://relay.ditto.pub",
       },
-      {
-        fallbackName: "Primal Public Relay",
-        url: "wss://relay.primal.net",
-      },
-      { fallbackName: "nos.lol", url: "wss://nos.lol" },
-      {
-        fallbackName: "Plebeian Market Relay",
-        url: "wss://relay.plebeian.market",
-      },
     ])
-    expect(CANONICAL_APP_RELAY_DEFINITIONS).toHaveLength(5)
+    expect(CANONICAL_APP_RELAY_DEFINITIONS).toHaveLength(3)
     expect(CANONICAL_APP_RELAY_DEFINITIONS[1]).toMatchObject({
+      operator: "brainstorm",
+      read: false,
+      write: false,
+      privateInbox: false,
+      accountStorage: false,
+    })
+    expect(CANONICAL_APP_RELAY_DEFINITIONS[2]).toMatchObject({
       url: "wss://relay.ditto.pub",
       read: true,
       write: true,
@@ -248,35 +249,31 @@ describe("relay settings protocol helpers", () => {
       expect.objectContaining({ url: "wss://relay.damus.io" })
     )
     expect(CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS).toEqual([
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://nos.lol",
-      "wss://relay.primal.net",
     ])
     expect(CANONICAL_COMMERCE_DISCOVERY_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://relay.plebeian.market",
     ])
     expect(CANONICAL_SEARCH_INDEX_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_DM_DECLARATION_DISCOVERY_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://nos.lol",
-      "wss://relay.primal.net",
     ])
     expect(CANONICAL_COMMERCE_DM_FALLBACK_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_DM_INBOX_DEFAULT_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_DM_COMPATIBILITY_ORDER_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
     ])
     expect(CANONICAL_ZAP_PUBLIC_RELAYS).toEqual([
@@ -286,10 +283,8 @@ describe("relay settings protocol helpers", () => {
       "wss://relay.plebeian.market",
     ])
     expect(CANONICAL_DEFAULT_RELAYS).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://nos.lol",
-      "wss://relay.primal.net",
     ])
     for (const relay of CANONICAL_DEFAULT_RELAYS) {
       expect(config.defaultRelays).toContain(new URL(relay).origin)
@@ -351,9 +346,9 @@ describe("relay settings protocol helpers", () => {
       "dm_compatibility_order",
       "zap_public",
     ])
-    expect(config.commerceRelayUrls).toContain("wss://conduit-congee.fly.dev")
+    expect(config.commerceRelayUrls).toContain("wss://relay.conduit.market")
     for (const retiredBackup of [
-      "wss://relay.conduit.market",
+      "wss://conduit-congee.fly.dev",
       "wss://relay.dreamith.to",
     ]) {
       expect(canonicalRelays).not.toContain(retiredBackup)
@@ -361,7 +356,7 @@ describe("relay settings protocol helpers", () => {
       expect(config.appReadRelayUrls).not.toContain(retiredBackup)
       expect(config.appWriteRelayUrls).not.toContain(retiredBackup)
     }
-    expect(config.nip89RelayHint).toBe("wss://conduit-congee.fly.dev")
+    expect(config.nip89RelayHint).toBe("wss://relay.conduit.market")
     expect(config.defaultRelays).not.toContain("wss://conduitl2.fly.dev")
     expect(config.defaultRelays).not.toContain("wss://relay.plebeian.market")
     expect(config.defaultRelays).not.toContain("wss://nostr.mom")
@@ -373,10 +368,8 @@ describe("relay settings protocol helpers", () => {
     const settings = createDefaultRelaySettings(config)
 
     expect(settings.entries.map((relay) => relay.url)).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://nos.lol",
-      "wss://relay.primal.net",
     ])
     expect(settings.entries.every((relay) => relay.readEnabled)).toBe(true)
     expect(settings.entries.every((relay) => relay.writeEnabled)).toBe(true)

@@ -21,6 +21,7 @@ import { Route as ProductsRouteImport } from './routes/products'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as ShippingRouteImport } from './routes/shipping'
 import { Route as TermsOfServiceRouteImport } from './routes/terms-of-service'
+import { Route as WalletRouteImport } from './routes/wallet'
 import { Route as EventsIndexRouteImport } from './routes/events/index'
 import { Route as EventsCollectionRefRouteImport } from './routes/events/$collectionRef'
 import { Route as EventsNewRouteImport } from './routes/events/new'
@@ -86,6 +87,11 @@ const TermsOfServiceRoute = TermsOfServiceRouteImport.update({
   path: '/terms-of-service',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WalletRoute = WalletRouteImport.update({
+  id: '/wallet',
+  path: '/wallet',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const EventsIndexRoute = EventsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -120,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/profile': typeof ProfileRoute
   '/shipping': typeof ShippingRoute
   '/terms-of-service': typeof TermsOfServiceRoute
+  '/wallet': typeof WalletRoute
   '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/events/new': typeof EventsNewRoute
   '/events/': typeof EventsIndexRoute
@@ -137,6 +144,7 @@ export interface FileRoutesByTo {
   '/profile': typeof ProfileRoute
   '/shipping': typeof ShippingRoute
   '/terms-of-service': typeof TermsOfServiceRoute
+  '/wallet': typeof WalletRoute
   '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/events/new': typeof EventsNewRoute
   '/events': typeof EventsIndexRoute
@@ -156,6 +164,7 @@ export interface FileRoutesById {
   '/profile': typeof ProfileRoute
   '/shipping': typeof ShippingRoute
   '/terms-of-service': typeof TermsOfServiceRoute
+  '/wallet': typeof WalletRoute
   '/events/$collectionRef': typeof EventsCollectionRefRoute
   '/events/new': typeof EventsNewRoute
   '/events/': typeof EventsIndexRoute
@@ -176,6 +185,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/shipping'
     | '/terms-of-service'
+    | '/wallet'
     | '/events/$collectionRef'
     | '/events/new'
     | '/events/'
@@ -193,6 +203,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/shipping'
     | '/terms-of-service'
+    | '/wallet'
     | '/events/$collectionRef'
     | '/events/new'
     | '/events'
@@ -211,6 +222,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/shipping'
     | '/terms-of-service'
+    | '/wallet'
     | '/events/$collectionRef'
     | '/events/new'
     | '/events/'
@@ -230,6 +242,7 @@ export interface RootRouteChildren {
   ProfileRoute: typeof ProfileRoute
   ShippingRoute: typeof ShippingRoute
   TermsOfServiceRoute: typeof TermsOfServiceRoute
+  WalletRoute: typeof WalletRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -318,6 +331,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TermsOfServiceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/wallet': {
+      id: '/wallet'
+      path: '/wallet'
+      fullPath: '/wallet'
+      preLoaderRoute: typeof WalletRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/events/': {
       id: '/events/'
       path: '/'
@@ -379,6 +399,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProfileRoute: ProfileRoute,
   ShippingRoute: ShippingRoute,
   TermsOfServiceRoute: TermsOfServiceRoute,
+  WalletRoute: WalletRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

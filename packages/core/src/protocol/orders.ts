@@ -1,6 +1,18 @@
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 import { decodeConduitCommerceExtension } from "./commerce-wire"
 import type { PrivateMessageEvent } from "./messaging"
 import { z } from "zod"
+import { isSatsLikeCurrency } from "../pricing"
+import { matchesCheckoutSparkOrderPrice } from "./checkout-spark-commerce-pricing"
+import { EVENT_KINDS } from "./kinds"
+import {
+  assertCurrentEventMarketOrganizerFeeTerms,
+  calculateEventMarketOrganizerFeeSats,
+  parseEventMarketOrganizerFeeTerms,
+} from "./event-market-organizer-fee"
 import {
   hasSameShippingPolicyQuote,
   type ShippingPolicyQuote,
@@ -75,6 +87,69 @@ export function serializeOrderRumorContent(order: OrderSchema): string {
   })
 }
 
+/** Standard encrypted kind-16 tags for a new occurrence-scoped pickup order. */
+export function buildEventMarketOrderRumorTags(order: OrderSchema): string[][] {
+  const parsed = orderSchema.parse(order)
+  const pickup = parsed.items.filter(
+    (item) =>
+      item.fulfillment?.type === "event_market_pickup" &&
+      !!item.fulfillment.occurrenceAssignment
+  )
+  if (!pickup.length) return []
+  if (pickup.length !== parsed.items.length)
+    throw new Error("Occurrence pickup items require a separate order.")
+  const first = pickup[0]!.fulfillment!
+  if (first.type !== "event_market_pickup")
+    throw new Error("Invalid pickup order.")
+  const tags: string[][] = [
+    ["openmarkets", "event-market-order", "1"],
+    ["event_market", first.market.coordinate, first.market.eventId],
+    ["event_occurrence", first.calendar.coordinate, first.calendar.eventId],
+    ...(first.schedule
+      ? [["event_schedule", first.schedule.coordinate, first.schedule.eventId]]
+      : []),
+    ["event_auth", first.grant.eventId],
+    ["fulfillment", "pickup"],
+  ]
+  const evidence = new Map<string, SignedPublicNostrEvent>()
+  const add = (event: SignedPublicNostrEvent) => {
+    if (!isValidSignedPublicNostrEvent(event))
+      throw new Error("Occurrence order requires valid signed public evidence.")
+    evidence.set(event.id, event)
+  }
+  add(first.market.signedEvent)
+  add(first.calendar.signedEvent)
+  if (first.schedule) add(first.schedule.signedEvent)
+  for (const event of first.grant.signedEvidence.ancestry) add(event)
+  for (const event of first.grant.signedEvidence.deletions) add(event)
+  const products = new Set<string>()
+  for (const item of pickup) {
+    const fulfillment = item.fulfillment!
+    if (
+      fulfillment.type !== "event_market_pickup" ||
+      !fulfillment.occurrenceAssignment
+    )
+      throw new Error("Occurrence assignment evidence is required.")
+    if (!products.has(item.productId)) {
+      products.add(item.productId)
+      tags.push([
+        "event_assignment",
+        item.productId,
+        fulfillment.occurrenceAssignment.coordinate,
+        fulfillment.occurrenceAssignment.eventId,
+      ])
+    }
+    add(fulfillment.product.signedEvent)
+    if (fulfillment.parentProduct) add(fulfillment.parentProduct.signedEvent)
+    add(fulfillment.occurrenceAssignment.signedEvent)
+  }
+  // Preserve complete supported histories. The shared private-message owner
+  // bounds the complete encrypted transport before signing or publication.
+  for (const event of evidence.values())
+    tags.push(["evidence", event.id, JSON.stringify(event)])
+  return tags
+}
+
 function expandOrderShippingPolicyQuotes(input: unknown): unknown {
   const order = parseObject(input)
   if (!order) return input
@@ -135,7 +210,24 @@ function expandOrderShippingPolicyQuotes(input: unknown): unknown {
 type OrderRumorEvent = Pick<
   PrivateMessageEvent,
   "id" | "created_at" | "content" | "tags" | "pubkey"
->
+> & { kind?: number }
+
+/** Private kind-16 buyer order hint; never payment or fulfillment evidence. */
+export const CHECKOUT_SPARK_ROUTER_ORDER_TAG = [
+  "conduit_checkout_payment",
+  "spark_router",
+  "1",
+] as const
+
+/** V5 event orders only; the marker never replaces signed-source validation. */
+export const CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG = [
+  "conduit_checkout_payment",
+  "spark_router",
+  "2",
+  "event_market",
+] as const
+
+export type CheckoutOrderPaymentRoute = "spark_router_v1"
 
 type ParsedOrderMessageBase = {
   id: string
@@ -148,7 +240,11 @@ type ParsedOrderMessageBase = {
 }
 
 export type ParsedOrderMessage =
-  | (ParsedOrderMessageBase & { type: "order"; payload: OrderSchema })
+  | (ParsedOrderMessageBase & {
+      type: "order"
+      payload: OrderSchema
+      checkoutPaymentRoute?: CheckoutOrderPaymentRoute
+    })
   | (ParsedOrderMessageBase & {
       type: "payment_request"
       payload: PaymentRequestMessageSchema
@@ -361,6 +457,233 @@ function messageBase<TType extends OrderMessageTypeSchema>(
   }
 }
 
+/** Shape admission only; signed product/fulfillment authority is checked separately. */
+function hasCheckoutRouterFulfillmentShape(
+  item: OrderSchema["items"][number],
+  merchantPubkey: string,
+  pricing?: OrderSchema["checkoutSparkPricing"],
+  eventRouter = false
+): boolean {
+  if (item.fulfillment?.type === "event_market_pickup") {
+    const pickup = item.fulfillment
+    return (
+      eventRouter &&
+      item.format === "physical" &&
+      pickup.merchantPubkey === merchantPubkey &&
+      pickup.payeePubkey === merchantPubkey &&
+      pickup.product.coordinate === item.productId &&
+      pickup.occurrenceAssignment !== undefined &&
+      item.shippingOptionId === undefined &&
+      item.shippingOptionDTag === undefined &&
+      item.sourceShippingCost === undefined &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.shippingPolicyQuote === undefined &&
+      item.shippingAllocatedCostSats === undefined
+    )
+  }
+  if (eventRouter) return false
+  if (item.format === "digital") {
+    return (
+      (item.fulfillment === undefined || item.fulfillment.type === "digital") &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.shippingOptionId === undefined
+    )
+  }
+  if (item.fulfillment?.type === "pickup") {
+    // orderSchema already checks the product, option, cost and coherent graph.
+    // A router marker additionally requires explicit SAT-only handoff terms.
+    return (
+      item.fulfillment.handoffMode !== undefined &&
+      item.fulfillment.handlerPubkey !== undefined &&
+      item.sourceShippingCost !== undefined &&
+      item.sourceShippingCost.amount === item.shippingCostSats &&
+      isSatsLikeCurrency(item.sourceShippingCost.currency) &&
+      isSatsLikeCurrency(item.sourceShippingCost.normalizedCurrency) &&
+      item.shippingCountries?.length === 0 &&
+      item.shippingCountryRules?.length === 0
+    )
+  }
+  if (item.shippingPolicyQuote)
+    return (
+      item.fulfillment?.type === "shipping" &&
+      item.shippingOptionId === item.shippingPolicyQuote.policyCoordinate &&
+      item.shippingPolicyQuote.merchantPubkey === merchantPubkey &&
+      (item.shippingCostSats ?? 0) === 0 &&
+      item.sourceShippingCost === undefined &&
+      Number.isSafeInteger(item.shippingAllocatedCostSats) &&
+      item.shippingAllocatedCostSats! >= 0
+    )
+  return (
+    item.fulfillment?.type === "shipping" &&
+    item.shippingCostSats !== undefined &&
+    Number.isSafeInteger(item.shippingCostSats) &&
+    item.shippingCostSats >= 0 &&
+    !!item.shippingOptionDTag &&
+    item.shippingOptionId ===
+      `30406:${merchantPubkey}:${item.shippingOptionDTag}` &&
+    item.sourceShippingCost !== undefined &&
+    matchesCheckoutSparkOrderPrice(
+      {
+        sourcePrice: item.sourceShippingCost,
+        priceAtPurchase: item.shippingCostSats,
+      },
+      pricing,
+      true
+    )
+  )
+}
+
+function parseCheckoutOrderPaymentRoute(
+  event: OrderRumorEvent,
+  payload: OrderSchema
+): CheckoutOrderPaymentRoute | undefined {
+  const tags = event.tags ?? []
+  const markers = tags.filter(
+    (tag) => tag[0] === CHECKOUT_SPARK_ROUTER_ORDER_TAG[0]
+  )
+  if (markers.length === 0) return undefined
+  const eventRouter =
+    markers[0]?.length === CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG.length &&
+    markers[0]?.every(
+      (value, index) => value === CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG[index]
+    )
+  const marker = eventRouter
+    ? CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG
+    : CHECKOUT_SPARK_ROUTER_ORDER_TAG
+  if (eventRouter) {
+    const expectedTags = buildEventMarketOrderRumorTags(payload)
+    const names = new Set([
+      "openmarkets",
+      "event_market",
+      "event_occurrence",
+      "event_schedule",
+      "event_auth",
+      "fulfillment",
+      "event_assignment",
+      "evidence",
+    ])
+    const observedTags = tags.filter((tag) => names.has(tag[0] ?? ""))
+    if (
+      expectedTags.length === 0 ||
+      JSON.stringify(observedTags) !== JSON.stringify(expectedTags)
+    )
+      throw new Error("Invalid event checkout payment marker")
+    const pickup = payload.items[0]?.fulfillment
+    if (pickup?.type !== "event_market_pickup")
+      throw new Error("Invalid event checkout payment marker")
+    const fee = assertCurrentEventMarketOrganizerFeeTerms(
+      parseEventMarketOrganizerFeeTerms({
+        event: pickup.market.signedEvent,
+        marketCoordinate: pickup.market.coordinate,
+      }),
+      payload.createdAt
+    )
+    if (
+      payload.subtotal === 0 &&
+      (fee.state !== "active" ||
+        calculateEventMarketOrganizerFeeSats({
+          commerceTotalSats: 0,
+          basisPoints: fee.basisPoints,
+          minimumSats: fee.minimumSats,
+        }) <= 0)
+    )
+      throw new Error("A free event order does not require router funding")
+  }
+
+  const exactlyOne = (name: string, value: string) => {
+    const matches = tags.filter((tag) => tag[0] === name)
+    return matches.length === 1 && matches[0]?.[1] === value
+  }
+  const buyer = event.pubkey.trim().toLowerCase()
+  const merchant = payload.merchantPubkey.trim().toLowerCase()
+  const itemTotal = payload.items.reduce(
+    (sum, item) => sum + item.priceAtPurchase * item.quantity,
+    0
+  )
+  const shippingTotal = payload.items.reduce(
+    (sum, item) =>
+      sum +
+      (item.shippingAllocatedCostSats ??
+        (item.shippingCostSats ?? 0) * item.quantity),
+    0
+  )
+  const hasPhysical = payload.items.some((item) => item.format === "physical")
+  const hasShipping = payload.items.some(
+    (item) => item.fulfillment?.type === "shipping"
+  )
+  const itemTags = tags.filter((tag) => tag[0] === "item")
+  const shippingTags = tags.filter((tag) => tag[0] === "shipping")
+  const shippingItems = payload.items.filter(
+    (item) => item.format === "physical" && !eventRouter
+  )
+  if (
+    markers.length !== 1 ||
+    markers[0]?.length !== marker.length ||
+    markers[0]?.some((value, index) => value !== marker[index]) ||
+    event.kind !== EVENT_KINDS.ORDER ||
+    !/^[0-9a-f]{64}$/.test(event.id) ||
+    !/^[0-9a-f]{64}$/.test(buyer) ||
+    !/^[0-9a-f]{64}$/.test(merchant) ||
+    (payload.buyerIdentityKind !== "signed_in" &&
+      payload.buyerIdentityKind !== "guest_ephemeral") ||
+    payload.buyerPubkey.trim().toLowerCase() !== buyer ||
+    !exactlyOne("p", merchant) ||
+    !exactlyOne("type", "order") ||
+    !exactlyOne("order", payload.id) ||
+    !exactlyOne("amount", String(payload.subtotal)) ||
+    !exactlyOne("currency", "SATS") ||
+    payload.currency !== "SATS" ||
+    !Number.isSafeInteger(payload.subtotal) ||
+    (eventRouter ? payload.subtotal < 0 : payload.subtotal <= 0) ||
+    !Number.isSafeInteger(itemTotal) ||
+    !Number.isSafeInteger(shippingTotal) ||
+    itemTotal + shippingTotal !== payload.subtotal ||
+    (payload.shippingCostSats ?? 0) !== shippingTotal ||
+    payload.shippingCostStatus !==
+      (hasPhysical
+        ? shippingTotal > 0
+          ? "priced"
+          : "included"
+        : "not_required") ||
+    (payload.shippingAddress !== undefined) !== hasShipping ||
+    (payload.buyerIdentityKind !== "guest_ephemeral" &&
+      payload.guestContact !== undefined) ||
+    payload.items.some(
+      (item, index) =>
+        !hasCheckoutRouterFulfillmentShape(
+          item,
+          merchant,
+          payload.checkoutSparkPricing,
+          eventRouter
+        ) ||
+        (item.familyProductId !== undefined &&
+          !item.familyProductId.startsWith(`30402:${merchant}:`)) ||
+        !matchesCheckoutSparkOrderPrice(
+          item,
+          payload.checkoutSparkPricing,
+          eventRouter
+        ) ||
+        item.currency !== "SATS" ||
+        !Number.isSafeInteger(item.quantity) ||
+        !Number.isSafeInteger(item.priceAtPurchase) ||
+        item.priceAtPurchase < 0 ||
+        itemTags[index]?.length !== 3 ||
+        itemTags[index]?.[1] !== item.productId ||
+        itemTags[index]?.[2] !== String(item.quantity)
+    ) ||
+    itemTags.length !== payload.items.length ||
+    shippingTags.length !== shippingItems.length ||
+    shippingItems.some(
+      (item, index) =>
+        shippingTags[index]?.length !== 2 ||
+        shippingTags[index]?.[1] !== item.shippingOptionId
+    )
+  ) {
+    throw new Error("Invalid private checkout payment marker")
+  }
+  return "spark_router_v1"
+}
+
 /**
  * Parse an unwrapped kind-16 rumor into a typed order-conversation message.
  *
@@ -380,7 +703,12 @@ export function parseOrderMessageRumorEvent(
   if (type === "order") {
     const payload = parseOrderRumorEvent(event)
     const orderId = getTagValue(event.tags ?? [], "order") ?? payload.id
-    return { ...messageBase(event, type, orderId), payload }
+    const checkoutPaymentRoute = parseCheckoutOrderPaymentRoute(event, payload)
+    return {
+      ...messageBase(event, type, orderId),
+      payload,
+      ...(checkoutPaymentRoute ? { checkoutPaymentRoute } : {}),
+    }
   }
 
   const orderId =
@@ -391,6 +719,9 @@ export function parseOrderMessageRumorEvent(
 
   if (type === "payment_request") {
     const payload = paymentRequestMessageSchema.parse({
+      ...(json?.receivingWallet
+        ? { receivingWallet: json.receivingWallet }
+        : {}),
       invoice: getString(json?.invoice) ?? event.content.trim(),
       amount:
         parseNumericTag(event.tags ?? [], "amount") ?? getNumber(json?.amount),

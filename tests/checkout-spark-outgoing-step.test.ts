@@ -442,6 +442,30 @@ describe("checkout Spark one-obligation step", () => {
     expect(run.saves).toBe(2)
   })
 
+  it("recognizes a pre-SDK expiry rejection but never resends the now-expired exact intent", async () => {
+    const run = harness(fundedState(CREATED_AT / 1_000 - 3_540))
+    run.setKnownNotSent({ status: "not_sent", reason: "invoice_expired" })
+    const blocked = await run.step()
+    expect(blocked.sendAttempted).toBe(false)
+    expect(blocked.state.obligations[0]!.state).toBe("not_found")
+    expect(blocked.nextAction).toEqual({
+      type: "wait",
+      reason: "obligation_invoice_window_insufficient",
+    })
+    expect(run.saves).toBe(3)
+    expect(run.sends).toHaveLength(1)
+    run.setKnownNotSent(null)
+    run.setNow(CREATED_AT + 60_000)
+    const again = await run.step("merchant")
+    expect(again.sendAttempted).toBe(false)
+    expect(again.nextAction).toEqual({
+      type: "wait",
+      reason: "obligation_invoice_window_insufficient",
+    })
+    expect(again.state.plan).toEqual(blocked.state.plan)
+    expect(run.sends).toHaveLength(1)
+  })
+
   it("never sends twice after a lost response and reload with an empty lookup", async () => {
     const run = harness()
     run.failSend()
@@ -531,9 +555,10 @@ describe("checkout Spark one-obligation step", () => {
     expect(run.sends).toHaveLength(0)
   })
 
-  it("does not preflight or send a leg with less than the provider window remaining", async () => {
+  it("does not preflight or send an expired leg", async () => {
     const run = harness(fundedState(CREATED_AT / 1_000 - 3_540))
-    const result = await run.step()
+    run.setNow(CREATED_AT + 60_000)
+    const result = await run.step("merchant")
     expect(result.nextAction).toEqual({
       type: "wait",
       reason: "obligation_invoice_window_insufficient",
@@ -542,7 +567,7 @@ describe("checkout Spark one-obligation step", () => {
     expect(result.state.obligations[0]!.state).toBe("not_found")
     expect(run.preflights).toHaveLength(0)
     expect(run.sends).toHaveLength(0)
-    const again = await run.step()
+    const again = await run.step("merchant")
     expect(again.sendAttempted).toBe(false)
     expect(run.sends).toHaveLength(0)
   })
@@ -550,7 +575,7 @@ describe("checkout Spark one-obligation step", () => {
   it("rechecks invoice lifetime after fee preflight before persisting send intent", async () => {
     const run = harness(fundedState(CREATED_AT / 1_000 - 3_480))
     run.setNow(CREATED_AT + 100)
-    run.onPreflight(() => run.setNow(CREATED_AT + 60_000))
+    run.onPreflight(() => run.setNow(CREATED_AT + 120_000))
     const result = await run.step("merchant")
     expect(result.nextAction).toEqual({
       type: "wait",
@@ -567,7 +592,7 @@ describe("checkout Spark one-obligation step", () => {
     let now = CREATED_AT + 100
     let sends = 0
     memory.onSave((count) => {
-      if (count === 2) now = CREATED_AT + 60_000
+      if (count === 2) now = CREATED_AT + 120_000
     })
     const input = {
       checkoutId: initial.plan.checkoutId,

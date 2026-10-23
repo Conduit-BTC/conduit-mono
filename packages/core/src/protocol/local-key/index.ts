@@ -112,6 +112,7 @@ export function prepareLocalKeyImport(
 export interface LocalKeySigner extends NostrKeySigner {
   readonly reference: LocalKeyReference
   invalidate(): void
+  commit(isCurrent: () => boolean, signal?: AbortSignal): Promise<void>
 }
 
 class ContainedLocalKeySigner implements LocalKeySigner {
@@ -146,6 +147,15 @@ class ContainedLocalKeySigner implements LocalKeySigner {
     this.#generation++
     for (const bytes of this.#buffers) bytes.fill(0)
     this.#buffers.clear()
+  }
+
+  async commit(isCurrent: () => boolean, signal?: AbortSignal): Promise<void> {
+    this.#assertCurrent(this.#generation)
+    await this.#storage.commit(
+      this.#reference.localKeyRevision,
+      isCurrent,
+      signal
+    )
   }
 
   async getPublicKey(): Promise<string> {
@@ -192,7 +202,7 @@ class ContainedLocalKeySigner implements LocalKeySigner {
   async #readCurrent(): Promise<Uint8Array> {
     let record
     try {
-      record = await this.#storage.read()
+      record = await this.#storage.read(this.#reference.localKeyRevision)
       if (!record) throw new NostrSignerError("disconnected")
       if (
         record.revision !== this.#reference.localKeyRevision ||
@@ -265,4 +275,11 @@ export function removeLocalKeyRecord(
   options: LocalKeyStorageOptions = {}
 ): Promise<void> {
   return new LocalKeyStorage(options).remove(reference.localKeyRevision)
+}
+
+export function reconcileLocalKeyRecord(
+  reference: LocalKeyReference | null,
+  options: LocalKeyStorageOptions = {}
+): Promise<void> {
+  return new LocalKeyStorage(options).reconcile(reference?.localKeyRevision)
 }

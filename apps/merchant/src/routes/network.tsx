@@ -124,13 +124,9 @@ function NetworkPage() {
   }, [accountPubkey, navigate])
 
   useEffect(() => {
-    const setupConfirmed =
-      networkSettings.view.inbox.state === "declared" &&
-      networkSettings.view.inbox.coverage === "complete" &&
-      !networkSettings.view.inbox.stale
     if (
       !hasProductDraftReturn ||
-      !setupConfirmed ||
+      !networkSettings.view.inbox.currentUsable ||
       hasUnpublishedRelayChanges ||
       networkOperationInProgress
     ) {
@@ -142,9 +138,7 @@ function NetworkPage() {
     hasProductDraftReturn,
     hasUnpublishedRelayChanges,
     networkOperationInProgress,
-    networkSettings.view.inbox.coverage,
-    networkSettings.view.inbox.stale,
-    networkSettings.view.inbox.state,
+    networkSettings.view.inbox.currentUsable,
     returnToProductDraft,
   ])
 
@@ -158,7 +152,7 @@ function NetworkPage() {
       <div className="mx-auto max-w-[54rem] py-2 sm:py-6">
         <div className="mx-auto max-w-[50rem]">
           {hasProductDraftReturn && (
-            <section className="mb-4 rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)]">
+            <section className="mb-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 ">
               <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
                 <div>
                   <h2 className="text-balance text-lg font-semibold text-[var(--text-primary)]">
@@ -180,7 +174,10 @@ function NetworkPage() {
                 </Button>
               </div>
               {productDraftReturnError && (
-                <p role="alert" className="mt-3 text-sm text-error">
+                <p
+                  role="alert"
+                  className="mt-3 text-sm text-[var(--error-text)]"
+                >
                   {productDraftReturnError}
                 </p>
               )}

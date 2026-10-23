@@ -4,6 +4,7 @@ import {
   writePendingLocalKeyRemoval,
   clearPendingLocalKeyRemoval,
   AuthSessionError,
+  readPendingLocalKeyRemoval,
   type AuthSession,
   type InvalidatedAuthSessionCleanupOptions,
 } from "./auth-session"
@@ -34,8 +35,25 @@ export function retireAuthSession(
           // Preserve public retry information even if import failed before
           // active-session metadata was saved. Storage failure is still a
           // deletion failure; live revocation never implies durable removal.
-          writePendingLocalKeyRemoval(session, options.storage)
-          await removeLocalKeyRecord(session)
+          const journalSaved = writePendingLocalKeyRemoval(
+            session,
+            options.storage
+          )
+          const pending = readPendingLocalKeyRemoval(options.storage)
+          const durable =
+            journalSaved ||
+            (pending?.localKeyRevision === session.localKeyRevision &&
+              pending.userPubkey === session.userPubkey)
+          try {
+            await removeLocalKeyRecord(session)
+          } catch {
+            throw new AuthSessionError(
+              "unavailable",
+              durable
+                ? "Local signer removal is incomplete. Signing is disconnected. Retry removal when site storage is available."
+                : "Local signer removal is unresolved. Signing is disconnected in this window, but restart safety could not be secured. Keep this window open and retry removal when site storage is available."
+            )
+          }
           if (!clearPendingLocalKeyRemoval(session, options.storage))
             throw new AuthSessionError(
               "unavailable",

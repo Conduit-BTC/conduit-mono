@@ -4,6 +4,11 @@ import {
   type ReporterDescription,
 } from "@playwright/test"
 
+import {
+  readSmokeFiles,
+  smokeNeedsBothApps,
+} from "./scripts/ci/playwright_smoke_files"
+
 import { smokeAreaTags } from "./e2e/helpers/smoke-areas"
 
 const CI = !!process.env.CI
@@ -15,10 +20,17 @@ const configuredRelayPort =
   requestedRelayPort && requestedRelayPort !== "0"
     ? requestedRelayPort
     : undefined
+const smokeFiles = readSmokeFiles(process.env.PLAYWRIGHT_SMOKE_FILES)
 const smokeArea = process.env.PLAYWRIGHT_SMOKE_AREA ?? "all"
 const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
+if (commerceIncluded) {
+  // Screenshots and tracing do not control Playwright's automatic DOM failure
+  // snapshot. Commerce pages may contain payment/recovery data, even in tests.
+  process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
+}
 const smokeResultFile = process.env.PLAYWRIGHT_SMOKE_RESULT_FILE
 const smokeProgressFile = process.env.PLAYWRIGHT_SMOKE_PROGRESS_FILE
+const smokeEvidenceFile = process.env.PLAYWRIGHT_SMOKE_EVIDENCE_FILE
 const smokeEvidenceValues = {
   baseSha: process.env.PLAYWRIGHT_SMOKE_BASE_SHA ?? "",
   sourceHeadSha: process.env.PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA ?? "",
@@ -42,7 +54,12 @@ const ciReporters: ReporterDescription[] = smokeResultFile
   ? [
       [
         "./scripts/ci/playwright_smoke_reporter.ts",
-        { outputFile: smokeResultFile, progressFile: smokeProgressFile },
+        {
+          outputFile: smokeResultFile,
+          progressFile: smokeProgressFile,
+          evidenceFile: smokeEvidenceFile,
+          evidence: smokeEvidence,
+        },
       ],
     ]
   : [["null"]]
@@ -52,13 +69,27 @@ const mobileTestFiles = [
 ]
 const responsiveCoverageFiles = [
   "**/local-key-signer.playwright.ts",
+  "**/checkout-recovery-storage.playwright.ts",
+  "**/event-market.playwright.ts",
+  "**/event-market-discovery.playwright.ts",
+  "**/wallet-recovery-repair.playwright.ts",
+  "**/shared-ui-composition.playwright.ts",
+  "**/shared-ui-visual-contract.playwright.ts",
+  "**/shared-ui-surface-audit.playwright.ts",
+  "**/shared-ui-populated-audit.playwright.ts",
   "**/merchant-shipping-tables.playwright.ts",
   "**/merchant-variation-shipping.playwright.ts",
   "**/commerce-inbox.playwright.ts",
+  "**/commerce.playwright.ts",
   "**/merchant-order-inbox.playwright.ts",
   "**/not-found.playwright.ts",
   "**/merchant-product-image-preview.playwright.ts",
+  "**/external-payment-preparation.playwright.ts",
 ]
+// Add the tagged order flows to mobile coverage without changing the older
+// Event Market cases' existing desktop-only coverage.
+const occurrenceOrdersMobileExclusion =
+  /event-market\.playwright\.ts(?!.*@occurrence-orders)/
 
 if (!new Set(["all", "market", "merchant", "commerce"]).has(smokeArea)) {
   throw new Error(`Unknown Playwright smoke area: ${smokeArea}`)
@@ -91,27 +122,36 @@ const relayWebServer = configuredRelayPort
 
 const webServer = [
   relayWebServer,
-  {
-    command: "bun scripts/dev/run_playwright_web_server.ts market",
-    url: `http://127.0.0.1:${marketPort}/products`,
-    reuseExistingServer: !CI && !commerceIncluded,
-    timeout: 120_000,
-  },
-  {
-    command: "bun scripts/dev/run_playwright_web_server.ts merchant",
-    url: `http://127.0.0.1:${merchantPort}/`,
-    reuseExistingServer: !CI && !commerceIncluded,
-    timeout: 120_000,
-  },
+  ...(!smokeNeedsBothApps(smokeFiles) && smokeArea === "merchant"
+    ? []
+    : [
+        {
+          command: "bun scripts/dev/run_playwright_web_server.ts market",
+          url: `http://127.0.0.1:${marketPort}/products`,
+          reuseExistingServer: !CI && !commerceIncluded,
+          timeout: 120_000,
+        },
+      ]),
+  ...(!smokeNeedsBothApps(smokeFiles) && smokeArea === "market"
+    ? []
+    : [
+        {
+          command: "bun scripts/dev/run_playwright_web_server.ts merchant",
+          url: `http://127.0.0.1:${merchantPort}/`,
+          reuseExistingServer: !CI && !commerceIncluded,
+          timeout: 120_000,
+        },
+      ]),
 ]
 
 export default defineConfig({
   metadata: smokeEvidence ? { smokeEvidence } : undefined,
   testDir: "./e2e",
-  testMatch: "**/*.playwright.ts",
+  testMatch: smokeFiles?.map((file) => `**/${file}`) ?? "**/*.playwright.ts",
   fullyParallel: true,
   forbidOnly: CI,
-  retries: CI ? 1 : 0,
+  // Required evidence accepts only a clean first attempt.
+  retries: 0,
   // Area shards share one isolated relay. Keep each selected area single-worker
   // so the commerce lane can make exact replay and side-effect assertions.
   workers: smokeArea === "all" ? (CI ? 2 : undefined) : 1,
@@ -129,16 +169,29 @@ export default defineConfig({
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
-      testIgnore: mobileTestFiles,
+      testIgnore: [
+        ...mobileTestFiles,
+        "**/commerce-router-recovery.playwright.ts",
+      ],
     },
     {
       name: "mobile-chromium",
-      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
+      grepInvert: occurrenceOrdersMobileExclusion,
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
+        (pattern) =>
+          !smokeFiles ||
+          smokeFiles.some((file) => pattern.endsWith(`/${file.slice(4)}`))
+      ),
       use: { ...devices["Pixel 7"] },
     },
     {
       name: "mobile-webkit",
-      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles],
+      grepInvert: occurrenceOrdersMobileExclusion,
+      testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
+        (pattern) =>
+          !smokeFiles ||
+          smokeFiles.some((file) => pattern.endsWith(`/${file.slice(4)}`))
+      ),
       use: { ...devices["iPhone 13"] },
     },
   ],

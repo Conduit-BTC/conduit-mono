@@ -1,9 +1,14 @@
 import { UserRound } from "lucide-react"
-import { type MerchantConversationSummary, type Profile } from "@conduit/core"
+import {
+  type CheckoutSparkMerchantSettlementProjection,
+  type MerchantConversationSummary,
+  type Profile,
+} from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage, StatusPill } from "@conduit/ui"
 import {
   getMerchantBuyerDisplayName,
   getMerchantConversationStatusDisplay,
+  getMerchantOrderPlacedAt,
   isMerchantGuestOrder,
 } from "../lib/order-phase"
 
@@ -39,7 +44,7 @@ export function BuyerAvatar({
 }
 
 export function merchantListCardClass(active: boolean): string {
-  return `w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color] ${
+  return `w-full rounded-[var(--radius-md)] border p-3 text-left transition-[border-color,background-color] ${
     active
       ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
       : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]"
@@ -48,16 +53,21 @@ export function merchantListCardClass(active: boolean): string {
 
 export function OrderListItem({
   conversation,
+  settlement,
   buyerProfile,
   active,
   onClick,
 }: {
   conversation: MerchantConversationSummary
+  settlement?: CheckoutSparkMerchantSettlementProjection | null
   buyerProfile?: Profile
   active: boolean
   onClick: () => void
 }) {
-  const statusDisplay = getMerchantConversationStatusDisplay(conversation)
+  const statusDisplay = getMerchantConversationStatusDisplay(
+    conversation,
+    settlement
+  )
   const visibleBuyerProfile = isMerchantGuestOrder(conversation)
     ? undefined
     : buyerProfile
@@ -65,7 +75,13 @@ export function OrderListItem({
     conversation,
     visibleBuyerProfile
   )
+  const placedAt = getMerchantOrderPlacedAt(conversation)
+  const placedDate = placedAt === null ? null : new Date(placedAt)
+  const updatedDate = new Date(conversation.latestAt)
+  const hasUpdatedDate =
+    conversation.latestAt >= 0 && Number.isFinite(updatedDate.getTime())
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
@@ -78,8 +94,31 @@ export function OrderListItem({
             <div className="truncate text-sm font-medium text-[var(--text-primary)]">
               {buyerName}
             </div>
-            <div className="shrink-0 text-[11px] text-[var(--text-muted)]">
-              {new Date(conversation.latestAt).toLocaleDateString()}
+            <div className="shrink-0 text-right text-[11px] tabular-nums text-[var(--text-muted)]">
+              <div>
+                {placedDate ? (
+                  <time
+                    dateTime={placedDate.toISOString()}
+                    title={`Placed ${placedDate.toLocaleString()}`}
+                  >
+                    Placed {placedDate.toLocaleDateString()}
+                  </time>
+                ) : (
+                  "Placed date unavailable"
+                )}
+              </div>
+              <div>
+                {hasUpdatedDate ? (
+                  <time
+                    dateTime={updatedDate.toISOString()}
+                    title={`Updated ${updatedDate.toLocaleString()}`}
+                  >
+                    Updated {updatedDate.toLocaleDateString()}
+                  </time>
+                ) : (
+                  "Updated date unavailable"
+                )}
+              </div>
             </div>
           </div>
           <div className="mt-0.5 truncate text-sm text-[var(--text-secondary)]">

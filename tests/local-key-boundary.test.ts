@@ -9,6 +9,7 @@ describe("local account secret containment", () => {
     expect(Object.keys(local).sort()).toEqual([
       "LOCAL_KEY_CAPABILITIES",
       "prepareLocalKeyImport",
+      "reconcileLocalKeyRecord",
       "removeLocalKeyRecord",
       "restoreLocalKeySigner",
     ])

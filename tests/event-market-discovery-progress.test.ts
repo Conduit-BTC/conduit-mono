@@ -193,7 +193,10 @@ describe("progressive current Event Market discovery", () => {
     const state = fixture(),
       fetch = state.dependencies.fetch
     state.dependencies.fetch = async (filter, options) => {
-      if (filter.authors?.includes(state.records[1]!.author))
+      if (
+        filter.authors?.length === 1 &&
+        filter.authors.includes(state.records[1]!.author)
+      )
         throw new Error("offline")
       return fetch(filter, options)
     }
@@ -201,7 +204,7 @@ describe("progressive current Event Market discovery", () => {
       { organizerPubkeys: state.records.map((record) => record.author) },
       state.dependencies
     )
-    expect(result.markets).toHaveLength(1)
+    expect(result.markets.filter((read) => read.calendar)).toHaveLength(1)
     expect(result.coverage).toBe("partial")
     state.dependencies.fetch = async () => {
       throw new Error("offline")
@@ -215,7 +218,7 @@ describe("progressive current Event Market discovery", () => {
       ).coverage
     ).toBe("unavailable")
   })
-  it("reports bounded author coverage after deduplication without reading a 65th author", async () => {
+  it("discovers every author beyond the first 64 and deduplicates batches", async () => {
     const state = fixture(65),
       plan = state.dependencies.plan,
       planned = new Set<string>()
@@ -227,10 +230,10 @@ describe("progressive current Event Market discovery", () => {
       { organizerPubkeys: state.records.map((record) => record.author) },
       state.dependencies
     )
-    expect(planned.size).toBe(64)
-    expect(planned.has(state.records[64]!.author)).toBe(false)
-    expect(result.markets).toHaveLength(64)
-    expect(result.coverage).toBe("partial")
+    expect(planned.size).toBe(65)
+    expect(planned.has(state.records[64]!.author)).toBe(true)
+    expect(result.markets).toHaveLength(65)
+    expect(result.coverage).toBe("complete")
     const single = fixture(1)
     expect(
       (
@@ -241,7 +244,7 @@ describe("progressive current Event Market discovery", () => {
       ).coverage
     ).toBe("complete")
   })
-  it("reports saturated cached coordinate coverage and never starts a 129th exact read", async () => {
+  it("retains excess coordinates for continuation instead of permanently excluding them", async () => {
     const state = fixture(1),
       record = state.records[0]!
     const cached = Array.from({ length: 129 }, (_, index) =>
@@ -283,10 +286,19 @@ describe("progressive current Event Market discovery", () => {
       state.dependencies
     )
     expect(exact.size).toBe(128)
-    expect(result.markets).toHaveLength(128)
+    expect(result.markets).toHaveLength(129)
     expect(result.coverage).toBe("partial")
-    // This capacity check signs and verifies 129 real event records. Its
-    // contract is the exact-read bound above, not a five-second CPU budget.
+    expect(result.continuation?.pendingCoordinates).toHaveLength(1)
+    const next = await discoverFutureEventMarkets(
+      {
+        organizerPubkeys: [record.author],
+        continuation: result.continuation,
+      },
+      state.dependencies
+    )
+    expect(exact.size).toBe(129)
+    expect(next.markets).toHaveLength(1)
+    expect(next.continuation).toBeUndefined()
   }, 20_000)
   it("stops queued work and progress after caller cancellation", async () => {
     const state = fixture(7),

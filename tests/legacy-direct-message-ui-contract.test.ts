@@ -111,7 +111,7 @@ describe("legacy direct-message UI contract", () => {
     ).text()
     expect(controllerSource).toContain("session.accountNetworkPreferences")
     expect(hookSource).toContain(
-      "enabled: !!pubkey && (options.enabled ?? true)"
+      "const enabled = !!pubkey && (options.enabled ?? true)"
     )
     expect(hookSource).toContain("invalidateInboxDeclaration(pubkey)")
     expect(hookSource).toContain("queryClient.invalidateQueries({ queryKey })")

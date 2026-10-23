@@ -9,7 +9,7 @@ import {
   runWithSparkWalletOperationLock,
   type SparkWalletOperationLockManager,
   type SparkWalletSessionLockManager,
-} from "../apps/market/src/lib/spark-wallet-lease"
+} from "@conduit/core/wallets/spark-wallet-lease"
 
 class MemoryLockManager implements SparkWalletSessionLockManager {
   readonly #held = new Set<string>()

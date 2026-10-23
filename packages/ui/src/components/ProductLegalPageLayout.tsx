@@ -26,7 +26,7 @@ export interface ProductLegalPageLayoutProps {
 }
 
 const linkClassName =
-  "font-medium text-primary-500 underline decoration-primary-500/40 underline-offset-4 hover:text-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+  "font-medium text-[var(--link-text)] underline decoration-primary-500/40 underline-offset-4 hover:text-[var(--link-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
 
 function getRuntimeHostname(deploymentHostname?: string): string {
   if (deploymentHostname !== undefined) return deploymentHostname
@@ -179,7 +179,9 @@ export function ProductLegalPageLayout({
         {reviewPreview && <ProductLegalReviewPreviewNotice />}
         <article aria-labelledby="product-legal-title">
           <header className="border-b border-[var(--border)] pb-8">
-            <p className="text-sm font-semibold text-primary-500">Legal</p>
+            <p className="text-sm font-semibold text-[var(--link-text)]">
+              Legal
+            </p>
             <h1
               id="product-legal-title"
               className="mt-2 max-w-3xl text-balance font-heading text-4xl font-semibold text-[var(--text-primary)] sm:text-5xl"
@@ -222,7 +224,7 @@ export function ProductLegalPageLayout({
 
           <aside
             aria-label="Policy scope"
-            className="my-8 rounded-2xl border border-primary-500/50 bg-[var(--surface-elevated)] p-5 shadow-sm"
+            className="my-8 rounded-[var(--radius-md)] border border-primary-500/50 bg-[var(--surface-elevated)] p-5 shadow-sm"
           >
             <p className="text-pretty text-base leading-7 text-[var(--text-primary)]">
               {scopeNotice}
@@ -250,7 +252,7 @@ export function ProductLegalPageLayout({
             </p>
           </aside>
 
-          <div className="space-y-9 text-pretty text-base leading-7 text-[var(--text-secondary)] [&_a]:rounded-sm [&_a]:font-medium [&_a]:text-primary-500 [&_a]:underline [&_a]:decoration-primary-500/40 [&_a]:underline-offset-4 [&_a:hover]:text-primary-600 [&_a:focus-visible]:outline-none [&_a:focus-visible]:ring-2 [&_a:focus-visible]:ring-[var(--ring)] [&_h2]:text-balance [&_h2]:font-heading [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-[var(--text-primary)] [&_li]:pl-1 [&_ol]:ml-6 [&_ol]:list-decimal [&_ol]:space-y-2 [&_p+p]:mt-4 [&_strong]:font-semibold [&_strong]:text-[var(--text-primary)] [&_ul]:ml-6 [&_ul]:list-disc [&_ul]:space-y-2">
+          <div className="space-y-9 text-pretty text-base leading-7 text-[var(--text-secondary)] [&_a]:rounded-sm [&_a]:font-medium [&_a]:text-[var(--link-text)] [&_a]:underline [&_a]:decoration-primary-500/40 [&_a]:underline-offset-4 [&_a:hover]:text-[var(--link-text)] [&_a:focus-visible]:outline-none [&_a:focus-visible]:ring-2 [&_a:focus-visible]:ring-[var(--ring)] [&_h2]:text-balance [&_h2]:font-heading [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:text-[var(--text-primary)] [&_li]:pl-1 [&_ol]:ml-6 [&_ol]:list-decimal [&_ol]:space-y-2 [&_p+p]:mt-4 [&_strong]:font-semibold [&_strong]:text-[var(--text-primary)] [&_ul]:ml-6 [&_ul]:list-disc [&_ul]:space-y-2">
             {children}
           </div>
 
@@ -286,9 +288,11 @@ function ProductLegalReviewPreviewNotice() {
   return (
     <aside
       aria-label="Legal document review preview"
-      className="mb-8 rounded-2xl border border-dashed border-primary-500/60 bg-[var(--surface-elevated)] p-5 shadow-sm"
+      className="mb-8 rounded-[var(--radius-md)] border border-dashed border-primary-500/60 bg-[var(--surface-elevated)] p-5 shadow-sm"
     >
-      <p className="text-sm font-semibold text-primary-500">Review preview</p>
+      <p className="text-sm font-semibold text-[var(--link-text)]">
+        Review preview
+      </p>
       <p className="mt-2 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
         This Conduit-controlled deployment preview shows the exact Product legal
         version proposed for Shop and Sell. This is not an official Product App
@@ -307,9 +311,9 @@ function UnofficialHostLegalNotice({ hostname }: { hostname: string }) {
       <main className="mx-auto flex min-h-dvh w-full max-w-3xl items-center px-4 py-12 sm:px-6 lg:px-8">
         <section
           aria-labelledby="independent-deployment-title"
-          className="w-full rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm sm:p-8"
+          className="w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 shadow-sm sm:p-8"
         >
-          <p className="text-sm font-semibold text-primary-500">
+          <p className="text-sm font-semibold text-[var(--link-text)]">
             Unofficial host
           </p>
           <h1

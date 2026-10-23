@@ -56,6 +56,7 @@ export interface Nip07AuthSession extends AuthSessionMetadata {
 export interface LocalKeyAuthSession extends AuthSessionMetadata {
   type: "local"
   localKeyRevision: string
+  removalPending?: true
 }
 
 export type AuthSession =
@@ -107,6 +108,9 @@ export function parseAuthSession(raw: string | null): AuthSession | null {
         type: "local",
         userPubkey: record.userPubkey,
         localKeyRevision: record.localKeyRevision,
+        ...(record.removalPending === true
+          ? { removalPending: true as const }
+          : {}),
         ...(typeof record.authClaim === "string"
           ? { authClaim: record.authClaim }
           : {}),
@@ -141,6 +145,7 @@ export function isAuthSessionRevoked(
   session: AuthSession,
   storage: AuthStorage | undefined = getDefaultAuthStorage()
 ): boolean {
+  if (session.type === "local" && session.removalPending) return true
   if (!storage) return false
   try {
     if (session.type === "local") {
@@ -215,7 +220,23 @@ export function writePendingLocalKeyRemoval(
     const publicSession = parseAuthSession(JSON.stringify(session))
     const encoded = JSON.stringify(publicSession)
     storage.setItem(LOCAL_KEY_REMOVAL_STORAGE_KEY, encoded)
-    return storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY) === encoded
+    if (storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY) === encoded) return true
+  } catch {
+    // A quota/partial failure can reject a new journal entry while allowing
+    // replacement of the existing auth record. Preserve exact public retry
+    // identity there, and verify it; never overwrite a concurrent account.
+  }
+  try {
+    const current = parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
+    if (
+      current?.type !== "local" ||
+      current.localKeyRevision !== session.localKeyRevision ||
+      current.userPubkey !== session.userPubkey
+    )
+      return false
+    const encoded = JSON.stringify({ ...current, removalPending: true })
+    storage.setItem(AUTH_STORAGE_KEY, encoded)
+    return storage.getItem(AUTH_STORAGE_KEY) === encoded
   } catch {
     return false
   }
@@ -280,7 +301,13 @@ export function authSessionsEqual(
   left: AuthSession | null,
   right: AuthSession | null
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+  // A removal marker changes restoration eligibility, not credential identity.
+  const identity = (session: AuthSession | null) => {
+    if (session?.type !== "local") return session
+    const { removalPending: _removalPending, ...rest } = session
+    return rest
+  }
+  return JSON.stringify(identity(left)) === JSON.stringify(identity(right))
 }
 
 export function shouldRetireAuthSessionAfterAuthorityChange(
@@ -319,6 +346,27 @@ export function writeAuthSession(
 
 export type InvalidatedAuthSessionCleanupStatus =
   "removed" | "absent" | "replacement"
+
+/** Roll back only this failed install; a concurrent replacement owns its data. */
+export function rollbackAuthSession(
+  expected: AuthSession,
+  previous: AuthSession | null,
+  storage: AuthStorage | undefined = getDefaultAuthStorage()
+): boolean {
+  if (!storage) return false
+  try {
+    const current = parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
+    if (!authSessionsEqual(current, expected)) return true
+    if (previous) storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(previous))
+    else storage.removeItem(AUTH_STORAGE_KEY)
+    return authSessionsEqual(
+      parseAuthSession(storage.getItem(AUTH_STORAGE_KEY)),
+      previous
+    )
+  } catch {
+    return false
+  }
+}
 
 export interface InvalidatedAuthSessionCleanupOptions {
   storage?: AuthStorage
@@ -487,6 +535,20 @@ export function revokeAuthSessionAuthority(
   options: AuthSessionAuthorityRevocationOptions = {}
 ): AuthSessionAuthorityRevocation {
   const claim = claimAuthRevision(storage)
+  // Preserve exact retry identity before a failed revocation-marker write can
+  // fall back to removing the auth record. In particular, overwriting the
+  // existing record may still work when allocating a new storage key fails.
+  if (
+    expected.type === "local" &&
+    options.sessionDisposition === "discard" &&
+    writePendingLocalKeyRemoval(expected, storage)
+  ) {
+    return {
+      freshRevisionPersisted: claim.persisted,
+      authorityRevoked: true,
+      sessionRetained: false,
+    }
+  }
   if (options.sessionDisposition !== "discard" && claim.persisted) {
     let sessionRetained: boolean
     try {

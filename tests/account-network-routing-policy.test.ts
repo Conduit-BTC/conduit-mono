@@ -197,10 +197,14 @@ describe("account network routing policy", () => {
         lookup: { coverage: "complete", hadEvent: true, observedAt: 10 },
         current: {
           state: "declared",
+          signedEvent: { id: "pending" },
           observedAt: 9,
           preferences: [{ url: "wss://pending.example" }],
         } as never,
-        pendingDistribution: { stagedAt: 9 } as never,
+        pendingDistribution: {
+          stagedAt: 9,
+          signedEvent: { id: "pending" },
+        } as never,
       })
     ).toEqual({ state: "positive", source: "pending", observedAt: 9 })
 
@@ -210,10 +214,12 @@ describe("account network routing policy", () => {
         stale: true,
         current: {
           state: "malformed",
+          signedEvent: { id: "malformed" },
           observedAt: 12,
         } as never,
         lastUsable: {
           state: "declared",
+          signedEvent: { id: "retained" },
           observedAt: 11,
           preferences: [{ url: "wss://retained.example" }],
         } as never,
@@ -227,6 +233,7 @@ describe("account network routing policy", () => {
         stale: false,
         lastUsable: {
           state: "declared",
+          signedEvent: { id: "retained" },
           observedAt: 13,
           preferences: [{ url: "wss://retained.example" }],
         } as never,
@@ -240,6 +247,7 @@ describe("account network routing policy", () => {
         stale: false,
         current: {
           state: "signed_empty",
+          signedEvent: { id: "empty" },
           observedAt: 14,
           preferences: [],
         } as never,

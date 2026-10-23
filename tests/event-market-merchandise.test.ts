@@ -175,7 +175,7 @@ describe("event-market organizer merchandise evidence", () => {
     ).toBe("unavailable")
   })
 
-  it("keeps owner read ws authority separate from remote merchant hints", async () => {
+  it("does not turn a nominated owner ws or remote merchant hint into unsigned authority", async () => {
     const product = productEvent("coffee", "Fresh coffee")
     const ownerRelay = "ws://owner-network.example:4848"
     const remoteRelay = "ws://remote-merchant.example:4848"
@@ -271,8 +271,8 @@ describe("event-market organizer merchandise evidence", () => {
     })
 
     expect(resolution.state).toBe("verified")
-    expect(observedRelayUrls).toContain(ownerRelay)
-    expect(observedOwnerSelectedRelayUrls).toContain(ownerRelay)
+    expect(observedRelayUrls).not.toContain(ownerRelay)
+    expect(observedOwnerSelectedRelayUrls).toEqual([])
     expect(observedRelayUrls).not.toContain(remoteRelay)
     expect(relayListAuthenticatedPubkey).toBe(ORGANIZER)
     expect(relayListShouldContinue).toBe(shouldContinue)

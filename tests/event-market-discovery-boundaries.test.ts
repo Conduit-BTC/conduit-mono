@@ -7,6 +7,7 @@ import {
   getEventMarketReadPlan,
   resolveEventMarketPerspectiveAuthorPubkeys,
 } from "@conduit/core"
+import { getEventMarketDiscoveryReadPlan } from "../packages/core/src/protocol/event-market"
 
 const organizer = "a".repeat(64)
 const owner = "b".repeat(64)
@@ -85,6 +86,34 @@ describe("current event discovery perspective boundary", () => {
 })
 
 describe("current event owner-aware bounded relay plan", () => {
+  it("keeps retained account scope separate from absent signer authority", async () => {
+    let lookupOptions: Record<string, unknown> = {}
+    __setEventMarketTestOverrides({
+      getRelayListsDetailed: async (_pubkeys, options = {}) => {
+        lookupOptions = options
+        return {
+          relayLists: new Map(),
+          resolutionStates: new Map([[organizer, "missing" as const]]),
+        }
+      },
+    })
+    await getEventMarketReadPlan({
+      organizerPubkey: organizer,
+      accountPubkey: owner,
+      authenticatedPubkey: null,
+    })
+    expect(lookupOptions.accountPubkey === owner).toBe(true)
+    expect(lookupOptions.authenticatedPubkey).toBeNull()
+    const discovery = await getEventMarketDiscoveryReadPlan({
+      organizerPubkeys: [organizer],
+      accountPubkey: owner,
+      authenticatedPubkey: null,
+    })
+    expect(lookupOptions.accountPubkey).toBe(owner)
+    expect(lookupOptions.authenticatedPubkey).toBeNull()
+    expect(lookupOptions.ownerSelectedRelayUrls).toEqual([])
+    expect(discovery.ownerSelectedRelayUrls).toEqual([])
+  })
   it("threads live owner authority while refusing remote insecure or loopback hints", async () => {
     const ownerRelay = "ws://owner-network.example:4848"
     const shouldContinue = () => true

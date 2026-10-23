@@ -1,6 +1,7 @@
 import {
   attachEventSourceRelayUrl,
   getEventSourceRelayUrls,
+  verifySignedEventBatches,
   verifySignedEvents as admitObservedEvents,
 } from "@conduit/core/protocol/relay-reader"
 import { afterEach, describe, expect, it } from "bun:test"
@@ -15,7 +16,7 @@ import { parseProductEvent } from "../packages/core/src/protocol/products"
 import { isValidSignedPublicNostrEvent } from "../packages/core/src/protocol/signed-event"
 
 const secret = generateSecretKey()
-const fixture = () =>
+const fixture = (content = 'Unicode 🛒\n"exact"') =>
   finalizeEvent(
     {
       kind: 30402,
@@ -25,7 +26,7 @@ const fixture = () =>
         ["title", "Signed fixture"],
         ["price", "1", "SAT"],
       ],
-      content: 'Unicode 🛒\n"exact"',
+      content,
     },
     secret
   )
@@ -107,6 +108,52 @@ describe("immutable public admission", () => {
       await admitPublicEvent(fixture(), { signal: controller.signal })
     ).toEqual({ status: "cancelled" })
   })
+
+  it.each([64, 512] as const)(
+    "preserves order and exact source association across %i-event batches",
+    async (batchSize) => {
+      const first = fixture("first")
+      const middle = fixture("middle")
+      const last = fixture("last")
+      const tampered = { ...first, content: "tampered" }
+      attachEventSourceRelayUrl(first, "wss://first.example")
+      attachEventSourceRelayUrl(last, "wss://last.example")
+      attachEventSourceRelayUrl(tampered, "wss://forged.example")
+      const initialBatch = [first, ...Array(batchSize - 1).fill(middle)]
+      const events = await verifySignedEventBatches(
+        [...initialBatch, tampered, last],
+        { batchSize }
+      )
+      expect(events.map((event) => event.id)).toEqual(
+        [...initialBatch, last].map((event) => event.id)
+      )
+      expect(events.every(isVerifiedNostrEvent)).toBe(true)
+      expect(getEventSourceRelayUrls(events[0]!)).toEqual([
+        "wss://first.example",
+      ])
+      expect(getEventSourceRelayUrls(events.at(-1)!)).toEqual([
+        "wss://last.example",
+      ])
+      expect(isVerifiedNostrEvent(last)).toBe(false)
+    }
+  )
+
+  it.each(["before", "during"] as const)(
+    "throws a native AbortError when cancelled %s batched admission",
+    async (when) => {
+      const controller = new AbortController()
+      if (when === "before") controller.abort()
+      const raw = fixture()
+      const pending = verifySignedEventBatches(Array(65).fill(raw), {
+        signal: controller.signal,
+        batchSize: 64,
+      })
+      if (when === "during") controller.abort()
+      await expect(pending).rejects.toBeInstanceOf(DOMException)
+      await expect(pending).rejects.toMatchObject({ name: "AbortError" })
+      expect(isVerifiedNostrEvent(raw)).toBe(false)
+    }
+  )
 
   it("executes the real bundled worker with full envelopes", async () => {
     const build = await Bun.build({

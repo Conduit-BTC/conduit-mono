@@ -73,21 +73,24 @@ describe("Market event catalog route", () => {
     )
   })
 
-  it("preserves reversible shipping choices and exact occurrence context", async () => {
+  it("offers pickup-only event shopping without rewriting saved shipping", async () => {
     const page = await Bun.file(
       "apps/market/src/components/FutureEventMarketPage.tsx"
     ).text()
     const cart = await Bun.file(
       "apps/market/src/components/CartEventFulfillmentChoice.tsx"
     ).text()
-    expect(page).toContain('choice === "shipping"')
-    expect(page).toContain("readEventShippingProduct({")
+    expect(page).not.toContain("EventFulfillmentChoice")
+    expect(page).not.toContain("readEventShippingProduct({")
+    expect(page).not.toContain("onMerchantActivate=")
+    expect(page).toContain("onMerchantChange(value ===")
     expect(page).toContain("eventMarketContext:")
     expect(page).toContain(
       "calendarCoordinate: fulfillment.calendar.coordinate"
     )
     expect(cart).toContain("event_market_pickup")
-    expect(cart).toContain("shipping")
+    expect(cart).toContain("Shipping · saved selection")
+    expect(cart).not.toContain("cart.changeFulfillment")
   })
 
   it("keeps product selection tied to the exact chosen listing", async () => {

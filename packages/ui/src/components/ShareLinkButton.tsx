@@ -129,7 +129,10 @@ export function ShareLinkButton({
         type="button"
         variant={variant}
         size={size}
-        className={cn(state === "copy_error" && "text-error", className)}
+        className={cn(
+          state === "copy_error" && "text-[var(--error-text)]",
+          className
+        )}
         aria-label={accessibleLabel}
         aria-describedby={
           ariaDescribedBy ? `${ariaDescribedBy} ${statusId}` : statusId

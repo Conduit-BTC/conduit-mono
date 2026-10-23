@@ -50,7 +50,7 @@ export function ProductInboxReadinessDialog({
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-[var(--surface-elevated)] text-primary-500 sm:mx-0">
+          <div className="mx-auto flex size-10 items-center justify-center rounded-full bg-[var(--surface-elevated)] text-[var(--link-text)] sm:mx-0">
             {guidance.action === "setup" ? (
               <Settings2 aria-hidden="true" className="size-5" />
             ) : guidance.action === "continue" ? (
@@ -67,7 +67,9 @@ export function ProductInboxReadinessDialog({
               {guidance.body}
             </AlertDialogDescription>
             {error ? (
-              <p className="mt-2 text-pretty text-sm text-error">{error}</p>
+              <p className="mt-2 text-pretty text-sm text-[var(--error-text)]">
+                {error}
+              </p>
             ) : null}
           </div>
         </AlertDialogHeader>

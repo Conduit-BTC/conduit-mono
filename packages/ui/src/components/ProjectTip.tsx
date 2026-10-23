@@ -509,7 +509,7 @@ export function ProjectTip({
                       {showQr && (
                         <div
                           id={qrId}
-                          className="mx-auto w-fit rounded-xl bg-white p-3"
+                          className="mx-auto w-fit rounded-[var(--radius-md)] bg-white p-3"
                         >
                           <QRCodeSVG
                             value={bolt11}
@@ -523,7 +523,7 @@ export function ProjectTip({
                         <summary className="cursor-pointer py-2">
                           Payment details
                         </summary>
-                        <p className="select-all break-all rounded-xl bg-[var(--surface)] p-3 font-mono">
+                        <p className="select-all break-all rounded-[var(--radius-md)] bg-[var(--surface)] p-3 font-mono">
                           {bolt11}
                         </p>
                       </details>

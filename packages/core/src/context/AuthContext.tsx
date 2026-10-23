@@ -12,6 +12,7 @@ import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS, CLAVE_PUSH_RELAY } from "../conf
 import {
   prepareLocalKeyImport,
   restoreLocalKeySigner,
+  reconcileLocalKeyRecord,
   LOCAL_KEY_CAPABILITIES,
   type LocalKeyImport,
   type LocalKeySigner,
@@ -59,6 +60,8 @@ import {
   revokeAuthSessionAuthority,
   shouldRetireAuthSessionAfterAuthorityChange,
   writeAuthSession,
+  rollbackAuthSession,
+  AuthSessionError,
   type AuthSession,
   type AuthMethod,
   AUTH_REVISION_STORAGE_KEY,
@@ -1071,6 +1074,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     let sessionPersisted = false
     let uncommittedLocal: LocalKeySigner | null = null
     let localCandidateSession: AuthSession | null = null
+    let uncommittedSessionSigner: SessionSigner | null = null
 
     setStatus(mode === "restore" ? "restoring" : "connecting")
     setMethod(requestedMethod)
@@ -1105,6 +1109,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         }
       } else if (requestedMethod === "local") {
         if (!localKeyEnabled) throw new Error("Local key sign-in is not enabled in this build.")
+        await reconcileLocalKeyRecord(storedSession?.type === "local" ? storedSession : null)
+        if (!attemptIsCurrent()) throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
         if (mode !== "restore" && options.localKeyImport)
           localCandidateSession = { version: 1, type: "local", ...options.localKeyImport.reference }
         const local = mode === "restore" && storedSession?.type === "local"
@@ -1261,6 +1267,11 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         onInvalidated: handleSignerSessionInvalidated,
       })
       installAccountSigner(sessionSigner, protectedReadSessionLifecycle.current, hasSessionAuthority)
+      uncommittedSessionSigner = sessionSigner
+      if (session.type === "local") {
+        await uncommittedLocal!.commit(attemptIsCurrent, options.pairingSignal)
+      }
+      uncommittedSessionSigner = null
       activeSessionSigner.current = sessionSigner
       localConnection.current = uncommittedLocal
       uncommittedLocal = null
@@ -1293,13 +1304,25 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         settleRestorePending(restoreAttempt)
       }
     } catch (err) {
+      if (uncommittedSessionSigner) {
+        uncommittedSessionSigner.invalidateLocal()
+        retireAccountSigner(uncommittedSessionSigner)
+        protectedReadSessionLifecycle.current.deactivate()
+      }
       uncommittedLocal?.invalidate()
       if (mode !== "restore" && localCandidateSession) {
+        if (!rollbackAuthSession(localCandidateSession, storedSession)) {
+          retirementBlockedSession.current = localCandidateSession
+          const message = "The previous signer session could not be restored. Keep this window open and retry when site storage is available."
+          setStatus("error")
+          setError(message)
+          throw new Error(message)
+        }
         try {
           await retireAuthSession(localCandidateSession, { withLock: async task => task() })
-        } catch {
+        } catch (cause) {
           retirementBlockedSession.current = localCandidateSession
-          const message = "The imported local signer could not be removed after connection failed. Retry removal when site storage is available."
+          const message = cause instanceof AuthSessionError ? cause.message : "The imported local signer could not be removed after connection failed. Retry removal when site storage is available."
           if (attemptOwnsEpoch()) {
             setRememberedMethod("local")
             setStatus("error")
@@ -1674,7 +1697,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         )
       } catch (cause) {
         const message = expectedSession?.type === "local"
-          ? "The stored local signer could not be removed. Signing is disconnected. Retry removal when site storage is available."
+          ? cause instanceof AuthSessionError ? cause.message : "The stored local signer could not be removed. Signing is disconnected. Retry removal when site storage is available."
           : revocation?.authorityRevoked
           ? REMOTE_SIGNER_CLEANUP_MESSAGE
           : REMOTE_SIGNER_REVOCATION_MESSAGE

@@ -5,9 +5,14 @@ import {
   type RelayQueryResult,
 } from "./relay-executor"
 import {
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   type AccountNetworkLocalStateRepository,
 } from "./account-network-local-state"
+import {
+  mergeRelayTargets,
+  selectRelayTargets,
+  type RelayTarget,
+} from "./relay-authority"
 import type { SignedNostrEvent } from "./nostr-event-signer"
 import type { ProtectedReadAuthorization } from "./protected-read-authorization"
 
@@ -32,26 +37,25 @@ export interface ReadProtectedInboxOptions {
   principalPubkey: string
   transport?: "nip17" | "nip04_incoming" | "nip04_outgoing"
   relayUrls: string[]
+  /** Exact read grants; required for account-scoped protected I/O. */
+  relayTargets?: readonly RelayTarget[]
   /** Optional full signed event ID; only narrows the protected kind-1059/#p read. */
   eventId?: string
   /** Inclusive NIP-01 time bounds for bounded recipient-scoped history reads. */
   since?: number
   until?: number
-  /**
-   * Exact relay subset backed by this authenticated owner's own inbox or
-   * Network selection. Compatibility and remote evidence must not populate it.
-   */
-  ownerSelectedRelayUrls?: readonly string[]
-  /** Inbox or legacy-read targets contributed by the App Relays layer. */
-  appRelayUrls?: readonly string[]
-  personalRelayUrls?: readonly string[]
-  independentRelayUrls?: readonly string[]
   limit: number
   authorization: ProtectedReadAuthorization | null
   accountNetworkLocalStateRepository?: Pick<
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["ownerRelayListEvidenceRepository"]
+  inboxDeclarationEvidenceRepository?: Parameters<
+    typeof filterEligibleAccountRelayTargets
+  >[0]["inboxDeclarationEvidenceRepository"]
   executor?: CommerceRelayExecutor
   signal?: AbortSignal
   connectTimeoutMs?: number
@@ -174,16 +178,33 @@ export async function readProtectedInbox(
   // Whole-relay removal is an account-local authority cutoff. Re-read it at
   // the last admission boundary so another tab can stop future protected
   // reads without interrupting work that was already admitted.
-  const eligibleRelayUrls = await filterEligibleAccountRelayUrls({
+  const protectedTargets = mergeRelayTargets(options.relayTargets ?? []).map(
+    (target) => ({
+      url: target.url,
+      grants: target.grants.filter((grant) =>
+        options.transport && options.transport !== "nip17"
+          ? grant.kind === "owner_nip65" ||
+            grant.kind === "app" ||
+            (grant.kind === "compatibility" && grant.policy === "inbox_read")
+          : grant.kind === "owner_nip17" ||
+            grant.kind === "retained_inbox" ||
+            grant.kind === "recovery" ||
+            (grant.kind === "app" && grant.bucket === "inbox_read") ||
+            (grant.kind === "compatibility" && grant.policy === "inbox_read")
+      ),
+    })
+  )
+  const eligibleRelayTargets = await filterEligibleAccountRelayTargets({
     accountPubkey: principalPubkey,
     authenticatedPubkey: options.authorization.expectedPubkey,
-    candidateRelayUrls: options.relayUrls,
-    ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-    appRelayUrls: options.appRelayUrls,
-    personalRelayUrls: options.personalRelayUrls ?? [],
-    independentRelayUrls: options.independentRelayUrls,
+    targets: selectRelayTargets(protectedTargets, options.relayUrls),
+    operation: "read",
     repository: options.accountNetworkLocalStateRepository,
+    ownerRelayListEvidenceRepository: options.ownerRelayListEvidenceRepository,
+    inboxDeclarationEvidenceRepository:
+      options.inboxDeclarationEvidenceRepository,
   })
+  const eligibleRelayUrls = eligibleRelayTargets.map((target) => target.url)
   if (eligibleRelayUrls.length === 0) {
     return emptyUnavailableResult(0, "authority_changed")
   }
@@ -216,6 +237,22 @@ export async function readProtectedInbox(
     {
       signal: options.signal,
       authorization: options.authorization,
+      admitRelay: async (relayUrl) =>
+        (
+          await filterEligibleAccountRelayTargets({
+            accountPubkey: principalPubkey,
+            authenticatedPubkey: options.authorization!.expectedPubkey,
+            targets: eligibleRelayTargets.filter(
+              (target) => target.url === relayUrl
+            ),
+            operation: "read",
+            repository: options.accountNetworkLocalStateRepository,
+            ownerRelayListEvidenceRepository:
+              options.ownerRelayListEvidenceRepository,
+            inboxDeclarationEvidenceRepository:
+              options.inboxDeclarationEvidenceRepository,
+          })
+        ).length > 0,
       connectTimeoutMs: options.connectTimeoutMs,
       queryTimeoutMs: options.queryTimeoutMs,
       authTimeoutMs: options.authTimeoutMs,

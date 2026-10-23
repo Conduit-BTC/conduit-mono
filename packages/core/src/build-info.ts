@@ -11,6 +11,9 @@ export interface ConduitBuildInfo {
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: boolean
     livePresenceEnabled: boolean
+    quantumRouterEnabled: boolean
+    quantumRouterExecutionEnabled: boolean
+    breezLightningAddressEnabled: boolean
   }
 }
 
@@ -30,6 +33,23 @@ export function getCommitUrl(
   return `${normalizeRepositoryUrl(info.sourceUrl)}/commit/${info.commitSha}`
 }
 
+const executionFlag = (
+  import.meta.env.VITE_QUANTUM_ROUTER_EXECUTION_ENABLED ?? ""
+)
+  .trim()
+  .toLowerCase()
+const localInheritedExecution =
+  (import.meta.env.VITE_DEPLOYMENT_PROFILE ?? "").trim().toLowerCase() ===
+    "local" &&
+  (["1", "true", "on"].includes(
+    (import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "").trim().toLowerCase()
+  ) ||
+    (import.meta.env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY === "true" &&
+      import.meta.env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL === "true"))
+const compiledExecutionEnabled = executionFlag
+  ? ["1", "true", "on"].includes(executionFlag)
+  : localInheritedExecution
+
 export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
   appVersion: clean(import.meta.env.VITE_APP_VERSION) ?? "0.0.0",
   commitSha: clean(import.meta.env.VITE_BUILD_COMMIT),
@@ -45,11 +65,19 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
     clean(import.meta.env.VITE_DEPLOYMENT_PROFILE) ?? "unknown",
   publicConfigDigest: clean(import.meta.env.VITE_PUBLIC_CONFIG_DIGEST),
   publicFeatures: Object.freeze({
+    breezLightningAddressEnabled:
+      import.meta.env?.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED === "true",
     dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_DM_BOOTSTRAP_WRITES ?? "").trim().toLowerCase()
     ),
     livePresenceEnabled: ["1", "true", "on"].includes(
       (import.meta.env.VITE_LIVE_PRESENCE_ENABLED ?? "").trim().toLowerCase()
     ),
+    quantumRouterEnabled:
+      compiledExecutionEnabled &&
+      ["1", "true", "on"].includes(
+        (import.meta.env.VITE_QUANTUM_ROUTER_ENABLED ?? "").trim().toLowerCase()
+      ),
+    quantumRouterExecutionEnabled: compiledExecutionEnabled,
   }),
 })

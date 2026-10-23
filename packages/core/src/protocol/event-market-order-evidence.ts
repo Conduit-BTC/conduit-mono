@@ -6,15 +6,16 @@ import {
 import { parseEventMarketCalendarEvent } from "./event-market"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { parseEventMarketRosterEvent } from "./event-market-roster"
+import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
 import { parseEventMarketSeriesEvent } from "./event-market-schedule"
 import {
   canonicalizeProductSpecifications,
   parseProductEvent,
 } from "./products"
+import { verifySignedEventBatches } from "./relay-reader"
 import { type SignedPublicNostrEvent } from "./signed-event"
 import {
   isVerifiedNostrEvent,
-  verifySignedEvents,
   type VerifiedNostrEvent,
 } from "./verified-public-event"
 import { normalizeCurrencyIdentity } from "../pricing"
@@ -36,6 +37,7 @@ export type EventMarketOrderEvidenceResult =
         | "calendar"
         | "grant"
         | "product"
+        | "assignment"
         | "terms"
     }
 
@@ -76,6 +78,12 @@ export async function admitEmbeddedEventMarketOrderEvidence(
       fulfillment.calendar.signedEvent,
       ...(fulfillment.schedule ? [fulfillment.schedule.signedEvent] : []),
       fulfillment.product.signedEvent,
+      ...(fulfillment.parentProduct
+        ? [fulfillment.parentProduct.signedEvent]
+        : []),
+      ...(fulfillment.occurrenceAssignment
+        ? [fulfillment.occurrenceAssignment.signedEvent]
+        : []),
       fulfillment.grant.signedEvidence.tip,
       ...fulfillment.grant.signedEvidence.ancestry,
       ...fulfillment.grant.signedEvidence.deletions,
@@ -84,15 +92,7 @@ export async function admitEmbeddedEventMarketOrderEvidence(
   const unique = [
     ...new Map(embedded.map((event) => [event.id, event])).values(),
   ]
-  const verified: VerifiedNostrEvent[] = []
-  for (let offset = 0; offset < unique.length; offset += 64) {
-    const batch = await verifySignedEvents(
-      unique.slice(offset, offset + 64),
-      options
-    )
-    verified.push(...batch.events)
-  }
-  return verified
+  return verifySignedEventBatches(unique, { ...options, batchSize: 64 })
 }
 
 /** Exact original evidence authorizes only this already-created order's physical terms. */
@@ -142,12 +142,32 @@ export function verifyEventMarketOrderEvidence(input: {
     ...first.grant.ancestryEventIds,
     ...first.grant.observedDeletionEventIds,
     ...future.map((item) => item.fulfillment.product.eventId),
+    ...future.flatMap((item) =>
+      item.fulfillment.parentProduct
+        ? [item.fulfillment.parentProduct.eventId]
+        : []
+    ),
+    ...future.flatMap((item) =>
+      item.fulfillment.occurrenceAssignment
+        ? [item.fulfillment.occurrenceAssignment.eventId]
+        : []
+    ),
   ])
   const embeddedEvidence = [
     first.market.signedEvent,
     first.calendar.signedEvent,
     ...(first.schedule ? [first.schedule.signedEvent] : []),
     ...future.map((item) => item.fulfillment.product.signedEvent),
+    ...future.flatMap((item) =>
+      item.fulfillment.parentProduct
+        ? [item.fulfillment.parentProduct.signedEvent]
+        : []
+    ),
+    ...future.flatMap((item) =>
+      item.fulfillment.occurrenceAssignment
+        ? [item.fulfillment.occurrenceAssignment.signedEvent]
+        : []
+    ),
     first.grant.signedEvidence.tip,
     ...first.grant.signedEvidence.ancestry,
     ...first.grant.signedEvidence.deletions,
@@ -226,7 +246,10 @@ export function verifyEventMarketOrderEvidence(input: {
       signed.kind !== 30402 ||
       signed.pubkey !== order.merchantPubkey ||
       signed.created_at * 1_000 !== evidence.createdAt ||
-      !signed.tags.some((tag) => tag[0] === "a" && tag[1] === market.coordinate)
+      (!item.fulfillment.occurrenceAssignment &&
+        !signed.tags.some(
+          (tag) => tag[0] === "a" && tag[1] === market.coordinate
+        ))
     )
       return { status: "invalid", reason: "product" }
     let product: ReturnType<typeof parseProductEvent>
@@ -255,6 +278,56 @@ export function verifyEventMarketOrderEvidence(input: {
       )
     )
       return { status: "invalid", reason: "product" }
+    if (item.fulfillment.occurrenceAssignment) {
+      const assignmentEvidence = item.fulfillment.occurrenceAssignment
+      if (product.type === "variable")
+        return { status: "invalid", reason: "product" }
+      if (product.type === "variation") {
+        const parentEvidence = item.fulfillment.parentProduct
+        const parentSigned = parentEvidence && byId.get(parentEvidence.eventId)
+        if (
+          !parentSigned ||
+          !parentEvidence ||
+          product.parentProductId !== parentEvidence.coordinate ||
+          parentSigned.pubkey !== order.merchantPubkey ||
+          parentSigned.created_at * 1_000 !== parentEvidence.createdAt
+        )
+          return { status: "invalid", reason: "product" }
+        try {
+          const parent = parseProductEvent(parentSigned)
+          if (
+            parent.id !== parentEvidence.coordinate ||
+            parent.type !== "variable" ||
+            parent.visibility !== "public"
+          )
+            return { status: "invalid", reason: "product" }
+        } catch {
+          return { status: "invalid", reason: "product" }
+        }
+      }
+      const assignment = parseEventMarketAssignmentEvent(
+        byId.get(assignmentEvidence.eventId)!
+      )
+      if (
+        !assignment ||
+        assignment.eventId !== assignmentEvidence.eventId ||
+        assignment.coordinate !== assignmentEvidence.coordinate ||
+        assignment.createdAt * 1_000 !== assignmentEvidence.createdAt ||
+        assignment.marketCoordinate !== market.coordinate ||
+        assignment.occurrenceCoordinate !== calendar.coordinate ||
+        assignment.productCoordinate !== item.productId ||
+        assignment.merchantPubkey !== order.merchantPubkey ||
+        assignment.state !== "active" ||
+        !assignment.fulfillmentMethods.includes("pickup") ||
+        (assignment.inventory.mode === "tracked" &&
+          (product.stock === undefined ||
+            assignment.inventory.quantity < item.quantity ||
+            assignment.inventory.quantity > product.stock)) ||
+        (assignment.inventory.mode === "untracked" &&
+          product.stock !== undefined)
+      )
+        return { status: "invalid", reason: "assignment" }
+    }
   }
   return {
     status: "verified",

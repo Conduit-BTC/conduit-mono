@@ -39,18 +39,21 @@ function signedProfileContext(
   )
   expect(verifyEvent(event)).toBe(true)
   expect(event.pubkey).toBe(getPublicKey(secretKey))
-  return createSelectedProfileContext({
-    pubkey: event.pubkey,
-    row: {
+  return {
+    ...createSelectedProfileContext({
       pubkey: event.pubkey,
-      eventId: event.id,
-      eventCreatedAt: event.created_at,
-      rawContent: event.content,
-      cachedAt: Date.now(),
-    },
-    observed: true,
-    readComplete: true,
-  })
+      row: {
+        pubkey: event.pubkey,
+        eventId: event.id,
+        eventCreatedAt: event.created_at,
+        rawContent: event.content,
+        cachedAt: Date.now(),
+      },
+      observed: true,
+      readComplete: true,
+    }),
+    signedEvent: event,
+  }
 }
 
 describe("checkout Spark recipient payout address evidence", () => {
@@ -69,6 +72,7 @@ describe("checkout Spark recipient payout address evidence", () => {
       lud16: "seller@example.com",
       profileEventId: context.frontier?.eventId,
       profileEventCreatedAt: context.frontier?.eventCreatedAt,
+      signedEvent: structuredClone(context.signedEvent),
     })
   })
 
@@ -82,7 +86,7 @@ describe("checkout Spark recipient payout address evidence", () => {
     ).toEqual({ state: "invalid", reason: "recipient_mismatch" })
   })
 
-  it("keeps retained, unobserved, missing, and incomplete evidence unavailable", () => {
+  it("keeps retained, unobserved, missing, and non-durable evidence unavailable", () => {
     const context = signedProfileContext({ lud16: "seller@example.com" })
     const recipientPubkey = context.profile.pubkey
     expect(
@@ -106,19 +110,17 @@ describe("checkout Spark recipient payout address evidence", () => {
     expect(
       resolveCheckoutSparkRecipientPayoutAddress({
         recipientPubkey,
-        context: { ...context, readComplete: false },
+        context: { ...context, persistence: "session" },
       })
     ).toEqual({ state: "unavailable", reason: "read_incomplete" })
   })
 
-  it("fails closed on incomplete or missing read metadata", () => {
+  it("fails closed on stale or missing read metadata", () => {
     const context = signedProfileContext({ lud16: "seller@example.com" })
     const recipientPubkey = context.profile.pubkey
     for (const readMeta of [
       { stale: true, degraded: false, capped: false },
-      { stale: false, degraded: true, capped: false },
-      { stale: false, degraded: false, capped: true },
-      { stale: false, degraded: false },
+      { degraded: false, capped: false },
       undefined,
     ]) {
       expect(
@@ -130,6 +132,38 @@ describe("checkout Spark recipient payout address evidence", () => {
           >[0]["readMeta"],
         })
       ).toEqual({ state: "unavailable", reason: "read_incomplete" })
+    }
+  })
+
+  it("accepts positive signed evidence without claiming complete relay coverage", () => {
+    const context = signedProfileContext({ lud16: "seller@example.com" })
+    context.readComplete = false
+    const readMeta = { stale: false, degraded: true, capped: true }
+    expect(
+      resolveRecipientCore({
+        recipientPubkey: context.profile.pubkey,
+        context,
+        readMeta,
+      }).state
+    ).toBe("ready")
+    expect(context.readComplete).toBe(false)
+    expect(readMeta).toEqual({ stale: false, degraded: true, capped: true })
+  })
+
+  it("requires the exact independently valid signed event, even with complete coverage", () => {
+    const context = signedProfileContext({ lud16: "seller@example.com" })
+    for (const signedEvent of [
+      undefined,
+      { ...context.signedEvent!, sig: "0".repeat(128) },
+      signedProfileContext({ lud16: "seller@example.com" }).signedEvent,
+    ]) {
+      expect(
+        resolveRecipientCore({
+          recipientPubkey: context.profile.pubkey,
+          context: { ...context, signedEvent },
+          readMeta: COMPLETE_READ,
+        })
+      ).toEqual({ state: "invalid", reason: "profile_frontier_invalid" })
     }
   })
 

@@ -1,9 +1,22 @@
-import { db, type OrderLifecycle, type OrderRelayDeliveryStatus } from "../db"
+import { parseEventMarketFreePurchaseDelivery } from "./event-market-free-purchase-delivery-record"
+import {
+  db,
+  type OrderLifecycle,
+  type OrderRelayDeliveryStatus,
+  type ConduitDB,
+} from "../db"
+import {
+  CANONICAL_APP_BACKPLANE_RELAYS,
+  HISTORICAL_COMPATIBILITY_ORDER_RELAYS,
+  RETIRED_CONDUIT_RELAY_URL,
+} from "../config"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
+import { relayTargetsFromUrls } from "./relay-authority"
 import { type AccountNetworkLocalStateRepository } from "./account-network-local-state"
 import { EVENT_KINDS } from "./kinds"
 import {
   deriveOrderLifecyclePhase,
+  isGuestOrderDataExpired,
   GUEST_ORDER_LOCAL_RETENTION_MS,
 } from "./order-lifecycle"
 import {
@@ -27,11 +40,14 @@ import {
 const RETRY_DELAY_MS = 60_000
 const FOREGROUND_RETRY_DELAY_MS = 15_000
 export const ORDER_RELAY_DELIVERY_LEASE_MS = 30_000
-// The compatibility registry before the Congee cutover. This is only used to
+// Historical compatibility registries. This is only used to
 // validate already-staged exact wraps; new plans use the current registry.
-const PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS = new Set([
-  "wss://relay.conduit.market",
-  "wss://relay.ditto.pub",
+const PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS = new Set(
+  HISTORICAL_COMPATIBILITY_ORDER_RELAYS
+)
+const HISTORICAL_CONDUIT_RELAYS = new Set([
+  ...CANONICAL_APP_BACKPLANE_RELAYS,
+  RETIRED_CONDUIT_RELAY_URL,
 ])
 
 export type PreparedOrderRelayDelivery = {
@@ -56,9 +72,11 @@ export type StagedOrderLifecycleInput = Pick<
   | "claimedReferralSource"
   | "buyerPubkey"
   | "buyerIdentityKind"
+  | "guestSessionExpiresAt"
   | "merchantPubkey"
   | "checkoutMode"
   | "checkoutSparkRouterBinding"
+  | "eventMarketFreePurchaseDelivery"
   | "publicZapSigner"
   | "publicZapFallback"
   | "merchantLightningAddress"
@@ -108,35 +126,75 @@ export interface RetryOrderRelayDeliveryOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  inboxDeclarationEvidenceRepository?: Pick<
+    import("./inbox-declaration-evidence").InboxDeclarationEvidenceRepository,
+    "get"
+  >
   /** Explicit foreground recovery may replay a same-session guest wrap. */
   allowGuest?: boolean
   /** Live account/session guard checked before every new relay write. */
   shouldContinue?: () => boolean
 }
 
-const dexieRepository: OrderRelayDeliveryRepository = {
-  get: async (orderId) => db.orderLifecycles.get(orderId),
-  list: async (buyerPubkey) =>
-    db.orderLifecycles.where("buyerPubkey").equals(buyerPubkey).toArray(),
-  update: async (orderId, updater) =>
-    db.transaction("rw", db.orderLifecycles, async () => {
-      const current = await db.orderLifecycles.get(orderId)
-      if (!current) return undefined
-      const next = updater(current)
-      await db.orderLifecycles.put(next)
-      return next
-    }),
-  stage: async (record, assertCompatible) =>
-    db.transaction("rw", db.orderLifecycles, async () => {
-      const current = await db.orderLifecycles.get(record.orderId)
-      if (current) {
-        assertCompatible(current)
-        return { lifecycle: current, inserted: false }
-      }
-      await db.orderLifecycles.put(record)
-      return { lifecycle: record, inserted: true }
-    }),
+export function createOrderRelayDeliveryRepository(
+  database: ConduitDB = db
+): OrderRelayDeliveryRepository {
+  return {
+    get: async (orderId) => database.orderLifecycles.get(orderId),
+    list: async (buyerPubkey) =>
+      database.orderLifecycles
+        .where("buyerPubkey")
+        .equals(buyerPubkey)
+        .toArray(),
+    update: async (orderId, updater) =>
+      database.transaction("rw", database.orderLifecycles, async () => {
+        const current = await database.orderLifecycles.get(orderId)
+        if (!current) return undefined
+        const next = updater(current)
+        await database.orderLifecycles.put(next)
+        return next
+      }),
+    stage: async (record, assertCompatible) =>
+      database.transaction("rw", database.orderLifecycles, async () => {
+        const current = await database.orderLifecycles.get(record.orderId)
+        if (current) {
+          assertCompatible(current)
+          return { lifecycle: current, inserted: false }
+        }
+        const packet = record.eventMarketFreePurchaseDelivery
+        if (packet) {
+          const previous = await database.orderLifecycles.toArray()
+          const pending = previous.flatMap((order) =>
+            order.eventMarketFreePurchaseDelivery &&
+            !order.eventMarketFreePurchaseDelivery.acknowledged
+              ? [order.eventMarketFreePurchaseDelivery]
+              : []
+          )
+          if (
+            pending.length >= 64 ||
+            JSON.stringify([...pending, packet]).length > 4 * 1024 * 1024
+          )
+            throw new Error(
+              "Finish a saved free pickup delivery before another order."
+            )
+          if (
+            previous.some((order) => {
+              const saved = order.eventMarketFreePurchaseDelivery
+              return (
+                saved &&
+                (saved.handoffId === packet.handoffId ||
+                  saved.purchaseClaimDigest === packet.purchaseClaimDigest)
+              )
+            })
+          )
+            throw new OrderRelayDeliveryStageConflictError()
+        }
+        await database.orderLifecycles.put(record)
+        return { lifecycle: record, inserted: true }
+      }),
+  }
 }
+const dexieRepository = createOrderRelayDeliveryRepository()
 
 function nextLeaseOwner(): string {
   return (
@@ -166,7 +224,7 @@ function isValidPersistedCompatibilityPlan(
     (relayUrls.length > 0 &&
       relayUrls.length <= MAX_COMPATIBILITY_ORDER_RELAYS &&
       new Set(relayUrls).size === relayUrls.length &&
-      relayUrls.includes("wss://relay.conduit.market") &&
+      relayUrls.some((url) => HISTORICAL_CONDUIT_RELAYS.has(url)) &&
       relayUrls.every((relayUrl) =>
         PRE_CUTOVER_COMPATIBILITY_ORDER_RELAYS.has(relayUrl)
       ))
@@ -198,9 +256,17 @@ function immutableLifecycleSnapshot(
     claimedReferralSource: lifecycle.claimedReferralSource,
     buyerPubkey: lifecycle.buyerPubkey,
     buyerIdentityKind: lifecycle.buyerIdentityKind,
+    guestSessionExpiresAt: lifecycle.guestSessionExpiresAt,
     merchantPubkey: lifecycle.merchantPubkey,
     checkoutMode: lifecycle.checkoutMode,
     checkoutSparkRouterBinding: lifecycle.checkoutSparkRouterBinding,
+    eventMarketFreePurchaseDelivery: lifecycle.eventMarketFreePurchaseDelivery
+      ? {
+          ...lifecycle.eventMarketFreePurchaseDelivery,
+          merchantDelivered: false,
+          acknowledged: false,
+        }
+      : undefined,
     publicZapSigner: lifecycle.publicZapSigner,
     publicZapFallback: lifecycle.publicZapFallback,
     merchantLightningAddress: lifecycle.merchantLightningAddress,
@@ -337,6 +403,25 @@ export async function stageOrderRelayDelivery(
     now?: () => number
   } = {}
 ): Promise<OrderRelayDeliveryStageResult> {
+  if (input.lifecycle.eventMarketFreePurchaseDelivery) {
+    const packet = parseEventMarketFreePurchaseDelivery(
+      input.lifecycle.eventMarketFreePurchaseDelivery
+    )
+    if (
+      packet.orderId !== input.lifecycle.orderId ||
+      packet.senderPubkey !== input.lifecycle.buyerPubkey ||
+      packet.merchantPubkey !== input.lifecycle.merchantPubkey ||
+      packet.buyerIdentityKind !== input.lifecycle.buyerIdentityKind ||
+      packet.createdAt !== input.lifecycle.createdAt ||
+      input.lifecycle.totalSats !== 0 ||
+      input.lifecycle.totalMsats !== 0 ||
+      input.lifecycle.checkoutMode !== "pay_later" ||
+      packet.merchantDelivered ||
+      packet.acknowledged
+    ) {
+      throw new Error("Free pickup delivery does not match the original order.")
+    }
+  }
   const merchantPubkey = input.lifecycle.merchantPubkey.trim().toLowerCase()
   const authority = input.prepared.routingAuthority
   const compatibilityPlan = input.prepared.compatibilityPlan
@@ -446,7 +531,14 @@ export async function stageOrderRelayDelivery(
     deliveryLeaseExpiresAt: timestamp + ORDER_RELAY_DELIVERY_LEASE_MS,
     createdAt: timestamp,
     updatedAt: timestamp,
-    expiresAt: createdAt + GUEST_ORDER_LOCAL_RETENTION_MS,
+    expiresAt:
+      input.lifecycle.buyerIdentityKind === "guest_ephemeral" &&
+      input.lifecycle.guestSessionExpiresAt !== undefined
+        ? Math.min(
+            createdAt + GUEST_ORDER_LOCAL_RETENTION_MS,
+            input.lifecycle.guestSessionExpiresAt
+          )
+        : createdAt + GUEST_ORDER_LOCAL_RETENTION_MS,
   }
   const stagedBase = {
     ...input.lifecycle,
@@ -462,6 +554,9 @@ export async function stageOrderRelayDelivery(
     zapReceiptStatus: "not_applicable" as const,
   }
   const record: OrderLifecycle = { ...stagedBase, phase: "pending" }
+  if (isGuestOrderDataExpired(record, timestamp)) {
+    throw new Error("Cannot stage an expired guest order.")
+  }
 
   return await repository.stage(record, (current) => {
     if (
@@ -520,6 +615,7 @@ export async function beginOrderRelayDeliveryAttempt(
       input.shouldContinue?.() === false ||
       current.buyerPubkey !== input.buyerPubkey ||
       activeOtherLease ||
+      isGuestOrderDataExpired(current, timestamp) ||
       delivery.expiresAt <= timestamp ||
       relayUrls.length === 0 ||
       relayUrls.some(
@@ -723,6 +819,7 @@ export async function retryOrderRelayDelivery(
       (current.buyerIdentityKind === "guest_ephemeral" &&
         !options.allowGuest) ||
       current.buyerPubkey !== activeBuyerPubkey ||
+      isGuestOrderDataExpired(current, timestamp) ||
       delivery.expiresAt <= timestamp ||
       !hasRetryablePublicTarget(delivery) ||
       (delivery.deliveryLeaseOwner &&
@@ -746,6 +843,10 @@ export async function retryOrderRelayDelivery(
 
   if (
     !claimed?.orderRelayDelivery ||
+    !hasValidOrderRelayRoutingAuthority(
+      claimed.orderRelayDelivery,
+      claimed.merchantPubkey
+    ) ||
     claimed.orderRelayDelivery.deliveryLeaseOwner !== leaseOwner
   ) {
     return claimed
@@ -768,6 +869,26 @@ export async function retryOrderRelayDelivery(
         recipientPubkey: claimed.merchantPubkey,
         event: signedEvent,
         relayUrls: outstanding.map((target) => target.relayUrl),
+        relayTargets: relayTargetsFromUrls(
+          outstanding.map((target) => target.relayUrl),
+          claimed.orderRelayDelivery.route === "compatibility_order"
+            ? {
+                kind: "compatibility",
+                operation: "write",
+                policy: "order_delivery",
+              }
+            : {
+                kind: "recipient_nip17",
+                operation: "write",
+                recipientPubkey: claimed.merchantPubkey,
+                ...(claimed.orderRelayDelivery.routingAuthority
+                  ? {
+                      eventId:
+                        claimed.orderRelayDelivery.routingAuthority.eventId,
+                    }
+                  : {}),
+              }
+        ),
         ownerSelectedRelayUrls: [],
         compatibility:
           claimed.orderRelayDelivery.route === "compatibility_order",
@@ -775,9 +896,13 @@ export async function retryOrderRelayDelivery(
         failed: [],
       },
       publisher: options.publisher,
-      shouldContinue: options.shouldContinue,
+      shouldContinue: () =>
+        options.shouldContinue?.() !== false &&
+        !isGuestOrderDataExpired(claimed, now()),
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      inboxDeclarationEvidenceRepository:
+        options.inboxDeclarationEvidenceRepository,
       beforePublish: async (relayUrl) => {
         const begun = await beginOrderRelayDeliveryAttempt(
           {

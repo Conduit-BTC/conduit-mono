@@ -9,6 +9,7 @@ import {
   type Nip47LookupInvoiceRequest,
   type Nip47MakeInvoiceRequest,
   type Nip47PayInvoiceRequest,
+  type Nip47PayResponse,
   type Nip47Transaction,
 } from "@getalby/sdk/nwc"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
@@ -47,6 +48,7 @@ type StoredInvoice = {
 
 export type DeterministicNwcWalletSnapshot = {
   counters: WalletCounters
+  balanceReads: number
   invoiceState: "none" | "pending" | "settled"
 }
 
@@ -81,8 +83,16 @@ export type DeterministicNwcWallet = {
 
 export type DeterministicNwcWalletOptions = {
   relayUrl: string
+  network?: "mainnet" | "testnet" | "regtest"
   lud16?: string
   nowSeconds?: () => number
+  claimUnissuedSettled?: boolean
+  methods?: Nip47GetInfoResponse["methods"]
+  getBalanceMsats?(): Promise<number> | number
+  /** Runner-held proof for an exact invoice issued by another test provider. */
+  authorizeExternalInvoice?(
+    request: Readonly<Nip47PayInvoiceRequest>
+  ): Promise<Nip47PayResponse | null> | Nip47PayResponse | null
 }
 
 function runtimeNwcKeyPair(): { pubkey: string; secret: string } {
@@ -168,7 +178,10 @@ function buildConnectionUri(input: {
   return `nostr+walletconnect://${input.walletPubkey}?${params.toString()}`
 }
 
-function invoiceHrp(amountMsats: number): string {
+function invoiceHrp(
+  amountMsats: number,
+  network: "mainnet" | "testnet" | "regtest"
+): string {
   if (
     !Number.isSafeInteger(amountMsats) ||
     amountMsats <= 0 ||
@@ -176,7 +189,9 @@ function invoiceHrp(amountMsats: number): string {
   ) {
     throw new Error("Deterministic NWC invoice amount must be positive msats.")
   }
-  return `lntb${amountMsats * 10}p`
+  const prefix =
+    network === "mainnet" ? "lnbc" : network === "regtest" ? "lnbcrt" : "lntb"
+  return `${prefix}${amountMsats * 10}p`
 }
 
 function requestMatchesInvoice(
@@ -188,6 +203,42 @@ function requestMatchesInvoice(
     (!request.invoice || request.invoice === invoice.invoice) &&
     (!request.payment_hash || request.payment_hash === TEST_PAYMENT_HASH_HEX)
   )
+}
+
+/** Track SDK callbacks and fire-and-forget publishes before closing its pool. */
+export function trackNwcServiceWork(service: NWCWalletService) {
+  const pending = new Set<Promise<unknown>>()
+  let failed = false
+  const track = (value: unknown) => {
+    const work = Promise.resolve(value)
+    pending.add(work)
+    void work.then(
+      () => pending.delete(work),
+      () => {
+        pending.delete(work)
+        failed = true
+      }
+    )
+  }
+  const subscribe = service.pool.subscribe.bind(service.pool)
+  service.pool.subscribe = (relays, filter, params) =>
+    subscribe(relays, filter, {
+      ...params,
+      onevent: params.onevent
+        ? (event) => track(params.onevent!(event))
+        : undefined,
+    })
+  const publish = service.pool.publish.bind(service.pool)
+  service.pool.publish = (...args) => {
+    const publications = publish(...args)
+    publications.forEach(track)
+    return publications
+  }
+  return async () => {
+    // A callback can enqueue a publication while the current batch drains.
+    while (pending.size) await Promise.allSettled([...pending])
+    if (failed) throw new DeterministicNwcOperationError("wallet_close")
+  }
 }
 
 function toTransaction(invoice: StoredInvoice): Nip47Transaction {
@@ -253,12 +304,14 @@ export function createDeterministicNwcWallet(
     relayUrls: [options.relayUrl],
     logger: { debug() {} },
   })
+  const drainServiceWork = trackNwcServiceWork(service)
   const counters: WalletCounters = {
     makeInvoice: 0,
     payInvoice: 0,
     lookupInvoice: 0,
   }
   let invoice: StoredInvoice | null = null
+  let balanceReads = 0
   let unsubscribeMerchant: (() => void) | null = null
   let unsubscribeBuyer: (() => void) | null = null
   let started = false
@@ -268,10 +321,10 @@ export function createDeterministicNwcWallet(
     alias: "Hermetic commerce wallet",
     color: "#000000",
     pubkey: walletPubkey,
-    network: "testnet",
+    network: options.network ?? "testnet",
     block_height: 0,
     block_hash: "0".repeat(64),
-    methods: [
+    methods: options.methods ?? [
       "get_info",
       "get_balance",
       "make_invoice",
@@ -287,8 +340,13 @@ export function createDeterministicNwcWallet(
       return { result: info(), error: undefined }
     },
     async getBalance() {
+      balanceReads++
       return {
-        result: { balance: TEST_WALLET_BALANCE_MSATS },
+        result: {
+          balance: options.getBalanceMsats
+            ? await options.getBalanceMsats()
+            : TEST_WALLET_BALANCE_MSATS,
+        },
         error: undefined,
       }
     },
@@ -308,7 +366,7 @@ export function createDeterministicNwcWallet(
             bolt11PaymentHashField(TEST_PAYMENT_HASH),
             bolt11PlainDescriptionField(description),
           ],
-          hrp: invoiceHrp(request.amount),
+          hrp: invoiceHrp(request.amount, options.network ?? "testnet"),
         }),
         settledAt: null,
       }
@@ -317,6 +375,10 @@ export function createDeterministicNwcWallet(
     async payInvoice(request: Nip47PayInvoiceRequest) {
       counters.payInvoice += 1
       if (!invoice || request.invoice !== invoice.invoice) {
+        if (options.authorizeExternalInvoice) {
+          const external = await options.authorizeExternalInvoice(request)
+          if (external) return { result: external, error: undefined }
+        }
         return {
           result: undefined,
           error: { code: "NOT_FOUND", message: "Invoice was not issued." },
@@ -330,6 +392,19 @@ export function createDeterministicNwcWallet(
     },
     async lookupInvoice(request: Nip47LookupInvoiceRequest) {
       counters.lookupInvoice += 1
+      if (!invoice && options.claimUnissuedSettled && request.invoice) {
+        return {
+          result: toTransaction({
+            invoice: request.invoice,
+            amountMsats: 100_000,
+            createdAt: nowSeconds() - 5,
+            description: "Controlled unissued settlement claim",
+            expiresAt: nowSeconds() + 3_600,
+            settledAt: nowSeconds(),
+          }),
+          error: undefined,
+        }
+      }
       if (!invoice || !requestMatchesInvoice(request, invoice)) {
         return {
           result: undefined,
@@ -363,19 +438,18 @@ export function createDeterministicNwcWallet(
     },
     async close() {
       if (closed) return
-      // The SDK intentionally publishes responses without awaiting relay ACKs.
-      // Give those local publishes one turn to settle before closing the pool,
-      // otherwise teardown can turn a successful response into an unhandled
-      // rejected publication promise.
       try {
         await runContentFreeNwcOperation("wallet_close", async () => {
-          await new Promise((resolve) => setTimeout(resolve, 25))
           unsubscribeMerchant?.()
           unsubscribeBuyer?.()
           unsubscribeMerchant = null
           unsubscribeBuyer = null
-          service.close()
-          started = false
+          try {
+            await drainServiceWork()
+          } finally {
+            service.close()
+            started = false
+          }
         })
       } finally {
         merchantKeyPair.walletSecret = ""
@@ -423,6 +497,7 @@ export function createDeterministicNwcWallet(
     snapshot() {
       return {
         counters: { ...counters },
+        balanceReads,
         invoiceState:
           invoice === null
             ? "none"

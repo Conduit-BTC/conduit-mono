@@ -66,7 +66,7 @@ describe("Merchant live account authority", () => {
       "apps/merchant/src/routes/index.tsx",
       "apps/merchant/src/routes/messages.tsx",
       "apps/merchant/src/routes/orders.tsx",
-      "apps/merchant/src/routes/payments.tsx",
+      "packages/core/src/hooks/useWalletAddress.ts",
       "apps/merchant/src/routes/profile.tsx",
       "apps/merchant/src/components/MerchantEventsTimeline.tsx",
     ]

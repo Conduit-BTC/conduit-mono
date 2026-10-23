@@ -278,7 +278,7 @@ describe("network settings view", () => {
   })
 
   it("keeps configured Conduit uses separate from observed capability", () => {
-    const configuredUrl = "wss://conduit-congee.fly.dev"
+    const configuredUrl = "wss://relay.conduit.market"
     const observedUrl = "wss://observed.example"
     const rows = [configuredUrl, observedUrl].map((url, position) => ({
       url,
@@ -344,9 +344,7 @@ describe("network settings view", () => {
         },
       }),
       localState: localState({
-        relayScans: [
-          scan("wss://conduit-congee.fly.dev", { reachable: false }),
-        ],
+        relayScans: [scan("wss://relay.conduit.market", { reachable: false })],
       }),
     })
 
@@ -358,14 +356,12 @@ describe("network settings view", () => {
     expect(
       view.appRelays?.rows.map((row) => [row.capability.relayName, row.url])
     ).toEqual([
-      ["Conduit Marketplace Relay", "wss://conduit-congee.fly.dev"],
+      ["Conduit Marketplace Relay", "wss://relay.conduit.market"],
+      ["Brainstorm Search", "wss://search.brainstorm.world"],
       ["Ditto Relay", "wss://relay.ditto.pub"],
-      ["Primal Public Relay", "wss://relay.primal.net"],
-      ["nos.lol", "wss://nos.lol"],
-      ["Plebeian Market Relay", "wss://relay.plebeian.market"],
     ])
     expect(view.appRelays?.rows[0]).toMatchObject({
-      url: "wss://conduit-congee.fly.dev",
+      url: "wss://relay.conduit.market",
       readEnabled: true,
       publishEnabled: true,
       privateInboxEnabled: true,
@@ -383,9 +379,8 @@ describe("network settings view", () => {
         "No signed relay setup was found on the relays checked. Review Conduit’s recommended roles before anything is signed.",
     })
     expect(view.setupRecommendation?.rows.map((row) => row.url)).toEqual([
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://relay.ditto.pub",
-      "wss://relay.primal.net",
     ])
     expect(
       [
@@ -528,7 +523,7 @@ describe("network settings view", () => {
           },
         ],
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: [personalRelayUrl],
           eventId: null,
@@ -588,11 +583,49 @@ describe("network settings view", () => {
       observedAt: 20_000,
     })
     expect(view.inbox).toMatchObject({
+      currentUsable: true,
       stale: true,
       retained: true,
       coverage: "partial",
       observedAt: null,
     })
+  })
+
+  it("projects current inbox authority independently of observation coverage", () => {
+    for (const coverage of ["complete", "partial", "unavailable"] as const) {
+      const view = buildAccountNetworkSettingsView({
+        reconciliation: reconciliation({
+          inbox: {
+            stale: coverage !== "complete",
+            pendingPublishRelayUrls: ["wss://source.example"],
+            observation: {
+              coverage,
+              attemptedRelayUrls: ["wss://source.example"],
+              successfulRelayUrls: [],
+              failedRelayUrls: ["wss://source.example"],
+              eventSourceRelayUrls: [],
+            },
+          },
+        }),
+        localState: localState(),
+      })
+
+      expect(view.inbox.currentUsable).toBe(true)
+      expect(view.inbox.coverage).toBe(coverage)
+    }
+
+    const unknown = buildAccountNetworkSettingsView({
+      reconciliation: reconciliation({
+        inbox: {
+          state: "lookup_unavailable",
+          eventId: undefined,
+          relayUrls: [],
+          observation: undefined,
+        },
+      }),
+      localState: localState(),
+    })
+    expect(unknown.inbox.currentUsable).toBe(false)
   })
 
   it("summarizes both exact pending deliveries and excludes removed targets", () => {
@@ -633,7 +666,7 @@ describe("network settings view", () => {
           },
         },
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: ["wss://first.example", "wss://second.example"],
           pendingPublishRelayUrls: [
@@ -718,7 +751,7 @@ describe("network settings view", () => {
           },
         },
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: ["wss://removed.example"],
           pendingPublishRelayUrls: ["wss://removed.example"],
@@ -791,7 +824,7 @@ describe("network settings view", () => {
           },
         },
         inbox: {
-          state: "distribution_pending",
+          state: "declared",
           relayUrls: [],
           pendingRelayUrls: ["wss://observed.example"],
           pendingPublishRelayUrls: [

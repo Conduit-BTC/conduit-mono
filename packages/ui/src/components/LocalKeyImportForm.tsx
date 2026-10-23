@@ -61,7 +61,7 @@ export function LocalKeyImportForm({
         Market and Merchant may need separate imports.
       </p>
       {failed && (
-        <p role="alert" className="text-sm text-error">
+        <p role="alert" className="text-sm text-error-text">
           Import failed. Check your key and this app’s storage permissions, then
           try again.
         </p>

@@ -1,7 +1,12 @@
 import { useState } from "react"
-import { verifyEventGuestReceipt, type OrderSchema } from "@conduit/core"
+import {
+  parseEventGuestReceipt,
+  verifyEventGuestReceipt,
+  type OrderSchema,
+} from "@conduit/core"
 import { Input } from "./Input"
 import { Label } from "./Label"
+import { Button } from "./Button"
 
 export function EventGuestReceiptVerifier({
   order,
@@ -10,27 +15,39 @@ export function EventGuestReceiptVerifier({
   order: OrderSchema
   merchantPubkey: string
 }) {
-  const [result, setResult] = useState<string | null>(null)
+  const scope = `${order.id}:${merchantPubkey}:${order.contactFreePickup?.receiptCommitment ?? ""}`
+  const [result, setResult] = useState<{
+    scope: string
+    message: string
+  } | null>(null)
+  const [code, setCode] = useState("")
+  function check(value: unknown) {
+    setResult({
+      scope,
+      message: verifyEventGuestReceipt(value, order, merchantPubkey)
+        ? "Receipt matches this order. Confirm payment and any prior refund before arranging a manual refund or rebate. Ask the customer for a payment destination in person."
+        : "This receipt does not match this order and merchant.",
+    })
+  }
   async function verify(file: File | undefined) {
     setResult(null)
     if (!file) return
     try {
       if (file.size > 4096) throw new Error("Invalid receipt")
-      const value: unknown = JSON.parse(await file.text())
-      setResult(
-        verifyEventGuestReceipt(value, order, merchantPubkey)
-          ? "Receipt matches this order. Confirm payment and any prior refund before arranging a manual refund or rebate. Ask the customer for a payment destination in person."
-          : "This receipt does not match this order and merchant."
-      )
+      const value = parseEventGuestReceipt(await file.text())
+      if (!value) throw new Error("Invalid receipt")
+      check(value)
     } catch {
-      setResult(
-        "Could not read this receipt. Choose the original receipt file."
-      )
+      setResult({
+        scope,
+        message:
+          "Could not read this receipt. Choose the original receipt file.",
+      })
     }
   }
   if (!order.contactFreePickup) return null
   return (
-    <section className="space-y-3 rounded-xl border border-[var(--border)] p-4">
+    <section className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
       <h3 className="font-semibold">Contact-free event order</h3>
       <p className="text-sm">Handoff name: {order.contactFreePickup.label}</p>
       <p className="text-xs text-[var(--text-muted)]">
@@ -41,14 +58,44 @@ export function EventGuestReceiptVerifier({
       <Input
         id="event-guest-receipt-file"
         type="file"
-        accept=".json,application/json"
+        accept=".txt,text/plain,.json,application/json"
         onChange={(event) => {
           void verify(event.target.files?.[0])
         }}
       />
-      {result ? (
+      <Label htmlFor="event-guest-receipt-code">
+        Or enter the private receipt code
+      </Label>
+      <Input
+        id="event-guest-receipt-code"
+        value={code}
+        maxLength={64}
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(event) => {
+          setCode(event.target.value)
+          setResult(null)
+        }}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        disabled={!/^[0-9a-f]{64}$/.test(code.trim())}
+        onClick={() =>
+          check({
+            format: "conduit-event-receipt",
+            version: 1,
+            orderId: order.id,
+            merchantPubkey,
+            claimSecret: code.trim(),
+          })
+        }
+      >
+        Verify receipt code
+      </Button>
+      {result?.scope === scope ? (
         <p role="status" className="text-sm">
-          {result}
+          {result.message}
         </p>
       ) : null}
     </section>

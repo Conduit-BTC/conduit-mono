@@ -7,7 +7,6 @@ import {
 
 const NON_READY_STATUSES: InboxDeclarationStatus[] = [
   "loading",
-  "distribution_pending",
   "not_observed",
   "signed_empty",
   "malformed",
@@ -47,12 +46,6 @@ describe("merchant product private-inbox guidance", () => {
     expect(getProductInboxPublishGuidance("malformed")).toMatchObject({
       action: "setup",
       title: "Repair your private inbox",
-    })
-    expect(
-      getProductInboxPublishGuidance("distribution_pending")
-    ).toMatchObject({
-      action: "setup",
-      title: "Finish private inbox setup",
     })
     expect(getProductInboxPublishGuidance("lookup_partial")).toMatchObject({
       action: "retry",

@@ -101,6 +101,7 @@ describe("durable public evidence admission", () => {
       });
       assert(result.status === "lookup_unavailable", "outage was reported as usable evidence");
       assert(result.frontier === null && result.publishedRevision === null, "display bytes became action authority");
+      assert(media.selectMediaServerPreferenceUse(result).kind === "incomplete", "unverified display bytes authorized media selection");
       assert(storage.getItem(key) === before, "recoverable media evidence was erased");
       let failure;
       try { await media.retryMediaServerPreferencesPublish({owner: pubkey, dependencies: {storage}}); }
@@ -114,6 +115,26 @@ describe("durable public evidence admission", () => {
       });
       assert(recovered.pending?.signedEvent.id === pending.id, "pending retry did not recover");
       assert(recovered.publishedRevision?.eventId === published.id, "published evidence did not recover");
+    `)
+  }, 20000)
+
+  it("does not authorize an unadmitted signed-empty media frontier during verifier outage", () => {
+    runScenario(`
+      const empty = sign(10063, [], 102);
+      storage.setItem(key, JSON.stringify({
+        version: 1, owner: pubkey,
+        frontier: {eventId: empty.id, createdAt: 102, state: "empty"},
+        frontierEvent: empty,
+      }));
+      const before = storage.getItem(key);
+      failWorker();
+      const result = await media.readMediaServerPreferences(pubkey, {
+        storage, readRelayUrls: relays,
+        fetchEvents: async () => { throw new Error("lookup unavailable"); },
+      });
+      assert(result.frontier === null, "unverified frontier gained authority");
+      assert(media.selectMediaServerPreferenceUse(result).kind === "incomplete", "unverified frontier permitted media selection");
+      assert(storage.getItem(key) === before, "unverified frontier bytes were changed");
     `)
   }, 20000)
 

@@ -9,7 +9,7 @@ import {
   WALLET_STORAGE_SYNCHRONIZATION_ERROR,
   WalletDescriptorSubscriptionCoordinator,
   WalletInitializationCoordinator,
-} from "../apps/market/src/lib/wallet-initialization"
+} from "@conduit/core/wallets/wallet-initialization"
 
 describe("WalletInitializationCoordinator", () => {
   it("deduplicates concurrent initialization across hook consumers", async () => {
@@ -42,6 +42,33 @@ describe("WalletInitializationCoordinator", () => {
 })
 
 describe("LatestWalletReloadCoordinator", () => {
+  it("lets a superseded read skip side effects before commit", async () => {
+    const oldRead = deferred<string>()
+    const effects: string[] = []
+    const coordinator = new LatestWalletReloadCoordinator()
+
+    const oldRun = coordinator.run(
+      async (isCurrent) => {
+        const value = await oldRead.promise
+        if (isCurrent()) effects.push(value)
+        return value
+      },
+      () => undefined
+    )
+    const newRun = coordinator.run(
+      async (isCurrent) => {
+        if (isCurrent()) effects.push("current")
+        return "current"
+      },
+      () => undefined
+    )
+
+    oldRead.resolve("stale")
+    expect(await oldRun).toBe("superseded")
+    expect(await newRun).toBe("committed")
+    expect(effects).toEqual(["current"])
+  })
+
   it("keeps a superseded reload pending until the latest reload commits", async () => {
     const oldLoad = deferred<string>()
     const newLoad = deferred<string>()

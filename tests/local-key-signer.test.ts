@@ -60,6 +60,7 @@ async function setup(factory = new IDBFactory()) {
   const encoded = input.value
   const prepared = prepareLocalKeyImport(input, { factory })
   const signer = await prepared.persist(() => true)
+  await signer.commit(() => true)
   disposals.push(() => signer.invalidate())
   const event = {
     kind: 1,
@@ -140,6 +141,7 @@ describe("contained existing-account local signer", () => {
     expect(
       Object.getOwnPropertyNames(Object.getPrototypeOf(s.signer)).sort()
     ).toEqual([
+      "commit",
       "constructor",
       "decryptLegacy",
       "decryptNip44",
@@ -230,6 +232,7 @@ describe("contained existing-account local signer", () => {
       { value: nsecEncode(second) } as HTMLInputElement,
       { factory }
     ).persist(() => true)
+    await signer.commit(() => true)
     try {
       const payload =
         "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABee0G5VSK0/9YypIObAtDKfYEAjD35uVkHyB0F4DwrcNaCXlCWZKaArsGrY6M9wnuTMxWfp1RTN9Xga8no+kF5Vsb"
@@ -499,6 +502,7 @@ describe("contained existing-account local signer", () => {
       { value: s.encoded } as HTMLInputElement,
       { factory: s.factory }
     ).persist(() => true)
+    await newer.commit(() => true)
     disposals.push(() => newer.invalidate())
     expect(
       newer.reference.localKeyRevision !== s.signer.reference.localKeyRevision

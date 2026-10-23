@@ -36,7 +36,18 @@ Automatic restore has no independent unlock. IndexedDB provides atomic local
 persistence, not encryption or hardware-backed protection. An automatically
 available wrapping key would not change same-origin authority.
 
-The local record stores secret bytes and a random import revision. Public auth
+The active record stores secret bytes and a random import revision. One bounded
+candidate slot stages a replacement without overwriting the active record.
+The shared auth lock serializes staging, metadata installation and promotion;
+the storage transaction additionally checks the candidate and predecessor
+revisions. Only successful session installation permits promotion. Failed
+installation rolls back only its own public metadata and removes only its own
+candidate. A later session is never overwritten by stale rollback. On restart,
+the saved public session selects the retained record; abandoned staging is
+discarded under the auth lock before another import, and a saved candidate is
+promoted after successful restoration.
+
+Public auth
 metadata stores public identity and that revision, separately from the shared
 auth claim. Check stored account/revision before use and before returning.
 Replacement, cancellation and logout fence pending results; the shared owner
@@ -45,8 +56,14 @@ retry/removal/reimport. Logout stops live authority immediately, then commits
 exact-revision deletion and public-session retirement. Failed deletion stays a
 visible error and blocks connection until removal succeeds. Stale cleanup must
 preserve a newer import. Malformed unusable records can be explicitly removed.
-The shared auth owner keeps a public-only removal journal so failed rollback
-before session installation is also retryable after restart; it carries no key.
+The shared auth owner verifies a public-only removal journal. If a new journal
+entry cannot persist, it attempts a verified removal marker in the exact existing
+auth record, preserving public retry identity without overwriting another
+account. Both paths block automatic restoration after restart. If neither
+durable revocation nor key deletion can be secured, the UI explicitly reports
+unresolved restart safety and asks the user to keep the window open and retry.
+No client can promise durable revocation while all persistent mutations fail.
+Successful deletion or a verified marker is required for a restart-safety claim.
 
 Clear accessible secret/conversation-key buffers on completion/invalidation.
 JavaScript strings, engine/library copies, browser backups and device storage
@@ -74,6 +91,9 @@ code-owner review and stale-review dismissal are enabled. Recheck before release
 - Run credential history and boundary guards. Generate disposable identities at
   runtime. No real/fixed credentials or key-bearing logs, traces, screenshots,
   videos or evidence. Protected-smoke credential rules remain intact.
+- Managed build profiles compile local-key sign-in off, including when an
+  environment override requests activation. Local browser fixtures enable it
+  explicitly for isolated testing.
 - Keep activation disabled until focused review, physical evidence and an
   explicit production decision. CI and emulation do not replace those gates.
 

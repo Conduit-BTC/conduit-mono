@@ -67,7 +67,7 @@ export function PrivateAttachment({
         {busy ? "Opening encrypted file…" : "Download encrypted file"}
       </Button>
       {failed ? (
-        <p role="alert" className="text-sm text-error">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           The attachment could not be verified or downloaded.
         </p>
       ) : null}

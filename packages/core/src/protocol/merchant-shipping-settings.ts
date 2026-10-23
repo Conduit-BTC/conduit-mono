@@ -1,12 +1,14 @@
 import type { AccountSigner, UnsignedNostrEvent } from "./nostr-event-signer"
 import { getAccountSigner } from "./session-signer"
 import { config } from "../config"
+import { configuredRelayTargets } from "./account-network-local-state"
 import { db, type ConduitDB } from "../db"
 import { SHIPPING_COUNTRIES } from "./countries"
 import { EVENT_KINDS } from "./kinds"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
+import { mergeRelayTargets, type RelayTarget } from "./relay-authority"
 import { fetchSignedEventsFanoutDetailed } from "./relay-reader"
 import { publishWithPlanner } from "./relay-publish"
 import {
@@ -77,6 +79,7 @@ export type MerchantShippingReadResult =
 interface MerchantShippingReadDependencies {
   fetchEvents?: typeof fetchSignedEventsFanoutDetailed
   readRelayUrls?: string[]
+  readRelayTargets?: RelayTarget[]
   shouldContinue?: () => boolean
   evidenceDb?: ConduitDB
 }
@@ -320,6 +323,7 @@ export async function fetchMerchantShippingSettings(
   const retainedRead = (coverageComplete: boolean) =>
     retained ? shippingReadFromEvent(retained, coverageComplete, true) : null
   let relayUrls = dependencies.readRelayUrls
+  let relayTargets = mergeRelayTargets(dependencies.readRelayTargets ?? [])
   if (!relayUrls) {
     const snapshot =
       await readDurableAccountRelaySettingsPlanningSnapshot(owner)
@@ -340,6 +344,7 @@ export async function fetchMerchantShippingSettings(
       accountPubkey: owner,
       authenticatedPubkey: owner,
       relayUrls: relayListPlan.candidateRelayUrls,
+      relayTargets: relayListPlan.relayTargets,
       maxRelayAttempts: relayListPlan.maxRelayAttempts,
       ownerSelectedRelayUrls: relayListPlan.ownerSelectedRelayUrls,
       appRelayUrls: relayListPlan.appRelayUrls,
@@ -364,6 +369,19 @@ export async function fetchMerchantShippingSettings(
         ...config.corePublicFallbackRelayUrls,
       ])
     )
+    relayTargets = mergeRelayTargets(
+      plan.relayTargets,
+      configuredRelayTargets({
+        kind: "app",
+        operation: "read",
+        bucket: "author_readback",
+      }),
+      configuredRelayTargets({
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "core_public",
+      })
+    )
   }
   relayUrls = Array.from(new Set(relayUrls)).slice(0, 8)
   if (relayUrls.length === 0)
@@ -380,6 +398,9 @@ export async function fetchMerchantShippingSettings(
       },
       {
         relayUrls,
+        relayTargets: relayTargets.filter((target) =>
+          relayUrls.includes(target.url)
+        ),
         maxRelayAttempts: 8,
         accountPubkey: owner,
         authenticatedPubkey: owner,

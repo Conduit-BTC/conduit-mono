@@ -47,14 +47,23 @@ and preserves a replacement using the same client key. Explicit logout can
 retire the exact expected credential when metadata verification fails, while
 still reporting failure.
 
-Local-key retirement first records public-only removal retry metadata, then
+Local-key retirement first verifies public-only removal retry metadata, then
 conditionally deletes the exact local-key revision. Only committed deletion
 allows its removal journal and saved public session metadata to be cleared.
 Failed deletion retains retry information and blocks automatic restoration;
 stale cleanup preserves a later import. This also covers failed new imports
 before active-session metadata was saved. Synchronous local and cross-tab
 authority revocation precedes asynchronous cleanup. Cleanup errors cannot
-install or revive a signer.
+install or revive a signer. A failed journal write falls back to an exact-session
+removal marker in the existing public auth record. If all durable mutations and
+key deletion fail, the UI reports that restart safety remains unresolved;
+live revocation alone is not durable removal.
+
+Replacement imports stage one candidate beside the active key, then install
+public metadata and shared session authority before atomic promotion. Failed
+installation restores the previous public session only while the failed
+candidate still owns that metadata, and deletes only that candidate. Restart
+reconciliation uses the saved public session to retain or discard staging.
 
 ## In-process local-key integration
 
@@ -85,13 +94,19 @@ iframe, cross-origin transport, separately deployed origin or package dependency
   and recipient relay AUTH. Guest keys remain purpose-scoped and ineligible.
   The adapter does not impersonate `window.nostr`.
 
-Automatic restore without an independent unlock secret gives same-origin code
-significant authority over the signer. Module containment reduces accidental
-secret handling and enables focused review; it is not a separate browser
-security boundary against compromised same-origin application code. Do not
-claim stronger protection through automatically available wrapping material.
+Provider implementation, import/onboarding UI, persistence changes and activation
+belong to a separate integration. Real-signer, composed Market/Merchant and
+physical-device evidence remain distinct from this shared-lifecycle extraction.
 
 Contained import UI, persistence and composed Market/Merchant coverage use the
 existing publication, NIP-17/NIP-59 and inbox owners. Physical iPhone PWA
 storage/logout validation and a separate production decision remain activation
 gates; emulated coverage does not establish physical-device behavior.
+
+## Wallet recovery boundary
+
+Wallet recovery consumes the existing `AccountSigner` capabilities and
+`SessionSigner` authority fences. Recovery-specific permission probes, encrypted
+wallet records, relay delivery/read-back evidence, primary-wallet selection and
+checkout recovery do not belong in auth session metadata or installation. A
+wallet's encryption/signing permissions must not become login requirements.

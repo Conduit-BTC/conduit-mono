@@ -28,20 +28,27 @@ The reference implementation does not modify the signed product to record a
 buyer choice and introduces no new public event kind. The shared control lives
 in `@conduit/ui`; cart transactions and choice preparation live in Market.
 
-## Contact-free immediate guest handoff
+## Contact-free guest pickup
 
-The signed physical product extension `conduit_event_guest` with the value
-`contact_optional` is an experimental Conduit convention. It is not part of the
-merged Open Markets specification. Absent, duplicate or malformed policy tags
+Current occurrence-assignment purchases permit pseudonymous contact-free pickup
+until the selected date ends, without a separate product opt-in. They retain
+the exact signed assignment, product and occurrence checks and require the
+buyer to save their private receipt. Organizer handoff also retains its separate
+stock, settlement and unique-claim checks.
+
+Historical pre-assignment immediate pickup uses the signed physical product
+extension `conduit_event_guest` with the value `contact_optional`. This is an
+experimental Conduit convention, not part of the merged Open Markets
+specification. Absent, duplicate or malformed policy tags
 require contact details; an unsigned content field cannot grant permission.
 Merchant authoring defaults this setting off.
 
 Only an ongoing selected occurrence with `merchant_present` fulfillment and
-opt-in on every exact signed product can use this guest choice. The full signed
-market, occurrence, grant and product snapshot checks still apply. Shipping,
-organizer handoff, future dates and signed-in orders retain their existing
-contact and delivery contracts. Ordinary guest pickup requires at least one
-contact method; shipping requires both email and phone.
+opt-in on every exact signed product can use that historical guest choice. The
+full signed market, occurrence, grant and product snapshot checks still apply.
+These historical restrictions do not narrow current assignment-based pickup.
+Ordinary contact-based guest pickup remains available with at least one contact
+method; shipping requires both email and phone.
 
 The guest downloads and acknowledges a private JSON receipt before checkout.
 A random 32-byte bearer secret binds that receipt to the order UUID and merchant

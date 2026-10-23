@@ -3,6 +3,10 @@ import {
   type SelectedProfileContext,
 } from "./profile-cache"
 import type { CommerceFreshnessMeta } from "./commerce"
+import {
+  isValidSignedPublicNostrEvent,
+  type SignedPublicNostrEvent,
+} from "./signed-event"
 
 const PUBKEY = /^[0-9a-f]{64}$/
 const EVENT_ID = /^[0-9a-f]{64}$/
@@ -14,6 +18,7 @@ export type CheckoutSparkRecipientPayoutAddressResolution =
       lud16: string
       profileEventId: string
       profileEventCreatedAt: number
+      signedEvent?: SignedPublicNostrEvent
     }
   | {
       state: "unavailable"
@@ -40,8 +45,10 @@ export type CheckoutSparkRecipientPayoutAddressResolution =
  * constructing the context. A progress callback, display profile, or plain
  * pubkey-to-address map is never payment authority.
  *
- * An incomplete or retained read cannot establish a current destination.
- * This is a payment-recipient gate, not a claim of global Nostr absence.
+ * One currently observed, durably selected, valid signed event establishes
+ * the recipient's destination. Incomplete discovery/relay coverage remains
+ * incomplete; it does not veto that positive evidence. Retained-only data,
+ * failed persistence, and a stronger selected frontier cannot authorize it.
  */
 export function resolveCheckoutSparkRecipientPayoutAddress(input: {
   recipientPubkey: string
@@ -73,15 +80,10 @@ export function resolveCheckoutSparkRecipientPayoutAddress(input: {
   if (context.freshness !== "observed") {
     return { state: "unavailable", reason: "profile_not_observed" }
   }
-  if (!context.readComplete) {
+  if (context.persistence !== "durable") {
     return { state: "unavailable", reason: "read_incomplete" }
   }
-  if (
-    !readMeta ||
-    readMeta.stale !== false ||
-    readMeta.degraded !== false ||
-    readMeta.capped !== false
-  ) {
+  if (!readMeta || readMeta.stale !== false) {
     return { state: "unavailable", reason: "read_incomplete" }
   }
 
@@ -102,11 +104,32 @@ export function resolveCheckoutSparkRecipientPayoutAddress(input: {
       : { state: "invalid", reason: "payment_address_invalid" }
   }
 
+  const signed = context.signedEvent
+  if (
+    !signed ||
+    !isValidSignedPublicNostrEvent(signed) ||
+    signed.kind !== 0 ||
+    signed.id !== frontier.eventId ||
+    signed.pubkey !== recipientPubkey ||
+    signed.created_at !== frontier.eventCreatedAt ||
+    signed.content !== frontier.rawContent
+  ) {
+    return { state: "invalid", reason: "profile_frontier_invalid" }
+  }
   return {
     state: "ready",
     recipientPubkey,
     lud16,
     profileEventId: frontier.eventId,
     profileEventCreatedAt: frontier.eventCreatedAt,
+    signedEvent: {
+      id: signed.id,
+      pubkey: signed.pubkey,
+      created_at: signed.created_at,
+      kind: signed.kind,
+      tags: signed.tags.map((tag) => [...tag]),
+      content: signed.content,
+      sig: signed.sig,
+    },
   }
 }

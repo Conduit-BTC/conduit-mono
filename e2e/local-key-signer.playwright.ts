@@ -235,7 +235,90 @@ for (const app of ["market", "merchant"] as const) {
     await expect.poll(() => hasOwner(page)).toBe(true)
   })
 
-  test(`${app} failed deletion remains visible after restart and can be retried @${app}`, async ({
+  for (const partialStorage of [false, true]) {
+    test(`${app} failed deletion${partialStorage ? " with partial storage failure" : ""} remains visible after restart and can be retried @${app}`, async ({
+      page,
+    }) => {
+      await installed(page)
+      await page.goto(home)
+      if (app === "market")
+        await page
+          .getByRole("button", { name: "Connect", exact: true })
+          .first()
+          .click()
+      await importAccount(page)
+      await expect.poll(() => hasOwner(page)).toBe(true)
+      await page.evaluate((partial) => {
+        if (partial) {
+          const set = Storage.prototype.setItem
+          const remove = Storage.prototype.removeItem
+          Storage.prototype.setItem = function (key, value) {
+            if (key.startsWith("conduit:auth:") && key !== "conduit:auth")
+              throw new DOMException("synthetic", "QuotaExceededError")
+            return set.call(this, key, value)
+          }
+          Storage.prototype.removeItem = function (key) {
+            if (key === "conduit:auth")
+              throw new DOMException("synthetic", "QuotaExceededError")
+            return remove.call(this, key)
+          }
+        }
+        const remove = IDBObjectStore.prototype.delete
+        IDBObjectStore.prototype.delete = function (key) {
+          if (this.transaction.db.name === "conduit-local-key")
+            throw new DOMException("synthetic", "QuotaExceededError")
+          return remove.call(this, key)
+        }
+      }, partialStorage)
+      await page.getByLabel(menu, { exact: true }).click()
+      await page
+        .getByRole("menuitem", { name: "Sign out and remove key", exact: true })
+        .click()
+      await expect.poll(() => hasOwner(page)).toBe(false)
+      if (app === "market")
+        await page
+          .getByRole("button", { name: "Connect", exact: true })
+          .first()
+          .click()
+      await expect(
+        page
+          .getByText("Local signer removal is incomplete.", {
+            exact: false,
+          })
+          .first()
+      ).toBeVisible()
+      await page.reload()
+      await expect.poll(() => hasOwner(page)).toBe(false)
+      if (app === "market")
+        await page
+          .getByRole("button", { name: "Connect", exact: true })
+          .first()
+          .click()
+      await expect(
+        page
+          .getByText("Local signer removal is incomplete.", { exact: false })
+          .first()
+      ).toBeVisible()
+      await page
+        .getByRole("button", { name: "Remove saved local signer", exact: true })
+        .click()
+      await expect
+        .poll(() =>
+          page.evaluate(async (root) => {
+            const auth = await import(`${root}/auth-session.ts`)
+            return (
+              auth.readPendingLocalKeyRemoval() === null &&
+              auth.readAuthSession() === null
+            )
+          }, protocol)
+        )
+        .toBe(true)
+      await page.reload()
+      await expect.poll(() => hasOwner(page)).toBe(false)
+    })
+  }
+
+  test(`${app} reports unresolved restart safety when all removal persistence fails @${app}`, async ({
     page,
   }) => {
     await installed(page)
@@ -248,12 +331,32 @@ for (const app of ["market", "merchant"] as const) {
     await importAccount(page)
     await expect.poll(() => hasOwner(page)).toBe(true)
     await page.evaluate(() => {
-      const remove = IDBObjectStore.prototype.delete
-      IDBObjectStore.prototype.delete = function (key) {
-        if (this.transaction.db.name === "conduit-local-key")
+      const set = Storage.prototype.setItem
+      const remove = Storage.prototype.removeItem
+      const deletion = IDBObjectStore.prototype.delete
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith("conduit:auth"))
+          throw new DOMException("synthetic", "QuotaExceededError")
+        return set.call(this, key, value)
+      }
+      Storage.prototype.removeItem = function (key) {
+        if (key.startsWith("conduit:auth"))
           throw new DOMException("synthetic", "QuotaExceededError")
         return remove.call(this, key)
       }
+      IDBObjectStore.prototype.delete = function (key) {
+        if (this.transaction.db.name === "conduit-local-key")
+          throw new DOMException("synthetic", "QuotaExceededError")
+        return deletion.call(this, key)
+      }
+      Object.defineProperty(window, "__restoreLocalRemovalStorage", {
+        configurable: true,
+        value: () => {
+          Storage.prototype.setItem = set
+          Storage.prototype.removeItem = remove
+          IDBObjectStore.prototype.delete = deletion
+        },
+      })
     })
     await page.getByLabel(menu, { exact: true }).click()
     await page
@@ -267,23 +370,15 @@ for (const app of ["market", "merchant"] as const) {
         .click()
     await expect(
       page
-        .getByText("The stored local signer could not be removed.", {
-          exact: false,
-        })
+        .getByText("restart safety could not be secured", { exact: false })
         .first()
     ).toBeVisible()
-    await page.reload()
-    await expect.poll(() => hasOwner(page)).toBe(false)
-    if (app === "market")
-      await page
-        .getByRole("button", { name: "Connect", exact: true })
-        .first()
-        .click()
-    await expect(
-      page
-        .getByText("Local signer removal is incomplete.", { exact: false })
-        .first()
-    ).toBeVisible()
+    await page.evaluate(() => {
+      ;(
+        window as unknown as { __restoreLocalRemovalStorage: () => void }
+      ).__restoreLocalRemovalStorage()
+      Reflect.deleteProperty(window, "__restoreLocalRemovalStorage")
+    })
     await page
       .getByRole("button", { name: "Remove saved local signer", exact: true })
       .click()
@@ -292,8 +387,8 @@ for (const app of ["market", "merchant"] as const) {
         page.evaluate(async (root) => {
           const auth = await import(`${root}/auth-session.ts`)
           return (
-            auth.readPendingLocalKeyRemoval() === null &&
-            auth.readAuthSession() === null
+            auth.readAuthSession() === null &&
+            auth.readPendingLocalKeyRemoval() === null
           )
         }, protocol)
       )
@@ -301,4 +396,116 @@ for (const app of ["market", "merchant"] as const) {
     await page.reload()
     await expect.poll(() => hasOwner(page)).toBe(false)
   })
+
+  for (const failure of ["cancel", "metadata", "installation"] as const) {
+    test(`${app} replacement ${failure} rolls back through the real auth owner and reloads the prior account @${app}`, async ({
+      page,
+    }) => {
+      await installed(page)
+      await page.goto(home)
+      const result = await page.evaluate(
+        async ({ root, fixturePath, failure }) => {
+          const { mountLocalAuthFixture } = await import(
+            fixturePath.replace(
+              "local-key-test-identity.ts",
+              "local-key-auth-fixture.tsx"
+            )
+          )
+          const keys = await import(`${root}/local-key/index.ts`)
+          const { LocalKeyStorage } = await import(
+            `${root}/local-key/storage.ts`
+          )
+          const metadata = await import(`${root}/auth-session.ts`)
+          const helper = await import(fixturePath)
+          const mounted = await mountLocalAuthFixture()
+          const input = document.createElement("input")
+          input.type = "password"
+          helper.populateImportInput(input)
+          const previous = await keys
+            .prepareLocalKeyImport(input)
+            .persist(() => true)
+          await previous.commit(() => true)
+          const saved = {
+            version: 1,
+            type: "local",
+            ...previous.reference,
+            authClaim: metadata.claimAuthRevision().revision,
+          }
+          metadata.writeAuthSession(saved)
+          previous.invalidate()
+          const write = LocalKeyStorage.prototype.write
+          const commit = LocalKeyStorage.prototype.commit
+          const set = Storage.prototype.setItem
+          if (failure === "cancel")
+            LocalKeyStorage.prototype.write = async function (...args) {
+              await write.apply(this, args)
+              mounted.auth.cancelConnect()
+            }
+          if (failure === "metadata")
+            Storage.prototype.setItem = function (key, value) {
+              if (key === metadata.AUTH_STORAGE_KEY)
+                throw new DOMException("synthetic", "QuotaExceededError")
+              return set.call(this, key, value)
+            }
+          if (failure === "installation")
+            LocalKeyStorage.prototype.commit = async () => {
+              throw new Error("synthetic installation failure")
+            }
+          helper.populateImportInput(input)
+          try {
+            await Promise.race([
+              mounted.auth
+                .connect({ method: "local", localKeyInput: input })
+                .catch(() => undefined),
+              new Promise((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(new Error("AUTH_FIXTURE_CONNECT_DID_NOT_SETTLE")),
+                  10000
+                )
+              ),
+            ])
+          } finally {
+            LocalKeyStorage.prototype.write = write
+            LocalKeyStorage.prototype.commit = commit
+            Storage.prototype.setItem = set
+            mounted.dispose()
+          }
+          const retained = metadata.readAuthSession()
+          const restored = await keys.restoreLocalKeySigner(saved)
+          const sameAccount =
+            (await restored.getPublicKey()) === saved.userPubkey
+          restored.invalidate()
+          const noCandidate = await new Promise<boolean>((resolve, reject) => {
+            const open = indexedDB.open("conduit-local-key", 1)
+            open.onerror = () => reject(new Error("synthetic read failed"))
+            open.onsuccess = () => {
+              const db = open.result
+              const tx = db.transaction("record", "readonly")
+              const read = tx.objectStore("record").getKey("candidate")
+              tx.oncomplete = () => {
+                resolve(read.result === undefined)
+                db.close()
+              }
+            }
+          })
+          return {
+            sameAccount,
+            sameRevision: retained?.localKeyRevision === saved.localKeyRevision,
+            noCandidate,
+            clearedInput: input.value === "",
+          }
+        },
+        { root: protocol, fixturePath: fixture, failure }
+      )
+      expect(result).toEqual({
+        sameAccount: true,
+        sameRevision: true,
+        noCandidate: true,
+        clearedInput: true,
+      })
+      await page.reload()
+      await expect.poll(() => hasOwner(page)).toBe(true)
+    })
+  }
 }

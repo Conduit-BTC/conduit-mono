@@ -11,7 +11,7 @@ import {
 import {
   MemorySparkDirectTransferSafetyStore,
   type SparkDirectTransferSafetyStore,
-} from "../apps/market/src/lib/spark-direct-transfer-safety"
+} from "@conduit/core/wallets/spark-direct-transfer-safety"
 import { bytesToBolt11Words, makeBolt11Fixture } from "./support/bolt11-fixture"
 
 describe("SparkWalletManager", () => {
@@ -1404,6 +1404,7 @@ describe("SparkWalletManager", () => {
     }
     let createCalls = 0
     let reconcileCalls = 0
+    let historicalCalls = 0
     let checkoutRequest = request
     const manager = new SparkWalletManager({
       network: "mainnet",
@@ -1424,6 +1425,13 @@ describe("SparkWalletManager", () => {
               providerStatus: "INVOICE_CREATED",
               failureReason: null,
               funds,
+            }
+          },
+          async attestCheckoutReceiveHistory() {
+            historicalCalls += 1
+            return {
+              status: "completed" as const,
+              observedAt: funds.observedAt,
             }
           },
         }
@@ -1476,8 +1484,32 @@ describe("SparkWalletManager", () => {
         network: "regtest",
       })
     ).rejects.toThrow("different wallet or network")
+    const historicalTarget = {
+      walletId: request.walletId,
+      network: request.network,
+      requestId: request.id,
+      paymentRequest: request.paymentRequest,
+      paymentHash: request.paymentHash,
+      requiredNetSats: request.requiredNetSats,
+      grossFundingSats: request.grossFundingSats,
+      createdAt: request.createdAt,
+      expiresAt: request.expiresAt,
+    }
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-personal", historicalTarget)
+    ).resolves.toMatchObject({ status: "completed" })
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-other", historicalTarget)
+    ).rejects.toThrow("different wallet or network")
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-personal", {
+        ...historicalTarget,
+        network: "regtest",
+      })
+    ).rejects.toThrow("different wallet or network")
     expect(createCalls).toBe(3)
     expect(reconcileCalls).toBe(1)
+    expect(historicalCalls).toBe(1)
   })
 
   it("fails closed when a Spark adapter lacks checkout receive capabilities", async () => {
@@ -1504,6 +1536,19 @@ describe("SparkWalletManager", () => {
         expirySecs: 300,
       })
     ).rejects.toThrow("cannot create a recoverable checkout receive request")
+    await expect(
+      manager.attestCheckoutReceiveHistory("wallet-personal", {
+        walletId: "wallet-personal",
+        network: "mainnet",
+        requestId: "receive-1",
+        paymentRequest: "lnbc1checkout",
+        paymentHash: "07".repeat(32),
+        requiredNetSats: 1_000,
+        grossFundingSats: 1_000,
+        createdAt: 1_800_000_000_000,
+        expiresAt: 1_800_000_300_000,
+      })
+    ).rejects.toThrow("cannot attest checkout receive history")
   })
 
   it("keeps multiple Spark wallet clients isolated", async () => {
@@ -1697,6 +1742,8 @@ describe("SparkWalletManager", () => {
       accountNumber: 0,
     })
     expect(lifecycleCalls).toEqual(["add-listener"])
+    expect(invalidatedWallets).toEqual(["wallet-personal"])
+    invalidatedWallets.length = 0
 
     onEvent?.()
     onEvent?.()
@@ -1710,9 +1757,10 @@ describe("SparkWalletManager", () => {
       "disconnect",
     ])
 
+    expect(invalidatedWallets).toEqual(["wallet-personal", "wallet-personal"])
     onEvent?.()
     await Promise.resolve()
-    expect(invalidatedWallets).toEqual(["wallet-personal"])
+    expect(invalidatedWallets).toEqual(["wallet-personal", "wallet-personal"])
 
     unsubscribe()
   })
@@ -1822,12 +1870,17 @@ describe("SparkWalletManager", () => {
       mnemonic: "abandon ".repeat(11) + "about",
       accountNumber: 0,
     }
+    const unopened = manager.captureSession("wallet-personal")
     await manager.openWithMnemonic(openInput)
+    const firstSession = manager.captureSession("wallet-personal")
+    expect(unopened()).toBe(false)
+    expect(firstSession()).toBe(true)
 
     await expect(manager.close("wallet-personal")).rejects.toThrow(
       "disconnect not confirmed"
     )
     expect(manager.isOpen("wallet-personal")).toBe(false)
+    expect(firstSession()).toBe(false)
     expect(releaseCalls).toBe(0)
 
     await expect(manager.openWithMnemonic(openInput)).rejects.toThrow(
@@ -1842,6 +1895,8 @@ describe("SparkWalletManager", () => {
 
     await manager.openWithMnemonic(openInput)
     expect(openCalls).toBe(2)
+    expect(firstSession()).toBe(false)
+    expect(manager.captureSession("wallet-personal")()).toBe(true)
   })
 
   it("releases the wallet session lease when SDK open fails", async () => {

@@ -201,7 +201,9 @@ export function cartItemInputFromProductSelection(
   return {
     ...createCartItemFromProduct(selectedProduct, fulfillment),
     familyProductId:
-      selectedProduct.type === "variation" ? product.id : undefined,
+      selectedProduct.type === "variation"
+        ? selectedProduct.parentProductId
+        : undefined,
     selectedSpecifications:
       selectedProduct.type === "variation"
         ? [...selectedProduct.specifications]

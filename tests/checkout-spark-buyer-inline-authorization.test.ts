@@ -1,0 +1,26 @@
+import { expect, it } from "bun:test"
+
+it("authorizes from the existing payment action and rechecks the exact saved plan", async () => {
+  const route = (
+    await Bun.file("apps/market/src/routes/orders.tsx").text()
+  ).replace(/\s+/g, " ")
+  expect(route).not.toContain("setRouterConfirmation")
+  expect(route).not.toContain("Approve automatic checkout payments?")
+  expect(route).not.toContain("Current payout details")
+  expect(route).not.toContain("CheckoutSparkSettledPayoutReview")
+  expect(route).toContain("price={settledRouterControl.priceSummary}")
+  expect(route).toContain("continueSettledRouterCheckout({")
+  const freshGuard = route.indexOf("!matchesCheckoutSparkSettledOrderControl({")
+  const runner = route.indexOf("const result = await routerRunner.run({")
+  expect(freshGuard).toBeGreaterThan(-1)
+  expect(runner).toBeGreaterThan(freshGuard)
+  expect(route).toContain("we'll finish automatically")
+  expect(route).toContain("<CheckoutPaymentProgress pausing={routerPausing}")
+  expect(route).not.toContain("Preparing the next payment")
+  expect(route).not.toContain("Sending and verifying payment")
+  expect(route).not.toContain("shared proportionally within")
+  expect(route).toContain("Your wallet may charge a separate fee.")
+  expect(route).toContain("sparkFeeApproval.requestApproval")
+  expect(route).toContain("routerApprovalGenerationRef.current += 1")
+  expect(route).not.toContain("acknowledged by the merchant")
+})

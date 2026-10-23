@@ -247,6 +247,7 @@ describe("current policy evidence at commerce action gates", () => {
             signAndPublishProductWriteBundle(
               {
                 merchantPubkey: merchant,
+                durableCommit: {},
                 listings: [
                   {
                     ...listing,
@@ -315,12 +316,11 @@ describe("current policy evidence at commerce action gates", () => {
       },
     },
   ]
-  for (const changes of incompatibleLegacyTerms) {
-    it(`blocks legacy v1 ${changes.name} before signing new or preserved table listings`, async () => {
+  for (const { name, ...fields } of incompatibleLegacyTerms) {
+    it(`blocks legacy v1 ${name} before signing new or preserved table listings`, async () => {
       const source = reader()
       const legacyEvent = policyEvent(1, legacyPolicy)
       source.setEvents([legacyEvent])
-      const { name: _name, ...fields } = changes
       const incompatible = { ...product, sourcePrice: undefined, ...fields }
       const signed = finalizeEvent(
         {
@@ -354,6 +354,7 @@ describe("current policy evidence at commerce action gates", () => {
             signAndPublishProductWriteBundle(
               {
                 merchantPubkey: merchant,
+                durableCommit: {},
                 listings: [
                   {
                     product: incompatible,
@@ -672,6 +673,7 @@ describe("current policy evidence at commerce action gates", () => {
           signAndPublishProductWriteBundle(
             {
               merchantPubkey: merchant,
+              durableCommit: {},
               listings: [listing],
               onSignedLocal: async () => {
                 localWrites++
@@ -770,6 +772,7 @@ describe("current policy evidence at commerce action gates", () => {
         signAndPublishProductWriteBundle(
           {
             merchantPubkey: merchant,
+            durableCommit: {},
             listings: [listing],
             onSignedLocal: async () => {
               localWrites++

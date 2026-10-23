@@ -205,3 +205,70 @@ describe("replaceable publish safety", () => {
     ).not.toThrow()
   })
 })
+
+it("allows only an exact complete address patch to bypass the sparse-profile heuristic", () => {
+  const before = JSON.stringify({
+    lud16: "old@wallet.example",
+    custom: { retained: true },
+  })
+  const next = JSON.stringify({
+    lud16: "new@conduit.cash",
+    custom: { retained: true },
+  })
+  expect(() =>
+    assertSafeReplaceablePublish(
+      { kind: EVENT_KINDS.PROFILE, content: next },
+      { profileAddressPatch: { previousContent: before, nextContent: next } }
+    )
+  ).not.toThrow()
+  const erased = JSON.stringify({ lud16: "new@conduit.cash" })
+  expect(() =>
+    assertSafeReplaceablePublish(
+      { kind: EVENT_KINDS.PROFILE, content: erased },
+      { profileAddressPatch: { previousContent: before, nextContent: erased } }
+    )
+  ).toThrow(ReplaceablePublishSafetyError)
+})
+
+it("permits exact receiving-field deletion without erasing unrelated metadata", () => {
+  for (const original of [
+    { lud16: "old@wallet.example" },
+    { lud06: "lnurl-legacy" },
+    {
+      lud16: "old@wallet.example",
+      lud06: "lnurl-legacy",
+      custom: { keep: true },
+    },
+  ]) {
+    const { lud16: _address, lud06: _legacy, ...metadata } = original
+    const before = JSON.stringify(original)
+    const next = JSON.stringify(metadata)
+    expect(() =>
+      assertSafeReplaceablePublish(
+        { kind: EVENT_KINDS.PROFILE, content: next },
+        { profileAddressPatch: { previousContent: before, nextContent: next } }
+      )
+    ).not.toThrow()
+  }
+  const before = JSON.stringify({
+    lud06: "lnurl-legacy",
+    custom: { keep: true },
+  })
+  for (const invalid of [
+    {},
+    { lud16: 42, custom: { keep: true } },
+    { lud06: "another-legacy", custom: { keep: true } },
+    { lud16: "new@conduit.cash", custom: { keep: false } },
+  ]) {
+    const next = JSON.stringify(invalid)
+    expect(() =>
+      assertSafeReplaceablePublish(
+        { kind: EVENT_KINDS.PROFILE, content: next },
+        { profileAddressPatch: { previousContent: before, nextContent: next } }
+      )
+    ).toThrow(ReplaceablePublishSafetyError)
+  }
+  expect(() =>
+    assertSafeReplaceablePublish({ kind: EVENT_KINDS.PROFILE, content: "{}" })
+  ).toThrow(ReplaceablePublishSafetyError)
+})

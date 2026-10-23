@@ -1,8 +1,11 @@
 import {
+  getPriceSats,
   hasCurrentShippingPolicyEvidence,
   type ParsedShippingOption,
   type PricingRateInput,
   type Product,
+  type SignedPublicNostrEvent,
+  snapshotCheckoutSparkPlanSourceEvents,
 } from "@conduit/core"
 import {
   createEventMarketPickupSnapshot,
@@ -49,6 +52,8 @@ export type CheckoutAuthorizationResult =
       /** Preserve the source read state; [] alone cannot mean both no option
        * was needed and an order-first shipping lookup failed. */
       shippingOptionEvidence: CheckoutShippingOptionEvidence
+      /** Selected public pickup revisions; never persisted in cart items. */
+      pickupSourceEvents?: readonly SignedPublicNostrEvent[]
     }
   | { status: "changed" }
 
@@ -66,6 +71,58 @@ export type CheckoutProductFulfillmentResolver = (
 export type CheckoutPickupHandlerAuthorizer = (
   items: readonly CartItem[]
 ) => Promise<void>
+
+/**
+ * A trusted submit caller may replace rate provenance only after independently
+ * authenticating the final rate. This comparison is not economic authority:
+ * all reviewed SAT amounts and every signed shipping/source term must remain
+ * identical, and the returned items retain the complete fresh rate evidence.
+ */
+function hasSameReviewedPricingTerms(input: {
+  reviewed: readonly CartItem[]
+  current: readonly CartItem[]
+  reviewedRateInput: PricingRateInput
+  currentRateInput: PricingRateInput
+}): boolean {
+  const comparableItems = (items: readonly CartItem[]) =>
+    items.map((item) =>
+      item.shippingPolicyQuote
+        ? {
+            ...item,
+            shippingPolicyQuote: {
+              ...item.shippingPolicyQuote,
+              pricingRate: null,
+            },
+          }
+        : item
+    )
+  if (
+    getCartCommerceFingerprint(comparableItems(input.reviewed)) !==
+    getCartCommerceFingerprint(comparableItems(input.current))
+  )
+    return false
+  const reviewedByProduct = new Map(
+    input.reviewed.map((item) => [item.productId, item])
+  )
+  return input.current.every((item) => {
+    const reviewed = reviewedByProduct.get(item.productId)
+    if (!reviewed) return false
+    const options = {
+      allowZero: item.fulfillment?.type === "event_market_pickup",
+    }
+    const reviewedPrice = getPriceSats(
+      reviewed,
+      input.reviewedRateInput,
+      options
+    )
+    const currentPrice = getPriceSats(item, input.currentRateInput, options)
+    return (
+      !!reviewedPrice &&
+      !!currentPrice &&
+      reviewedPrice.sats === currentPrice.sats
+    )
+  })
+}
 
 /**
  * A future Event Market purchase must have live and retained signed
@@ -119,6 +176,7 @@ export async function resolveCurrentFutureEventMarketFulfillments(
     const productRead = await dependencies.readProduct({
       marketRead,
       productCoordinate: item.productId,
+      selectedOccurrenceCoordinate: saved.calendar.coordinate,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
     })
@@ -155,6 +213,35 @@ export async function resolveCurrentFutureEventMarketFulfillments(
   return snapshots
 }
 
+/** Detach exact accepted revisions; later stages must never look up their latest replacements. */
+function eventMarketSourceEvents(
+  snapshots: ReadonlyMap<string, OrderEventMarketPickupFulfillmentSchema>
+): readonly SignedPublicNostrEvent[] | undefined {
+  if (snapshots.size === 0) return undefined
+  const sources = new Map<string, SignedPublicNostrEvent>()
+  for (const snapshot of snapshots.values()) {
+    for (const event of [
+      snapshot.market.signedEvent,
+      snapshot.calendar.signedEvent,
+      snapshot.product.signedEvent,
+      ...(snapshot.parentProduct ? [snapshot.parentProduct.signedEvent] : []),
+      ...(snapshot.schedule ? [snapshot.schedule.signedEvent] : []),
+      ...(snapshot.occurrenceAssignment
+        ? [snapshot.occurrenceAssignment.signedEvent]
+        : []),
+      snapshot.grant.signedEvidence.tip,
+      ...snapshot.grant.signedEvidence.ancestry,
+      ...snapshot.grant.signedEvidence.deletions,
+    ]) {
+      const previous = sources.get(event.id)
+      if (previous && JSON.stringify(previous) !== JSON.stringify(event))
+        throw new Error("Current Event Market signed evidence conflicts.")
+      sources.set(event.id, event)
+    }
+  }
+  return snapshotCheckoutSparkPlanSourceEvents([...sources.values()])
+}
+
 /**
  * Rebuilds one checkout snapshot from authoritative 30402 and 30406 reads.
  * The caller must use the returned items for every subsequent pricing,
@@ -168,6 +255,10 @@ export async function authorizeCurrentCheckoutItems(input: {
   readShippingOptions: CheckoutShippingOptionReader
   destination?: { country: string; subdivision?: string; postalCode?: string }
   rateInput?: PricingRateInput
+  /** Caller-owned opt-in, only after authenticating a signed final rate. */
+  allowPricingRateEvidenceRefresh?: boolean
+  /** Rate used to display the cart whose exact SAT terms the buyer reviewed. */
+  reviewedRateInput?: PricingRateInput
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
@@ -200,6 +291,7 @@ export async function authorizeCurrentCheckoutItems(input: {
     input.futureEventMarketDependencies
   )
   if (!futureSnapshots) return { status: "changed" }
+  const pickupSourceEvents = eventMarketSourceEvents(futureSnapshots)
   for (const item of input.reviewedItems) {
     const saved = item.fulfillment
     const current = futureSnapshots.get(item.productId)
@@ -313,6 +405,7 @@ export async function authorizeCurrentCheckoutItems(input: {
         status: "unavailable_order_first",
         options: [],
       },
+      ...(pickupSourceEvents ? { pickupSourceEvents } : {}),
     }
   }
   const prepared = prepareCartFulfillment(
@@ -322,10 +415,18 @@ export async function authorizeCurrentCheckoutItems(input: {
     input.rateInput ?? null
   )
 
-  if (
-    getCartCommerceFingerprint(prepared.items) !==
-    getCartCommerceFingerprint(withCurrentFutureEvidence(input.reviewedItems))
-  ) {
+  const reviewedItems = withCurrentFutureEvidence(input.reviewedItems)
+  const unchanged =
+    input.allowPricingRateEvidenceRefresh === true
+      ? hasSameReviewedPricingTerms({
+          reviewed: reviewedItems,
+          current: prepared.items,
+          reviewedRateInput: input.reviewedRateInput ?? null,
+          currentRateInput: input.rateInput ?? null,
+        })
+      : getCartCommerceFingerprint(prepared.items) ===
+        getCartCommerceFingerprint(reviewedItems)
+  if (!unchanged) {
     return { status: "changed" }
   }
 
@@ -348,5 +449,6 @@ export async function authorizeCurrentCheckoutItems(input: {
       shippingCoordinates.length === 0
         ? { status: "not_required", options: [] }
         : { status: "verified", options: shippingOptions },
+    ...(pickupSourceEvents ? { pickupSourceEvents } : {}),
   }
 }

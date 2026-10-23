@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test"
+import Dexie from "dexie"
+import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import type { NDKFilter } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, type Event } from "nostr-tools"
 
@@ -16,6 +18,10 @@ import {
   type ShopperTrustResolveRelayLists,
 } from "@conduit/core"
 import { createInMemoryAccountNetworkLocalStateRepository } from "@conduit/core/protocol/account-network-local-state"
+import { relayTargetsFromUrls } from "@conduit/core/protocol/relay-authority"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import { admitFixture } from "./helpers/public-event"
+import { ConduitDB } from "@conduit/core/db"
 
 import {
   bolt11DescriptionHashField,
@@ -163,7 +169,7 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
-    expect(db.verno).toBe(25)
+    expect(db.verno).toBe(30)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -183,6 +189,10 @@ describe("shopper trust evidence", () => {
         "checkoutSparkPlanBindings",
         "checkoutSparkReconciliations",
         "checkoutSparkRetirements",
+        "checkoutRecoveryStorage",
+        "merchantInventoryProducts",
+        "merchantInventoryAssignments",
+        "merchantInventoryAcceptedOrders",
       ])
     )
     expect(db.inboxDeclarationEvidence.schema.primKey.name).toBe("pubkey")
@@ -223,6 +233,41 @@ describe("shopper trust evidence", () => {
         "updatedAt",
       ])
     )
+  })
+
+  it("preserves a v29 shopper trust snapshot while adding recovery storage", async () => {
+    const cache = createCache()
+    await getShopperTrustEvidence(
+      { merchantPubkey: MERCHANT_PUBKEY, shopperPubkey: SHOPPER_PUBKEY },
+      {
+        cache,
+        fetchEvents: async () => successfulRead(),
+        now: () => NOW_MS,
+        relayUrls: ["wss://relay.example"],
+      }
+    )
+    const snapshot = [...cache.rows.values()][0]!
+    expect(snapshot).toBeDefined()
+    const name = `shopper-trust-v29-${crypto.randomUUID()}`
+    const options = { indexedDB, IDBKeyRange }
+    const previous = new Dexie(name, options)
+    previous.version(29).stores({
+      shopperTrustSnapshots: "id, merchantPubkey, shopperPubkey, cachedAt",
+    })
+    await previous.table("shopperTrustSnapshots").put(snapshot)
+    previous.close()
+    const upgraded = new ConduitDB(name, options)
+    try {
+      await upgraded.open()
+      expect(upgraded.verno).toBe(30)
+      expect(await upgraded.shopperTrustSnapshots.get(snapshot.id)).toEqual(
+        snapshot
+      )
+      expect(await upgraded.checkoutRecoveryStorage.count()).toBe(0)
+    } finally {
+      upgraded.close()
+      await upgraded.delete()
+    }
   })
 
   it("keeps both divergent version-9 stores in the upgrade history", async () => {
@@ -1018,9 +1063,10 @@ describe("shopper trust evidence", () => {
         now: () => NOW_MS,
         resolveRelayLists,
         baseRelayUrls: [publicRelay],
-        authenticatedPubkey: MERCHANT_PUBKEY,
-        accountNetworkLocalStateRepository:
-          createInMemoryAccountNetworkLocalStateRepository(),
+        baseRelayTargets: relayTargetsFromUrls([publicRelay], {
+          kind: "public_hint",
+          operation: "read",
+        }),
       }
     )
 
@@ -1044,9 +1090,27 @@ describe("shopper trust evidence", () => {
   it("uses an authenticated owner read relay without admitting remote ws hints", async () => {
     const ownerRelay = "ws://owner-network.example:4848"
     const remoteRelay = "ws://remote-shopper.example:4848"
+    const ownerEvidence = createInMemoryOwnerRelayListEvidenceRepository()
+    const ownerSelection = await admitFixture(
+      signedEvent(MERCHANT_SECRET, {
+        kind: EVENT_KINDS.RELAY_LIST,
+        createdAt: NOW_SECONDS,
+        tags: [["r", ownerRelay, "read"]],
+      })
+    )
+    await ownerEvidence.reconcile({
+      pubkey: MERCHANT_PUBKEY,
+      observations: [{ signedEvent: ownerSelection }],
+      lookup: {
+        observedAt: NOW_MS,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: ownerSelection.id,
+      },
+    })
     const observed: Array<{
       relayUrls: readonly string[]
-      ownerSelectedRelayUrls: readonly string[]
+      ownerReadTargets: readonly { url: string; grants: unknown[] }[]
       authenticatedPubkey?: string | null
     }> = []
     const relayListAuthenticatedPubkeys: Array<string | null | undefined> = []
@@ -1060,6 +1124,7 @@ describe("shopper trust evidence", () => {
         authenticatedPubkey: MERCHANT_PUBKEY,
         accountNetworkLocalStateRepository:
           createInMemoryAccountNetworkLocalStateRepository(),
+        ownerRelayListEvidenceRepository: ownerEvidence,
         cache: createCache(),
         forceRefresh: true,
         now: () => NOW_MS,
@@ -1107,7 +1172,7 @@ describe("shopper trust evidence", () => {
           const relayUrls = options?.relayUrls ?? []
           observed.push({
             relayUrls,
-            ownerSelectedRelayUrls: options?.ownerSelectedRelayUrls ?? [],
+            ownerReadTargets: options?.relayTargets ?? [],
             authenticatedPubkey: options?.authenticatedPubkey,
           })
           return {
@@ -1127,8 +1192,18 @@ describe("shopper trust evidence", () => {
       observed.some(({ relayUrls }) => relayUrls.includes(ownerRelay))
     ).toBe(true)
     expect(
-      observed.some(({ ownerSelectedRelayUrls }) =>
-        ownerSelectedRelayUrls.includes(ownerRelay)
+      observed.some(({ ownerReadTargets }) =>
+        ownerReadTargets.some(
+          (target) =>
+            target.url === ownerRelay &&
+            target.grants.some(
+              (grant) =>
+                (grant as { kind?: string; operation?: string }).kind ===
+                  "owner_nip65" &&
+                (grant as { kind?: string; operation?: string }).operation ===
+                  "read"
+            )
+        )
       )
     ).toBe(true)
     expect(
@@ -1164,7 +1239,7 @@ describe("shopper trust evidence", () => {
             options?.allowInsecureRelayUrlsForPubkey,
         })
       }
-      return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey)]))
+      return new Map(pubkeys.map((pubkey) => [pubkey, relayList(pubkey, {})]))
     }
     const read = async (authenticatedPubkey?: string | null) =>
       await getShopperTrustEvidence(

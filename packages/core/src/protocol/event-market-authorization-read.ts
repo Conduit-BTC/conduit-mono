@@ -1,5 +1,5 @@
 import type { Filter as PublicRelayFilter } from "nostr-tools"
-import { db, type CachedEventMarketRosterEvidence } from "../db"
+import { eventMarketEvidenceStore } from "./event-market-evidence-store"
 import {
   getEventMarketReadPlan,
   parseAddressableCoordinate,
@@ -12,26 +12,21 @@ import {
 import { EVENT_KINDS } from "./kinds"
 import {
   fetchSignedEventsFanoutDetailed,
+  verifySignedEventBatches,
   type PublicRelayReadOptions,
 } from "./relay-reader"
 import { type SignedPublicNostrEvent } from "./signed-event"
+import { isVerifiedNostrEvent } from "./verified-public-event"
 import {
-  isVerifiedNostrEvent,
-  verifySignedEvents,
-} from "./verified-public-event"
+  observeEventMarketWriteScope,
+  type EventMarketWriteObservation,
+} from "./event-market-write-readiness"
 
 async function admitRows(
   rows: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ) {
-  const verified = []
-  for (let offset = 0; offset < rows.length; offset += 64) {
-    const batch = await verifySignedEvents(rows.slice(offset, offset + 64), {
-      signal,
-    })
-    verified.push(...batch.events)
-  }
-  return verified
+  return verifySignedEventBatches(rows, { signal, batchSize: 64 })
 }
 
 export interface EventMarketAuthorizationReadResult {
@@ -43,6 +38,7 @@ export interface EventMarketAuthorizationReadResult {
   actionable: boolean
   /** Exact retained observations used in this reduction, for order evidence custody. */
   observedEvidence: SignedPublicNostrEvent[]
+  writeObservation?: EventMarketWriteObservation
 }
 
 type Fanout = {
@@ -72,49 +68,16 @@ async function fetchSigned(
     relays: result.relays,
   }
 }
-async function loadRetained(
-  coordinate: string
-): Promise<SignedPublicNostrEvent[]> {
-  const rows = await db.eventMarketRosterEvidence
-    .where("marketCoordinate")
-    .equals(coordinate)
-    .toArray()
-  return admitRows(rows.map((row) => row.signedEvent))
-}
-async function retainSigned(
-  coordinate: string,
-  events: readonly SignedPublicNostrEvent[]
-): Promise<void> {
-  if (events.length === 0) return
-  const unique = [...new Map(events.map((event) => [event.id, event])).values()]
-  const rows: CachedEventMarketRosterEvidence[] = unique.map((event) => ({
-    id: `${coordinate}:${event.id}`,
-    marketCoordinate: coordinate,
-    signedEvent: event,
-    cachedAt: Date.now(),
-  }))
-  await db.transaction("rw", db.eventMarketRosterEvidence, async () => {
-    const existing = await db.eventMarketRosterEvidence
-      .where("marketCoordinate")
-      .equals(coordinate)
-      .count()
-    const old = await db.eventMarketRosterEvidence.bulkGet(
-      rows.map((row) => row.id)
-    )
-    if (existing + old.filter((row) => !row).length > 2_048)
-      throw new Error("Event Market authorization retention is at capacity.")
-    await db.eventMarketRosterEvidence.bulkPut(rows)
-  })
-}
 const defaults: EventMarketAuthorizationReadDependencies = {
   plan: getEventMarketReadPlan,
   fetch: fetchSigned,
-  load: loadRetained,
-  retain: retainSigned,
+  load: eventMarketEvidenceStore.load,
+  retain: eventMarketEvidenceStore.retain,
 }
 function options(
   plan: EventMarketReadPlan,
   input: {
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -122,13 +85,10 @@ function options(
 ): PublicRelayReadOptions {
   return {
     relayUrls: plan.candidateRelayUrls,
+    relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,
-    accountPubkey: input.authenticatedPubkey,
+    accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
-    appRelayUrls: plan.appRelayUrls,
-    personalRelayUrls: plan.personalRelayUrls,
-    independentRelayUrls: plan.independentRelayUrls,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   }
@@ -139,6 +99,7 @@ export async function readEventMarketAuthorization(
   input: {
     marketCoordinate: string
     merchantPubkey: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -200,6 +161,7 @@ export async function readEventMarketAuthorization(
   try {
     plan = await dependencies.plan({
       organizerPubkey: market.authorPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,
@@ -381,6 +343,18 @@ export async function readEventMarketAuthorization(
       : incomplete
         ? "partial"
         : "complete"
+  const writeObservation = observeEventMarketWriteScope({
+    selectedLive: requiredIds.length > 0 && !stale,
+    limited:
+      !!plan.relayHintTruncated ||
+      attempted.size >= 256 ||
+      unresolvedParent ||
+      ids.size > 256 ||
+      transitions.events.length >= 128 ||
+      scopedDeletions.events.length >= 128 ||
+      exactDeletionReads.some((read) => read.events.length >= 128),
+    reads,
+  })
   return {
     marketCoordinate: coordinate,
     merchantPubkey: input.merchantPubkey,
@@ -396,5 +370,6 @@ export async function readEventMarketAuthorization(
       !stale &&
       coverage !== "unavailable",
     observedEvidence: all,
+    writeObservation,
   }
 }

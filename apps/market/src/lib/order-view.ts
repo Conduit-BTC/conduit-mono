@@ -10,6 +10,7 @@ import {
   isMerchantOrderPaid,
   normalizeLightningInvoice,
   orderFlowFromCheckoutMode,
+  parseEventMarketAssignmentEvent,
   validateLightningInvoiceForPayment,
   type BuyerConversationSummary,
   type OrderFlow,
@@ -140,6 +141,10 @@ export interface OrderViewModel {
   orderDeliveryStatus: OrderDeliveryStatus
   invoiceStatus: OrderInvoiceStatus
   paymentStatus: OrderPaymentStatus
+  /** Routed funding and generic status messages are not commerce settlement. */
+  checkoutSparkRouted?: boolean
+  checkoutSparkCommerceVerified?: boolean
+  checkoutSparkRecipientUnverified?: boolean
   proofDeliveryStatus: OrderProofDeliveryStatus
   zapReceiptStatus: OrderZapReceiptStatus
   addressValidity: OrderAddressValidity
@@ -270,6 +275,11 @@ export interface BuildOrderViewModelInput {
   messages?: ParsedOrderMessage[] | null
   paymentAttempt?: StoredPaymentAttempt | null
   nowSeconds?: number
+  /** Exact buyer/order-bound provider facts, never a relay progress claim. */
+  checkoutSparkSettlement?: {
+    commerceVerified: boolean
+    recipientUnverified?: boolean
+  } | null
 }
 
 export function isZeroCostPickupOrder(
@@ -347,11 +357,19 @@ function isCompletedMerchantStatus(
  * Payment is complete from the buyer's perspective when either the local
  * payment lifecycle confirms it or the merchant has published a status that
  * confirms settlement. The latter keeps relay-only and partial-read views
- * consistent when the buyer's local payment record is unavailable.
+ * consistent when the buyer's local payment record is unavailable. Routed
+ * orders instead require their exact provider-backed commerce projection.
  */
 export function isBuyerOrderPaid(
-  vm: Pick<OrderViewModel, "paymentStatus" | "merchantStatus">
+  vm: Pick<
+    OrderViewModel,
+    | "paymentStatus"
+    | "merchantStatus"
+    | "checkoutSparkRouted"
+    | "checkoutSparkCommerceVerified"
+  >
 ): boolean {
+  if (vm.checkoutSparkRouted) return vm.checkoutSparkCommerceVerified === true
   return (
     vm.paymentStatus === "paid" ||
     isMerchantOrderPaid({ status: vm.merchantStatus })
@@ -512,7 +530,7 @@ function deriveMerchantInvoiceAction({
 export function buildOrderViewModel(
   input: BuildOrderViewModelInput
 ): OrderViewModel {
-  const { lifecycle, conversation, paymentAttempt } = input
+  const { lifecycle, conversation } = input
   const messages = input.messages ?? conversation?.messages ?? undefined
   const summary: OrderSummary | null = messages
     ? extractOrderSummary(
@@ -540,6 +558,13 @@ export function buildOrderViewModel(
         message.senderPubkey === merchantPubkey
     )?.recipientPubkey ??
     ""
+
+  const paymentAttempt =
+    input.paymentAttempt?.orderId === input.orderId &&
+    input.paymentAttempt.buyerPubkey === buyerPubkey &&
+    input.paymentAttempt.merchantPubkey === merchantPubkey
+      ? input.paymentAttempt
+      : null
 
   // --- Items / totals -----------------------------------------------------
   const items: OrderViewItem[] = lifecycle
@@ -627,12 +652,23 @@ export function buildOrderViewModel(
     (invoiceFromMessages ? "received" : "not_requested")
 
   const proofFromMessages = summary?.paymentProofReceived ?? false
+  const checkoutSparkRouted =
+    !!lifecycle?.checkoutSparkRouterBinding ||
+    summary?.checkoutSparkRouted === true
+  const checkoutSparkCommerceVerified =
+    checkoutSparkRouted &&
+    input.checkoutSparkSettlement?.commerceVerified === true
   const merchantPaymentConfirmed =
     summary?.paymentConfirmed === true ||
     summary?.shippingUpdateReceived === true
-  const basePaymentStatus: OrderPaymentStatus = merchantPaymentConfirmed
-    ? "paid"
-    : (lifecycle?.paymentStatus ?? (proofFromMessages ? "paid" : "not_started"))
+  const basePaymentStatus: OrderPaymentStatus = checkoutSparkRouted
+    ? checkoutSparkCommerceVerified
+      ? "paid"
+      : "not_started"
+    : merchantPaymentConfirmed
+      ? "paid"
+      : (lifecycle?.paymentStatus ??
+        (proofFromMessages ? "paid" : "not_started"))
 
   const proofDeliveryStatus: OrderProofDeliveryStatus =
     lifecycle?.proofDeliveryStatus ??
@@ -652,6 +688,8 @@ export function buildOrderViewModel(
   const basePaymentPaid = isBuyerOrderPaid({
     paymentStatus: basePaymentStatus,
     merchantStatus,
+    checkoutSparkRouted,
+    checkoutSparkCommerceVerified,
   })
 
   const tracking =
@@ -681,15 +719,17 @@ export function buildOrderViewModel(
               : (lifecycle?.phase ??
                 (orderDeliveryStatus === "sent" ? "in_progress" : "pending"))
 
-  const merchantInvoiceAction = deriveMerchantInvoiceAction({
-    orderId: input.orderId,
-    lifecycle,
-    summary,
-    merchantStatus,
-    merchantPaymentConfirmed,
-    effectivePhase: phase,
-    nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
-  })
+  const merchantInvoiceAction = checkoutSparkRouted
+    ? null
+    : deriveMerchantInvoiceAction({
+        orderId: input.orderId,
+        lifecycle,
+        summary,
+        merchantStatus,
+        merchantPaymentConfirmed,
+        effectivePhase: phase,
+        nowSeconds: input.nowSeconds ?? Math.floor(Date.now() / 1_000),
+      })
   const invoiceStatus: OrderInvoiceStatus =
     merchantInvoiceAction?.status === "payable"
       ? "manual_required"
@@ -700,7 +740,12 @@ export function buildOrderViewModel(
     merchantInvoiceAction?.status === "payable"
       ? "manual_required"
       : basePaymentStatus
-  const paymentPaid = isBuyerOrderPaid({ paymentStatus, merchantStatus })
+  const paymentPaid = isBuyerOrderPaid({
+    paymentStatus,
+    merchantStatus,
+    checkoutSparkRouted,
+    checkoutSparkCommerceVerified,
+  })
 
   const publicReceiptNotObserved =
     paymentStatus === "ambiguous" && zapReceiptStatus === "receipt_not_observed"
@@ -760,7 +805,12 @@ export function buildOrderViewModel(
     orderDeliveryStatus,
     invoiceStatus,
     paymentStatus,
+    checkoutSparkRouted,
+    checkoutSparkCommerceVerified,
     proofDeliveryStatus,
+    checkoutSparkRecipientUnverified:
+      checkoutSparkRouted &&
+      input.checkoutSparkSettlement?.recipientUnverified === true,
     zapReceiptStatus,
     addressValidity: lifecycle?.addressValidity ?? "not_required",
     merchantStatus,
@@ -1059,6 +1109,44 @@ export function getOrderFilterPhase(
   return "pending"
 }
 
+/** Display the saved handover workflow, never infer acceptance or settlement. */
+function hasFiniteOrganizerStockHandover(vm: OrderViewModel): boolean {
+  return (
+    vm.items.length > 0 &&
+    vm.items.every((item) => {
+      const fulfillment = item.fulfillment
+      if (
+        fulfillment?.type !== "event_market_pickup" ||
+        fulfillment.mode !== "organizer_handoff" ||
+        fulfillment.merchantPubkey !== vm.merchantPubkey ||
+        fulfillment.payeePubkey !== fulfillment.merchantPubkey ||
+        !fulfillment.occurrenceAssignment
+      )
+        return false
+      const assignment = parseEventMarketAssignmentEvent(
+        fulfillment.occurrenceAssignment.signedEvent
+      )
+      return (
+        assignment?.state === "active" &&
+        assignment.eventId === fulfillment.occurrenceAssignment.eventId &&
+        assignment.coordinate === fulfillment.occurrenceAssignment.coordinate &&
+        assignment.merchantPubkey === fulfillment.merchantPubkey &&
+        assignment.organizerPubkey === fulfillment.organizerPubkey &&
+        assignment.marketCoordinate === fulfillment.market.coordinate &&
+        assignment.occurrenceCoordinate === fulfillment.calendar.coordinate &&
+        assignment.productCoordinate === fulfillment.product.coordinate &&
+        assignment.productCoordinate === item.productId &&
+        assignment.inventory.mode === "tracked" &&
+        assignment.fulfillmentMethods.includes("pickup") &&
+        assignment.stockPool.state === "valid" &&
+        assignment.stockPool.pool.state === "active" &&
+        assignment.stockPool.pool.organizerPubkey ===
+          fulfillment.organizerPubkey
+      )
+    })
+  )
+}
+
 export function buildOrderTimeline(
   vm: OrderViewModel,
   formatSats: (sats: number) => string = (sats) =>
@@ -1067,6 +1155,7 @@ export function buildOrderTimeline(
   const statuses = computeOrderTimelineStatuses(vm)
   const futureHandoff = vm.futureMarketFulfillments[0]
   const organizerHandoff = futureHandoff?.mode === "organizer_handoff"
+  const finiteOrganizerHandoff = hasFiniteOrganizerStockHandover(vm)
   const rowOrder: readonly OrderTimelineRowKey[] = isZeroCostPickupOrder(vm)
     ? ["order_sent", "merchant_confirmation", "fulfillment", "complete"]
     : vm.buyerIdentityKind === "guest_ephemeral"
@@ -1074,57 +1163,72 @@ export function buildOrderTimeline(
       : vm.requiresShipping || vm.requiresPickup
         ? TIMELINE_ROW_ORDER
         : TIMELINE_ROW_ORDER.filter((key) => key !== "fulfillment")
-  return rowOrder.map((key) => {
-    const status = statuses[key]
-    const copy = copyFor(key, status)
-    let title = copy.title
-    let subtitle = copy.subtitle
-    // Prepaid (zap-out) orders have no merchant invoice; reflect direct payment.
-    if (key === "invoice" && vm.flow === "prepaid") {
-      title = status === "complete" ? "Paid directly" : "Direct payment"
-      subtitle =
-        "Paid the merchant directly over Lightning — no invoice needed."
-    } else if (key === "fulfillment" && vm.requiresPickup) {
-      title =
-        status === "complete"
-          ? "Pickup complete"
-          : organizerHandoff
-            ? "Pickup from event organizer"
-            : "Pickup from merchant booth"
-      subtitle =
-        status === "complete"
-          ? "The pickup order was marked complete."
-          : organizerHandoff
-            ? isZeroCostPickupOrder(vm)
-              ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
-              : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
-            : "The merchant handles pickup at the signed merchant booth location. No organizer receipt is sent."
-    } else if (
-      key === "payment" &&
-      vm.paymentStatus === "ambiguous" &&
-      !isBuyerOrderPaid(vm)
-    ) {
-      if (vm.zapReceiptStatus === "receipt_not_observed") {
-        title = "Payment not confirmed"
+  return rowOrder
+    .filter((key) => !finiteOrganizerHandoff || key !== "merchant_confirmation")
+    .map((key) => {
+      const status = statuses[key]
+      const copy = copyFor(key, status)
+      let title = copy.title
+      let subtitle = copy.subtitle
+      // Funding a router is not a payment to a merchant or a merchant receipt.
+      if (key === "payment" && vm.checkoutSparkRouted) {
+        title = isBuyerOrderPaid(vm)
+          ? "Order payment verified"
+          : "Payment not yet verified"
+        subtitle = isBuyerOrderPaid(vm)
+          ? "Your order payment was verified on this device. Delivery is confirmed separately."
+          : vm.checkoutSparkRecipientUnverified
+            ? "Payment was sent, but its intended recipient has not been verified on this device. Do not pay it again."
+            : "Payment has not been verified yet. Check the saved payment status; do not start another payment."
+      } else if (key === "invoice" && vm.flow === "prepaid") {
+        title = status === "complete" ? "Paid directly" : "Direct payment"
         subtitle =
-          "A matching receipt was not observed. If your wallet shows payment, do not pay again."
-      } else {
-        title = "Payment needs review"
+          "Paid the merchant directly over Lightning — no invoice needed."
+      } else if (key === "fulfillment" && vm.requiresPickup) {
+        title =
+          status === "complete"
+            ? "Pickup complete"
+            : organizerHandoff
+              ? "Pickup from event organizer"
+              : "Pickup from merchant booth"
         subtitle =
-          "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+          status === "complete"
+            ? "The pickup order was marked complete."
+            : organizerHandoff
+              ? finiteOrganizerHandoff
+                ? isZeroCostPickupOrder(vm)
+                  ? "Show your private pickup receipt to the organizer. They'll check reserved stock before handing over your items."
+                  : "Show your private pickup receipt to the organizer. They'll check payment and reserved stock before handing over your items."
+                : isZeroCostPickupOrder(vm)
+                  ? "No payment is required. The organizer handles pickup after the merchant sends the minimal private pickup receipt."
+                  : "The organizer handles pickup after the merchant confirms payment and sends the minimal private pickup receipt."
+              : "The merchant handles pickup at the signed merchant booth location. No organizer receipt is sent."
+      } else if (
+        key === "payment" &&
+        vm.paymentStatus === "ambiguous" &&
+        !isBuyerOrderPaid(vm)
+      ) {
+        if (vm.zapReceiptStatus === "receipt_not_observed") {
+          title = "Payment not confirmed"
+          subtitle =
+            "A matching receipt was not observed. If your wallet shows payment, do not pay again."
+        } else {
+          title = "Payment needs review"
+          subtitle =
+            "We couldn't confirm this payment moved. Check your wallet, then message the merchant before retrying."
+        }
+      } else if (
+        key === "payment" &&
+        status === "complete" &&
+        typeof vm.totalSats === "number"
+      ) {
+        subtitle = `Payment of ${formatSats(vm.totalSats)} was sent over Lightning.`
       }
-    } else if (
-      key === "payment" &&
-      status === "complete" &&
-      typeof vm.totalSats === "number"
-    ) {
-      subtitle = `Payment of ${formatSats(vm.totalSats)} was sent over Lightning.`
-    }
-    if (key === "fulfillment" && vm.tracking?.number) {
-      subtitle = `Tracking: ${vm.tracking.number}`
-    }
-    return { key, title, subtitle, status }
-  })
+      if (key === "fulfillment" && vm.tracking?.number) {
+        subtitle = `Tracking: ${vm.tracking.number}`
+      }
+      return { key, title, subtitle, status }
+    })
 }
 
 // --- Header status pill ---------------------------------------------------
@@ -1177,6 +1281,30 @@ export function deriveOrderHeaderStatus(vm: OrderViewModel): OrderHeaderStatus {
       primaryLabel: "Failed",
       detailLabel: "Order not sent",
       actionNeeded: true,
+      showSpinner: false,
+    }
+  }
+  if (vm.checkoutSparkRouted) {
+    const fulfilling =
+      vm.merchantStatus === "accepted" ||
+      vm.merchantStatus === "processing" ||
+      vm.merchantStatus === "shipped"
+    return {
+      tone: paid || fulfilling ? "info" : "warning",
+      primaryLabel:
+        vm.merchantStatus === "shipped"
+          ? "Shipped"
+          : fulfilling
+            ? "In progress"
+            : paid
+              ? "Paid"
+              : "Pending",
+      detailLabel: paid
+        ? "Order payment verified"
+        : vm.checkoutSparkRecipientUnverified
+          ? "Payment sent; recipient confirmation pending"
+          : "Payment not yet verified on this device",
+      actionNeeded: false,
       showSpinner: false,
     }
   }

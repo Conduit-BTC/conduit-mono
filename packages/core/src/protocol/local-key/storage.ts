@@ -4,11 +4,13 @@ import { NostrSignerError } from "../nostr-event-signer"
 // records through a barrel, application store, diagnostic or migration payload.
 const DATABASE = "conduit-local-key"
 const RECORD = "active"
+const CANDIDATE = "candidate"
 
 export interface LocalKeyRecord {
   version: 1
   revision: string
   secret: Uint8Array
+  previousRevision?: string | null
 }
 
 export interface LocalKeyStorageOptions {
@@ -77,7 +79,7 @@ export class LocalKeyStorage {
 
   async #transaction<T>(
     mode: IDBTransactionMode,
-    apply: (value: unknown, store: IDBObjectStore) => T,
+    apply: (value: unknown, store: IDBObjectStore, candidate: unknown) => T,
     isCurrent: () => boolean = () => true,
     signal?: AbortSignal
   ): Promise<T> {
@@ -89,11 +91,13 @@ export class LocalKeyStorage {
         const tx = db.transaction("record", mode)
         const store = tx.objectStore("record")
         const read = store.get(RECORD)
+        const candidate = store.get(CANDIDATE)
         let result: T
         let failure: NostrSignerError | undefined
         let settled = false
         const clearRead = () => {
           if (read.readyState === "done") clearRecord(read.result)
+          if (candidate.readyState === "done") clearRecord(candidate.result)
         }
         const fail = (error = new NostrSignerError("unavailable")) => {
           failure = error
@@ -113,14 +117,14 @@ export class LocalKeyStorage {
           signal?.removeEventListener("abort", cancel)
         }
         signal?.addEventListener("abort", cancel, { once: true })
-        read.onsuccess = () => {
+        candidate.onsuccess = () => {
           if (settled || signal?.aborted || !isCurrent()) {
             clearRead()
             cancel()
             return
           }
           try {
-            result = apply(read.result, store)
+            result = apply(read.result, store, candidate.result)
           } catch (error) {
             fail(
               error instanceof NostrSignerError
@@ -154,8 +158,13 @@ export class LocalKeyStorage {
     }
   }
 
-  read(): Promise<LocalKeyRecord | null> {
-    return this.#transaction("readonly", (value) => {
+  read(revision?: string): Promise<LocalKeyRecord | null> {
+    return this.#transaction("readonly", (active, _store, candidate) => {
+      const value =
+        revision && validRecord(candidate) && candidate.revision === revision
+          ? candidate
+          : active
+      clearRecord(value === candidate ? active : candidate)
       if (value === undefined) return null
       if (!validRecord(value)) {
         clearRecord(value)
@@ -172,19 +181,85 @@ export class LocalKeyStorage {
   ): Promise<void> {
     return this.#transaction(
       "readwrite",
-      (previous, store) => {
-        clearRecord(previous)
-        store.put(record, RECORD)
+      (previous, store, candidate) => {
+        try {
+          // One bounded candidate slot. Concurrent importers cannot evict a
+          // staged account or discard each other's rollback information.
+          if (candidate !== undefined)
+            throw new NostrSignerError("authority_changed")
+          if (previous !== undefined && !validRecord(previous))
+            throw new NostrSignerError("unavailable")
+          store.put(
+            {
+              ...record,
+              previousRevision: validRecord(previous)
+                ? previous.revision
+                : null,
+            },
+            CANDIDATE
+          )
+        } finally {
+          clearRecord(previous)
+          clearRecord(candidate)
+        }
       },
       isCurrent,
       signal
     )
   }
 
+  /** Promote only after the auth owner installed this exact session. */
+  commit(
+    revision: string,
+    isCurrent: () => boolean,
+    signal?: AbortSignal
+  ): Promise<void> {
+    return this.#transaction(
+      "readwrite",
+      (active, store, candidate) => {
+        try {
+          if (validRecord(active) && active.revision === revision) return
+          if (
+            !validRecord(candidate) ||
+            candidate.revision !== revision ||
+            candidate.previousRevision !==
+              (validRecord(active) ? active.revision : null)
+          )
+            throw new NostrSignerError("authority_changed")
+          store.put({ version: 1, revision, secret: candidate.secret }, RECORD)
+          store.delete(CANDIDATE)
+        } finally {
+          clearRecord(active)
+          clearRecord(candidate)
+        }
+      },
+      isCurrent,
+      signal
+    )
+  }
+
+  /** Recover a crash before installation: metadata selects the retained key. */
+  reconcile(revision: string | undefined): Promise<void> {
+    return this.#transaction("readwrite", (active, store, candidate) => {
+      try {
+        if (
+          candidate !== undefined &&
+          (!validRecord(candidate) || candidate.revision !== revision)
+        )
+          store.delete(CANDIDATE)
+      } finally {
+        clearRecord(active)
+        clearRecord(candidate)
+      }
+    })
+  }
+
   /** Atomic comparison/deletion: stale cleanup can never remove a later import. */
   remove(revision: string): Promise<void> {
-    return this.#transaction("readwrite", (value, store) => {
+    return this.#transaction("readwrite", (value, store, candidate) => {
       try {
+        if (validRecord(candidate) && candidate.revision === revision)
+          store.delete(CANDIDATE)
         if (value === undefined) return
         // Preserve every identifiable later revision, including an unknown
         // schema or damaged body. A record without a revision cannot authorize
@@ -201,6 +276,7 @@ export class LocalKeyStorage {
           store.delete(RECORD)
       } finally {
         clearRecord(value)
+        clearRecord(candidate)
       }
     })
   }

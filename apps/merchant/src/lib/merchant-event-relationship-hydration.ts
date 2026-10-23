@@ -5,16 +5,28 @@ import {
   type EventMarketRosterReadResult,
   type ProductSchema,
 } from "@conduit/core"
+import type { MerchantInventoryAssignment } from "@conduit/core/db"
 
 export const MERCHANT_EVENT_RELATIONSHIP_TARGET_LIMIT = 64
 const CONCURRENCY = 4
 const DEADLINE_MS = 20_000
 
-/** Product revisions are already reconciled by the merchant storefront read. */
+/** Known relationships are discovery hints; hydration verifies current rosters. */
 export function getMerchantProductMarketReferences(
-  products: readonly Pick<ProductSchema, "eventMarketRefs">[]
+  products: readonly Pick<ProductSchema, "eventMarketRefs">[],
+  assignments: readonly Pick<
+    MerchantInventoryAssignment,
+    "marketCoordinate"
+  >[] = []
 ): string[] {
   const references = new Set<string>()
+  for (const assignment of assignments) {
+    const decoded = decodeEventMarketReference(
+      assignment.marketCoordinate,
+      [30409]
+    )
+    if (decoded) references.add(decoded.coordinate)
+  }
   for (const product of products) {
     for (const reference of product.eventMarketRefs ?? []) {
       const decoded = decodeEventMarketReference(reference, [30409])
@@ -22,6 +34,17 @@ export function getMerchantProductMarketReferences(
     }
   }
   return [...references]
+}
+
+export function isMerchantTimelineMarketReadIncomplete(
+  read: EventMarketRosterReadResult
+): boolean {
+  return (
+    read.resolution.state !== "current" ||
+    read.coverage !== "complete" ||
+    read.calendarCoverage !== "complete" ||
+    (read.schedule?.kind === "series" && read.scheduleCoverage !== "complete")
+  )
 }
 
 export async function hydrateMerchantProductMarkets(input: {

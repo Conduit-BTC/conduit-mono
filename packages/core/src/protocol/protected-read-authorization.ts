@@ -1,5 +1,5 @@
-import { isAccountAuthMethod } from "./auth-session"
 import type { NostrEventSigner } from "./nostr-event-signer"
+import { isAccountAuthMethod } from "./auth-session"
 
 export type ProtectedReadOperation = "private_inbox_read"
 export type ProtectedReadAuthPolicy = "required" | "when_challenged"
@@ -113,14 +113,14 @@ function hasCurrentLeaseAuthority(lease: ActiveSignerLease): boolean {
   return authorityCurrent
 }
 
-/** Internal auth-provider hook. Install only externally backed account signers. */
+/** Internal auth-provider hook. Install only shared account signer methods. */
 export function installProtectedReadSigner(
   signer: NostrEventSigner,
   expectedPubkey: string,
   hasAuthority: () => boolean
 ): ProtectedReadSignerLease {
   if (!isAccountAuthMethod(signer.authMethod)) {
-    throw new Error("Protected reads require a NIP-07 or NIP-46 account signer")
+    throw new Error("Protected reads require an account signer")
   }
   if (activeLease) revokeLease(activeLease)
   const lease: ActiveSignerLease = {

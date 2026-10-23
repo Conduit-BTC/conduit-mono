@@ -1,3 +1,4 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import {
   finalizeEvent,
@@ -5,7 +6,10 @@ import {
   getPublicKey,
   verifyEvent,
 } from "nostr-tools/pure"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 
 import {
   buildEventMarketCalendarDraft,
@@ -29,6 +33,11 @@ import {
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+
+type MobileFooterProbeWindow = Window & {
+  __footerScrollProbe?: { count: number; last: number; delta: number }
+  __orderViewportScrollFinished?: boolean
+}
 
 test.setTimeout(60_000)
 test.use({ trace: "off", screenshot: "off", video: "off" })
@@ -77,24 +86,75 @@ async function expectVisibleDisjointControls(
 ): Promise<void> {
   await expect
     .poll(async () => {
-      const [firstBox, secondBox, viewport] = await Promise.all([
-        first.boundingBox(),
-        second.boundingBox(),
-        page.evaluate(() => ({
-          width: innerWidth,
-          height: innerHeight,
-          scrollY,
-          measuredFooterHeight:
-            Number.parseFloat(
-              getComputedStyle(document.documentElement).getPropertyValue(
-                "--market-fixed-footer-height"
-              )
-            ) || 0,
-          footerHidden:
-            document.querySelector("footer")?.getAttribute("aria-hidden") ===
-            "true",
-        })),
+      const [firstHandle, secondHandle] = await Promise.all([
+        first.elementHandle(),
+        second.elementHandle(),
       ])
+      // Both controls and chrome metrics must describe the same animation frame.
+      // Separate protocol calls can compare a moving trigger with a later footer.
+      const snapshot = await page.evaluate(
+        ({ firstElement, secondElement }) => {
+          const box = (element: Element | null) => {
+            if (!element?.isConnected) return null
+            const { x, y, width, height } = element.getBoundingClientRect()
+            if (
+              width <= 0 ||
+              height <= 0 ||
+              getComputedStyle(element).visibility !== "visible"
+            )
+              return null
+            return { x, y, width, height }
+          }
+          const rootStyle = getComputedStyle(document.documentElement)
+          const widget = firstElement?.parentElement
+          const widgetStyle = widget ? getComputedStyle(widget) : undefined
+          const footer = document.querySelector("footer")
+          const translateY = (element: Element | null | undefined) => {
+            if (!element) return 0
+            const transform = getComputedStyle(element).transform
+            return transform === "none"
+              ? 0
+              : new DOMMatrixReadOnly(transform).m42
+          }
+          return {
+            firstBox: box(firstElement),
+            secondBox: box(secondElement),
+            viewport: {
+              width: innerWidth,
+              height: innerHeight,
+              scrollY,
+              measuredFooterHeight:
+                Number.parseFloat(
+                  rootStyle.getPropertyValue("--market-fixed-footer-height")
+                ) || 0,
+              footerHidden: footer?.getAttribute("aria-hidden") === "true",
+              triggerMarginBottom: widget
+                ? Number.parseFloat(getComputedStyle(widget).marginBottom)
+                : 0,
+              triggerTransformY: translateY(widget),
+              footerTransformY: translateY(footer),
+              widgetHiddenShift: widgetStyle
+                ? Number.parseFloat(
+                    widgetStyle.getPropertyValue(
+                      "--order-messages-hidden-shift"
+                    )
+                  )
+                : undefined,
+              widgetBottomOffset: widgetStyle
+                ? Number.parseFloat(
+                    widgetStyle.getPropertyValue(
+                      "--order-messages-bottom-offset"
+                    )
+                  )
+                : undefined,
+              atomicFooterHeight: footer?.getBoundingClientRect().height,
+            },
+          }
+        },
+        { firstElement: firstHandle, secondElement: secondHandle }
+      )
+      await Promise.all([firstHandle?.dispose(), secondHandle?.dispose()])
+      const { firstBox, secondBox, viewport } = snapshot
       const record = (layout: string) => {
         recordSmokeDiagnostic(test.info(), "footer-layout", {
           phase,
@@ -112,6 +172,30 @@ async function expectVisibleDisjointControls(
           scrollY: viewport.scrollY,
           measuredFooterHeight: viewport.measuredFooterHeight,
           footerHidden: viewport.footerHidden,
+          widgetMarginBottom: viewport.triggerMarginBottom,
+          widgetTransformY: viewport.triggerTransformY,
+          widgetHiddenShift: viewport.widgetHiddenShift,
+          widgetBottomOffset: viewport.widgetBottomOffset,
+          atomicTriggerY: firstBox?.y,
+          atomicTriggerBottom: firstBox
+            ? firstBox.y + firstBox.height
+            : undefined,
+          atomicFooterLinkTop: secondBox?.y,
+          atomicFooterHeight: viewport.atomicFooterHeight,
+          atomicLayout:
+            !firstBox || !secondBox
+              ? "missing"
+              : !(
+                    firstBox.x + firstBox.width <= secondBox.x ||
+                    secondBox.x + secondBox.width <= firstBox.x ||
+                    firstBox.y + firstBox.height <= secondBox.y ||
+                    secondBox.y + secondBox.height <= firstBox.y
+                  )
+                ? "intersecting"
+                : "disjoint",
+          triggerMarginBottom: viewport.triggerMarginBottom,
+          triggerTransformY: viewport.triggerTransformY,
+          footerTransformY: viewport.footerTransformY,
         })
         return layout
       }
@@ -857,7 +941,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     await page.goto(`${marketUrl}/orders?order=${otherOrderId}&focus=payment`)
     await expect(
       page.getByRole("link", { name: "View full order details", exact: true })
-    ).toHaveAttribute("href", `/orders?order=${otherOrderId}`)
+    ).toHaveAttribute(
+      "href",
+      `/orders?order=${otherOrderId}&counterparty=${TEST_MERCHANT_PUBKEY}`
+    )
     await expect(
       page.getByRole("button", { name: "Try payment again" })
     ).toBeVisible()
@@ -877,33 +964,97 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("market cart follows the hidden and returning mobile footer @market", async ({
     page,
   }) => {
-    await page.setViewportSize({ width: 320, height: 700 })
-    await seedMarketCart(page)
-    await page.goto(`${marketUrl}/products`)
-    const cart = page.getByRole("region", { name: "Cart inventory" })
-    const footer = page.locator("footer")
-    await expect(cart).toBeVisible()
-    const bottomDistance = () =>
-      cart.evaluate((element) => {
-        const wrapperBottom =
-          element.parentElement!.getBoundingClientRect().bottom
-        const footerTop = document
-          .querySelector("footer")!
-          .getBoundingClientRect().top
-        return Math.abs(footerTop - wrapperBottom)
+    let phase = "initial"
+    try {
+      await page.setViewportSize({ width: 320, height: 700 })
+      await page.addInitScript(() => {
+        const probe = ((window as MobileFooterProbeWindow).__footerScrollProbe =
+          {
+            count: 0,
+            last: scrollY,
+            delta: 0,
+          })
+        window.addEventListener(
+          "scroll",
+          () => {
+            probe.delta = scrollY - probe.last
+            probe.last = scrollY
+            probe.count++
+          },
+          { passive: true }
+        )
       })
-    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
-    // Give the actual scroll-driven chrome a long page without changing controls.
-    await page.locator("main").evaluate((main) => {
-      main.style.minHeight = `${innerHeight * 3}px`
-    })
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-    await expect(footer).toHaveAttribute("aria-hidden", "true")
-    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
-    await page.evaluate(() => window.scrollBy(0, -64))
-    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
-    await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
-    await assertMobileViewport(page)
+      await seedMarketCart(page)
+      await page.goto(`${marketUrl}/products`)
+      const cart = page.getByRole("region", { name: "Cart inventory" })
+      const footer = page.locator("footer")
+      await expect(cart).toBeVisible()
+
+      const bottomDistance = async () => {
+        const metrics = await cart.evaluate((element) => ({
+          footerTop: document.querySelector("footer")!.getBoundingClientRect()
+            .top,
+          cartBottom: element.parentElement!.getBoundingClientRect().bottom,
+          scrollY,
+          viewportHeight: innerHeight,
+          footerHidden:
+            document.querySelector("footer")!.getAttribute("aria-hidden") ===
+            "true",
+        }))
+        recordSmokeDiagnostic(test.info(), "footer-follow", {
+          phase,
+          ...metrics,
+        })
+        return Math.abs(metrics.footerTop - metrics.cartBottom)
+      }
+      await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+      // Give the actual scroll-driven chrome a long page without changing controls.
+      await page.locator("main").evaluate((main) => {
+        main.style.minHeight = `${innerHeight * 3}px`
+      })
+      phase = "hidden"
+      recordSmokeDiagnostic(test.info(), "footer-follow", { phase })
+      // Stay inside the page: a changing page-end bound can clamp scrollY
+      // upward, which correctly makes the scroll-driven footer return.
+      await page.evaluate(() => window.scrollTo(0, innerHeight))
+      await expect(footer).toHaveAttribute("aria-hidden", "true")
+      await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+      phase = "returned"
+      recordSmokeDiagnostic(test.info(), "footer-follow", { phase })
+      await page.evaluate(() => window.scrollBy(0, -64))
+      await expect(footer).not.toHaveAttribute("aria-hidden", "true")
+      await expect.poll(bottomDistance).toBeLessThanOrEqual(1)
+      await assertMobileViewport(page)
+    } finally {
+      // Diagnostic collection must never replace the original failure.
+      const snapshot = await page
+        .evaluate(() => {
+          const footer = document.querySelector("footer")
+          const cart = document.querySelector('[aria-label="Cart inventory"]')
+          const probe = (window as MobileFooterProbeWindow).__footerScrollProbe
+          return {
+            footerTop: footer?.getBoundingClientRect().top ?? 0,
+            cartBottom:
+              cart?.parentElement?.getBoundingClientRect().bottom ?? 0,
+            footerHidden: footer?.getAttribute("aria-hidden") === "true",
+            scrollY,
+            viewportHeight: innerHeight,
+            mainHeight:
+              document.querySelector("main")?.getBoundingClientRect().height ??
+              0,
+            maxScrollY: document.documentElement.scrollHeight - innerHeight,
+            mobileQueryMatches: matchMedia("(max-width: 639px)").matches,
+            scrollEvents: probe?.count ?? 0,
+            lastScrollY: probe?.last ?? 0,
+            lastDelta: probe?.delta ?? 0,
+          }
+        })
+        .catch(() => ({}))
+      recordSmokeDiagnostic(test.info(), "footer-follow", {
+        phase,
+        ...snapshot,
+      })
+    }
   })
 
   test("market order messages stay clear of the returning mobile footer @market", async ({
@@ -913,6 +1064,13 @@ test.describe("CND-162 mobile browser baseline", () => {
     const secretKey = generateSecretKey()
     const buyerPubkey = getPublicKey(secretKey)
 
+    await page.addInitScript(() => {
+      document.addEventListener("scrollend", (event) => {
+        if (event.target === document)
+          (window as MobileFooterProbeWindow).__orderViewportScrollFinished =
+            true
+      })
+    })
     await page.setViewportSize({ width: 320, height: 700 })
     await seedTestRelayIdentity(secretKey)
     await installTestSigner(page, buyerPubkey, { secretKey })
@@ -938,6 +1096,19 @@ test.describe("CND-162 mobile browser baseline", () => {
       exact: true,
     })
 
+    await expect(messagesTrigger).toBeVisible()
+    // Wait for the selected-order viewport scroll to finish before arranging
+    // the visible initial state. Its smooth animation can outlive the request.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as MobileFooterProbeWindow).__orderViewportScrollFinished
+        )
+      )
+      .toBe(true)
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }))
+    await expect(footer).not.toHaveAttribute("aria-hidden", "true")
     await expectVisibleDisjointControls(
       page,
       messagesTrigger,
@@ -1220,10 +1391,10 @@ test.describe("CND-162 mobile browser baseline", () => {
     expect(iconBox).not.toBeNull()
     expect(preferencesPillBox!.width).toBeLessThan(headerBox!.width * 0.75)
     expect(preferencesPillBox!.height).toBeLessThanOrEqual(32)
-    expect(iconBox!.width).toBeGreaterThanOrEqual(11)
-    expect(iconBox!.width).toBeLessThanOrEqual(13)
-    expect(iconBox!.height).toBeGreaterThanOrEqual(11)
-    expect(iconBox!.height).toBeLessThanOrEqual(13)
+    expect(iconBox!.width).toBeGreaterThanOrEqual(14)
+    expect(iconBox!.width).toBeLessThanOrEqual(16)
+    expect(iconBox!.height).toBeGreaterThanOrEqual(14)
+    expect(iconBox!.height).toBeLessThanOrEqual(16)
 
     await page.goto(`${marketUrl}/network`)
     await expect(page.getByRole("heading", { name: "Network" })).toBeVisible()
@@ -1461,6 +1632,286 @@ test.describe("CND-162 mobile browser baseline", () => {
   test("market wallet route keeps mobile-safe input and recoverable validation @market", async ({
     page,
   }) => {
+    const info = test.info()
+    type MenuPhase =
+      | "before_trigger"
+      | "menu_mounted"
+      | "trigger_clicked"
+      | "menu_removed"
+      | "item_clicked"
+    type MenuState = {
+      observationAvailable: boolean
+      triggerPresent: boolean
+      triggerEnabled: boolean
+      walletLoading: boolean
+      menuMounted: boolean
+      menuRemoved: boolean
+      menuPresent: boolean
+      menuOpen: boolean
+      itemPresent: boolean
+      itemVisible: boolean
+      itemEnabled: boolean
+      dialogPresent: boolean
+      pointerDownOnTrigger: boolean
+      triggerMovementDuringGesture: "stable" | "moved" | "unavailable"
+    }
+    let pendingItemSelection = false
+    let activeAttempt: "first" | "after_reload" = "first"
+    let observerFailure: unknown
+    const recordMenuState = (
+      attempt: "first" | "after_reload",
+      phase: MenuPhase,
+      state: MenuState
+    ) => {
+      // The reporter has an exact-file allowlist for these fixed fields.
+      recordSmokeDiagnostic(info, "mobile-wallet-menu", {
+        attempt,
+        phase,
+        observationAvailable: state.observationAvailable === true,
+        triggerPresent: state.triggerPresent === true,
+        triggerEnabled: state.triggerEnabled === true,
+        walletLoading: state.walletLoading === true,
+        menuMounted: state.menuMounted === true,
+        menuRemoved: state.menuRemoved === true,
+        menuPresent: state.menuPresent === true,
+        menuOpen: state.menuOpen === true,
+        itemPresent: state.itemPresent === true,
+        itemVisible: state.itemVisible === true,
+        itemEnabled: state.itemEnabled === true,
+        dialogPresent: state.dialogPresent === true,
+        pointerDownOnTrigger: state.pointerDownOnTrigger === true,
+        triggerMovementDuringGesture:
+          state.triggerMovementDuringGesture === "stable" ||
+          state.triggerMovementDuringGesture === "moved"
+            ? state.triggerMovementDuringGesture
+            : "unavailable",
+      })
+    }
+    await page.exposeFunction(
+      "__recordMobileWalletMenuTransition",
+      (
+        attempt: "first" | "after_reload",
+        phase: MenuPhase,
+        state: MenuState
+      ) => {
+        if (
+          !pendingItemSelection ||
+          attempt !== activeAttempt ||
+          (phase !== "menu_mounted" && phase !== "menu_removed")
+        )
+          return
+        try {
+          recordMenuState(attempt, phase, state)
+          if (phase === "menu_removed")
+            recordSmokeFailureContext(
+              info,
+              "mobile_wallet_setup_item_ready",
+              "unmet"
+            )
+        } catch (error) {
+          observerFailure ??= error
+        }
+      }
+    )
+    const installMenuProbe = async (attempt: "first" | "after_reload") => {
+      await page.evaluate((attempt) => {
+        const findTrigger = () =>
+          Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "Add wallet"
+          )
+        const gesture = {
+          pointerDownOnTrigger: false,
+          triggerMovementDuringGesture: "unavailable" as
+            "stable" | "moved" | "unavailable",
+          menuMounted: false,
+          menuRemoved: false,
+        }
+        let downY: number | null = null
+        let triggerGestureComplete = false
+        let bindingFailed = false
+        const listenerController = new AbortController()
+        document.addEventListener(
+          "pointerdown",
+          (event) => {
+            if (triggerGestureComplete) return
+            const trigger = findTrigger()
+            gesture.pointerDownOnTrigger =
+              !!trigger &&
+              event.target instanceof Node &&
+              trigger.contains(event.target)
+            downY = trigger?.getBoundingClientRect().y ?? null
+          },
+          { capture: true, signal: listenerController.signal }
+        )
+        document.addEventListener(
+          "pointerup",
+          () => {
+            if (triggerGestureComplete) return
+            const trigger = findTrigger()
+            gesture.triggerMovementDuringGesture =
+              downY === null || !trigger
+                ? "unavailable"
+                : Math.abs(trigger.getBoundingClientRect().y - downY) > 8
+                  ? "moved"
+                  : "stable"
+            triggerGestureComplete = true
+          },
+          { capture: true, signal: listenerController.signal }
+        )
+        const snapshot = () => {
+          const menu = document.querySelector('[role="menu"]')
+          const item = Array.from(
+            document.querySelectorAll('[role="menuitem"]')
+          ).find(
+            (entry) =>
+              entry.textContent?.trim() === "Connect an external wallet"
+          )
+          const currentTrigger = findTrigger()
+          return {
+            observationAvailable: true,
+            triggerPresent: !!currentTrigger,
+            triggerEnabled:
+              !!currentTrigger &&
+              !currentTrigger.matches(":disabled") &&
+              currentTrigger.getAttribute("aria-disabled") !== "true",
+            walletLoading: !!Array.from(document.querySelectorAll("span")).find(
+              (entry) => entry.textContent?.trim() === "Loading saved wallets"
+            ),
+            menuMounted: gesture.menuMounted,
+            menuRemoved: gesture.menuRemoved,
+            menuPresent: !!menu,
+            menuOpen: menu?.getAttribute("data-state") === "open",
+            itemPresent: !!item,
+            itemVisible: !!item && item.getClientRects().length > 0,
+            itemEnabled:
+              !!item &&
+              !item.matches(":disabled") &&
+              item.getAttribute("aria-disabled") !== "true",
+            dialogPresent: !!document.querySelector('[role="dialog"]'),
+            pointerDownOnTrigger: gesture.pointerDownOnTrigger,
+            triggerMovementDuringGesture: gesture.triggerMovementDuringGesture,
+          }
+        }
+        const containsMenu = (node: Node) =>
+          node instanceof Element &&
+          (node.matches('[role="menu"]') ||
+            !!node.querySelector('[role="menu"]'))
+        const observer = new MutationObserver((changes) => {
+          const mounted = changes.some((change) =>
+            [...change.addedNodes].some(containsMenu)
+          )
+          const removed = changes.some((change) =>
+            [...change.removedNodes].some(containsMenu)
+          )
+          if (!mounted && !removed) return
+          if (mounted) gesture.menuMounted = true
+          if (removed) gesture.menuRemoved = true
+          const phase = removed ? "menu_removed" : "menu_mounted"
+          void (
+            window as unknown as {
+              __recordMobileWalletMenuTransition: (
+                attempt: "first" | "after_reload",
+                phase: "menu_mounted" | "menu_removed",
+                state: ReturnType<typeof snapshot>
+              ) => Promise<void>
+            }
+          )
+            .__recordMobileWalletMenuTransition(attempt, phase, snapshot())
+            .catch(() => {
+              bindingFailed = true
+            })
+        })
+        observer.observe(document, { childList: true, subtree: true })
+        ;(
+          window as unknown as {
+            __mobileWalletMenuSnapshot: typeof snapshot
+            __mobileWalletMenuDispose: () => boolean
+          }
+        ).__mobileWalletMenuSnapshot = snapshot
+        ;(
+          window as unknown as { __mobileWalletMenuDispose: () => boolean }
+        ).__mobileWalletMenuDispose = () => {
+          observer.disconnect()
+          listenerController.abort()
+          return bindingFailed
+        }
+      }, attempt)
+    }
+    const disposeMenuProbe = async () => {
+      const bindingFailed = await page.evaluate(() =>
+        (
+          window as unknown as {
+            __mobileWalletMenuDispose?: () => boolean
+          }
+        ).__mobileWalletMenuDispose?.()
+      )
+      if (bindingFailed || observerFailure)
+        throw new Error("Mobile wallet menu diagnostic failed")
+    }
+    const menuDiagnostic =
+      (attempt: "first" | "after_reload") =>
+      async (
+        phase: "before_trigger" | "trigger_clicked" | "import_clicked"
+      ) => {
+        const state = await page.evaluate(() =>
+          (
+            window as unknown as {
+              __mobileWalletMenuSnapshot: () => MenuState
+            }
+          ).__mobileWalletMenuSnapshot()
+        )
+        const menuPhase = phase === "import_clicked" ? "item_clicked" : phase
+        recordMenuState(attempt, menuPhase, state)
+        if (phase === "before_trigger") {
+          activeAttempt = attempt
+          pendingItemSelection = true
+          recordSmokeFailureContext(
+            info,
+            "mobile_wallet_setup_trigger_click_completed",
+            "pending"
+          )
+        } else if (phase === "trigger_clicked") {
+          if (state.itemPresent && state.itemVisible && state.itemEnabled)
+            recordSmokeFailureContext(
+              info,
+              "mobile_wallet_setup_item_click_completed",
+              "pending"
+            )
+          else
+            recordSmokeFailureContext(
+              info,
+              "mobile_wallet_setup_item_ready",
+              "unmet"
+            )
+        } else {
+          pendingItemSelection = false
+          recordSmokeFailureContext(
+            info,
+            "mobile_wallet_setup_dialog_ready",
+            state.dialogPresent ? "met" : "pending"
+          )
+        }
+      }
+    const openObservedWalletSetup = async (
+      attempt: "first" | "after_reload"
+    ) => {
+      await installMenuProbe(attempt)
+      let cleanupFailure: unknown
+      try {
+        await openWalletSetup(page, "Connect wallet", menuDiagnostic(attempt))
+      } finally {
+        pendingItemSelection = false
+        if (!page.isClosed()) {
+          try {
+            await disposeMenuProbe()
+          } catch (error) {
+            // An open failure stays primary; a completed open reports cleanup.
+            if (!page.isClosed()) cleanupFailure = error
+          }
+        }
+      }
+      if (cleanupFailure !== undefined) throw cleanupFailure
+    }
     await installTestSigner(page, TEST_BUYER_PUBKEY)
     await page.goto(`${marketUrl}/wallet`)
 
@@ -1469,7 +1920,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     ).toBeVisible()
     await assertMobileViewport(page)
 
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    await openObservedWalletSetup("first")
     const dialog = page.getByRole("dialog", { name: "Connect wallet" })
     const connectionString = dialog.getByPlaceholder(
       "nostr+walletconnect://..."
@@ -1486,9 +1937,91 @@ test.describe("CND-162 mobile browser baseline", () => {
     await expect(
       page.getByRole("heading", { name: "Wallets", exact: true })
     ).toBeVisible()
-    await page.getByRole("button", { name: "Connect wallet" }).tap()
+    await openObservedWalletSetup("after_reload")
     await expect(connectionString).toBeVisible()
   })
+
+  for (const { app, url } of [
+    { app: "market", url: marketUrl },
+    { app: "merchant", url: merchantUrl },
+  ] as const) {
+    test(`${app} wallet setup keeps touch selection on a moving trigger @${app}`, async ({
+      page,
+    }) => {
+      await installTestSigner(page, TEST_BUYER_PUBKEY)
+      await page.goto(`${url}/wallet`)
+      await expect(
+        page.getByRole("heading", { name: "Wallets", exact: true })
+      ).toBeVisible()
+      // A long wallet list permits the same trigger movement observed in CI.
+      await page.locator("main").evaluate((element) => {
+        element.style.minHeight = "200vh"
+      })
+      await page.evaluate(() => {
+        const probe = { pointerType: "", moved: false }
+        Object.assign(window, { __walletMenuPointerProbe: probe })
+        document.addEventListener(
+          "pointerdown",
+          (event) => {
+            probe.pointerType = event.pointerType
+          },
+          { capture: true, once: true }
+        )
+        const observer = new MutationObserver(() => {
+          if (!document.querySelector('[role="menu"]')) return
+          observer.disconnect()
+          const trigger = Array.from(document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "Add wallet"
+          )
+          if (!trigger) throw new Error("Wallet trigger is missing")
+          const before = trigger.getBoundingClientRect().y
+          window.scrollBy({ top: 140, behavior: "instant" })
+          probe.moved =
+            Math.abs(trigger.getBoundingClientRect().y - before) > 100
+        })
+        observer.observe(document.body, { childList: true, subtree: true })
+      })
+      await openWalletSetup(page, "Connect wallet", async (phase) => {
+        if (phase === "trigger_clicked") {
+          await expect(page.getByRole("menu")).toBeVisible()
+        }
+      })
+      await expect(
+        page.getByRole("dialog", { name: "Connect wallet", exact: true })
+      ).toBeVisible()
+      expect(
+        await page.evaluate(
+          () =>
+            (
+              window as unknown as {
+                __walletMenuPointerProbe: {
+                  pointerType: string
+                  moved: boolean
+                }
+              }
+            ).__walletMenuPointerProbe
+        )
+      ).toEqual({ pointerType: "touch", moved: true })
+
+      await page.keyboard.press("Escape")
+      await expect(
+        page.getByRole("dialog", { name: "Connect wallet", exact: true })
+      ).not.toBeVisible()
+      await page
+        .getByRole("button", { name: "Add wallet", exact: true })
+        .press("ArrowDown")
+      await expect(page.getByRole("menu")).toBeVisible()
+      await page
+        .getByRole("menuitem", {
+          name: "Connect an external wallet",
+          exact: true,
+        })
+        .press("Enter")
+      await expect(
+        page.getByRole("dialog", { name: "Connect wallet", exact: true })
+      ).toBeVisible()
+    })
+  }
 
   test("market reviews an updated payment address before retrying the same order @market", async ({
     page,

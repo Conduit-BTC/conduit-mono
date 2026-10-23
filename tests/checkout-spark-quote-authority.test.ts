@@ -1,4 +1,14 @@
 import { describe, expect, it } from "bun:test"
+import { admitFixture } from "./helpers/public-event"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+} from "nostr-tools/pure"
+import {
+  parseProductEvent,
+  deriveCheckoutSparkSignedCommerceObligations,
+} from "@conduit/core"
 import type { ParsedShippingOption, Product } from "@conduit/core"
 import { authorizeCurrentCheckoutItems } from "../apps/market/src/lib/checkout-authorization"
 import { buildCheckoutSparkCommerceEvidence } from "../apps/market/src/lib/checkout-spark-commerce-evidence"
@@ -92,6 +102,56 @@ async function authorize(
 }
 
 describe("checkout Spark quote authority", () => {
+  it("carries a fresh fiat variation quote from authorization into exact signed allocation", async () => {
+    const key = generateSecretKey()
+    const merchant = getPublicKey(key)
+    const event = finalizeEvent(
+      {
+        kind: 30_402,
+        created_at: NOW / 1_000,
+        tags: [
+          ["d", "child"],
+          ["title", "Child"],
+          ["price", "2.5", "USD"],
+          ["type", "variation", "digital"],
+          ["a", `30402:${merchant}:family`],
+          ["spec", "Size", "Large"],
+        ],
+        content: "",
+      },
+      key
+    )
+    const listing = {
+      ...parseProductEvent(await admitFixture(event)),
+      sourceEventId: event.id,
+    }
+    const item = {
+      ...createCartItemFromProduct(listing),
+      familyProductId: listing.parentProductId,
+      quantity: 2,
+    }
+    const authorization = await authorize(listing, { item })
+    if (authorization.status !== "ok") throw new Error("Expected checkout")
+    const authority = buildCheckoutSparkQuoteAuthority({
+      authorization,
+      rateInput: { rate: 100_000, fetchedAt: NOW, source: "mempool" },
+      nowMs: NOW,
+    })
+    const evidence = buildCheckoutSparkCommerceEvidence(authority)
+    expect(evidence.pricing?.rate.rate).toBe(100_000)
+    expect(evidence.lines[0]?.variation?.familyCoordinate).toBe(
+      listing.parentProductId
+    )
+    expect(
+      deriveCheckoutSparkSignedCommerceObligations({
+        quote: evidence,
+        products: authority.products,
+        merchantPubkey: merchant,
+        acceptedAtMs: NOW,
+      })
+    ).toEqual([{ kind: "merchant", recipientId: merchant, amountSats: 5_000 }])
+  })
+
   it("binds cart-order quote lines when signed listing reads arrive reversed", async () => {
     const first = product()
     const second = product({
@@ -328,19 +388,16 @@ describe("checkout Spark quote authority", () => {
     ).toThrow("Current signed checkout evidence changed")
   })
 
-  it("composes current signed Event Market and digital evidence into an exact Spark quote", async () => {
+  it("freezes one current signed Event Market graph into an exact Spark quote", async () => {
     const event = await createEventMarketCheckoutFixture()
     const digital = product()
     const eventItem = { ...event.item, quantity: 2 }
-    const items = [
-      eventItem,
-      { ...createCartItemFromProduct(digital), quantity: 1 },
-    ]
+    const items = [eventItem]
     const authorization = await authorizeCurrentCheckoutItems({
       mode: "direct_payment",
       reviewedItems: items,
       rawItems: items,
-      refreshedProducts: [digital, event.product],
+      refreshedProducts: [event.product],
       futureEventMarketDependencies: event.futureEventMarketDependencies,
       readShippingOptions: async () => {
         throw new Error("No shipping option required")
@@ -359,25 +416,43 @@ describe("checkout Spark quote authority", () => {
         merchantPubkey: event.merchant,
         quantity: 2,
       },
-      {
-        productCoordinate: digital.id,
-        productEventId: digital.sourceEventId,
-        merchantPubkey: digital.pubkey,
-        quantity: 1,
-      },
     ])
     expect(bundle.products.map((listing) => listing.id)).toEqual([
-      digital.id,
       event.product.id,
     ])
-    expect(bundle.pricing.totalSats).toBe(220)
+    expect(bundle.pricing.totalSats).toBe(200)
+    expect(bundle.eventMarket).toMatchObject({
+      marketEventId: event.fulfillment.market.eventId,
+      occurrenceEventId: event.fulfillment.calendar.eventId,
+      organizerFeeSats: 0,
+      organizerFee: { state: "absent" },
+    })
+    expect(
+      bundle.pickupSourceEvents?.map((source) => source.id).sort()
+    ).toEqual(event.events.map((source) => source.id).sort())
+    expect(Object.isFrozen(bundle.eventMarket)).toBe(true)
+    expect(Object.isFrozen(bundle.pickupSourceEvents)).toBe(true)
     const evidence = buildCheckoutSparkCommerceEvidence(bundle)
     expect(evidence.lines[0]).toEqual({
       ...bundle.lines[0],
       unitMerchandiseSats: 100,
       unitShippingSats: 0,
     })
-    expect(evidence.commerceTotalSats).toBe(220)
+    expect(evidence.commerceTotalSats).toBe(200)
+    expect(() =>
+      buildCheckoutSparkQuoteAuthority({
+        authorization: {
+          ...authorization,
+          items: [
+            ...authorization.items,
+            { ...createCartItemFromProduct(digital), quantity: 1 },
+          ],
+          listingReadProducts: [event.product, digital],
+          fulfillmentResolvedProducts: [event.product, digital],
+        },
+        rateInput: null,
+      })
+    ).toThrow()
 
     for (const fulfillment of [
       {
@@ -405,14 +480,57 @@ describe("checkout Spark quote authority", () => {
         buildCheckoutSparkQuoteAuthority({
           authorization: {
             ...authorization,
-            items: [
-              { ...authorization.items[0]!, fulfillment },
-              authorization.items[1]!,
-            ],
+            items: [{ ...authorization.items[0]!, fulfillment }],
           },
           rateInput: null,
         })
       ).toThrow("Current signed checkout evidence changed")
+    }
+  })
+
+  it("retains a positive signed organizer minimum on free goods without inventing a product charge", async () => {
+    const event = await createEventMarketCheckoutFixture({
+      price: 0,
+      organizerFee: {
+        state: "active",
+        basisPoints: 250,
+        minimumSats: 5,
+        lightningAddress: "organizer@example.test",
+      },
+    })
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: "direct_payment",
+      reviewedItems: [event.item],
+      rawItems: [event.item],
+      refreshedProducts: [event.product],
+      futureEventMarketDependencies: event.futureEventMarketDependencies,
+      readShippingOptions: async () => [],
+      authorizePickupHandlers: async () => undefined,
+    })
+    if (authorization.status !== "ok") throw new Error("Expected checkout")
+    const bundle = buildCheckoutSparkQuoteAuthority({
+      authorization,
+      rateInput: null,
+    })
+    expect(bundle.pricing.totalSats).toBe(0)
+    expect(bundle.pricing.paymentRequired).toBe(false)
+    expect(bundle.eventMarket?.organizerFeeSats).toBe(5)
+    expect(buildCheckoutSparkCommerceEvidence(bundle).commerceTotalSats).toBe(0)
+    for (const sources of [
+      undefined,
+      authorization.pickupSourceEvents?.filter(
+        (source) => source.kind !== 3841
+      ),
+      authorization.pickupSourceEvents?.map((source) =>
+        source.kind === 30409 ? { ...source, content: "tampered" } : source
+      ),
+    ]) {
+      expect(() =>
+        buildCheckoutSparkQuoteAuthority({
+          authorization: { ...authorization, pickupSourceEvents: sources },
+          rateInput: null,
+        })
+      ).toThrow()
     }
   })
 

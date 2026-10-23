@@ -342,10 +342,7 @@ function boundedTestRelayUrls(options?: {
   maxRelayAttempts?: number
 }): string[] {
   const relayUrls = [...(options?.relayUrls ?? [])]
-  const maxRelayAttempts = options?.maxRelayAttempts
-  return typeof maxRelayAttempts === "number" && maxRelayAttempts > 0
-    ? relayUrls.slice(0, maxRelayAttempts)
-    : relayUrls
+  return relayUrls
 }
 
 function makeFollowListRead(input: {
@@ -789,7 +786,7 @@ describe("commerce gateway", () => {
     expect(productRelayAttempts.flat()).not.toContain(unsafeRelayUrl)
   })
 
-  it("caps final hinted detail, parent and sibling plans at six relays", async () => {
+  it("keeps additive hinted detail, parent and sibling coverage beyond concurrency", async () => {
     const previousDiscovery = config.commerceDiscoveryRelayUrls
     const source = "wss://bounded-source.conduit.market"
     const pubkey = fixturePubkey("author-f")
@@ -850,7 +847,9 @@ describe("commerce gateway", () => {
       expect(attempts).toHaveLength(3)
       expect(attempts.some((attempt) => attempt.family)).toBe(true)
       for (const attempt of attempts) {
-        expect(attempt.relays.length).toBeLessThanOrEqual(6)
+        expect(attempt.relays).toEqual(
+          expect.arrayContaining(config.commerceDiscoveryRelayUrls)
+        )
         expect(attempt.relays[0]).toBe(source)
       }
     } finally {
@@ -858,7 +857,7 @@ describe("commerce gateway", () => {
     }
   })
 
-  it("reports capped direct coverage when an author has more than six NIP-65 hints", async () => {
+  it("drains direct coverage when an author has more hints than concurrent slots", async () => {
     const authorRelayUrls = Array.from(
       { length: 7 },
       (_, index) => `wss://direct-author-${index}.conduit.market`
@@ -905,16 +904,16 @@ describe("commerce gateway", () => {
     expect(result.data[0]?.eventId).toBe(product.id)
     expect(result.diagnostics[0]).toMatchObject({
       issue: null,
-      coverage: { listing: "partial" },
+      coverage: { listing: "complete" },
     })
-    expect(result.meta.degraded).toBe(true)
-    expect(result.meta.capped).toBe(true)
-    expect(attempts.every((relayUrls) => relayUrls.length <= 6)).toBe(true)
+    expect(result.meta.degraded).toBe(false)
+    expect(result.meta.capped).toBe(false)
+    expect(attempts.flat()).toEqual(expect.arrayContaining(authorRelayUrls))
     expect(
       authorRelayUrls.some(
         (relayUrl) => !attempts.some((attempt) => attempt.includes(relayUrl))
       )
-    ).toBe(true)
+    ).toBe(false)
   })
 
   it("keeps the current naddr source ahead of older cached provenance", async () => {
@@ -1542,7 +1541,11 @@ describe("commerce gateway", () => {
         expect(result.meta.degraded).toBe(false)
       }
       expect(
-        familyAttempts.every(({ relayUrls }) => relayUrls.length <= 6)
+        familyAttempts.every(({ relayUrls }) =>
+          config.commerceDiscoveryRelayUrls.every((url) =>
+            relayUrls.includes(url)
+          )
+        )
       ).toBe(true)
       for (const family of families) {
         expect(
@@ -3568,7 +3571,7 @@ describe("commerce gateway", () => {
         kinds: [EVENT_KINDS.PRODUCT],
         authors: undefined,
         limit: 100,
-        relayUrls: ["wss://conduit-congee.fly.dev"],
+        relayUrls: ["wss://relay.conduit.market"],
       },
     ])
     expect(result.data.map((record) => record.product.title)).toEqual([
@@ -5660,7 +5663,7 @@ describe("commerce gateway", () => {
     expect(asMerchant.data.map((row) => row.orderId)).not.toContain("orphan")
   })
 
-  it("excludes partial buckets with conflicting roles or counterparties", async () => {
+  it("keeps ambiguous roles hidden while separating partial history by counterparty", async () => {
     const partialRow = (
       id: string,
       orderId: string,
@@ -5726,7 +5729,17 @@ describe("commerce gateway", () => {
     })
 
     expect(asBuyer.data).toHaveLength(0)
-    expect(asMerchant.data).toHaveLength(0)
+    expect(asMerchant.data).toHaveLength(2)
+    expect(asMerchant.data.map((row) => row.buyerPubkey).sort()).toEqual([
+      "buyer-a",
+      "buyer-b",
+    ])
+    expect(
+      asMerchant.data.every(
+        (row) =>
+          row.orderId === "counterparty-conflict" && row.messageCount === 1
+      )
+    ).toBe(true)
   })
 
   it("persists buyer-originated order messages into the conversation cache", async () => {
@@ -6730,7 +6743,7 @@ describe("commerce gateway", () => {
     const readOnlyRelayUrl = "ws://read-only-owner.example:4848"
     const writeOnlyRelayUrl = "ws://write-only-owner.example:4848"
     const genericReadRelayPlans: string[][] = []
-    const genericReadOwnerSelections: string[][] = []
+    const genericReadOwnerTargetSelections: boolean[] = []
     const genericReadAuthenticatedPubkeys: Array<string | null | undefined> = []
     let productReadRelayPlan: string[] = []
 
@@ -6748,9 +6761,18 @@ describe("commerce gateway", () => {
         const relayUrls = [...(options?.relayUrls ?? [])]
         if (filter.kinds?.includes(EVENT_KINDS.PROFILE)) {
           genericReadRelayPlans.push(relayUrls)
-          genericReadOwnerSelections.push([
-            ...(options?.ownerSelectedRelayUrls ?? []),
-          ])
+          genericReadOwnerTargetSelections.push(
+            Boolean(
+              options?.relayTargets?.some(
+                (target) =>
+                  target.url === readOnlyRelayUrl &&
+                  target.grants.some(
+                    (grant) =>
+                      grant.kind === "owner_nip65" && grant.operation === "read"
+                  )
+              )
+            )
+          )
           genericReadAuthenticatedPubkeys.push(options?.authenticatedPubkey)
         }
         if (filter.kinds?.includes(EVENT_KINDS.PRODUCT)) {
@@ -6787,13 +6809,15 @@ describe("commerce gateway", () => {
     )
     expect(genericReadRelayPlans).toEqual([
       generalAppRelayUrls,
-      [writeOnlyRelayUrl, readOnlyRelayUrl, ...generalAppRelayUrls],
+      [
+        writeOnlyRelayUrl,
+        generalAppRelayUrls[0]!,
+        readOnlyRelayUrl,
+        ...generalAppRelayUrls.slice(1),
+      ],
     ])
     expect(genericReadRelayPlans.flat()).not.toContain(staleSelfRelayUrl)
-    expect(genericReadOwnerSelections).toEqual([
-      [],
-      [readOnlyRelayUrl, writeOnlyRelayUrl],
-    ])
+    expect(genericReadOwnerTargetSelections).toEqual([false, true])
     expect(genericReadAuthenticatedPubkeys).toEqual([
       MERCHANT_A_PUBKEY,
       MERCHANT_A_PUBKEY,
@@ -7041,7 +7065,7 @@ describe("commerce gateway", () => {
       readPolicy: { maxRelays: 1 },
     })
 
-    expect(seenRelayUrls).toEqual([localRelayUrl])
+    expect(seenRelayUrls).toEqual([localRelayUrl, ...config.defaultRelays])
   })
 
   it("uses explicit product relay hints before default relays for profiles", async () => {
@@ -7087,6 +7111,7 @@ describe("commerce gateway", () => {
     expect(seenRelayUrls).toEqual([
       "wss://live-product-source.conduit.market",
       "wss://second-product-source.conduit.market/path",
+      ...config.defaultRelays,
     ])
     expect(result.data[PROFILE_LIVE_MERCHANT]?.displayName).toBe(
       "Live Merchant"
@@ -7216,7 +7241,9 @@ describe("commerce gateway", () => {
       sort: "newest",
     })
 
-    expect(deletionFetchCalls).toBe(6)
+    expect(deletionFetchCalls).toBe(
+      6 * config.commerceDiscoveryRelayUrls.length
+    )
     expect(maxActiveDeletionFetches).toBeGreaterThan(1)
     expect(maxActiveDeletionFetches).toBeLessThanOrEqual(8)
     expect(result.data).toHaveLength(129)
@@ -8596,7 +8623,7 @@ describe("getProductsByIds diagnostics", () => {
       fetchPublicEventsWithDiagnostics: async (filter, options) => {
         const relayUrls = boundedTestRelayUrls(options)
         expect(relayUrls).not.toContain(parkedRelayUrl)
-        expect(relayUrls).toEqual(ambientRelayUrls.slice(0, 6))
+        expect(relayUrls).toEqual(ambientRelayUrls)
         return {
           events: filter.kinds?.includes(EVENT_KINDS.PRODUCT)
             ? [liveEvent]
