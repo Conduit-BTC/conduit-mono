@@ -97,6 +97,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
   physical-device matrix for Market, Merchant, Wallet, and booth flows
 
 - `docs/knowledge/breez-lightning-addresses.md`: same-identity hosted address integration, configuration, retry and live enablement evidence.
+- `docs/knowledge/wallet-recovery-method-checks.md`: bounded local recovery
+  metadata checks, unavailable versus missing evidence, Retry and stale-result
+  isolation without provider-opening deadlines.
 
 - `docs/knowledge/address-gateway-release.md`: original request verification, PR-based approved names, provider admission qualification and receiving-preserving release gates.
 

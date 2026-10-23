@@ -3,6 +3,7 @@ import type { WalletDescriptor } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, test, type Locator, type Page } from "@playwright/test"
 import { recordSmokeDiagnostic } from "./smoke-diagnostics"
+import { viteFileModuleUrl } from "./vite-file-module-url"
 
 type ControlledWalletFixtureWindow = Window & {
   __walletFixtureFactory?: {
@@ -26,6 +27,7 @@ type ControlledWalletFixtureWindow = Window & {
     savedMnemonic: string
     lastAccount: number
     failOpen?: boolean
+    openBarrier?: () => Promise<void>
     addressUnavailableReason?: string
     balanceReads?: number
     delayBalance?: boolean
@@ -195,6 +197,7 @@ export async function prepareControlledWallet(page: Page) {
           })
         const probe = fixtureWindow.__walletProbe
         probe.opens++
+        if (probe.openBarrier) await probe.openBarrier()
         if (probe.failOpen) throw new Error("Injected SDK open failure")
         probe.openedAccounts.push(input.accountNumber)
         probe.lastAccount = input.accountNumber
@@ -315,7 +318,7 @@ export async function installControlledWallet(
 ) {
   await page.evaluate(
     async ({ failRegistration, modulePath, restoredAddress }) => {
-      const recovery = await import("/@fs" + modulePath)
+      const recovery = await import(modulePath)
       Object.assign(window, {
         __walletProbe: {
           restoredAddress,
@@ -336,7 +339,9 @@ export async function installControlledWallet(
     {
       restoredAddress,
       failRegistration,
-      modulePath: path.resolve("packages/core/src/wallets/spark-recovery.ts"),
+      modulePath: viteFileModuleUrl(
+        path.resolve("packages/core/src/wallets/spark-recovery.ts")
+      ),
     }
   )
 }
