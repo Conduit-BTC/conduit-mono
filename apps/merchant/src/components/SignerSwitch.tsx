@@ -17,6 +17,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
     authUrl,
     nostrConnectUri,
     connect,
+    localKeyEnabled,
     cancelConnect,
     disconnect,
   } = useAuth()
@@ -34,6 +35,10 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       nostrConnectUri={nostrConnectUri}
       signerMethod={method}
       rememberedMethod={rememberedMethod}
+      localKeyEnabled={localKeyEnabled}
+      onImportLocalKey={(localKeyInput) =>
+        connect({ method: "local", localKeyInput })
+      }
       extensionAvailable={extensionAvailable}
       connectedDescription="Your merchant workspace is ready."
       connectDescription="Use your Nostr account to open your merchant workspace."

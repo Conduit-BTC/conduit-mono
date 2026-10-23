@@ -7,9 +7,33 @@ import {
   selectDeploymentProfileName,
 } from "../scripts/vite/deployment_profile"
 import { resolveDmCompatibilityOrderRoutingEnabled } from "../packages/core/src/config"
-import { assertPagesWalletConfiguration } from "../scripts/vite/build_info"
+import {
+  assertPagesWalletConfiguration,
+  createConduitBuildContract,
+} from "../scripts/vite/build_info"
 
 describe("deployment profiles", () => {
+  it("keeps local-key sign-in disabled in managed builds despite environment overrides", () => {
+    const profile = process.env.CONDUIT_DEPLOYMENT_PROFILE
+    const enabled = process.env.VITE_ENABLE_LOCAL_KEY_SIGNER
+    try {
+      process.env.VITE_ENABLE_LOCAL_KEY_SIGNER = "true"
+      for (const name of ["production", "preview", "staging"]) {
+        process.env.CONDUIT_DEPLOYMENT_PROFILE = name
+        for (const app of ["market", "merchant"]) {
+          expect(
+            createConduitBuildContract(`${import.meta.dir}/../apps/${app}`)
+              .define["import.meta.env.VITE_ENABLE_LOCAL_KEY_SIGNER"]
+          ).toBe('"false"')
+        }
+      }
+    } finally {
+      if (profile === undefined) delete process.env.CONDUIT_DEPLOYMENT_PROFILE
+      else process.env.CONDUIT_DEPLOYMENT_PROFILE = profile
+      if (enabled === undefined) delete process.env.VITE_ENABLE_LOCAL_KEY_SIGNER
+      else process.env.VITE_ENABLE_LOCAL_KEY_SIGNER = enabled
+    }
+  })
   it("rejects a hosted wallet build missing its public Breez configuration", () => {
     for (const app of ["market", "merchant"]) {
       expect(() =>

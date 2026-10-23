@@ -37,6 +37,10 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- [Auth session lifecycle](knowledge/auth-session-lifecycle.md): shared account/session ownership,
+  provider integration, authority fencing and method-specific cleanup
+- [Local signer security review](knowledge/local-signer-security-review.md): contained existing-key
+  import, storage/lifecycle contract, threat model and focused review/device gates
 - `docs/knowledge/central-relay-policy.md`: central relay ownership, installed
   delivery-plan migration, finite caller ledger and CI enforcement
 

@@ -63,7 +63,7 @@ export interface PublishCheckoutSparkBoundOrderInput {
   shouldContinue: () => boolean
   addressValidity: OrderLifecycle["addressValidity"]
   shippingZoneEligibility: OrderLifecycle["shippingZoneEligibility"]
-  relayAuthMethod?: "nip07" | "nip46"
+  relayAuthMethod?: "nip07" | "nip46" | "local"
   storage?: CheckoutSparkSettledPreparationStorage | null
 }
 

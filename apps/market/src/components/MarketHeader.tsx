@@ -236,6 +236,7 @@ function AccountControl({
   authPending,
   onConnect,
   onDisconnect,
+  localSigner,
 }: {
   connected: boolean
   displayName: string
@@ -244,6 +245,7 @@ function AccountControl({
   authPending: boolean
   onConnect: () => void
   onDisconnect: () => void
+  localSigner: boolean
 }) {
   const [open, setOpen] = useState(false)
 
@@ -340,7 +342,7 @@ function AccountControl({
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
         <AccountMenuItem
           icon={<LogOut className="size-4" />}
-          label="Disconnect"
+          label={localSigner ? "Sign out and remove key" : "Disconnect"}
           variant="danger"
           onSelect={() => {
             setOpen(false)
@@ -357,7 +359,7 @@ export function MarketHeader({
 }: {
   chromeState: MarketChromeState
 }) {
-  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const { pubkey, status, disconnect, authGeneration, method } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -729,7 +731,8 @@ export function MarketHeader({
             avatarUrl={profile?.picture}
             authPending={authPending}
             onConnect={() => setConnectOpen(true)}
-            onDisconnect={disconnect}
+            onDisconnect={() => void disconnect().catch(() => undefined)}
+            localSigner={method === "local"}
           />
         </div>
       </div>

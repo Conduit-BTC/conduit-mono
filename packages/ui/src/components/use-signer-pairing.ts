@@ -4,7 +4,7 @@ export interface UseSignerPairingOptions {
   autoPrepare: boolean
   connectPending?: boolean
   connectDisabled?: boolean
-  rememberedMethod?: "nip07" | "nip46" | null
+  rememberedMethod?: "nip07" | "nip46" | "local" | null
   nostrConnectUri?: string | null
   error?: string | null
   onConnect: () => Promise<void> | void

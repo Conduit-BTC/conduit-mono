@@ -114,7 +114,7 @@ type BuyerOrderPublishDependencies = {
   signerInteraction?: "external" | "background_external"
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
-  relayAuthMethod?: "nip07" | "nip46"
+  relayAuthMethod?: "nip07" | "nip46" | "local"
   shouldContinue?: () => boolean
   /** Initial order snapshot persisted with the exact recipient wrap pre-send. */
   orderLifecycle?: StagedOrderLifecycleInput
