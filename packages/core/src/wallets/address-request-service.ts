@@ -157,6 +157,37 @@ export class AddressRequestService {
     this.scope.assertCurrent()
     return parseAddressRequests(plaintext, event, network)
   }
+  private async signSnapshot(
+    snapshot: AddressRequestSnapshot,
+    options: AccountSignerOperationOptions
+  ): Promise<SignedNostrEvent> {
+    const content = await this.input.signer.encryptNip44(
+      this.scope.owner,
+      JSON.stringify(snapshot),
+      options
+    )
+    this.scope.assertCurrent()
+    const event = validateAddressRequestEvent(
+      await this.input.signer.signEvent(
+        {
+          kind: 30078,
+          pubkey: this.scope.owner,
+          created_at: snapshot.createdAt,
+          tags: [["d", addressRequestsDTag(snapshot.network)]],
+          content,
+        },
+        options
+      ),
+      this.scope.owner,
+      snapshot.network
+    )
+    if (
+      JSON.stringify(await this.decrypt(event, snapshot.network, options)) !==
+      JSON.stringify(snapshot)
+    )
+      throw new SparkRecoveryError("invalid_record")
+    return event
+  }
   /** Read retained evidence without requiring optional relay availability. */
   async loadLocal(
     network: AddressRequestNetwork,
@@ -235,31 +266,7 @@ export class AddressRequestService {
       requests: records,
       createdAt,
     }
-    const content = await this.input.signer.encryptNip44(
-      this.scope.owner,
-      JSON.stringify(snapshot),
-      options
-    )
-    this.scope.assertCurrent()
-    const event = validateAddressRequestEvent(
-      await this.input.signer.signEvent(
-        {
-          kind: 30078,
-          pubkey: this.scope.owner,
-          created_at: createdAt,
-          tags: [["d", addressRequestsDTag(network)]],
-          content,
-        },
-        options
-      ),
-      this.scope.owner,
-      network
-    )
-    if (
-      JSON.stringify(await this.decrypt(event, network, options)) !==
-      JSON.stringify(snapshot)
-    )
-      throw new SparkRecoveryError("invalid_record")
+    const event = await this.signSnapshot(snapshot, options)
     await this.input.store.update(this.scope.owner, network, (current) => {
       this.scope.assertCurrent()
       if (JSON.stringify(current) !== JSON.stringify(state))
@@ -616,32 +623,8 @@ export class AddressRequestService {
         requests: collected.records,
         createdAt,
       }
-      const content = await this.input.signer.encryptNip44(
-        this.scope.owner,
-        JSON.stringify(snapshot),
-        options
-      )
-      this.scope.assertCurrent()
-      event = validateAddressRequestEvent(
-        await this.input.signer.signEvent(
-          {
-            kind: 30078,
-            pubkey: this.scope.owner,
-            created_at: createdAt,
-            tags: [["d", addressRequestsDTag(network)]],
-            content,
-          },
-          options
-        ),
-        this.scope.owner,
-        network
-      )
+      event = await this.signSnapshot(snapshot, options)
       eventSource = "new"
-      if (
-        JSON.stringify(await this.decrypt(event, network, options)) !==
-        JSON.stringify(snapshot)
-      )
-        throw new SparkRecoveryError("invalid_record")
       // Signed immutable bytes reach disk before any relay or HTTP write.
       await this.input.store.update(this.scope.owner, network, (current) => {
         if (current.operation?.event.id !== replacedOperationId)
