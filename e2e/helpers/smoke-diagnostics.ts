@@ -384,6 +384,22 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "event-stock-control": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        phase: ["setup_code_read", "stock_reconcile"],
+        observationAvailable: "boolean",
+        pageClosed: "boolean",
+        controlCardinality: ["absent", "single", "multiple"],
+        controlVisible: "boolean",
+        controlEnabled: "boolean",
+        controlHitTarget: "boolean",
+        detailsPresent: "boolean",
+        detailsOpen: "boolean",
+        refreshControlCardinality: ["absent", "single", "multiple"],
+        refreshControlEnabled: "boolean",
+      },
+    },
     "wallet-import-menu": {
       file: "e2e/shared-ui-composition.playwright.ts",
       fields: {
@@ -1188,6 +1204,7 @@ export function safeRetainedSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "event-stock-control"
     | "wallet-import-menu"
     | "wallet-foreground-open"
     | "wallet-retry"
@@ -1222,4 +1239,92 @@ export function recordSmokeDiagnostic(
   const annotation = info.annotations.find((item) => item.type === type)
   if (annotation) annotation.description = description
   else info.annotations.push({ type, description })
+}
+
+/** Observe only after a failed stock control; never retain its value or content. */
+export async function recordEventStockControlFailure(
+  page: Page,
+  info: TestInfo,
+  phase: "setup_code_read" | "stock_reconcile"
+): Promise<void> {
+  try {
+    let values: Record<string, unknown> = {
+      phase,
+      observationAvailable: false,
+      pageClosed: page.isClosed(),
+    }
+    if (!values.pageClosed) {
+      let observationTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const observation = await Promise.race([
+          page
+            .getByRole(phase === "setup_code_read" ? "textbox" : "button", {
+              name:
+                phase === "setup_code_read"
+                  ? "Pickup setup code"
+                  : "Reconcile accepted order stock",
+              exact: true,
+              includeHidden: true,
+            })
+            .evaluateAll((controls) => {
+              const cardinality = (count: number) =>
+                count === 0 ? "absent" : count === 1 ? "single" : "multiple"
+              const enabled = (element: Element | undefined) =>
+                !!element &&
+                !element.matches(":disabled") &&
+                element.getAttribute("aria-disabled") !== "true"
+              const control = controls.length === 1 ? controls[0] : undefined
+              const rect = control?.getBoundingClientRect()
+              const hit =
+                rect && rect.width > 0 && rect.height > 0
+                  ? document.elementFromPoint(
+                      rect.x + rect.width / 2,
+                      rect.y + rect.height / 2
+                    )
+                  : null
+              const details = [...document.querySelectorAll("summary")]
+                .find(
+                  (summary) =>
+                    summary.textContent?.trim() === "Technical pickup details"
+                )
+                ?.closest("details")
+              const refreshControls = [
+                ...document.querySelectorAll("button"),
+              ].filter(
+                (button) =>
+                  button.textContent?.trim() === "Check for stock updates"
+              )
+              return {
+                observationAvailable: true,
+                pageClosed: false,
+                controlCardinality: cardinality(controls.length),
+                controlVisible:
+                  !!control &&
+                  control.getClientRects().length > 0 &&
+                  getComputedStyle(control).visibility === "visible",
+                controlEnabled: enabled(control),
+                controlHitTarget: !!control && !!hit && control.contains(hit),
+                detailsPresent: !!details,
+                detailsOpen: details?.open === true,
+                refreshControlCardinality: cardinality(refreshControls.length),
+                refreshControlEnabled:
+                  refreshControls.length === 1 && enabled(refreshControls[0]),
+              }
+            }),
+          new Promise<undefined>((resolve) => {
+            observationTimer = setTimeout(() => resolve(undefined), 250)
+          }),
+        ])
+        if (observation) values = { phase, ...observation }
+        else values.pageClosed = page.isClosed()
+      } catch {
+        values.pageClosed = page.isClosed()
+      } finally {
+        if (observationTimer !== undefined) clearTimeout(observationTimer)
+      }
+    }
+    recordSmokeDiagnostic(info, "event-stock-control", values)
+  } catch {
+    // Diagnostics must not replace or delay the original test failure.
+  }
 }

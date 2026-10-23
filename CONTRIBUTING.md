@@ -389,6 +389,13 @@ stays suppressed. Do not enable `PW_RUNNER_DEBUG`, which bypasses the reporter.
 A matching signal is diagnostic evidence, not proof that every timeout shares
 the same cause; absence of a signal does not exclude a browser failure.
 
+The reserved-stock journey records failure-only, file-bound control-state
+observations at pickup setup and reconciliation: fixed phase/cardinality enums
+and availability, visibility, enablement, hit-target and disclosure booleans.
+These observations do not establish stock delivery or settlement. Input values,
+pickup codes, identifiers, error text, DOM and coordinates remain excluded;
+the original operation error and test deadlines are unchanged.
+
 ## Code Conventions
 
 ### General
