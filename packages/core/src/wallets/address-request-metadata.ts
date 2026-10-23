@@ -44,6 +44,8 @@ const snapshotSchema = z
 export type AddressRequestSnapshot = z.infer<typeof snapshotSchema>
 export type AddressRequestNetwork = AddressRequestSnapshot["network"]
 export interface AddressRequestState {
+  /** Latest encrypted local intent; independent of the immutable delivery attempt. */
+  local?: SignedNostrEvent
   observed?: SignedNostrEvent
   operation?: {
     event: SignedNostrEvent
@@ -106,6 +108,8 @@ export function validateAddressRequestStates(
   for (const [key, state] of Object.entries(states)) {
     const network = sparkRecoveryNetworkSchema.parse(key)
     const checked: AddressRequestState = {}
+    if (state.local)
+      checked.local = validateAddressRequestEvent(state.local, owner, network)
     if (state.observed)
       checked.observed = validateAddressRequestEvent(
         state.observed,
