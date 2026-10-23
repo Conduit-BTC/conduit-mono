@@ -26,23 +26,6 @@ function surface(
     createdAt: 1,
     updatedAt: 1,
   }
-  const walletDiagnosis: UseWalletsReturn["recoveryDiagnosisByWallet"][string] =
-    {
-      backup: {
-        ready: recoverySync !== "pending",
-        confirmedTargets: 0,
-        targetCount: recoverySync === "pending" ? 1 : 0,
-        independentCopies: 0,
-        issues: recoverySync === "pending" ? ["awaiting_publish"] : [],
-      },
-      primary: {
-        ready: true,
-        confirmedTargets: 0,
-        targetCount: 0,
-        independentCopies: 0,
-        issues: [],
-      },
-    }
   const wallets = {
     wallets: hasWallet ? [wallet] : [],
     portableWallets: hasWallet ? [wallet] : [],
@@ -51,14 +34,10 @@ function surface(
     recoverySyncByWallet: hasWallet
       ? { wallet: recoverySync === "ready" ? "ready" : "pending" }
       : {},
-    recoveryDiagnosisByWallet: hasWallet ? { wallet: walletDiagnosis } : {},
     mainWalletSync: null,
-    mainWalletDiagnosis: null,
-    recoveryDiscoveryDiagnosis: null,
     nwcSnapshots: {},
     loading: false,
     initializationError: null,
-    hasPasswordWallets: false,
     signerUnlockSupported: true,
     sparkAvailability: { status: "ready", network: "mainnet" },
     recoverySync,
@@ -118,4 +97,19 @@ describe("shared Wallets recovery delivery wording", () => {
     expect(markup).toContain("Encrypted relay recovery is confirmed.")
     expect(markup).not.toContain("Relay recovery is not confirmed yet.")
   })
+})
+
+for (const state of ["idle", "checking", "pending", "ready"] as const) {
+  it(`keeps routine ${state} synchronization quiet`, () => {
+    const markup = surface(state, true, false)
+    expect(markup).not.toContain("Sync wallet names")
+    expect(markup).not.toContain("Repair saved recovery")
+    expect(markup).not.toContain("Approve wallet access")
+  })
+}
+it("shows one actionable message and collapsed details after signer refusal", () => {
+  const markup = surface("blocked", true, false)
+  expect(markup.split("Approve wallet access").length - 1).toBe(1)
+  expect(markup).toContain("<summary>Details</summary>")
+  expect(markup).not.toContain("<details open")
 })

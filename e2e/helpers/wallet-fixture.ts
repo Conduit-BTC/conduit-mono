@@ -2,7 +2,6 @@ import path from "node:path"
 import type { WalletDescriptor } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { recordSmokeDiagnostic } from "./smoke-diagnostics"
 
 type ControlledWalletFixtureWindow = Window & {
   __walletFixtureFactory?: {
@@ -66,65 +65,21 @@ export async function walletRetryControlSettled(
 }
 
 export async function retryWalletRecovery(page: Page) {
-  const retry = page.getByRole("button", {
-    name: "Retry encrypted wallet sync",
-    exact: true,
-  })
-  const recoveryDialog = page.getByRole("dialog", { name: /^Recovery for / })
-  let phase = "open_details"
-  try {
-    if (!(await retry.count())) {
-      await page
-        .getByRole("button", { name: /^Manage / })
-        .first()
-        .click()
-      await page
-        .getByRole("menuitem", { name: "Recovery details", exact: true })
-        .click()
+  await page.evaluate(
+    async ({ core, sync }) => {
+      const { getAccountSigner } = await import(core)
+      const { getPortableWalletSync } = await import(sync)
+      await getPortableWalletSync(getAccountSigner()).sync({
+        priority: "foreground",
+      })
+    },
+    {
+      core: "/@fs" + path.resolve("packages/core/src/index.ts"),
+      sync:
+        "/@fs" +
+        path.resolve("packages/core/src/wallets/portable-wallet-sync.ts"),
     }
-    phase = "click_retry"
-    await retry.click()
-    phase = "await_sync"
-    await expect.poll(() => walletRetryControlSettled(retry)).toBe(true)
-    phase = "dismiss_details"
-    if (await recoveryDialog.count()) await page.keyboard.press("Escape")
-  } catch (error) {
-    const controlState = await walletRetryControlState(retry).catch(() => null)
-    const observed = await Promise.all([
-      retry.count(),
-      recoveryDialog.count(),
-      page.getByRole("button", { name: /^Manage / }).count(),
-    ]).catch(() => null)
-    recordSmokeDiagnostic(test.info(), "wallet-retry", {
-      phase,
-      observationAvailable: observed !== null,
-      retryPresent: !!observed?.[0],
-      retryVisible:
-        observed?.[0] === 1 && (await retry.isVisible().catch(() => false)),
-      retryEnabled:
-        observed?.[0] === 1 &&
-        controlState?.count === 1 &&
-        controlState.enabled,
-      recoveryDialogPresent: !!observed?.[1],
-      managePresent: !!observed?.[2],
-      syncCheckingVisible: await page
-        .getByText("Checking encrypted wallet recovery…", { exact: true })
-        .isVisible()
-        .catch(() => false),
-      recoveryBlockedVisible: await page
-        .getByText(
-          "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
-          { exact: true }
-        )
-        .isVisible()
-        .catch(() => false),
-      walletCardCount: await page
-        .locator("[data-wallet-group]")
-        .count()
-        .catch(() => 0),
-    })
-    throw error
-  }
+  )
 }
 
 export async function saveWalletRecovery(page: Page, makeMain = true) {
@@ -506,7 +461,7 @@ export async function installWalletReloadObservationBarrier(page: Page) {
     async (route) => {
       const response = await route.fetch()
       const body = await response.text()
-      const marker = ["const", "hasPasswordWallets", "="].join(" ")
+      const marker = ["const", "account", "="].join(" ")
       if (body.split(marker).length !== 2)
         throw new Error("Wallet reload observation seam changed")
       await route.fulfill({
@@ -531,8 +486,6 @@ export async function openWalletDuringDescriptorReload(page: Page) {
         __controlledWalletController: UseWalletsReturn & {
           unlockSpark(
             walletId: string,
-            password?: string,
-            migrate?: boolean,
             options?: { priority?: "foreground" | "background" }
           ): Promise<void>
         }
@@ -580,7 +533,7 @@ export async function openWalletDuringDescriptorReload(page: Page) {
       // consumer completes the explicitly authorized native open.
       let denied = false
       try {
-        await controller.unlockSpark(wallet.id, "", false, {
+        await controller.unlockSpark(wallet.id, {
           priority: "background",
         })
       } catch {

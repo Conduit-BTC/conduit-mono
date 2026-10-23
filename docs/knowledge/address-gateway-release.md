@@ -42,47 +42,31 @@ authorizes changing the saved name or request ID.
 
 ## Encrypted wallet progress
 
-Request progress uses a separate encrypted kind-30078 record at
-`conduit:address-requests:v1:mainnet`, keyed within its ciphertext by the
-existing wallet ID. It does not add fields to the wallet-membership registry.
-Each entry retains exact canonical request bytes, the original account proof,
-the wallet proof inside those bytes, and a monotonic phase. The account journal
-retains exact signed local intent before HTTP submission or activation. The
-selected wallet must have current signer ownership, verified local encrypted
-recovery, matching native Spark identity, and no retained removal or conflicting
-backup. Account-wide discovery completeness is not that wallet's authority.
+Request progress is a field of the complete encrypted Portable Wallet record,
+`conduit:portable-wallet:v1:<walletId>`. It travels with the original recovery
+tuple, name, receiving address and preferences. The clean-start wallet runtime
+ignores previous separate request records and registry extensions.
 
-Optional relay publication runs independently through the existing request
-service. Its immutable staged event and destinations remain separate from the
-latest encrypted local progress; new progress cannot rewrite an in-flight event.
-Incomplete membership or optional readback leaves synchronization pending without
-vetoing gateway submission, status or approved activation. Local retention is
-shown separately from confirmed publication; another device cannot restore a
-local-only checkpoint. Reload or another wallet action resumes bounded repair.
+The record retains canonical request bytes, the original account proof, the
+wallet proof and progress. Exact signed wallet bytes are saved locally before
+HTTP submission or activation. Current signer ownership, active lifecycle and
+matching native identity authorize the selected wallet. Unrelated discovery
+or relay-delivery uncertainty does not grant or veto that authority.
 
-Normal wallet loading reads this optional record independently of membership.
-Automatic checks are bounded to three
-requests per signer session, once per request; signer refusal pauses automatic
-checks. Explicit checks use foreground consent. Receipt/uncertainty continue to
-show the existing receiving address. Once approval or decline is recorded,
-pending checks stop. Activation is an explicit action and independently checks
-current gateway approval and authenticated provider registration. A saved phase
-is a resume hint, never approval or proof of current registration.
+The shared wallet coordinator handles relay delivery automatically. A saved
+request phase is a resume hint, never gateway approval or current registration
+proof. Status checks and activation use fresh foreground authority. Before
+resubmitting retained intent, query authenticated status: only explicit
+`not_received` permits retrying the same immutable request. Unknown responses
+and failed receipt writes cannot create a replacement request.
 
-`Activate and use address` first retains activation intent, registers only after
-an authenticated absence, verifies the exact name and public lookup, saves
-registration progress, then uses the existing field-preserving kind-0 address
+`Activate and use address` verifies current gateway approval, checks provider
+state, retains activation intent before registering an absent address, verifies
+the exact name and public lookup, then uses the field-preserving kind-0 address
 publisher. A profile failure leaves `registered` progress with `Finish profile
-update`; the retry verifies the existing registration without registering again.
-Completion includes the profile event ID and requires fresh profile observation.
-A failure to sync completion offers a separate sync retry. A generic routing
-error or unavailable relay never erases request evidence.
-
-Before retrying a retained request, query authenticated status. An unknown or
-lost response stays uncertain; only explicit authenticated `not_received` permits
-resubmission of the same identity and bytes. A failed local receipt write cannot
-cause a new request. Gateway receipt/approval and optional relay sync render as
-independent states.
+update`; retry verifies registration before resuming publication. Completion
+includes the freshly observed profile event ID. Wallet synchronization resumes
+automatically and has no separate address-sync action.
 
 Durable HTTP submissions retain the original body and send its original NIP-98
 proof in `X-Address-Request-Proof`, together with a fresh NIP-98 Authorization
@@ -92,28 +76,19 @@ layers and the Spark signature. D1 stores durable original account proofs as
 plain-event records and legacy clients remain readable. Existing rows are never
 rewritten by retries. No database migration is needed for the wrapper.
 
-Conflicting immutable evidence fails closed. Confirmed membership removal
-always wins; retained stronger phases survive stale optional heads. Optional
-read failure never changes wallet membership or grants approval. Display names
-use their own `conduit:wallet-names:v1:<network>` record.
+Conflicting immutable request evidence fails closed. Saved names and address
+progress use the same newest-valid-wallet rule as recovery; partial reads do
+not erase stronger retained records. See [the complete wallet lifecycle](wallet-registry-lifecycle.md).
 
-### Reader compatibility and limits
+### Cutover and limits
 
-New ordinary membership successors contain only the deployed strict v1 fields.
-An older client can continue to read and write wallet membership while a newer
-client writes the separate request record. Older clients do not show that
-optional progress. The workflow is enabled by default; setting
-`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED=false` is an emergency disable,
-not a staged-reader requirement.
-
-Some earlier preview clients wrote `addressNameRequests` inside the registry.
-New readers still accept that legacy extension. Before an ordinary successor
-drops it, the writer must publish and read back the exact legacy progress in
-the separate record. If migration cannot be confirmed, the membership change
-stops rather than erasing the only relay copy. Rollback must preserve encrypted
-request history and D1 evidence; a fresh old client cannot display optional
-progress. The 16 KiB plaintext bound still applies. Controlled encrypted tests
-prove bounded reconciliation, not arbitrary relay retention or physical-device
+The wallet event format deliberately has no old-format compatibility reader,
+fallback, dual writes or automatic migration. Initial seed import establishes
+fresh wallet metadata; existing gateway/D1 evidence is not deleted or rewritten.
+The workflow is enabled by default. Setting
+`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED=false` disables new request writes
+in an emergency. The complete wallet plaintext has a 16 KiB bound. Controlled
+encrypted tests do not establish public-relay retention or physical-device
 recovery.
 
 ## Qualification boundary
@@ -208,31 +183,10 @@ qualification.
 - [NIP-98 HTTP authentication](https://github.com/nostr-protocol/nips/blob/master/98.md)
 - [Turnstile hostname rules](https://developers.cloudflare.com/turnstile/additional-configuration/hostname-management/)
 
-## Optional request synchronization repair
+## Selected-wallet authorization
 
-Selected-wallet authorization completes before the wallet request timestamp is
-set and before a fresh NIP-98 HTTP proof is signed. Within one action, unchanged
-encrypted recovery and signed journal IDs reuse their validated identity and
-removal evidence. Each boundary still checks the current signer, wallet,
-native identity, recovery binding and journal; changed evidence is revalidated.
-No decrypted recovery material or authorization survives into the next action.
-After transport-proof signing, a final check rejects changed wallet authority
-without repeating decryption or signing over a stale authorization. Local request
-progress is relay-confirmed only when that exact selected record is covered by
-the confirmed snapshot. An empty or unrelated membership snapshot is insufficient.
-
-When all relevant relay heads agree on compatible cross-device progress, optional
-synchronization can reconcile a staged operation over that head. A new signed
-successor contains the merged progress, preserves exact request payloads and proofs,
-and inherits the staged delivery plan. The existing journal atomically replaces the
-superseded optional operation; no permanent history store is added. Reconciliation confirms consensus at the frozen
-destinations, and interrupted successor delivery retries its exact bytes. Divergent,
-unavailable, or incompatible observations retain the pending operation for repair.
-This device-local journal addition changes no public event format or version.
-
-Validated legacy registry requests for the selected wallet remain resume evidence
-even when an unrelated wallet backup is missing. Discovery uncertainty never
-authorizes replacing that immutable request. Newly staged local aggregates omit
-requests only for positively signed mainnet removals; omission from a partial
-read does not prune them. Frozen delivery events remain separately retained, so
-removed-wallet history cannot exhaust the active snapshot's size budget.
+Authorization checks the current complete record and native identity before
+request signing. A final fence after signing rejects changed signer or wallet
+authority. Decrypted records are session-scoped and cleared when authority is
+retired. Synchronization uses the shared wallet coordinator and exact-event
+readback; there is no separate request journal, membership gate or repair flow.
