@@ -777,8 +777,12 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   )
   await freshDialog.getByLabel("Title").fill("Fallback image listing")
   await freshDialog.getByLabel("Price").fill("7")
-  await freshDialog.locator("#product-fulfillment").click()
+  const fulfillment = freshDialog.locator("#product-fulfillment")
+  await fulfillment.click()
   await page.getByRole("option", { name: "Digital" }).click()
+  // Finish the Select's focus restoration before entering tags.
+  await expect(fulfillment).toBeFocused()
+  await expect(fulfillment).toHaveText("Digital")
   const tags = freshDialog.getByRole("combobox", { name: "Tags" })
   for (const [index, tag] of ["fallback", "storage", "guardrail"].entries()) {
     recordSmokeDiagnostic(info, "fallback-upload", {

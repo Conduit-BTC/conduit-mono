@@ -118,6 +118,8 @@ test("signed name request completes after approval and restores on another stora
     relayUrls.map((url) => [url, new Map<string, SignedNostrEvent>()])
   )
   const requestWrites: Array<{ url: string; event: SignedNostrEvent }> = []
+  let loseNextResponse = true
+  const httpPaths: string[] = []
   let optionalUnavailable = false
   let optionalWriteStatus: "timed_out" | undefined
   let failNextOptionalReadback = false
@@ -340,8 +342,9 @@ test("signed name request completes after approval and restores on another stora
           }
         },
         signAccount: (draft) => signer.signEvent(draft),
-        fetch: (async (url, init) =>
-          handleAddressGateway(
+        fetch: (async (url, init) => {
+          httpPaths.push(String(url))
+          const response = await handleAddressGateway(
             new Request(url, {
               ...init,
               headers: {
@@ -353,7 +356,13 @@ test("signed name request completes after approval and restores on another stora
             approved,
             challenge,
             Math.floor(Date.now() / 1000)
-          )) as typeof fetch,
+          )
+          if (loseNextResponse) {
+            loseNextResponse = false
+            throw new Error("Controlled lost HTTP reply")
+          }
+          return response
+        }) as typeof fetch,
         async address(_id, register, name) {
           if (register) {
             registrations++
@@ -391,12 +400,17 @@ test("signed name request completes after approval and restores on another stora
       })
     const flowA = workflow(first, metadata(dbA))
     optionalUnavailable = true
-    await expect(
-      flowA.submit(walletId, { desiredName: "saved-name", token: "controlled" })
-    ).rejects.toThrow("Finish wallet sync")
+    expect(
+      (
+        await flowA.submit(walletId, {
+          desiredName: "saved-name",
+          token: "controlled",
+        })
+      ).record.phase
+    ).toBe("pending")
     expect(
       sqlite.query("SELECT COUNT(*) AS count FROM name_requests").get()
-    ).toEqual({ count: 0 })
+    ).toEqual({ count: 1 })
     const retained = await new DexieAddressRequestStore(dbA).load(
       owner,
       "mainnet"
@@ -435,10 +449,19 @@ test("signed name request completes after approval and restores on another stora
       )
     ).toBe(true)
     expect(requestWrites.some(({ url }) => url === laterRelay)).toBe(false)
-    const submitted = await flowA.submit(walletId, {
-      desiredName: "saved-name",
-      token: "controlled",
-    })
+    httpPaths.length = 0
+    const submitted = await workflow(service(dbA), metadata(dbA)).submit(
+      walletId,
+      {
+        desiredName: "saved-name",
+        token: "controlled",
+      }
+    )
+    expect(httpPaths).toHaveLength(1)
+    expect(httpPaths[0].endsWith("/status")).toBe(true)
+    expect(
+      sqlite.query("SELECT COUNT(*) AS count FROM name_requests").get()
+    ).toEqual({ count: 1 })
     expect(submitted.record.phase).toBe("received")
     expect(submitted.record.payload).toBe(originalBytes)
     expect((await namesA.load(owner, "mainnet")).pending[walletId].token).toBe(

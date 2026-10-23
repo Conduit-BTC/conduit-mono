@@ -287,6 +287,7 @@ export interface SparkSdkClient {
     requestId?: string
   ): Promise<NwcLookupInvoiceResult>
 
+  getAddressIdentity?(): Promise<string>
   lookupBreezAddress?(domain?: string): Promise<BreezAddressState>
   ensureBreezAddress?(
     username?: string,
@@ -564,6 +565,19 @@ export class SparkWalletManager {
     )
       return { status: "unavailable", reason: "locked" }
     return result
+  }
+
+  async getAddressIdentity(walletId: string): Promise<string> {
+    const client = this.#getClient(walletId)
+    if (!client.getAddressIdentity)
+      throw new Error("Wallet identity is unavailable.")
+    const identity = await client.getAddressIdentity()
+    if (
+      this.#clients.get(walletId) !== client ||
+      this.#quarantinedWallets.has(walletId)
+    )
+      throw new Error("Your wallet session changed.")
+    return identity
   }
 
   async signAddressNameRequest(

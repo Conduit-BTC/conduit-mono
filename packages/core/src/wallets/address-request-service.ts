@@ -80,6 +80,7 @@ function combine(
 export class AddressRequestService {
   private readonly scope
   private readonly targets: string[]
+  private synchronization?: Promise<boolean>
   constructor(
     private readonly input: {
       signer: AccountSigner
@@ -101,6 +102,39 @@ export class AddressRequestService {
           input.relayTargets ?? planAccountStorageRelays(input.userRelayUrls)
         ).map((target) => target.url)
   }
+  /** One bounded domain repair at a time; never holds the foreground wallet lock. */
+  syncPending(
+    discover: () => Promise<SparkRecoveryDiscovery>
+  ): Promise<boolean> {
+    if (this.synchronization) return this.synchronization
+    const run = async () => {
+      try {
+        const discovery = await discover()
+        const local = await this.loadLocal("mainnet", {
+          priority: "background",
+        })
+        const active = this.membership(discovery)
+        const entry = Object.entries(local.records).find(([id]) =>
+          active.has(id)
+        )
+        if (!entry) return Object.keys(local.records).length === 0
+        // save merges the entire active-account snapshot in one journal operation.
+        return (
+          await this.save("mainnet", discovery, entry[0], entry[1], {
+            priority: "background",
+          })
+        ).confirmed
+      } catch {
+        // Retain exact local intent and delivery attempts; another load/action resumes.
+        return false
+      }
+    }
+    this.synchronization = run().finally(() => {
+      this.synchronization = undefined
+    })
+    return this.synchronization
+  }
+
   private continues = () => {
     try {
       this.scope.assertCurrent()
@@ -123,6 +157,130 @@ export class AddressRequestService {
     this.scope.assertCurrent()
     return parseAddressRequests(plaintext, event, network)
   }
+  private async signSnapshot(
+    snapshot: AddressRequestSnapshot,
+    options: AccountSignerOperationOptions
+  ): Promise<SignedNostrEvent> {
+    const content = await this.input.signer.encryptNip44(
+      this.scope.owner,
+      JSON.stringify(snapshot),
+      options
+    )
+    this.scope.assertCurrent()
+    const event = validateAddressRequestEvent(
+      await this.input.signer.signEvent(
+        {
+          kind: 30078,
+          pubkey: this.scope.owner,
+          created_at: snapshot.createdAt,
+          tags: [["d", addressRequestsDTag(snapshot.network)]],
+          content,
+        },
+        options
+      ),
+      this.scope.owner,
+      snapshot.network
+    )
+    if (
+      JSON.stringify(await this.decrypt(event, snapshot.network, options)) !==
+      JSON.stringify(snapshot)
+    )
+      throw new SparkRecoveryError("invalid_record")
+    return event
+  }
+  /** Read retained evidence without requiring optional relay availability. */
+  async loadLocal(
+    network: AddressRequestNetwork,
+    options: AccountSignerOperationOptions = {}
+  ): Promise<AddressRequestSyncResult> {
+    this.scope.assertCurrent()
+    const state = await this.input.store.load(this.scope.owner, network)
+    const records = await this.localRecords(state, network, options)
+    return {
+      records,
+      confirmed: false,
+      diagnosis: { reason: "local_event_pending" },
+    }
+  }
+  private async localRecords(
+    state: AddressRequestState,
+    network: AddressRequestNetwork,
+    options: AccountSignerOperationOptions
+  ): Promise<Records> {
+    const snapshots = await Promise.all(
+      [state.observed, state.operation?.event, state.local].map((event) =>
+        event ? this.decrypt(event, network, options) : undefined
+      )
+    )
+    this.scope.assertCurrent()
+    const records: Records = {}
+    for (const snapshot of snapshots)
+      for (const [id, record] of Object.entries(snapshot?.requests ?? {}))
+        records[id] = mergeAddressRequestRecord(records[id], record)
+    return records
+  }
+
+  /** Caller proves selected-wallet authority; this never grants membership. */
+  async stage(
+    network: AddressRequestNetwork,
+    walletId: string,
+    record: AddressRequestRecord,
+    options: AccountSignerOperationOptions = {},
+    confirmedRemovedWalletIds: readonly string[] = []
+  ): Promise<AddressRequestSyncResult> {
+    this.scope.assertCurrent()
+    const state = await this.input.store.load(this.scope.owner, network)
+    const records = await this.localRecords(state, network, options)
+    // Only positive removal evidence can prune a new local aggregate. The
+    // immutable observed/delivery events remain separately retained.
+    for (const id of confirmedRemovedWalletIds) delete records[id]
+    if (confirmedRemovedWalletIds.includes(walletId))
+      throw new SparkRecoveryError("conflict")
+    if (requestEvidence(record).ownerPubkey !== this.scope.owner)
+      throw new SparkRecoveryError("identity_mismatch")
+    records[walletId] = mergeAddressRequestRecord(records[walletId], record)
+    if (
+      state.local &&
+      JSON.stringify(
+        (await this.decrypt(state.local, network, options)).requests
+      ) === JSON.stringify(records)
+    )
+      return {
+        records,
+        confirmed: false,
+        diagnosis: { reason: "local_event_pending" },
+      }
+
+    const createdAt = Math.max(
+      Math.floor(Date.now() / 1000),
+      ...[state.local, state.operation?.event, state.observed].map(
+        (event) => (event?.created_at ?? 0) + 1
+      )
+    )
+    const snapshot: AddressRequestSnapshot = {
+      format: "conduit.address-requests",
+      version: 1,
+      ownerPubkey: this.scope.owner,
+      network,
+      parentEventId: state.observed?.id ?? null,
+      requests: records,
+      createdAt,
+    }
+    const event = await this.signSnapshot(snapshot, options)
+    await this.input.store.update(this.scope.owner, network, (current) => {
+      this.scope.assertCurrent()
+      if (JSON.stringify(current) !== JSON.stringify(state))
+        throw new SparkRecoveryError("conflict")
+      return { ...current, local: event }
+    })
+    this.scope.assertCurrent()
+    return {
+      records,
+      confirmed: false,
+      diagnosis: { reason: "local_event_pending" },
+    }
+  }
+
   private membership(discovery: SparkRecoveryDiscovery): Set<string> {
     if (
       discovery.state === "conflict" ||
@@ -137,10 +295,11 @@ export class AddressRequestService {
   }
   private async read(
     network: AddressRequestNetwork,
-    options: AccountSignerOperationOptions
+    options: AccountSignerOperationOptions,
+    targets = this.targets
   ): Promise<{ heads: (SignedNostrEvent | undefined)[]; complete: boolean }> {
     const reads = await Promise.all(
-      this.targets.map(async (url) => {
+      targets.map(async (url) => {
         this.scope.assertCurrent()
         try {
           const result = await this.input.transport.read(
@@ -220,6 +379,12 @@ export class AddressRequestService {
       combine(
         records,
         (await this.decrypt(state.operation.event, network, options)).requests,
+        active
+      )
+    if (state.local)
+      combine(
+        records,
+        (await this.decrypt(state.local, network, options)).requests,
         active
       )
     for (const head of heads)
@@ -347,6 +512,8 @@ export class AddressRequestService {
       },
     })
     const replacedOperationId = event?.id
+    let newerProgress = false
+    let reconciledOperation: AddressRequestState["operation"]
     if (event) {
       const pending = await this.decrypt(event, network, options)
       const changed =
@@ -357,18 +524,29 @@ export class AddressRequestService {
           candidate.id !== event!.id &&
           candidate.id !== pending.parentEventId
       )
-      if ((changed || foreign) && !collected.complete)
-        throw new SparkRecoveryError("conflict")
-      // A new agreed head may have won while the immutable local event was pending.
-      // Rebase its exact request bytes after merging the signed heads.
-      if (changed || foreign) {
+      if (!collected.readComplete) return local("request_read_unavailable")
+      if (foreign) {
+        if (!collected.complete || !head) return local("request_heads_disagree")
+        // A compatible agreed head can supersede an undeliverable replaceable
+        // event. Reconcile over that head without changing request evidence.
+        // Confirm consensus on the frozen destinations, not constructor defaults.
+        const frozen = state.operation!
+        const agreed = await this.read(
+          network,
+          options,
+          frozen.relayPolicyTargets ?? frozen.targets
+        )
+        if (!agreed.complete) return local("request_read_unavailable")
+        if (!agreed.heads.every((candidate) => candidate?.id === head.id))
+          return local("request_heads_disagree")
+        reconciledOperation = frozen
         event = undefined
         eventSource = undefined
-      } else if (!collected.readComplete)
-        return local("request_read_unavailable")
+      } else newerProgress = changed
     }
     if (
       !event &&
+      !reconciledOperation &&
       state.observed &&
       collected.complete &&
       head?.id !== state.observed.id
@@ -397,6 +575,7 @@ export class AddressRequestService {
       if (head) {
         const prior = await this.decrypt(head, network, options)
         if (
+          !reconciledOperation &&
           JSON.stringify(prior.requests) === JSON.stringify(collected.records)
         ) {
           const membership = await this.membershipHeadStatus(
@@ -432,7 +611,8 @@ export class AddressRequestService {
       const createdAt = Math.max(
         Math.floor(Date.now() / 1000),
         (head?.created_at ?? 0) + 1,
-        (state.observed?.created_at ?? 0) + 1
+        (state.observed?.created_at ?? 0) + 1,
+        (state.operation?.event.created_at ?? 0) + 1
       )
       const snapshot: AddressRequestSnapshot = {
         format: "conduit.address-requests",
@@ -443,39 +623,25 @@ export class AddressRequestService {
         requests: collected.records,
         createdAt,
       }
-      const content = await this.input.signer.encryptNip44(
-        this.scope.owner,
-        JSON.stringify(snapshot),
-        options
-      )
-      this.scope.assertCurrent()
-      event = validateAddressRequestEvent(
-        await this.input.signer.signEvent(
-          {
-            kind: 30078,
-            pubkey: this.scope.owner,
-            created_at: createdAt,
-            tags: [["d", addressRequestsDTag(network)]],
-            content,
-          },
-          options
-        ),
-        this.scope.owner,
-        network
-      )
+      event = await this.signSnapshot(snapshot, options)
       eventSource = "new"
-      if (
-        JSON.stringify(await this.decrypt(event, network, options)) !==
-        JSON.stringify(snapshot)
-      )
-        throw new SparkRecoveryError("invalid_record")
       // Signed immutable bytes reach disk before any relay or HTTP write.
       await this.input.store.update(this.scope.owner, network, (current) => {
         if (current.operation?.event.id !== replacedOperationId)
           throw new SparkRecoveryError("conflict")
         return {
           ...current,
-          operation: { event: event!, targets: [...this.targets] },
+          operation: {
+            event: event!,
+            targets: [...(reconciledOperation?.targets ?? this.targets)],
+            ...(reconciledOperation?.relayPolicyTargets
+              ? {
+                  relayPolicyTargets: [
+                    ...reconciledOperation.relayPolicyTargets,
+                  ],
+                }
+              : {}),
+          },
         }
       })
       if (!collected.complete)
@@ -533,11 +699,15 @@ export class AddressRequestService {
         return local("readback_different")
       confirmedTargets++
     }
-    await this.input.store.update(this.scope.owner, network, (current) => ({
-      ...current,
-      observed: event,
-      operation: undefined,
-    }))
+    await this.input.store.update(this.scope.owner, network, (current) => {
+      this.scope.assertCurrent()
+      if (current.operation?.event.id !== event.id)
+        throw new SparkRecoveryError("conflict")
+      return { ...current, observed: event, operation: undefined }
+    })
+    // Only after exact readback may newer locally retained progress become a successor.
+    if (newerProgress)
+      return this.save(network, discovery, walletId, record, options)
     return { records: collected.records, confirmed: true }
   }
   /** Confirm legacy progress before an ordinary registry successor drops its extension. */
