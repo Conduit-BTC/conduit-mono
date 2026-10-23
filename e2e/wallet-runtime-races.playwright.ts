@@ -8,6 +8,7 @@ import {
   observeWalletController,
   prepareControlledWallet,
   installControlledWallet,
+  installWalletReloadObservationBarrier,
   saveWalletRecovery as saved,
 } from "./helpers/wallet-fixture"
 import {
@@ -26,6 +27,7 @@ const apps = {
 test.setTimeout(90_000)
 test.use({ trace: "off", screenshot: "off", video: "off" })
 type WalletFixtureWindow = Window & {
+  __controlledWalletReloadBarrier?: () => Promise<void>
   nostr: {
     nip44: {
       decrypt(peer: string, ciphertext: string): Promise<string>
@@ -71,6 +73,7 @@ type WalletFixtureWindow = Window & {
   __watchClickedRecoverySync?: boolean
 }
 type WalletRaceWindow = Window & {
+  __controlledWalletReloadBarrier?: () => Promise<void>
   __walletProbe: {
     savedMnemonic: string
     reloadHeld: boolean
@@ -162,6 +165,7 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
   test.setTimeout(20_000)
   const identity = createRuntimeSignerIdentity()
   try {
+    await installWalletReloadObservationBarrier(page)
     await prepareControlledWallet(page)
     await observeWalletController(page)
     await installRealTestSigner(page, identity, relay)
@@ -177,26 +181,21 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
     await closeDefaultWalletSession(page)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
     await page.evaluate(
-      async ({ core, storage }) => {
+      async ({ core }) => {
         const { db } = await import(core)
-        const { getMarketWalletStore } = await import(storage)
-        const store = getMarketWalletStore()
-        const read = store.getSparkRecovery.bind(store)
         const probe = (window as unknown as WalletFixtureWindow).__walletProbe
         probe.recoveryReads = 0
         probe.reloadHeld = false
         const gate = new Promise<void>((resolve) => {
           probe.releaseReload = resolve
         })
-        store.getSparkRecovery = async (id: string) => {
-          const recovery = await read(id)
-          // listVisible is the first credential read; reload's metadata read
-          // follows its runtime snapshot and is the second read.
-          if (++probe.recoveryReads === 2) {
+        ;(
+          window as unknown as WalletFixtureWindow
+        ).__controlledWalletReloadBarrier = async () => {
+          if (++probe.recoveryReads === 1) {
             probe.reloadHeld = true
             await gate
           }
-          return recovery
         }
         const wallet = (await db.wallets.toArray())[0]
         await db.wallets.update(wallet.id, { label: "Reload gated wallet" })
@@ -232,6 +231,7 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
   test.setTimeout(25_000)
   const identity = createRuntimeSignerIdentity()
   try {
+    await installWalletReloadObservationBarrier(page)
     await prepareControlledWallet(page)
     await observeWalletController(page)
     await installRealTestSigner(page, identity, relay)
@@ -248,14 +248,11 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
 
     await page.evaluate(
-      async ({ core, storage, managerUrl }) => {
+      async ({ core, managerUrl }) => {
         const { db } = await import(core)
-        const { getMarketWalletStore } = await import(storage)
         const { getSparkWalletManager } = await import(managerUrl)
-        const store = getMarketWalletStore()
         const manager = getSparkWalletManager()!
         const probe = (window as unknown as WalletRaceWindow).__walletProbe
-        const readRecovery = store.getSparkRecovery.bind(store)
         const readBalance = manager.getBalance.bind(manager)
         let recoveryReads = 0
         const reloadGate = new Promise<void>((resolve) => {
@@ -266,15 +263,14 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
         })
         probe.reloadHeld = false
         probe.balanceHeld = false
-        store.getSparkRecovery = async (id: string) => {
-          const recovery = await readRecovery(id)
-          // listVisible reads the credential first. This second read follows
-          // the reload's snapshot of the still-closed native wallet.
-          if (++recoveryReads === 2) {
+        ;(
+          window as unknown as WalletRaceWindow
+        ).__controlledWalletReloadBarrier = async () => {
+          // Hold after the native snapshot, regardless of credential-read count.
+          if (++recoveryReads === 1) {
             probe.reloadHeld = true
             await reloadGate
           }
-          return recovery
         }
         manager.getBalance = async (id: string) => {
           const balance = await readBalance(id)

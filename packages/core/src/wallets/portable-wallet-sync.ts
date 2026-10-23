@@ -602,12 +602,10 @@ export async function projectPortableWallets(
     assertWalletSignerCurrent(signer)
     const previous = new Map((await store.list()).map((w) => [w.id, w]))
     for (const record of records) {
-      const existing = (await store.list()).find(
-        (w) => w.id === record.walletId
-      )
+      const existing = previous.get(record.walletId)
       if (record.lifecycle === "removed") {
         // Keep credentials/payment references; visibility follows the signed lifecycle.
-        if (existing)
+        if (existing && !existing.accountRemoved)
           await store.put({
             ...existing,
             portableRecordVersion: 1,
@@ -631,14 +629,23 @@ export async function projectPortableWallets(
             "spark_transfer",
           ],
         }))
-      await store.put({
-        ...wallet,
-        label: record.name,
-        portableRecordVersion: 1,
-        accountRemoved: false,
-        accountPaySelectedAt: record.paySelectedAt,
-        accountReceiveSelectedAt: record.receiveSelectedAt,
-      })
+      // Readback runs repeatedly. Only changed metadata should invalidate
+      // descriptor subscribers and their provider-session observations.
+      if (
+        wallet.label !== record.name ||
+        wallet.portableRecordVersion !== 1 ||
+        wallet.accountRemoved !== false ||
+        wallet.accountPaySelectedAt !== record.paySelectedAt ||
+        wallet.accountReceiveSelectedAt !== record.receiveSelectedAt
+      )
+        await store.put({
+          ...wallet,
+          label: record.name,
+          portableRecordVersion: 1,
+          accountRemoved: false,
+          accountPaySelectedAt: record.paySelectedAt,
+          accountReceiveSelectedAt: record.receiveSelectedAt,
+        })
       const recovery = credentials.get(record.walletId)
       if (recovery) await store.putSparkRecovery(record.walletId, recovery)
     }

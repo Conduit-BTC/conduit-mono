@@ -76,6 +76,16 @@ test("projects a complete wallet atomically into isolated provider credentials w
     { priority: "foreground" },
     { store, registry }
   )
+  // A routine readback must not invalidate wallet subscribers or restart
+  // their provider balance reads when the complete record is unchanged.
+  let descriptorWrites = 0
+  const countWrite = () => {
+    descriptorWrites++
+  }
+  database.wallets.hook("updating", countWrite)
+  await projectPortableWallets(active, [record], {}, { store, registry })
+  database.wallets.hook("updating").unsubscribe(countWrite)
+  expect(descriptorWrites).toBe(0)
   const visible = await store.listVisible(active.pubkey)
   expect(visible.length).toBe(1)
   expect(visible[0].label).toBe("Imported")
