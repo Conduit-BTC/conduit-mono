@@ -9,7 +9,12 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "bun:test"
-import { chromium, expect as browserExpect } from "@playwright/test"
+import {
+  chromium,
+  expect as browserExpect,
+  type Page,
+  type TestInfo,
+} from "@playwright/test"
 
 import type {
   FullConfig,
@@ -25,6 +30,7 @@ import {
   classifySmokeBrowserError,
   observeMessagesDialogTrigger,
   parseSmokeFailureContext,
+  recordEventStockControlFailure,
   safeRetainedSmokeDiagnostics,
   safeRetainedSmokeFailureContext,
   safeSmokeDiagnostics,
@@ -37,6 +43,177 @@ import {
   safePlaywrightRunnerError,
   serializeSmokeEvidence,
 } from "../scripts/ci/playwright_smoke_reporter"
+
+describe("event stock control failure diagnostic privacy", () => {
+  const file = "e2e/event-market.playwright.ts"
+  const observation = {
+    phase: "setup_code_read",
+    observationAvailable: true,
+    pageClosed: false,
+    controlCardinality: "single",
+    controlVisible: true,
+    controlEnabled: false,
+    controlHitTarget: false,
+    detailsPresent: true,
+    detailsOpen: true,
+    refreshControlCardinality: "absent",
+    refreshControlEnabled: false,
+  }
+  const annotation = (value: unknown) => ({
+    type: "smoke:event-stock-control",
+    description: JSON.stringify(value),
+  })
+
+  it("retains only the two phases, closed cardinalities and boolean observations", () => {
+    for (const phase of ["setup_code_read", "stock_reconcile"]) {
+      for (const cardinality of ["absent", "single", "multiple"]) {
+        const values = {
+          ...observation,
+          phase,
+          controlCardinality: cardinality,
+          refreshControlCardinality: cardinality,
+        }
+        const expected = [{ kind: "event-stock-control", ...values }]
+        expect(safeSmokeDiagnostics(file, [annotation(values)])).toEqual(
+          expected
+        )
+        expect(safeRetainedSmokeDiagnostics(file, expected)).toEqual(expected)
+      }
+    }
+  })
+
+  it("strips extra private fields and malformed scalar values at capture and retained-read boundaries", () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    const extra = {
+      pickupCode: sentinel,
+      inputValue: sentinel,
+      errorMessage: sentinel,
+      invoice: sentinel,
+      walletBalance: 1234,
+      coordinates: { x: 1, y: 2 },
+      ciphertext: sentinel,
+    }
+    const expected = [{ kind: "event-stock-control", ...observation }]
+    const captured = safeSmokeDiagnostics(file, [
+      annotation({ ...observation, ...extra }),
+    ])
+    const retained = safeRetainedSmokeDiagnostics(file, [
+      { kind: "event-stock-control", ...observation, ...extra },
+    ])
+    expect(captured).toEqual(expected)
+    expect(retained).toEqual(expected)
+    expect(JSON.stringify([captured, retained])).not.toContain(sentinel)
+
+    for (const field of Object.keys(observation)) {
+      for (const invalid of [sentinel, 2, null, [], { value: sentinel }]) {
+        const values = { ...observation, [field]: invalid }
+        for (const result of [
+          safeSmokeDiagnostics(file, [annotation(values)]),
+          safeRetainedSmokeDiagnostics(file, [
+            { kind: "event-stock-control", ...values },
+          ]),
+        ]) {
+          expect(result).toHaveLength(1)
+          expect(result[0]).not.toHaveProperty(field)
+          expect(JSON.stringify(result)).not.toContain(sentinel)
+        }
+      }
+    }
+  })
+
+  it("rejects malformed annotations and cross-file observations without adding failure contexts", () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    for (const description of [
+      "not-json",
+      "null",
+      "[]",
+      "true",
+      "{}",
+      JSON.stringify(sentinel),
+      JSON.stringify({ phase: sentinel }),
+    ])
+      expect(
+        safeSmokeDiagnostics(file, [
+          { type: "smoke:event-stock-control", description },
+        ])
+      ).toEqual([])
+    expect(
+      safeRetainedSmokeDiagnostics(file, [
+        null,
+        [],
+        { kind: "event-stock-control" },
+        { kind: sentinel, phase: "setup_code_read" },
+      ])
+    ).toEqual([])
+    for (const other of [
+      "e2e/commerce.playwright.ts",
+      "e2e/merchant-order-inbox.playwright.ts",
+      "e2e/event-market.playwright.ts/extra",
+    ]) {
+      expect(safeSmokeDiagnostics(other, [annotation(observation)])).toEqual([])
+      expect(
+        safeRetainedSmokeDiagnostics(other, [
+          { kind: "event-stock-control", ...observation },
+        ])
+      ).toEqual([])
+    }
+    expect(
+      parseSmokeFailureContext(file, {
+        expected: "setup_code_read",
+        observed: "pending",
+      })
+    ).toBeUndefined()
+  })
+
+  for (const mode of ["closed", "rejected", "unresponsive"] as const) {
+    it(`records a bounded content-free ${mode} fallback without a browser`, async () => {
+      const sentinel = "private-" + crypto.randomUUID()
+      const annotations: TestInfo["annotations"] = []
+      let observationCalls = 0
+      const page = {
+        isClosed: () => mode === "closed",
+        getByRole: () => {
+          observationCalls += 1
+          return {
+            evaluateAll: () =>
+              mode === "unresponsive"
+                ? new Promise(() => {})
+                : Promise.reject(new Error(sentinel)),
+          }
+        },
+      } as unknown as Page
+      await recordEventStockControlFailure(
+        page,
+        { annotations } as TestInfo,
+        "stock_reconcile"
+      )
+      expect(observationCalls === 0).toBe(mode === "closed")
+      expect(annotations).toHaveLength(1)
+      expect(JSON.parse(annotations[0]!.description!)).toEqual({
+        phase: "stock_reconcile",
+        observationAvailable: false,
+        pageClosed: mode === "closed",
+      })
+      expect(JSON.stringify(annotations)).not.toContain(sentinel)
+    })
+  }
+
+  it("does not let recording failure replace the original test failure", async () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    const info = {
+      get annotations() {
+        throw new Error(sentinel)
+      },
+    } as unknown as TestInfo
+    await expect(
+      recordEventStockControlFailure(
+        { isClosed: () => true } as Page,
+        info,
+        "setup_code_read"
+      )
+    ).resolves.toBeUndefined()
+  })
+})
 
 describe("privacy-safe Playwright smoke reporter", () => {
   // The regular unit job does not install browser binaries. Run this bounded

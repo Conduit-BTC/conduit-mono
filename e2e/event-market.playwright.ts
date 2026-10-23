@@ -27,6 +27,7 @@ import { interceptBlossom } from "./helpers/blossom"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
+import { recordEventStockControlFailure } from "./helpers/smoke-diagnostics"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -5497,7 +5498,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
 
 test("reserved organizer stock carries a free purchase through pickup and once-only seller reconciliation @market @merchant @commerce @occurrence-orders", async ({
   page,
-}) => {
+}, info) => {
   test.setTimeout(240_000)
   const result = await createAssignedPickupOrder(page, {
     zeroCost: true,
@@ -5589,12 +5590,18 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         })
       ).toBeHidden()
       await page.getByText("Technical pickup details", { exact: true }).click()
-      const writerId = await page
-        .getByRole("textbox", {
-          name: "Pickup setup code",
-          exact: true,
-        })
-        .inputValue()
+      let writerId: string
+      try {
+        writerId = await page
+          .getByRole("textbox", {
+            name: "Pickup setup code",
+            exact: true,
+          })
+          .inputValue()
+      } catch (error) {
+        await recordEventStockControlFailure(page, info, "setup_code_read")
+        throw error
+      }
       await gotoAs(page, merchantUrl, eventPath, "merchant")
       await page
         .getByRole("combobox", {
@@ -5730,12 +5737,17 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   await page
     .getByRole("button", { name: "Check for stock updates", exact: true })
     .click()
-  await page
-    .getByRole("button", {
-      name: "Reconcile accepted order stock",
-      exact: true,
-    })
-    .click()
+  try {
+    await page
+      .getByRole("button", {
+        name: "Reconcile accepted order stock",
+        exact: true,
+      })
+      .click()
+  } catch (error) {
+    await recordEventStockControlFailure(page, info, "stock_reconcile")
+    throw error
+  }
   await expect(
     page.getByText(/exact accepted order and handout are reconciled once/)
   ).toBeVisible()

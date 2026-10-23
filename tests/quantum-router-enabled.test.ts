@@ -216,6 +216,31 @@ describe("Quantum Router capability admission", () => {
     ).toBe(true)
   })
 
+  it("admits official Shop and Sell from the managed production configuration only", () => {
+    for (const deploymentProfile of ["production", "preview"] as const) {
+      const profile = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: deploymentProfile,
+      })
+      for (const hostname of ["shop.conduit.market", "sell.conduit.market"]) {
+        const input = {
+          profileEnabled: profile.publicFeatures.quantumRouterEnabled,
+          executionEnabled:
+            profile.publicFeatures.quantumRouterExecutionEnabled,
+          deploymentProfile: profile.name,
+          lightningNetwork: profile.lightningNetwork,
+          hostname,
+          dev: false,
+        }
+        expect(resolveQuantumRouterEnabled(input)).toBe(
+          deploymentProfile === "production"
+        )
+        expect(resolveQuantumRouterExecutionEnabled(input)).toBe(
+          deploymentProfile === "production"
+        )
+      }
+    }
+  })
+
   it("rejects official production hosts compiled under another profile", () => {
     for (const hostname of ["SHOP.CONDUIT.MARKET.", "sell.conduit.market"]) {
       for (const deploymentProfile of [
