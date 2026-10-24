@@ -1140,17 +1140,17 @@ export function useWallets(
         },
         onRegistered: (address) => {
           if (!signer) return
-          getPortableWalletSync(signer).rememberLightningAddress(
-            walletId,
-            address
-          )
-          void synchronizeRecovery(signer, options).catch(() => {
+          const service = getPortableWalletSync(signer)
+          service.rememberLightningAddress(walletId, address)
+          // Address metadata does not change wallet descriptors or balances.
+          // A reload here would retrigger the runtime-driven address lookup.
+          void service.sync(options).catch(() => {
             if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
           })
         },
       })
     },
-    [synchronizeRecovery]
+    []
   )
 
   const addressRequestSigner = getAccountSigner()
