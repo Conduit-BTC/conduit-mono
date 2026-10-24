@@ -4,9 +4,8 @@ import {
   verifyAddressRequestAuthority,
   type SignedAddressNameRequest,
 } from "./address-name-request"
-import { SparkRecoveryError } from "./spark-recovery-contract"
 
-/** Private extension of the existing encrypted wallet registry, never approval authority. */
+/** Private field of the encrypted wallet record, never approval authority. */
 export const addressRequestRecordSchema = z
   .strictObject({
     payload: z.string().max(8192),
@@ -82,6 +81,6 @@ export function mergeAddressRequestRecord(
       next.profileEventId &&
       previous.profileEventId !== next.profileEventId)
   )
-    throw new SparkRecoveryError("conflict")
+    throw new Error("Saved address request conflicts with this request.")
   return rank[previous.phase] >= rank[next.phase] ? previous : next
 }

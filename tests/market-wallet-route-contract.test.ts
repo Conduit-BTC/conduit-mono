@@ -25,12 +25,11 @@ describe("Market wallet route contracts", () => {
     const database = await readFile("packages/core/src/db/index.ts", "utf8")
     const finalizations =
       hook.match(/await refreshAfterCommittedWalletMutation\(\)/g) ?? []
-    const sparkRegistrations =
-      hook.match(/await registerSparkWallet\(\{/g) ?? []
+    const sparkImports = hook.match(/await service\.import\(/g) ?? []
 
     expect(finalizations.length).toBeGreaterThanOrEqual(6)
-    expect(sparkRegistrations).toHaveLength(1)
-    expect(hook).toContain("const setupSparkWallet = useCallback(")
+    expect(sparkImports).toHaveLength(2)
+    expect(hook).not.toContain("registerSparkWallet")
     expect(database).toContain(
       "liveQuery(() => db.wallets.toArray()).subscribe"
     )
@@ -62,7 +61,7 @@ describe("Market wallet route contracts", () => {
       hook.indexOf("const remove = () =>")
     )
     const cleanup = removal.lastIndexOf("await cleanupSparkWalletState({")
-    const publication = removal.indexOf("await service.prepareRegistry(")
+    const publication = removal.indexOf("await service.update(")
     const commit = removal.indexOf("await store.transaction(")
     expect(cleanup).toBeGreaterThanOrEqual(0)
     expect(publication).toBeGreaterThan(cleanup)
@@ -345,7 +344,7 @@ describe("Market wallet route contracts", () => {
     expect(hook).toContain("isSparkWalletManagerInitialized")
     expect(wallet).toContain("onSelect={() => dialog(onRemove)}")
     expect(wallet).toContain(
-      "This removes the wallet registration and password-protected recovery from this browser. It does not delete the Portable Wallet or move its funds."
+      "This removes the wallet registration and encrypted recovery from this browser. It does not delete the Portable Wallet or move its funds."
     )
   })
 

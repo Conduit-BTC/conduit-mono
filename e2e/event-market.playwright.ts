@@ -5869,8 +5869,15 @@ async function enablePrivateInbox(page: Page): Promise<void> {
     exact: true,
   })
   if ((await inbox.count()) === 0) {
-    await relays.getByLabel("Add relay", { exact: true }).fill(FIXTURE_RELAY)
-    await relays.getByRole("button", { name: "Add relay", exact: true }).click()
+    const input = relays.getByLabel("Add relay", { exact: true })
+    await input.fill(FIXTURE_RELAY)
+    await expect(
+      relays.getByRole("button", { name: "Add relay", exact: true })
+    ).toBeEnabled()
+    // Mobile WebKit can lose a pointer click while the relay list settles.
+    // Submit from the focused field and confirm the form handled the action.
+    await input.press("Enter")
+    await expect(input).toHaveValue("")
   }
   await expect(
     relays.getByRole("button", {

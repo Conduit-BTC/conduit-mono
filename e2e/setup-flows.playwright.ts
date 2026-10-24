@@ -25,6 +25,7 @@ import {
 import {
   installControlledWallet,
   prepareControlledWallet,
+  saveWalletRecovery,
 } from "./helpers/wallet-fixture"
 
 // Setup-flow cases can handle private shipping, password, and recovery state.
@@ -779,71 +780,6 @@ async function seedCachedMerchantTagCatalog(
       }),
     [merchantPubkey, MERCHANT_TAG_CATALOG] as const
   )
-}
-
-async function seedPortableWalletDescriptor(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const randomBase64 = (byteLength: number): string => {
-      const bytes = crypto.getRandomValues(new Uint8Array(byteLength))
-      return btoa(String.fromCharCode(...bytes))
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const database = request.result
-        const transaction = database.transaction(
-          ["wallets", "walletCredentials"],
-          "readwrite"
-        )
-        const timestamp = Date.now()
-        transaction.objectStore("wallets").put({
-          id: "playwright-portable-wallet",
-          kind: "portable",
-          providerId: "spark",
-          label: "QA Portable",
-          network: "mainnet",
-          capabilities: [
-            "pay_invoice",
-            "receive",
-            "balance",
-            "history",
-            "spark_transfer",
-          ],
-          status: "locked",
-          defaultIntents: ["pay_invoice"],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        transaction.objectStore("walletCredentials").put({
-          walletId: "playwright-portable-wallet",
-          providerId: "spark",
-          credential: JSON.stringify({
-            type: "password",
-            walletId: "playwright-portable-wallet",
-            providerId: "spark",
-            network: "mainnet",
-            accountNumber: 1,
-            recovery: {
-              version: 2,
-              kdf: "PBKDF2-SHA-256",
-              cipher: "AES-GCM",
-              iterations: 100_000,
-              salt: randomBase64(16),
-              iv: randomBase64(12),
-              ciphertext: randomBase64(48),
-            },
-          }),
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        transaction.oncomplete = () => resolve()
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
-      }
-    })
-  })
 }
 
 test("merchant shipping country combobox supports search and selection @merchant", async ({
@@ -2393,72 +2329,91 @@ test("market wallet route remains available without a Nostr signer @market", asy
 test("wallet dialog dismissal clears device-local sensitive state @market", async ({
   page,
 }) => {
-  await page.goto(`${marketUrl}/wallet`)
-  await expect(
-    page.getByRole("heading", { name: "Wallets", exact: true })
-  ).toBeVisible()
-  await seedPortableWalletDescriptor(page)
-  await page.reload()
-
-  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
-
-  const unlockButton = page.getByRole("button", {
-    name: "Open wallet",
-    exact: true,
-  })
-  await unlockButton.click()
-  const unlockDialog = page.getByRole("dialog", {
-    name: "Unlock QA Portable",
-  })
-  const unlockPassword = unlockDialog.getByLabel("Wallet password")
-  await unlockPassword.evaluate((element) => {
-    if (!(element instanceof HTMLInputElement)) {
-      throw new Error("Expected the wallet password control to be an input.")
-    }
-    const setValue = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value"
-    )?.set
-    if (!setValue) throw new Error("The input value setter is unavailable.")
-    setValue.call(element, crypto.randomUUID())
-    element.dispatchEvent(new Event("input", { bubbles: true }))
-  })
-  await page.keyboard.press("Escape")
-  await expect(unlockDialog).not.toBeVisible()
-  await expect(unlockButton).toBeFocused()
-
-  await unlockButton.click()
-  expect(
-    await unlockPassword.evaluate(
-      (element) =>
-        element instanceof HTMLInputElement && element.value.length === 0
-    )
-  ).toBe(true)
-  await unlockDialog.getByRole("button", { name: "Cancel" }).click()
-
-  const manageButton = page.getByRole("button", { name: "Manage QA Portable" })
-  await manageButton.click()
-  await page.getByRole("menuitem", { name: "Remove from this device" }).click()
-  const removeDialog = page.getByRole("alertdialog", {
-    name: "Remove from this device?",
-  })
-  const recoveryConfirmation = removeDialog.getByRole("switch", {
-    name: /I have the recovery (phrase and Spark account number|details required to restore this Portable Wallet)/,
-  })
-  await recoveryConfirmation.click()
-  await expect(recoveryConfirmation).toBeChecked()
-  await page.keyboard.press("Escape")
-  await expect(removeDialog).not.toBeVisible()
-
-  await manageButton.click()
-  await page.getByRole("menuitem", { name: "Remove from this device" }).click()
-  await expect(recoveryConfirmation).not.toBeChecked()
-  await expect(
-    removeDialog.getByRole("button", {
-      name: "Remove from this device",
-      exact: true,
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await prepareControlledWallet(page)
+    await installRealTestSigner(page, identity, TEST_RELAY_URL)
+    await page.goto(`${marketUrl}/wallet`)
+    await installControlledWallet(page)
+    await openWalletSetup(page, "Create wallet")
+    await saveWalletRecovery(page)
+    const manageButton = page.getByRole("button", {
+      name: /^Manage Conduit Wallet/,
     })
-  ).toBeDisabled()
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+    const recoveryDialog = page.getByRole("dialog", {
+      name: /^Recovery for Conduit Wallet/,
+    })
+    await recoveryDialog
+      .getByRole("button", { name: "Show recovery phrase", exact: true })
+      .click()
+    // Assert presence without copying the recovery material into test output.
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Copy recovery details",
+        exact: true,
+      })
+    ).toBeVisible()
+    await page.keyboard.press("Escape")
+    await expect(recoveryDialog).not.toBeVisible()
+    await expect(manageButton).toBeFocused()
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Show recovery phrase",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Copy recovery details",
+        exact: true,
+      })
+    ).toHaveCount(0)
+    await recoveryDialog
+      .getByRole("button", { name: "Done", exact: true })
+      .click()
+
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+      .click()
+    const removeDialog = page.getByRole("alertdialog", {
+      name: "Remove wallet from account?",
+    })
+    const recoveryConfirmation = removeDialog.getByRole("switch", {
+      name: "I have the recovery details required to restore this Portable Wallet",
+    })
+    await recoveryConfirmation.click()
+    await expect(recoveryConfirmation).toBeChecked()
+    await page.keyboard.press("Escape")
+    await expect(removeDialog).not.toBeVisible()
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+      .click()
+    await expect(recoveryConfirmation).not.toBeChecked()
+    await expect(
+      removeDialog.getByRole("button", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+    ).toBeDisabled()
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
 })
 
 test("market shopper preferences remove legacy plaintext and render the complete form @market", async ({

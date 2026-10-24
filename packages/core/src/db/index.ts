@@ -1,7 +1,7 @@
 import type { InboxCipher } from "../protocol/commerce-inbox-store"
 import type { EventMarketFreePurchaseDelivery } from "../protocol/event-market-free-purchase-delivery-record"
 import type { ReceivingWalletBinding } from "../wallets/receiving"
-import type { SparkRecoveryState } from "../wallets/spark-recovery-service"
+import type { PortableWalletAccount } from "../wallets/portable-wallet-sync"
 import Dexie, {
   liveQuery,
   type DexieOptions,
@@ -1493,7 +1493,8 @@ export class ConduitDB extends Dexie {
     },
     "key"
   >
-  sparkRecoveryEvidence!: EntityTable<SparkRecoveryState, "ownerPubkey">
+  sparkRecoveryEvidence!: EntityTable<{ ownerPubkey: string }, "ownerPubkey">
+  portableWalletAccounts!: EntityTable<PortableWalletAccount, "ownerPubkey">
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   commerceInboxDeletions!: EntityTable<InboxDeletionRow, "id">
@@ -1898,6 +1899,7 @@ export class ConduitDB extends Dexie {
         "id, accountPubkey, &[accountPubkey+marketCoordinate]",
     })
     this.version(30).stores({ checkoutRecoveryStorage: "key" })
+    this.version(31).stores({ portableWalletAccounts: "ownerPubkey" })
   }
 }
 
