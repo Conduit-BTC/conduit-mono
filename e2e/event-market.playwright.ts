@@ -5596,15 +5596,19 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         })
         .inputValue()
       await gotoAs(page, merchantUrl, eventPath, "merchant")
-      await page
-        .getByRole("combobox", {
-          name: "Stock for organizer pickup",
-          exact: true,
-        })
-        .click()
-      await page
-        .getByRole("option", { name: /synthetic-existing-product/ })
-        .click()
+      const stock = page.getByRole("combobox", {
+        name: "Stock for organizer pickup",
+        exact: true,
+      })
+      await expect(stock).toBeEnabled()
+      // Exercise Radix's focused keyboard path, then confirm the exact selection.
+      await stock.press("Enter")
+      const product = page.getByRole("option", {
+        name: /synthetic-existing-product/,
+      })
+      await expect(product).toBeVisible()
+      await product.press("Enter")
+      await expect(stock).toContainText(/synthetic-existing-product/)
       await page
         .getByRole("textbox", { name: "Quantity to reserve", exact: true })
         .fill("2")
@@ -5774,7 +5778,9 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   })
   await expect(complete).toBeEnabled()
   const completionStart = result.relay.publications.length
-  await complete.click()
+  // Mobile WebKit can release a scripted pointer outside this button.
+  // Focused keyboard activation starts exactly one action without retrying it.
+  await complete.press("Enter")
   // Settle the initiated action before checking its exact private receipt.
   await complete.waitFor({ state: "hidden" })
   await page
@@ -7541,7 +7547,9 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await page.clock.setFixedTime(new Date((newStart + 600) * 1000))
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   const from = relay.publications.length
-  await complete.click()
+  await expect(complete).toBeEnabled()
+  // Use the same focused activation as the free-pickup reconciliation case.
+  await complete.press("Enter")
   await complete.waitFor({ state: "hidden" })
   await page
     .getByRole("button", { name: /^(Sending|Recording)…$/ })
