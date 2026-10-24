@@ -171,10 +171,9 @@ export function AddressNameRequestForm({
     useState<Awaited<ReturnType<typeof addressRequestAvailability>>>()
   useEffect(() => {
     let active = true
-    if (siteKey)
-      void addressRequestAvailability(fetch).then((status) => {
-        if (active) setAvailability(status)
-      })
+    void addressRequestAvailability(fetch).then((status) => {
+      if (active) setAvailability(status)
+    })
     return () => {
       active = false
     }
