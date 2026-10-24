@@ -40,9 +40,17 @@ recovery reader or compatibility migration is provided.
 
 Preference updates retain the signed successor and both local defaults in one
 transaction. Failed default writes leave no successor for a later sync to apply.
+An explicit selection advances its preference timestamp beyond every known
+record for that network and intent, even if the local clock is behind or tied.
+Metadata-only edits do not change preference ordering. Unseen concurrent edits
+still use the existing newest-record resolution.
 Provider-verified addresses remain usable when metadata signing is paused.
 Address observations wait in session memory for synchronization; restart queries
 the provider again, and explicit address retries use foreground signer consent.
+
+Temporary browser-storage failures retain automatic timer and foreground-wakeup
+retries with capped backoff. Signer access failures stay paused for an explicit
+foreground retry; storage recovery must not resume declined signer consent.
 
 The bounded discovery reader reports partial coverage when it reaches its
 resource limits. Empty or partial results do not prove global absence. The

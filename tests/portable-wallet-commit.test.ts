@@ -1,5 +1,5 @@
 import { resolveSparkLightningAddress } from "../packages/core/src/wallets/resolve-spark-lightning-address"
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { generateSecretKey } from "nostr-tools/pure"
@@ -96,6 +96,77 @@ async function fixture() {
     },
   }
 }
+for (const fields of [
+  ["paySelectedAt"],
+  ["receiveSelectedAt"],
+  ["paySelectedAt", "receiveSelectedAt"],
+] as const)
+  test(`explicit ${fields.join("/")} selection supersedes a known faster clock`, async () => {
+    const f = await fixture()
+    try {
+      const second = await f.service.import(
+        {
+          mnemonic: generateSparkMnemonic(),
+          network: "mainnet",
+          accountNumber: 1,
+        },
+        "Second"
+      )
+      await f.service.update(f.wallet.walletId, {
+        paySelectedAt: 2_000,
+        receiveSelectedAt: 3_000,
+      })
+      // Reopening on a slower device must still honor an explicit selection.
+      const restarted = f.make()
+      await restarted.update(
+        second.walletId,
+        Object.fromEntries(fields.map((field) => [field, 1_999]))
+      )
+      const saved = await f.make().get(second.walletId)
+      const visible = await f.store.listVisible(f.signer.pubkey)
+      for (const [field, intent, previous] of [
+        ["paySelectedAt", "pay_invoice", 2_000],
+        ["receiveSelectedAt", "receive", 3_000],
+      ] as const) {
+        const selected = fields.some((selection) => selection === field)
+        expect(saved[field]).toBe(selected ? previous + 1 : 0)
+        expect(
+          visible.find((wallet) => wallet.defaultIntents.includes(intent))?.id
+        ).toBe(selected ? second.walletId : f.wallet.walletId)
+      }
+      await f.make().sync({ priority: "foreground" })
+      expect(await f.make().get(second.walletId)).toEqual(saved)
+    } finally {
+      await f.close()
+    }
+  })
+
+test("equal-clock selections are ordered inside the serialized update", async () => {
+  const f = await fixture()
+  try {
+    const second = await f.service.import(
+      {
+        mnemonic: generateSparkMnemonic(),
+        network: "mainnet",
+        accountNumber: 1,
+      },
+      "Second"
+    )
+    await Promise.all([
+      f.service.update(f.wallet.walletId, { paySelectedAt: 2_000 }),
+      f.service.update(second.walletId, { paySelectedAt: 2_000 }),
+    ])
+    expect((await f.make().get(second.walletId)).paySelectedAt).toBe(2_001)
+    expect(
+      (await f.store.listVisible(f.signer.pubkey)).find((wallet) =>
+        wallet.defaultIntents.includes("pay_invoice")
+      )?.id
+    ).toBe(second.walletId)
+  } finally {
+    await f.close()
+  }
+})
+
 for (const failIntent of ["pay_invoice", "receive"] as const)
   test(`failed ${failIntent} write rolls back the signed preference and both defaults`, async () => {
     const f = await fixture()
@@ -314,6 +385,163 @@ test("signed-record storage failure rolls back local defaults", async () => {
       (await f.store.listVisible(f.signer.pubkey))[0].defaultIntents
     ).toEqual([])
   } finally {
+    await f.close()
+  }
+})
+
+function backgroundBrowser() {
+  const browser = new EventTarget()
+  const document = Object.assign(new EventTarget(), {
+    visibilityState: "visible",
+  })
+  const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, "document")
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: browser,
+  })
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: document,
+  })
+  let now = 0
+  let tick = () => {}
+  const handle = setInterval(() => {}, 1_000_000)
+  const interval = spyOn(globalThis, "setInterval").mockImplementation(
+    (handler) => {
+      tick = handler as () => void
+      return handle
+    }
+  )
+  const clock = spyOn(Date, "now").mockImplementation(() => now)
+  const jitter = spyOn(Math, "random").mockReturnValue(0)
+  return {
+    advance(ms: number) {
+      now += ms
+      tick()
+    },
+    wake(event: "focus" | "online" | "visibilitychange") {
+      const target = event === "visibilitychange" ? document : browser
+      target.dispatchEvent(new Event(event))
+    },
+    close() {
+      clearInterval(handle)
+      interval.mockRestore()
+      clock.mockRestore()
+      jitter.mockRestore()
+      if (oldWindow) Object.defineProperty(globalThis, "window", oldWindow)
+      else Reflect.deleteProperty(globalThis, "window")
+      if (oldDocument)
+        Object.defineProperty(globalThis, "document", oldDocument)
+      else Reflect.deleteProperty(globalThis, "document")
+    },
+  }
+}
+
+for (const trigger of ["timer", "focus", "online", "visibilitychange"] as const)
+  test(`${trigger} resumes wallet sync after temporary storage failure`, async () => {
+    const f = await fixture()
+    const browser = backgroundBrowser()
+    const service = f.make()
+    const sync = spyOn(service, "sync")
+    const load = f.storeRecords.load
+    let fail = true
+    f.storeRecords.load = async (owner) => {
+      if (fail) throw new Error("Temporary storage failure")
+      return load(owner)
+    }
+    const disconnect = service.connect()
+    try {
+      await expect(sync.mock.results[0].value).rejects.toThrow(
+        "Temporary storage failure"
+      )
+      expect(service.snapshot).toMatchObject({
+        status: "blocked",
+        blockedReason: "storage",
+      })
+      fail = false
+      if (trigger === "timer") browser.advance(30_000)
+      else browser.wake(trigger)
+      expect(sync).toHaveBeenCalledTimes(2)
+      await sync.mock.results[1].value
+      expect(service.snapshot.status).toBe("pending")
+      expect(service.snapshot.blockedReason).toBeUndefined()
+      disconnect()
+      browser.advance(300_000)
+      browser.wake("online")
+      expect(sync).toHaveBeenCalledTimes(2)
+    } finally {
+      disconnect()
+      sync.mockRestore()
+      browser.close()
+      await f.close()
+    }
+  })
+
+test("repeated storage failures retry with capped backoff", async () => {
+  const f = await fixture()
+  const browser = backgroundBrowser()
+  const service = f.make()
+  const sync = spyOn(service, "sync")
+  f.storeRecords.load = async () => {
+    throw new Error("Temporary storage failure")
+  }
+  const disconnect = service.connect()
+  try {
+    await expect(sync.mock.results[0].value).rejects.toThrow()
+    let attempts = 1
+    for (const delay of [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]) {
+      browser.advance(delay - 1)
+      expect(sync).toHaveBeenCalledTimes(attempts)
+      browser.advance(1)
+      expect(sync).toHaveBeenCalledTimes(++attempts)
+      await expect(sync.mock.results[attempts - 1].value).rejects.toThrow()
+    }
+  } finally {
+    disconnect()
+    sync.mockRestore()
+    browser.close()
+    await f.close()
+  }
+})
+
+test("automatic wakeups stay paused after signer refusal until an explicit retry", async () => {
+  const f = await fixture()
+  const browser = backgroundBrowser()
+  const service = f.make()
+  const sync = spyOn(service, "sync")
+  const decrypt = spyOn(f.provider, "decryptNip44").mockRejectedValue(
+    new NostrSignerError("authorization_denied")
+  )
+  const disconnect = service.connect()
+  try {
+    await expect(sync.mock.results[0].value).rejects.toMatchObject({
+      code: "authorization_denied",
+    })
+    expect(service.snapshot).toMatchObject({
+      status: "blocked",
+      blockedReason: "signer",
+    })
+    expect(decrypt).toHaveBeenCalledTimes(1)
+    decrypt.mockRestore()
+    browser.advance(300_000)
+    browser.wake("focus")
+    browser.wake("online")
+    browser.wake("visibilitychange")
+    expect(sync).toHaveBeenCalledTimes(1)
+    await service.sync({ priority: "foreground" })
+    expect(service.snapshot.blockedReason).toBeUndefined()
+    // Foreground success must not silently resume declined background consent.
+    await expect(
+      f.signer.decryptNip44(f.signer.pubkey, "synthetic", {
+        priority: "background",
+      })
+    ).rejects.toMatchObject({ code: "background_paused" })
+  } finally {
+    disconnect()
+    decrypt.mockRestore()
+    sync.mockRestore()
+    browser.close()
     await f.close()
   }
 })

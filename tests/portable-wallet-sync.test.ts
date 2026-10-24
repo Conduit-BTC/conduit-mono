@@ -406,6 +406,41 @@ describe("complete Portable Wallet records", () => {
 })
 
 describe("wallet convergence after interruption", () => {
+  it("keeps preference ordering scoped to its network and leaves metadata-only edits neutral", async () => {
+    const f = fixture(),
+      a = f.device()
+    const wallet = await a.service.import(f.bundle(), "Mainnet")
+    const other = await a.service.import(
+      { ...f.bundle(), network: "testnet" },
+      "Testnet"
+    )
+    await a.service.update(wallet.walletId, {
+      paySelectedAt: 2_000,
+      receiveSelectedAt: 3_000,
+    })
+    await a.service.update(other.walletId, {
+      paySelectedAt: 9_000,
+      receiveSelectedAt: 9_000,
+    })
+    await a.service.update(wallet.walletId, { name: "Renamed" })
+    expect(await a.service.get(wallet.walletId)).toMatchObject({
+      paySelectedAt: 2_000,
+      receiveSelectedAt: 3_000,
+    })
+    await a.service.update(wallet.walletId, {
+      paySelectedAt: 1_999,
+      receiveSelectedAt: 1_999,
+    })
+    expect(await a.service.get(wallet.walletId)).toMatchObject({
+      paySelectedAt: 2_001,
+      receiveSelectedAt: 3_001,
+    })
+    expect(await a.service.get(other.walletId)).toMatchObject({
+      paySelectedAt: 9_000,
+      receiveSelectedAt: 9_000,
+    })
+  })
+
   it("retains an offline rename through denied consent and restart, merging it into the newest complete record", async () => {
     const f = fixture(),
       a = f.device(),

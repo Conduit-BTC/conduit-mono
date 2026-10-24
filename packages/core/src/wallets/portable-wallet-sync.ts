@@ -97,21 +97,22 @@ export class PortableWalletSync {
         if (
           !active ||
           running ||
-          this.snapshot.status === "blocked" ||
+          (this.snapshot.status === "blocked" &&
+            this.snapshot.blockedReason !== "storage") ||
           (!force && Date.now() < nextAt)
         )
           return
         running = true
         try {
           await this.sync({ priority: "background" })
-          delay =
-            this.snapshot.status === "ready"
-              ? 30_000
-              : Math.min(delay * 2, 300_000)
         } catch {
           /* Shared status records access failure; background never repeats denied consent. */
         } finally {
           running = false
+          delay =
+            this.snapshot.status === "ready"
+              ? 30_000
+              : Math.min(delay * 2, 300_000)
           nextAt = Date.now() + delay + Math.floor(Math.random() * 1000)
         }
       }
@@ -334,11 +335,20 @@ export class PortableWalletSync {
       const before = await this.decode(saved.event, options)
       if (before.lifecycle === "removed")
         throw new Error("This wallet was removed.")
-      await this.write(
-        account,
-        portableWalletRecordSchema.parse({ ...before, ...patch }),
-        options
-      )
+      const next = portableWalletRecordSchema.parse({ ...before, ...patch })
+      const selections = (
+        ["paySelectedAt", "receiveSelectedAt"] as const
+      ).filter((field) => patch[field] !== undefined && next[field] > 0)
+      // Explicit choices supersede known preferences even when this device's
+      // clock is behind or tied. Compute inside the account's serialized update.
+      if (selections.length)
+        for (const known of Object.values(account.wallets)) {
+          const record = await this.decode(known.event, options)
+          if (record.network !== next.network) continue
+          for (const field of selections)
+            next[field] = Math.max(next[field], record[field] + 1)
+        }
+      await this.write(account, portableWalletRecordSchema.parse(next), options)
     })
   }
   private async write(
