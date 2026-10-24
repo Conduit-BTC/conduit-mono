@@ -102,7 +102,7 @@ function fixture() {
       accountNumber: b.accountNumber,
       network: b.network,
     })
-  function device() {
+  function device(accountSigner = signer) {
     let account: PortableWalletAccount = { ownerPubkey: owner, wallets: {} }
     let projected: PortableWalletRecord[] = []
     const store: PortableWalletStore = {
@@ -113,7 +113,7 @@ function fixture() {
     }
     const make = () =>
       new PortableWalletSync({
-        signer,
+        signer: accountSigner,
         store,
         transport,
         relays,
@@ -578,4 +578,41 @@ describe("address progress in the complete wallet", () => {
     expect(restored.phase).toBe("complete")
     expect(restored.accountProof).toBe(proof.accountProof)
   })
+})
+
+it("restores valid wallets and older valid heads after a signed ciphertext fails authentication", async () => {
+  const f = fixture(),
+    a = f.device()
+  const valid = await a.service.import(f.bundle(), "Valid")
+  const other = await a.service.import(f.bundle(), "Older valid head")
+  await a.service.sync()
+  const wrongKey = v2.utils.getConversationKey(generateSecretKey(), f.owner)
+  const bad = await f.signer.signEvent({
+    pubkey: f.owner,
+    kind: 30078,
+    created_at: 9000,
+    tags: [
+      ["d", PORTABLE_WALLET_PREFIX + other.walletId],
+      ["t", PORTABLE_WALLET_TAG],
+    ],
+    content: v2.encrypt(JSON.stringify(other), wrongKey),
+  })
+  // One relay has replaced the previous head; another retains valid evidence.
+  f.data.set(f.relays[0], [a.account().wallets[valid.walletId].event, bad])
+  const { SessionSigner } =
+    await import("../packages/core/src/protocol/session-signer")
+  const signer = new SessionSigner(f.signer, {
+    expectedPubkey: f.owner,
+    revision: "invalid-ciphertext-test",
+    authMethod: "nip07",
+    getCapabilities: () => f.signer.capabilities,
+    hasAuthority: () => true,
+  })
+  const b = f.device(signer)
+  await b.service.sync()
+  expect((await b.service.get(valid.walletId)).name).toBe("Valid")
+  expect((await b.service.get(other.walletId)).name).toBe("Older valid head")
+  expect(b.projected()).toHaveLength(2)
+  expect(b.service.snapshot.invalidCount).toBe(1)
+  expect(b.service.snapshot.status).not.toBe("blocked")
 })

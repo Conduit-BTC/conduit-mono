@@ -433,7 +433,8 @@ export class PortableWalletSync {
           } catch (error) {
             this.current()
             if (
-              error instanceof NostrSignerError ||
+              (error instanceof NostrSignerError &&
+                error.code !== "invalid_ciphertext") ||
               error instanceof SessionSignerError
             )
               throw error
@@ -649,6 +650,7 @@ export async function projectPortableWallets(
       const recovery = credentials.get(record.walletId)
       if (recovery) await store.putSparkRecovery(record.walletId, recovery)
     }
+    const visible = await store.listVisible(signer.pubkey)
     for (const network of new Set(records.map((r) => r.network))) {
       const available = records.filter(
         (r) => r.network === network && r.lifecycle === "active"
@@ -668,7 +670,13 @@ export async function projectPortableWallets(
           field === "paySelectedAt"
             ? applied?.accountPaySelectedAt
             : applied?.accountReceiveSelectedAt
-        if (chosen && chosen[field] > (lastSelectedAt ?? 0))
+        // Removal can expose an older preference without changing its timestamp.
+        // Fill a missing default, but preserve an existing local NWC choice.
+        const hasDefault = visible.some(
+          (wallet) =>
+            wallet.network === network && wallet.defaultIntents.includes(intent)
+        )
+        if (chosen && (chosen[field] > (lastSelectedAt ?? 0) || !hasDefault))
           await registry.setDefault(chosen.walletId, intent)
       }
     }

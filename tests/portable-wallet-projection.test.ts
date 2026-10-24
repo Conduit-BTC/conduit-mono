@@ -122,6 +122,57 @@ test("projects a complete wallet atomically into isolated provider credentials w
     (await store.getSparkRecovery(record.walletId))?.ciphertext ===
       credential?.ciphertext
   ).toBe(true)
+  const secondIdentity = { ...identity, accountNumber: 8 }
+  secondIdentity.identityPublicKey =
+    await deriveSparkRecoveryIdentity(secondIdentity)
+  const second: PortableWalletRecord = {
+    ...record,
+    ...secondIdentity,
+    walletId: portableWalletId(secondIdentity),
+    name: "Second",
+    paySelectedAt: 2,
+    receiveSelectedAt: 2,
+  }
+  await projectPortableWallets(
+    active,
+    [record, second],
+    {},
+    { store, registry }
+  )
+  expect(
+    (await store.listVisible(active.pubkey))
+      .find((w) => w.id === second.walletId)
+      ?.defaultIntents.sort()
+  ).toEqual(["pay_invoice", "receive"])
+  const removedSecond = { ...second, lifecycle: "removed" as const }
+  await projectPortableWallets(
+    active,
+    [record, removedSecond],
+    {},
+    { store, registry }
+  )
+  const remaining = await store.listVisible(active.pubkey)
+  expect(remaining).toHaveLength(1)
+  expect(remaining[0].defaultIntents.sort()).toEqual(["pay_invoice", "receive"])
+  const fresh = new ConduitDB(`wallet-fresh-${crypto.randomUUID()}`, {
+    indexedDB: new IDBFactory(),
+    IDBKeyRange,
+  })
+  try {
+    const freshStore = new MarketWalletStore(fresh),
+      freshRegistry = new WalletRegistry(freshStore)
+    await projectPortableWallets(
+      active,
+      [record, removedSecond],
+      {},
+      { store: freshStore, registry: freshRegistry }
+    )
+    expect(
+      (await freshStore.listVisible(active.pubkey))[0].defaultIntents.sort()
+    ).toEqual(remaining[0].defaultIntents.sort())
+  } finally {
+    await fresh.delete()
+  }
   const external = await registry.add({
     providerId: "nwc",
     kind: "connected",
@@ -130,7 +181,20 @@ test("projects a complete wallet atomically into isolated provider credentials w
     capabilities: ["pay_invoice"],
   })
   await registry.setDefault(external.id, "pay_invoice")
-  await projectPortableWallets(active, [record], {}, { store, registry })
+  // Removing another wallet must not override a deliberate local NWC choice.
+  await projectPortableWallets(
+    active,
+    [record, second],
+    {},
+    { store, registry }
+  )
+  await registry.setDefault(external.id, "pay_invoice")
+  await projectPortableWallets(
+    active,
+    [record, removedSecond],
+    {},
+    { store, registry }
+  )
   expect(
     (await store.listVisible(active.pubkey)).find((w) => w.id === external.id)
       ?.defaultIntents
@@ -154,6 +218,6 @@ test("projects a complete wallet atomically into isolated provider credentials w
     { store, registry }
   )
   expect((await store.listVisible(active.pubkey)).length).toBe(0)
-  expect(await database.walletCredentials.count()).toBe(1)
+  expect(await database.walletCredentials.count()).toBe(2)
   expect(await database.sparkRecoveryEvidence.count()).toBe(0)
 }, 15000)
