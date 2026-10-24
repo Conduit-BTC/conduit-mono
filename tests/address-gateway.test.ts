@@ -267,6 +267,25 @@ describe("approved-name gateway", () => {
       wrongHostname = false,
       providerChecks = 0
     const provider = (async (input, init) => {
+      if (
+        String(input).startsWith("https://api.cloudflare.com/") &&
+        !new URL(String(input)).pathname.endsWith("/deployments")
+      )
+        return Response.json({
+          success: true,
+          result: {
+            name: "conduit-merchant",
+            subdomain: "conduit-merchant-33n.pages.dev",
+            source: {
+              type: "github",
+              config: {
+                owner: "Conduit-BTC",
+                repo_name: "conduit-mono",
+                repo_id: "1154829623",
+              },
+            },
+          },
+        })
       if (String(input).startsWith("https://api.cloudflare.com/"))
         return Response.json({
           success: true,

@@ -32,6 +32,18 @@ interface Deployment {
     config?: { owner?: string; repo_name?: string; repo_id?: string }
   }
 }
+interface Project {
+  name?: string
+  subdomain?: string
+  source?: Deployment["source"]
+}
+function trustedSource(source: Deployment["source"]): boolean {
+  return (
+    source?.type === "github" &&
+    source.config?.owner === "Conduit-BTC" &&
+    source.config.repo_name === "conduit-mono"
+  )
+}
 export function previewProject(
   origin: string
 ): keyof typeof PREVIEW_PROJECTS | undefined {
@@ -73,28 +85,54 @@ export async function admitPreviewOrigin(
   )
     return "unavailable"
   try {
-    // Bound anonymous readiness/preflight traffic before using the account API.
+    // Share one deadline and charge every upstream request against the API budget.
+    const signal = AbortSignal.timeout(5000)
+    const base = `https://api.cloudflare.com/client/v4/accounts/${env.PAGES_ACCOUNT_ID}/pages/projects/${project}`
+    async function metadata(path: string): Promise<unknown> {
+      if (
+        !env.PREVIEW_DISCOVERY_RATE_LIMITER ||
+        !(
+          await env.PREVIEW_DISCOVERY_RATE_LIMITER.limit({
+            key: "pages-discovery",
+          })
+        ).success
+      )
+        throw new Error("Preview discovery unavailable")
+      const result = await fetcher(base + path, {
+        headers: { Authorization: `Bearer ${env.PAGES_READ_API_TOKEN}` },
+        // workerd supports manual/follow, not the browser's error mode.
+        // Reject non-2xx responses below without forwarding credentials.
+        redirect: "manual",
+        cache: "no-store",
+        signal,
+      })
+      if (!result.ok) throw new Error("Preview discovery unavailable")
+      return JSON.parse(await boundedText(result.body, 2_000_000))
+    }
+    // Deployment records omit repo_id; the project endpoint supplies it.
+    const details = (await metadata("")) as {
+      success?: boolean
+      result?: Project
+    }
     if (
-      !env.PREVIEW_DISCOVERY_RATE_LIMITER ||
-      !(
-        await env.PREVIEW_DISCOVERY_RATE_LIMITER.limit({
-          key: "pages-discovery",
-        })
-      ).success
+      details.success !== true ||
+      !details.result ||
+      typeof details.result !== "object" ||
+      Array.isArray(details.result)
     )
       return "unavailable"
-    for (let page = 1; page <= 3; page++) {
-      const result = await fetcher(
-        `https://api.cloudflare.com/client/v4/accounts/${env.PAGES_ACCOUNT_ID}/pages/projects/${project}/deployments?env=preview&per_page=100&page=${page}`,
-        {
-          headers: { Authorization: `Bearer ${env.PAGES_READ_API_TOKEN}` },
-          redirect: "error",
-          cache: "no-store",
-          signal: AbortSignal.timeout(5000),
-        }
-      )
-      if (!result.ok) return "unavailable"
-      const data = JSON.parse(await boundedText(result.body, 2_000_000)) as {
+    if (
+      details.result.name !== project ||
+      details.result.subdomain !== PREVIEW_PROJECTS[project] ||
+      !trustedSource(details.result.source) ||
+      String(details.result.source?.config?.repo_id) !== "1154829623"
+    )
+      return "origin_forbidden"
+    // Pages accepts at most 25 per page. Retain the 300-record discovery bound.
+    for (let page = 1; page <= 12; page++) {
+      const data = (await metadata(
+        `/deployments?env=preview&per_page=25&page=${page}`
+      )) as {
         success?: boolean
         result?: Deployment[]
         result_info?: { total_pages?: number }
@@ -112,10 +150,9 @@ export async function admitPreviewOrigin(
         if (
           d.project_name !== project ||
           d.environment !== "preview" ||
-          d.source?.type !== "github" ||
-          source?.owner !== "Conduit-BTC" ||
-          source?.repo_name !== "conduit-mono" ||
-          String(source?.repo_id) !== "1154829623" ||
+          !trustedSource(d.source) ||
+          (source?.repo_id !== undefined &&
+            String(source.repo_id) !== "1154829623") ||
           d.deployment_trigger?.type !== "github:push" ||
           d.deployment_trigger.metadata?.commit_dirty !== false ||
           !d.deployment_trigger.metadata.branch ||

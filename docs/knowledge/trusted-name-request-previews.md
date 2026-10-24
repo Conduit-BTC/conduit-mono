@@ -27,8 +27,12 @@ write access and Pages account administration are therefore inside this boundary
 Do not attach untrusted upload automation to these projects.
 
 The gateway does not fetch a URL supplied by a caller. It consults only the two
-pinned projects. Discovery stops after three pages of 100 deployments, times out
-per request and has an anonymous API budget. Missing credentials, rate limiting,
+pinned projects. Discovery verifies the project repository ID, then scans at most
+twelve pages of 25 deployments under one five-second deadline. Every upstream call consumes the
+anonymous API budget. Deployment records must independently match the repository
+owner/name; their optional repository ID must agree when returned. The project
+endpoint supplies the required ID because deployment records omit it in practice.
+Missing credentials, rate limiting,
 API failures or incomplete discovery fail closed with an unavailable response.
 The production origin path does not depend on Pages API availability.
 

@@ -44,6 +44,17 @@ function provider(rows = [deployment()]) {
     expect(new Headers(init?.headers).get("Authorization")).toBe(
       `Bearer ${env.PAGES_READ_API_TOKEN}`
     )
+    expect(init?.redirect).toBe("manual")
+    if (!new URL(String(url)).pathname.endsWith("/deployments"))
+      return Response.json({
+        success: true,
+        result: {
+          name: "conduit-market",
+          subdomain: "conduit-market-coo.pages.dev",
+          source: deployment().source,
+        },
+      })
+    expect(new URL(String(url)).searchParams.get("per_page")).toBe("25")
     return Response.json({
       success: true,
       result: rows,
@@ -153,18 +164,27 @@ test("missing credentials, API failures, ambiguous aliases and discovery limits 
     await admitPreviewOrigin(
       origin,
       env,
-      (async () => {
+      (async (input) => {
         calls++
+        if (!new URL(String(input)).pathname.endsWith("/deployments"))
+          return Response.json({
+            success: true,
+            result: {
+              name: "conduit-market",
+              subdomain: "conduit-market-coo.pages.dev",
+              source: deployment().source,
+            },
+          })
         return Response.json({
           success: true,
           result: [{ ...deployment(), url: "https://other.test", aliases: [] }],
-          result_info: { total_pages: 4 },
+          result_info: { total_pages: 13 },
         })
       }) as typeof fetch,
       now
     )
   ).toBe("unavailable")
-  expect(calls).toBe(3)
+  expect(calls).toBe(13)
 })
 
 test("anonymous preview discovery is rate limited before any provider fetch", async () => {
@@ -208,4 +228,96 @@ test("provider outages and malformed/oversized metadata never authorize or expos
   expect(await admitPreviewOrigin(origin, env, provider([d]), now)).toBe(
     "unavailable"
   )
+})
+
+test("Workers fetch uses supported redirect and page size with project-level repository identity", async () => {
+  const d = deployment()
+  const source = { ...d.source, config: { ...d.source.config } }
+  delete (d.source.config as { repo_id?: string }).repo_id
+  const paths: string[] = []
+  const fetcher = (async (input, init) => {
+    const url = new URL(String(input))
+    paths.push(url.pathname)
+    // Reproduce actual workerd behavior instead of accepting browser-only options.
+    if (init?.redirect === "error")
+      throw new TypeError("Unsupported redirect mode")
+    expect(init?.redirect).toBe("manual")
+    if (url.pathname.endsWith("/deployments")) {
+      if (Number(url.searchParams.get("per_page")) > 25)
+        return Response.json({ success: false }, { status: 400 })
+      return Response.json({
+        success: true,
+        result: [d],
+        result_info: { total_pages: 1 },
+      })
+    }
+    return Response.json({
+      success: true,
+      result: {
+        name: "conduit-market",
+        subdomain: "conduit-market-coo.pages.dev",
+        source,
+      },
+    })
+  }) as typeof fetch
+  expect(await admitPreviewOrigin(origin, env, fetcher, now)).toBe("allowed")
+  expect(paths).toEqual([
+    `/client/v4/accounts/${env.PAGES_ACCOUNT_ID}/pages/projects/conduit-market`,
+    `/client/v4/accounts/${env.PAGES_ACCOUNT_ID}/pages/projects/conduit-market/deployments`,
+  ])
+})
+
+test("project repository identity remains required when deployment records omit its ID", async () => {
+  let calls = 0
+  const fetcher = (async () => {
+    calls++
+    return Response.json({
+      success: true,
+      result: {
+        name: "conduit-market",
+        subdomain: "conduit-market-coo.pages.dev",
+        source: {
+          ...deployment().source,
+          config: { ...deployment().source.config, repo_id: "other" },
+        },
+      },
+    })
+  }) as typeof fetch
+  expect(await admitPreviewOrigin(origin, env, fetcher, now)).toBe(
+    "origin_forbidden"
+  )
+  expect(calls).toBe(1)
+})
+test("each metadata request consumes the upstream budget and redirects fail closed", async () => {
+  let permits = 0,
+    calls = 0
+  const limited = {
+    ...env,
+    PREVIEW_DISCOVERY_RATE_LIMITER: {
+      limit: async () => ({ success: ++permits < 2 }),
+    },
+  }
+  const fetcher = (async (...args) => {
+    calls++
+    return provider()(...args)
+  }) as typeof fetch
+  expect(await admitPreviewOrigin(origin, limited, fetcher, now)).toBe(
+    "unavailable"
+  )
+  expect(calls).toBe(1)
+  expect(permits).toBe(2)
+  expect(
+    await admitPreviewOrigin(
+      origin,
+      env,
+      (async (_input, init) => {
+        expect(init?.redirect).toBe("manual")
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://unrelated.test" },
+        })
+      }) as typeof fetch,
+      now
+    )
+  ).toBe("unavailable")
 })
