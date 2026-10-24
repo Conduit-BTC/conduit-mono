@@ -527,7 +527,9 @@ describe("address progress in the complete wallet", () => {
           }
         },
         signAccount: (draft) => f.signer.signEvent(draft),
-        fetch: (async (_url, init) => {
+        fetch: (async (url, init) => {
+          if (String(url).endsWith("/availability"))
+            return Response.json({ status: "ready" })
           bodies.push(String(init?.body))
           return Response.json({ status: approved ? "approved" : "received" })
         }) as typeof fetch,

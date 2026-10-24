@@ -22,25 +22,32 @@ test("dedicated bindings permit offline config validation without credentials", 
   for (const env of ["preview", "production"] as const)
     expect(() => validateGatewayDeployment(configured(), env)).not.toThrow()
 })
-test("production pins the one Merchant release preview without admitting another preview", () => {
+test("production pins only exact production origins and stages automatic previews disabled", () => {
   const config = configured()
-  const merchantOrigin =
-    "https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev"
-  expect(config.vars.ALLOWED_ORIGINS.split(",")).toContain(merchantOrigin)
-  expect(config.vars.TURNSTILE_HOSTNAMES.split(",")).toContain(
-    new URL(merchantOrigin).hostname
+  expect(config.vars.ALLOWED_ORIGINS).toBe(
+    "https://shop.conduit.market,https://sell.conduit.market"
   )
+  expect(config.vars.TURNSTILE_HOSTNAMES).toBe(
+    "shop.conduit.market,sell.conduit.market"
+  )
+  expect(config.vars.TRUSTED_PREVIEWS_ENABLED).toBe("false")
   expect(() => validateGatewayDeployment(config, "production")).not.toThrow()
-  config.vars.ALLOWED_ORIGINS +=
-    ",https://another-preview.conduit-merchant-33n.pages.dev"
+  config.vars.ALLOWED_ORIGINS += ",https://anything.pages.dev"
   expect(() => validateGatewayDeployment(config, "production")).toThrow(
     "exact app origins"
   )
-  config.vars.ALLOWED_ORIGINS = source.vars.ALLOWED_ORIGINS
-  config.vars.TURNSTILE_HOSTNAMES +=
-    ",another-preview.conduit-merchant-33n.pages.dev"
+})
+test("automatic preview authorization requires reviewed account and server-only credential storage", () => {
+  const config = configured()
+  config.vars.TRUSTED_PREVIEWS_ENABLED = "true"
   expect(() => validateGatewayDeployment(config, "production")).toThrow(
-    "exact app origins"
+    "reviewed Pages account"
+  )
+  Object.assign(config.vars, { PAGES_ACCOUNT_ID: "a".repeat(32) })
+  expect(() => validateGatewayDeployment(config, "production")).not.toThrow()
+  Object.assign(config.vars, { PAGES_READ_API_TOKEN: "must-not-be-public" })
+  expect(() => validateGatewayDeployment(config, "production")).toThrow(
+    "secret store"
   )
 })
 test("production rejects missing binding, changed origins, exposed credentials and logging", () => {

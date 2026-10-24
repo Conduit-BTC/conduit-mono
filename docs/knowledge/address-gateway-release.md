@@ -145,12 +145,12 @@ Turnstile site key and ordinary public Breez client configuration.
 Turnstile permits subdomains of a configured parent hostname. A dedicated widget
 can narrow scope and separate lifecycle ownership, but lack of an explicit
 subdomain entry is not proof that a parent-domain widget cannot serve it.
-Preview should show the finished form; real preview submissions are not a release
-gate. An explicitly authorized release preview can use its exact origin and
-hostname with the trusted gateway and a public site key. Never allow all Pages
-previews, give the preview provider credentials, or run candidate code in the
-qualification runner. Remove the temporary preview origin after qualification.
-Production submit and status require actual deployed observations.
+Trusted repository previews can use the production gateway through
+[provider-verified preview admission](./trusted-name-request-previews.md).
+The gateway checks native Git deployment provenance and expiry independently of
+Turnstile's project-host coverage. No client workflow receives provider credentials.
+Cloudflare changes and a deployed real submit/status/activation check remain
+separate approval gates; local tests do not establish deployed admission.
 
 Stage the reviewed Worker with mutations disabled, verify D1 and secrets by
 presence only, then coordinate provider admission and cash-domain routing so

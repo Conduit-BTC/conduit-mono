@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ADDRESS_REQUEST_ACTION } from "@conduit/core/wallets/address-name-request"
+import {
+  ADDRESS_REQUEST_ACTION,
+  addressRequestAvailability,
+  addressRequestFailureMessage,
+} from "@conduit/core/wallets/address-name-request"
 import { requestEvidence } from "@conduit/core/wallets/address-request-record"
 import type { AddressRequestView } from "@conduit/core/wallets/address-request-workflow"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
@@ -77,6 +81,9 @@ function AddressChallenge({
           theme: "auto",
           size: "compact",
           appearance: "interaction-only",
+          retry: "never",
+          "refresh-expired": "manual",
+          "refresh-timeout": "manual",
           callback: (token: string) => {
             if (current) {
               setFailed(false)
@@ -98,9 +105,16 @@ function AddressChallenge({
     <div className="max-w-full">
       <div ref={container} className="w-[150px] max-w-full" />
       {failed && (
+        <p role="alert" className="text-pretty text-sm">
+          Security check unavailable or expired. Retry the check; if it keeps
+          failing, open the current preview or production app.
+        </p>
+      )}
+      {failed && (
         <Button
           size="sm"
           variant="ghost"
+          type="button"
           onClick={() => setRetry((value) => value + 1)}
         >
           Retry security check
@@ -153,6 +167,18 @@ export function AddressNameRequestForm({
   onActivated(): Promise<void>
   siteKey?: string
 }) {
+  const [availability, setAvailability] =
+    useState<Awaited<ReturnType<typeof addressRequestAvailability>>>()
+  useEffect(() => {
+    let active = true
+    if (siteKey)
+      void addressRequestAvailability(fetch).then((status) => {
+        if (active) setAvailability(status)
+      })
+    return () => {
+      active = false
+    }
+  }, [siteKey])
   const [name, setName] = useState("")
   const [view, setView] = useState<AddressRequestView>()
   const [loaded, setLoaded] = useState(false)
@@ -251,6 +277,23 @@ export function AddressNameRequestForm({
   const unresolved = phase === "pending" || phase === "received"
   const retry =
     unresolved && (view?.status === "not_received" || phase === "pending")
+  const failure =
+    view?.status &&
+    [
+      "origin_forbidden",
+      "preview_expired",
+      "challenge_failed",
+      "rate_limited",
+      "invalid",
+      "unavailable",
+    ].includes(view.status)
+      ? addressRequestFailureMessage(view.status)
+      : undefined
+  const readinessFailure =
+    availability && availability !== "ready"
+      ? addressRequestFailureMessage(availability)
+      : undefined
+
   const message = !loaded
     ? "Restoring your saved request…"
     : phase === "complete"
@@ -263,15 +306,17 @@ export function AddressNameRequestForm({
             ? "Name approved. Activate it when you are ready."
             : phase === "declined"
               ? "Request declined. Your existing receiving address still works."
-              : phase === "received"
-                ? "Pending approval. Your existing receiving address still works."
-                : phase === "pending"
-                  ? view?.status === "not_received"
-                    ? "No submission found. Retry the same saved request."
-                    : "Submission is uncertain. Your saved request will be checked again."
-                  : !siteKey || !writesEnabled
-                    ? "Name requests are temporarily unavailable."
-                    : "Requests do not reserve or approve names."
+              : failure
+                ? failure
+                : phase === "received"
+                  ? "Pending approval. Your existing receiving address still works."
+                  : phase === "pending"
+                    ? view?.status === "not_received"
+                      ? "No submission found. Retry the same saved request."
+                      : "Submission is uncertain. Your saved request will be checked again."
+                    : !siteKey || !writesEnabled
+                      ? "Name requests are temporarily unavailable."
+                      : "Requests do not reserve or approve names."
   return (
     <form
       className="grid min-w-0 gap-2"
@@ -281,6 +326,13 @@ export function AddressNameRequestForm({
         void run("submit")
       }}
     >
+      {import.meta.env?.VITE_RELEASE_CHANNEL === "preview" && (
+        <p className="text-pretty text-sm">
+          This preview creates real @conduit.cash name requests. Requests and
+          activated addresses carry over to production with your encrypted
+          wallet record. Approval is still required.
+        </p>
+      )}
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <AddressRequestFields
           walletId={walletId}
@@ -293,20 +345,28 @@ export function AddressNameRequestForm({
             size="sm"
             type="submit"
             disabled={
-              pending || !loaded || !writesEnabled || !token || !name.trim()
+              pending ||
+              !loaded ||
+              availability !== "ready" ||
+              !writesEnabled ||
+              !token ||
+              !name.trim()
             }
           >
             {view ? "Retry same request" : "Request name"}
           </Button>
         )}
       </div>
-      {writesEnabled && (!view || retry) && siteKey && (
-        <AddressChallenge
-          key={challengeRevision}
-          siteKey={siteKey}
-          onToken={onToken}
-        />
-      )}
+      {writesEnabled &&
+        availability === "ready" &&
+        (!view || retry) &&
+        siteKey && (
+          <AddressChallenge
+            key={challengeRevision}
+            siteKey={siteKey}
+            onToken={onToken}
+          />
+        )}
       <p
         role="status"
         aria-live="polite"
@@ -315,6 +375,27 @@ export function AddressNameRequestForm({
       >
         {pending ? "Saving and checking your request…" : message}
       </p>
+      {readinessFailure && (
+        <div>
+          <p role="alert" className="text-pretty text-sm">
+            {readinessFailure}
+          </p>
+          <Button
+            size="sm"
+            type="button"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setAvailability(undefined)
+              void addressRequestAvailability(fetch).then((status) => {
+                if (current.current) setAvailability(status)
+              })
+            }}
+          >
+            Check service availability
+          </Button>
+        </div>
+      )}
       {error && (
         <p role="alert" className="text-sm">
           {error}
@@ -335,7 +416,7 @@ export function AddressNameRequestForm({
         <Button
           size="sm"
           type="button"
-          disabled={pending || !writesEnabled}
+          disabled={pending || !writesEnabled || availability !== "ready"}
           onClick={() => void run("activate")}
         >
           {phase === "registered"
