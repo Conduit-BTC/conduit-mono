@@ -1,3 +1,4 @@
+import { resolveSparkLightningAddress } from "../wallets/resolve-spark-lightning-address"
 import { getAccountStorageRelays } from "../protocol/account-storage-relay-policy"
 import {
   lockedWalletRuntime as lockedRuntime,
@@ -185,7 +186,8 @@ export interface UseWalletsReturn {
     walletId: string,
     register?: boolean,
     username?: string,
-    domain?: "breez.tips" | "conduit.cash"
+    domain?: "breez.tips" | "conduit.cash",
+    options?: AccountSignerOperationOptions
   ): Promise<import("@conduit/core").BreezAddressState>
   requestAddressName?: AddressRequestWorkflow
   receiveSparkLightning(walletId: string, amountSats?: number): Promise<string>
@@ -1121,49 +1123,32 @@ export function useWallets(
       walletId: string,
       register = false,
       username?: string,
-      domain?: "breez.tips" | "conduit.cash"
+      domain?: "breez.tips" | "conduit.cash",
+      options: AccountSignerOperationOptions = { priority: "background" }
     ) => {
-      const manager = requireSparkManager()
       const signer = getAccountSigner()
-      const state = domain
-        ? await manager.getLightningAddress(
+      return resolveSparkLightningAddress({
+        manager: requireSparkManager(),
+        walletId,
+        register,
+        username,
+        domain,
+        assertCurrent: () => {
+          if (getAccountSigner() !== signer)
+            throw new Error("Your Nostr sign-in changed.")
+          if (signer) assertWalletSignerCurrent(signer)
+        },
+        onRegistered: (address) => {
+          if (!signer) return
+          getPortableWalletSync(signer).rememberLightningAddress(
             walletId,
-            register,
-            username,
-            domain
+            address
           )
-        : await (async () => {
-            const [breez, existing] = await Promise.all([
-              manager.getLightningAddress(
-                walletId,
-                true,
-                undefined,
-                "breez.tips"
-              ),
-              manager.getLightningAddress(
-                walletId,
-                false,
-                undefined,
-                "conduit.cash"
-              ),
-            ])
-            return existing.status === "registered" ? existing : breez
-          })()
-      if (signer && state.status === "registered") {
-        const service = getPortableWalletSync(signer)
-        const record = await service.get(walletId, { priority: "background" })
-        if (record.lightningAddress !== state.address) {
-          await service.update(
-            walletId,
-            { lightningAddress: state.address },
-            { priority: "background" }
-          )
-          void synchronizeRecovery(signer).catch(() => {
+          void synchronizeRecovery(signer, options).catch(() => {
             if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
           })
-        }
-      }
-      return state
+        },
+      })
     },
     [synchronizeRecovery]
   )

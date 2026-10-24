@@ -28,6 +28,22 @@ Checkout/order records are outside this cutover: their original wallet and
 operation references remain fixed. The wallet-retention and payment-attempt
 safety boundaries must continue to prevent replay or automatic reassignment.
 
+Pre-cutover Spark invoices retain their original wallet IDs and evidence, but
+those legacy wallet descriptors are excluded from the new registry. As a result,
+automatic invoice verification through those original bindings is unavailable
+after upgrading. Importing the same seed restores the native account under the
+new deterministic wallet ID; it does not repair or reassign an old invoice
+binding. Outstanding invoices require manual reconciliation against their
+original payment evidence. Do not infer settlement or replay a payment from a
+successful seed import. This is an explicit clean-start limitation; no legacy
+recovery reader or compatibility migration is provided.
+
+Preference updates retain the signed successor and both local defaults in one
+transaction. Failed default writes leave no successor for a later sync to apply.
+Provider-verified addresses remain usable when metadata signing is paused.
+Address observations wait in session memory for synchronization; restart queries
+the provider again, and explicit address retries use foreground signer consent.
+
 The bounded discovery reader reports partial coverage when it reaches its
 resource limits. Empty or partial results do not prove global absence. The
 production storage policy remains centralized in account-storage-relay-policy.

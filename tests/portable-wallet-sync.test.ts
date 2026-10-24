@@ -122,7 +122,8 @@ function fixture() {
         assertCurrent: () => {
           if (!current) throw new NostrSignerError("authority_changed")
         },
-        project: async (records) => {
+        project: async (records, _options, retain) => {
+          await retain()
           projected = records
         },
       })
