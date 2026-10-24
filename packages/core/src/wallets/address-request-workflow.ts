@@ -7,6 +7,8 @@ import {
   ADDRESS_REQUEST_ORIGIN,
   ADDRESS_REQUEST_PATH,
   addressNameRequestPayload,
+  addressRequestAvailability,
+  addressRequestFailureMessage,
   addressRequestHash,
   decodeAddressNameRequestResponse,
   type AddressNameRequest,
@@ -87,6 +89,9 @@ export function createAddressRequestWorkflow(
     check: boolean,
     token?: string
   ): Promise<AddressNameRequestStatus> => {
+    const availability = await addressRequestAvailability(d.fetch)
+    d.assertCurrent()
+    if (availability !== "ready") return availability
     const path = ADDRESS_REQUEST_PATH + (check ? "/status" : "")
     const assertAuthorized = await d.authorize?.(walletId, record)
     const event = await authorization(record.payload, path)
@@ -149,6 +154,10 @@ export function createAddressRequestWorkflow(
       let view = await load(walletId)
       const retained = !!view
       if (!view) {
+        const availability = await addressRequestAvailability(d.fetch)
+        d.assertCurrent()
+        if (availability !== "ready")
+          throw new Error(addressRequestFailureMessage(availability))
         const proof = await d.signWallet(walletId, {
           requestId: input.requestId ?? crypto.randomUUID(),
           desiredName: input.desiredName.trim().toLowerCase(),

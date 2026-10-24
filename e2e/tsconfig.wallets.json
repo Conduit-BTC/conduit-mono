@@ -34,6 +34,7 @@
     "commerce.playwright.ts",
     "commerce-inbox.playwright.ts",
     "merchant-product-image-preview.playwright.ts",
-    "wallet-runtime-races.playwright.ts"
+    "wallet-runtime-races.playwright.ts",
+    "address-name-request.playwright.ts"
   ]
 }
