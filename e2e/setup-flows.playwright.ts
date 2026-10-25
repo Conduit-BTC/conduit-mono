@@ -28,7 +28,7 @@ import {
   saveWalletRecovery,
 } from "./helpers/wallet-fixture"
 
-// Setup-flow cases can handle private shipping, password, and recovery state.
+// Setup-flow cases can handle private shipping and recovery state.
 // Keep browser diagnostics from recording those values on failure.
 test.use({ trace: "off", screenshot: "off", video: "off" })
 
@@ -131,136 +131,6 @@ async function enterWalletsForSetup(page: Page): Promise<void> {
   await expect(
     page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
   ).toBeVisible()
-}
-
-type StoredRelayEvent = {
-  id: string
-  pubkey: string
-  created_at: number
-  kind: number
-  tags: string[][]
-  content: string
-  sig: string
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-function isStoredRelayEvent(value: unknown): value is StoredRelayEvent {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    typeof value.pubkey === "string" &&
-    typeof value.created_at === "number" &&
-    typeof value.kind === "number" &&
-    Array.isArray(value.tags) &&
-    typeof value.content === "string" &&
-    typeof value.sig === "string"
-  )
-}
-
-function relayEventMatchesFilter(
-  event: StoredRelayEvent,
-  filter: Record<string, unknown>
-): boolean {
-  const ids = filter.ids
-  if (
-    Array.isArray(ids) &&
-    !ids.some((id) => typeof id === "string" && event.id.startsWith(id))
-  ) {
-    return false
-  }
-  const authors = filter.authors
-  if (
-    Array.isArray(authors) &&
-    !authors.some(
-      (author) => typeof author === "string" && event.pubkey.startsWith(author)
-    )
-  ) {
-    return false
-  }
-  const kinds = filter.kinds
-  if (Array.isArray(kinds) && !kinds.includes(event.kind)) return false
-  if (typeof filter.since === "number" && event.created_at < filter.since) {
-    return false
-  }
-  if (typeof filter.until === "number" && event.created_at > filter.until) {
-    return false
-  }
-
-  for (const [key, values] of Object.entries(filter)) {
-    if (!key.startsWith("#") || !Array.isArray(values)) continue
-    const tagName = key.slice(1)
-    if (
-      !event.tags.some(
-        (tag) => tag[0] === tagName && values.includes(tag[1] ?? "")
-      )
-    ) {
-      return false
-    }
-  }
-  return true
-}
-
-function normalizeRelayUrl(relayUrl: string): string {
-  return relayUrl.endsWith("/") ? relayUrl.slice(0, -1) : relayUrl
-}
-
-async function installStoredRelay(page: Page): Promise<void> {
-  const eventsByRelay = new Map<string, Map<string, StoredRelayEvent>>()
-  await page.routeWebSocket(
-    /^(?:ws:\/\/127\.0\.0\.1:7777|wss:\/\/)/,
-    (socket) => {
-      const relayUrl = normalizeRelayUrl(socket.url())
-      const eventsById =
-        eventsByRelay.get(relayUrl) ?? new Map<string, StoredRelayEvent>()
-      eventsByRelay.set(relayUrl, eventsById)
-      socket.onMessage((message) => {
-        if (typeof message !== "string") return
-        let frame: unknown
-        try {
-          frame = JSON.parse(message)
-        } catch {
-          return
-        }
-        if (!Array.isArray(frame)) return
-
-        if (frame[0] === "REQ" && typeof frame[1] === "string") {
-          const subscriptionId = frame[1]
-          const filters = frame.slice(2).filter(isRecord)
-          const limitedMatchesById = new Map<string, StoredRelayEvent>()
-          for (const filter of filters) {
-            const matches = Array.from(eventsById.values())
-              .filter((event) => relayEventMatchesFilter(event, filter))
-              .sort(
-                (left, right) =>
-                  right.created_at - left.created_at ||
-                  left.id.localeCompare(right.id)
-              )
-            const limit =
-              typeof filter.limit === "number"
-                ? Math.max(0, Math.floor(filter.limit))
-                : matches.length
-            for (const event of matches.slice(0, limit)) {
-              limitedMatchesById.set(event.id, event)
-            }
-          }
-          for (const event of limitedMatchesById.values()) {
-            socket.send(JSON.stringify(["EVENT", subscriptionId, event]))
-          }
-          socket.send(JSON.stringify(["EOSE", subscriptionId]))
-          return
-        }
-
-        if (frame[0] === "EVENT" && isStoredRelayEvent(frame[1])) {
-          const event = structuredClone(frame[1])
-          eventsById.set(event.id, event)
-          socket.send(JSON.stringify(["OK", event.id, true, "saved"]))
-        }
-      })
-    }
-  )
 }
 
 async function seedCachedMerchantProduct(page: Page): Promise<void> {
@@ -788,60 +658,19 @@ test("merchant shipping country combobox supports search and selection @merchant
   await page.setViewportSize({ width: 375, height: 667 })
   await installTestSigner(page, TEST_MERCHANT_PUBKEY)
   await page.goto(`${merchantUrl}/shipping`)
-  await page
-    .getByText("Listing area and fixed-shipping defaults", { exact: true })
-    .click()
-
-  await expect(
-    page.getByRole("heading", { name: "Shipping", exact: true })
-  ).toBeVisible()
-
-  const countryPicker = page.getByRole("combobox", {
-    name: "Search countries to add...",
-  })
-  const countryPickerTrigger = page
-    .locator("[data-combobox-search-trigger]")
-    .filter({ has: countryPicker })
-  const leadingTriggerSize = await countryPickerTrigger.evaluate((element) => ({
-    width: element.clientWidth,
-    height: element.clientHeight,
-  }))
-  await countryPickerTrigger.click({
-    position: { x: 12, y: leadingTriggerSize.height / 2 },
-  })
-  await expect(countryPicker).toBeFocused()
-  await page.keyboard.type("un")
-  await expect(countryPicker).toHaveValue("un")
-  await expect(page.getByRole("option").first()).toContainText("United")
-
-  await countryPicker.fill("")
-  await expect(page.getByRole("option").first()).toContainText("Åland Islands")
-
-  await page.getByRole("heading", { name: "Shipping", exact: true }).click()
-  const trailingTriggerSize = await countryPickerTrigger.evaluate(
-    (element) => ({
-      width: element.clientWidth,
-      height: element.clientHeight,
-    })
-  )
-  await countryPickerTrigger.click({
-    position: {
-      x: trailingTriggerSize.width - 12,
-      y: trailingTriggerSize.height / 2,
-    },
-  })
-  await expect(countryPicker).toBeFocused()
-  await page.keyboard.type("canada")
-  await expect(countryPicker).toHaveValue("canada")
-  await page.getByRole("option", { name: /CA Canada/i }).click()
-
-  await expect(
-    page.locator("span").filter({ hasText: /^Canada$/ })
-  ).toBeVisible()
-  await expect(countryPicker).toHaveValue("")
+  const origin = page.getByRole("combobox", { name: "Origin country" })
+  await origin.click()
+  const search = page.getByPlaceholder("Search countries", { exact: true })
+  await search.fill("canada")
+  await page.getByRole("option", { name: "Canada", exact: true }).click()
+  await expect(origin).toContainText("Canada")
+  await origin.click()
+  await search.fill("United States")
+  await page.getByRole("option", { name: "United States", exact: true }).click()
+  await expect(origin).toContainText("United States")
 })
 
-test("merchant ships from settings sync and default a new listing @merchant", async ({
+test("merchant public location syncs and defaults a new listing @merchant", async ({
   page,
 }) => {
   test.setTimeout(90_000)
@@ -849,140 +678,39 @@ test("merchant ships from settings sync and default a new listing @merchant", as
   const pubkey = getPublicKey(secretKey)
   await seedTestRelayIdentity(secretKey)
   await installTestSigner(page, pubkey, { secretKey })
-  const requestedPlaces: string[] = []
-  page.on("request", (request) => {
-    if (request.url().includes("/places/"))
-      requestedPlaces.push(new URL(request.url()).pathname)
-  })
-  await page.goto(`${merchantUrl}/shipping`)
+  await page.goto(`${merchantUrl}/preferences`)
   await page
-    .getByText("Listing area and fixed-shipping defaults", { exact: true })
+    .getByLabel("General merchant location", { exact: true })
+    .fill("Oakland, Alameda County, California, United States")
+  await page.getByLabel("Coarse geohash (four characters)").fill("9q9p")
+  await page
+    .getByRole("button", { name: "Publish public settings", exact: true })
     .click()
   await expect(
-    page.getByRole("heading", { name: "Shipping", exact: true })
-  ).toBeVisible()
-
-  const country = page.getByRole("combobox", {
-    name: "Search countries",
-    exact: true,
-  })
-  await country.click()
-  await country.fill("United States")
-  await page
-    .getByRole("option", { name: /United States/ })
-    .first()
-    .click()
-  await expect(
-    page.getByRole("combobox", { name: "Search a place, county, or region" })
-  ).toBeDisabled()
-  const state = page.getByRole("combobox", { name: "Search states" })
-  await state.click()
-  await state.fill("California")
-  await page
-    .getByRole("option", { name: /California/ })
-    .first()
-    .click()
-  const place = page.getByRole("combobox", {
-    name: "Search a place, county, or region",
-  })
-  await expect(place).toBeEnabled()
-  await place.click()
-  await place.fill("Alameda County")
-  await page
-    .getByRole("option", { name: /Oakland.*Alameda County/ })
-    .first()
-    .click()
-  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
-  expect(requestedPlaces).toContain("/places/US/CA.json")
-  expect(requestedPlaces).not.toContain("/places/US.json")
-
-  await state.click()
-  await state.fill("Nevada")
-  await page
-    .getByRole("option", { name: /Nevada/ })
-    .first()
-    .click()
-  await expect(page.getByText(/Public ships from area:/)).toHaveCount(0)
-  await country.click()
-  await country.fill("Canada")
-  await page
-    .getByRole("option", { name: /Canada/ })
-    .first()
-    .click()
-  await expect(
-    page.getByRole("combobox", { name: "Search states" })
-  ).toHaveCount(0)
-  await expect(page.getByText(/Public ships from area:/)).toHaveCount(0)
-  await country.click()
-  await country.fill("United States")
-  await page
-    .getByRole("option", { name: /United States/ })
-    .first()
-    .click()
-  await state.click()
-  await state.fill("California")
-  await page
-    .getByRole("option", { name: /California/ })
-    .first()
-    .click()
-  await place.click()
-  await place.fill("Oakland")
-  await page
-    .getByRole("option", { name: /Oakland.*Alameda County/ })
-    .first()
-    .click()
-
-  await place.click()
-  await place.fill("Berkeley")
-  await place.press("Escape")
-  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
-
-  const destinationCountry = page.getByRole("combobox", {
-    name: "Search countries to add...",
-  })
-  await destinationCountry.click()
-  await destinationCountry.fill("Canada")
-  await page
-    .getByRole("option", { name: /CA Canada/ })
-    .first()
-    .click()
-
-  await page.getByRole("button", { name: "Save changes" }).click()
-  await expect(
-    page.getByText("Shipping settings published to relays.")
-  ).toBeVisible({ timeout: 20_000 })
+    page
+      .getByRole("status")
+      .filter({ hasText: "Public settings saved and found on relays." })
+  ).toBeVisible({ timeout: 30_000 })
   const events = await readTestRelayEvents({
-    kinds: [30_078],
+    kinds: [10420],
     authors: [pubkey],
-    "#d": ["conduit/merchant-shipping-settings"],
   })
   expect(events).toHaveLength(1)
-  const content = JSON.parse(events[0]!.content) as {
-    countries: Array<{ code: string }>
-    shipsFrom: { location: string; geohash: string }
-  }
-  expect(content.countries.map(({ code }) => code)).toEqual(["CA"])
-  expect(content.shipsFrom.location).toContain(
-    "Oakland, Alameda County, California"
-  )
-  expect(content.shipsFrom.geohash).toMatch(
-    /^[0123456789bcdefghjkmnpqrstuvwxyz]{4}$/
-  )
-
-  await page.evaluate(
-    (key) => localStorage.removeItem(`conduit:merchant:shipping_config:${key}`),
-    pubkey
-  )
+  const document = JSON.parse(events[0]!.content)
+  expect(document.settings.merchant.generalLocation).toEqual({
+    location: "Oakland, Alameda County, California, United States",
+    geohash: "9q9p",
+  })
+  expect(document.settings.shipping).toBeUndefined()
+  expect(
+    await readTestRelayEvents({ kinds: [30402, 30406], authors: [pubkey] })
+  ).toHaveLength(0)
   await page.reload()
-  await page
-    .getByText("Listing area and fixed-shipping defaults", { exact: true })
-    .click()
-  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible({
+  await expect(
+    page.getByLabel("General merchant location", { exact: true })
+  ).toHaveValue("Oakland, Alameda County, California, United States", {
     timeout: 20_000,
   })
-  await expect(
-    page.locator("span").filter({ hasText: /^Canada$/ })
-  ).toBeVisible()
   await page.goto(`${merchantUrl}/products`)
   const addProduct = page.getByRole("button", { name: "Add product" }).first()
   await expect(addProduct).toBeEnabled({ timeout: 20_000 })
@@ -1031,110 +759,70 @@ test("merchant ships from settings sync and default a new listing @merchant", as
   ).toBeVisible()
 })
 
-test("merchant shipping requires loading signed settings discovered after local edits @merchant", async ({
+test("merchant public settings retain stale edits for explicit review @merchant", async ({
   page,
 }) => {
   test.setTimeout(60_000)
   const secretKey = generateSecretKey()
   const pubkey = getPublicKey(secretKey)
   await seedTestRelayIdentity(secretKey)
-  const settings = {
-    format: "conduit-merchant-shipping-settings",
-    version: 1,
-    countries: [
-      { code: "US", name: "United States", restrictTo: [], exclude: ["AK"] },
-    ],
-    shipsFrom: {
-      location: "Oakland, Alameda County, California, United States",
-      geohash: "9q9p",
-    },
-  }
+  await installTestSigner(page, pubkey, { secretKey })
+  await page.goto(`${merchantUrl}/preferences`)
+  const notice = page.getByLabel("Public notice", { exact: true })
+  await notice.fill("Local draft")
   const signed = finalizeEvent(
     {
-      kind: 30_078,
-      created_at: Math.floor(Date.now() / 1000) - 60,
-      tags: [["d", "conduit/merchant-shipping-settings"]],
-      content: JSON.stringify(settings),
+      kind: 10420,
+      created_at: Math.floor(Date.now() / 1000) - 1,
+      tags: [["d", "openmarkets.public-settings"]],
+      content: JSON.stringify({
+        format: "openmarkets.public-settings",
+        version: 1,
+        settings: {
+          merchant: { notice: "Remote notice", serviceLanguages: ["en"] },
+        },
+      }),
     },
     secretKey
   )
   await publishTestRelayEvents([signed])
-  await installTestSigner(page, pubkey, { secretKey })
-  const heldReads: Array<() => void> = []
-  let holdReads = true
-  await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
-    const server = socket.connectToServer()
-    socket.onMessage((message) => {
-      const frame: unknown =
-        typeof message === "string" ? JSON.parse(message) : null
-      const isSettingsRead =
-        Array.isArray(frame) &&
-        frame[0] === "REQ" &&
-        frame
-          .slice(2)
-          .some(
-            (filter) =>
-              isRecord(filter) &&
-              Array.isArray(filter.kinds) &&
-              filter.kinds.includes(30_078)
-          )
-      if (holdReads && isSettingsRead)
-        heldReads.push(() => server.send(message))
-      else server.send(message)
-    })
-  })
-  await page.goto(`${merchantUrl}/shipping`)
-  await expect(page.getByRole("heading", { name: "Shipping" })).toBeVisible()
   await page
-    .getByText("Listing area and fixed-shipping defaults", { exact: true })
+    .getByRole("button", { name: "Publish public settings", exact: true })
     .click()
-  await expect.poll(() => heldReads.length).toBeGreaterThan(0)
-  const destination = page.getByRole("combobox", {
-    name: "Search countries to add...",
-  })
-  await destination.fill("Canada")
-  await page.getByRole("option", { name: /CA Canada/ }).click()
-  holdReads = false
-  for (const release of heldReads) release()
   await expect(
-    page.getByRole("button", { name: "Load signed settings", exact: true })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Save changes" })
-  ).toBeDisabled()
-  // Also exercise the submit handler, rather than relying on a disabled button.
-  await page
-    .locator("details form")
-    .evaluate((form) => (form as HTMLFormElement).requestSubmit())
+    page.getByRole("status").filter({ hasText: "Settings changed elsewhere" })
+  ).toBeVisible({ timeout: 30_000 })
+  await expect(notice).toHaveValue("Local draft")
   expect(
-    (await readTestRelayEvents({ kinds: [30_078], authors: [pubkey] })).map(
-      ({ id }) => id
+    (await readTestRelayEvents({ kinds: [10420], authors: [pubkey] })).map(
+      (e) => e.id
     )
   ).toEqual([signed.id])
   await page
-    .getByRole("button", { name: "Load signed settings", exact: true })
+    .getByRole("button", { name: "Review current settings", exact: true })
     .click()
-  await expect(page.getByText(/Public ships from area:.*Oakland/)).toBeVisible()
   await expect(
-    page.getByRole("button", { name: "Remove United States" })
+    page.getByText('Current: "Remote notice"', { exact: true })
   ).toBeVisible()
-  await expect(page.getByRole("button", { name: "Remove Canada" })).toHaveCount(
-    0
-  )
-  await destination.fill("Canada")
-  await page.getByRole("option", { name: /CA Canada/ }).click()
-  await page.getByRole("button", { name: "Save changes" }).click()
+  await page
+    .getByRole("button", { name: "Keep my reviewed changes", exact: true })
+    .click()
+  await page
+    .getByRole("button", { name: "Publish public settings", exact: true })
+    .click()
   await expect(
-    page.getByText("Shipping settings published to relays.")
-  ).toBeVisible({ timeout: 20_000 })
+    page
+      .getByRole("status")
+      .filter({ hasText: "Public settings saved and found on relays." })
+  ).toBeVisible({ timeout: 30_000 })
   const [updated] = await readTestRelayEvents({
-    kinds: [30_078],
+    kinds: [10420],
     authors: [pubkey],
   })
-  const saved = JSON.parse(updated!.content) as typeof settings
-  expect(saved.countries.map(({ code }) => code)).toEqual(["US", "CA"])
-  expect(saved.countries[0]!.exclude).toEqual(["AK"])
-  expect(saved.shipsFrom).toEqual(settings.shipsFrom)
+  expect(JSON.parse(updated!.content).settings.merchant).toEqual({
+    notice: "Local draft",
+    serviceLanguages: ["en"],
+  })
 })
 
 test("merchant product editing preserves signed area after cancelled place search @merchant", async ({
@@ -2257,24 +1945,14 @@ test("market wallets route unifies owned and external wallet setup @market", asy
   ).toHaveCount(0)
   await page.goto(`${marketUrl}/preferences`)
   await expect(
-    page.getByRole("heading", { name: "Price display", exact: true })
+    page.getByRole("heading", { name: "Private preferences", exact: true })
   ).toBeVisible()
-
-  const displayCurrency = page.getByRole("combobox", {
-    name: "Preferred currency",
-  })
-  const satsStandard = page.getByRole("switch", {
-    name: "Sats the standard",
-  })
-  await displayCurrency.click()
-  await page.getByRole("option", { name: "EUR" }).click()
-  await satsStandard.click()
-  await expect(displayCurrency).toContainText("EUR")
-  await expect(satsStandard).toBeChecked()
-
-  await page.reload()
-  await expect(displayCurrency).toContainText("EUR")
-  await expect(satsStandard).toBeChecked()
+  await expect(
+    page.getByRole("combobox", { name: "Display currency", exact: true })
+  ).toBeEnabled()
+  await expect(
+    page.getByRole("combobox", { name: "Bitcoin unit", exact: true })
+  ).toBeEnabled()
 })
 
 test("portable wallet import keeps derivation advanced and clears form state @market", async ({
@@ -2416,144 +2094,83 @@ test("wallet dialog dismissal clears device-local sensitive state @market", asyn
   }
 })
 
-test("market shopper preferences remove legacy plaintext and render the complete form @market", async ({
+test("market ordinary preferences ignore legacy values and save addresses through the signer @market", async ({
   page,
 }) => {
-  test.setTimeout(60_000)
-  await page.setViewportSize({ width: 1280, height: 900 })
-  const secretKey = generateSecretKey()
-  const buyerPubkey = getPublicKey(secretKey)
-  await installStoredRelay(page)
-  await installTestSigner(page, buyerPubkey, { nip44: false, secretKey })
-  await page.addInitScript((buyerPubkey) => {
+  test.setTimeout(90_000)
+  const identity = createRuntimeSignerIdentity()
+  await installRealTestSigner(page, identity, TEST_RELAY_URL)
+  await page.addInitScript((owner) => {
     localStorage.setItem(
-      `conduit:market-shopper-presets:v1:${buyerPubkey}`,
-      JSON.stringify({
-        version: 1,
-        updatedAt: Date.now(),
-        value: {
-          shippingCountry: "DE",
-        },
+      `conduit:market-shopper-presets:v1:${owner}`,
+      JSON.stringify({ version: 1, value: { shippingCountry: "DE" } })
+    )
+    localStorage.setItem(
+      `conduit:market-price-preference:v1:${owner}`,
+      JSON.stringify({ currency: "EUR", bitcoinUnit: "sats" })
+    )
+  }, identity.pubkey)
+  try {
+    await page.goto(`${marketUrl}/preferences`)
+    await expect(
+      page.getByRole("combobox", { name: "Display currency", exact: true })
+    ).toHaveText("BTC")
+    await expect(page.getByLabel("Encryption password")).toHaveCount(0)
+    await page.getByRole("button", { name: "Add address", exact: true }).click()
+    await expect(page.getByLabel("Country code", { exact: true })).toHaveValue(
+      "US"
+    )
+    await page
+      .getByLabel("Address label", { exact: true })
+      .fill("Synthetic home")
+    await page
+      .getByLabel("Recipient name", { exact: true })
+      .fill("Test recipient")
+    await page
+      .getByLabel("Street address", { exact: true })
+      .fill("1 Test Street")
+    await page.getByLabel("City", { exact: true }).fill("Test City")
+    await page.getByLabel("Postal code", { exact: true }).fill("00000")
+    const save = page.getByRole("button", {
+      name: "Save private preferences",
+      exact: true,
+    })
+    await expect(save).toBeDisabled()
+    await page
+      .getByRole("button", { name: "Keep address in draft", exact: true })
+      .click()
+    await expect(
+      page.getByText("Synthetic home · Default", { exact: true })
+    ).toBeVisible()
+    await save.click()
+    await expect(
+      page.getByRole("status").filter({ hasText: "Saved and found on relays." })
+    ).toBeVisible({ timeout: 30_000 })
+    await page.reload()
+    await expect(
+      page.getByText("Synthetic home · Default", { exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+    await page.getByRole("button", { name: "Edit", exact: true }).click()
+    await expect(
+      page.getByLabel("Street address", { exact: true })
+    ).toHaveValue("1 Test Street")
+    await page
+      .getByLabel("Street address", { exact: true })
+      .fill("Unsaved synthetic draft")
+    await page
+      .getByRole("button", { name: "Cancel address edit", exact: true })
+      .click()
+    await page.getByRole("button", { name: "Edit", exact: true }).click()
+    await expect(
+      page.getByLabel("Street address", { exact: true })
+    ).toHaveValue("1 Test Street")
+    expect(
+      await readTestRelayEvents({
+        kinds: [10420, 30402, 30406],
+        authors: [identity.pubkey],
       })
-    )
-  }, buyerPubkey)
-
-  await page.goto(`${marketUrl}/preferences`)
-  await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible()
-  const preferencesStatus = page
-    .locator("header")
-    .filter({ has: page.getByRole("heading", { name: "Preferences" }) })
-    .getByRole("status")
-  await expect(preferencesStatus).toContainText(
-    /Encrypted on relays|Relay ready/,
-    { timeout: 20_000 }
-  )
-  const recipientName = page.getByLabel("Recipient name")
-  const addressLine1 = page.getByLabel("Address line 1")
-  await expect(recipientName).toBeVisible()
-  await expect(addressLine1).toBeVisible()
-  const addressPositionBefore = await addressLine1.boundingBox()
-  await expect(
-    recipientName.locator("..").getByText("Required", { exact: true })
-  ).toBeVisible()
-  await recipientName.fill("Ada Lovelace")
-  await expect(
-    recipientName.locator("..").getByText("Required", { exact: true })
-  ).not.toBeVisible()
-  const addressPositionAfter = await addressLine1.boundingBox()
-  expect(addressPositionAfter?.y).toBe(addressPositionBefore?.y)
-  await expect(page.getByLabel("Postal / ZIP code")).toBeVisible()
-  const encryptionPassword = page.getByLabel("Encryption password")
-  const confirmPassword = page.getByLabel("Confirm password")
-  const unlockPreference = page.getByLabel("Unlock preference")
-  await expect(encryptionPassword).toBeVisible()
-  await expect(confirmPassword).toBeVisible()
-  await expect(unlockPreference).toBeVisible()
-  const encryptionPasswordPosition = await encryptionPassword.boundingBox()
-  const confirmPasswordPosition = await confirmPassword.boundingBox()
-  expect(confirmPasswordPosition?.y).toBe(encryptionPasswordPosition?.y)
-  await expect(encryptionPassword).toHaveAttribute("maxlength", "1024")
-  await expect(confirmPassword).toHaveAttribute("maxlength", "1024")
-  const unlockPreferencePositionBefore = await unlockPreference.evaluate(
-    (element) => element.getBoundingClientRect().top + window.scrollY
-  )
-  await encryptionPassword.fill("short")
-  await expect(
-    encryptionPassword
-      .locator("..")
-      .getByText("Password must contain 16 or more characters.")
-  ).toBeVisible()
-  await encryptionPassword.fill("long password text")
-  await expect(
-    encryptionPassword
-      .locator("..")
-      .getByText("Password must contain at least one number.")
-  ).toBeVisible()
-  await encryptionPassword.fill("secure password 7")
-  const unlockPreferencePositionAfter = await unlockPreference.evaluate(
-    (element) => element.getBoundingClientRect().top + window.scrollY
-  )
-  expect(unlockPreferencePositionAfter).toBe(unlockPreferencePositionBefore)
-  await expect(
-    encryptionPassword
-      .locator("..")
-      .getByText("Password must contain 16 or more characters.")
-  ).not.toBeVisible()
-  await confirmPassword.fill("different")
-  await expect(
-    confirmPassword.locator("..").getByText("Password confirmation must match.")
-  ).toBeVisible()
-  await confirmPassword.fill("secure password 7")
-  await expect(
-    confirmPassword.locator("..").getByText("Password confirmation must match.")
-  ).not.toBeVisible()
-  await expect(page.getByText(/save requirements remaining/)).toBeVisible()
-  await expect(
-    page.getByRole("button", { name: "Save preferences" })
-  ).toBeDisabled()
-
-  await expect
-    .poll(() =>
-      page.evaluate((buyerPubkey) => {
-        return localStorage.getItem(
-          `conduit:market-shopper-presets:v1:${buyerPubkey}`
-        )
-      }, buyerPubkey)
-    )
-    .toBeNull()
-
-  await addressLine1.fill("12 St James Square")
-  await page.getByLabel("City").fill("London")
-  await page.getByLabel("Postal / ZIP code").fill("SW1Y 4LB")
-  await expect(page.getByText("Ready to save", { exact: true })).toBeVisible()
-  await page.getByRole("button", { name: "Save preferences" }).click()
-  await expect(
-    page.getByText("Preset encrypted and saved on your relays.")
-  ).toBeVisible({ timeout: 40_000 })
-  await expect(
-    preferencesStatus.filter({ hasText: "Encrypted on relays" })
-  ).toBeVisible()
-
-  await recipientName.fill("Sensitive unsaved recipient")
-  await addressLine1.fill("Sensitive unsaved address")
-  await page.getByRole("button", { name: "Lock", exact: true }).click()
-  await expect(
-    page.getByRole("heading", { name: "Unlock shipping preset" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("heading", { name: "Price display", exact: true })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("combobox", { name: "Preferred currency" })
-  ).toBeEnabled()
-  await expect(
-    page.getByRole("switch", { name: "Sats the standard" })
-  ).toBeEnabled()
-  const unlockPassword = page.getByLabel("Password", { exact: true })
-  await expect(unlockPassword).toHaveAttribute("maxlength", "1024")
-  await page.getByRole("button", { name: "Replace forgotten preset" }).click()
-  await expect(recipientName).toHaveValue("")
-  await expect(addressLine1).toHaveValue("")
-  await expect(page.getByText("Sensitive unsaved recipient")).toHaveCount(0)
-  await expect(page.getByText("Sensitive unsaved address")).toHaveCount(0)
+    ).toHaveLength(0)
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
 })
