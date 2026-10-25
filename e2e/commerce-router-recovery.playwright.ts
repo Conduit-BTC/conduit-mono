@@ -1485,13 +1485,12 @@ async function rehearseRouter(
         exact: true,
       })
       const recoveredOrder = recovery
+      const completedPayment = recovery.getByText(
+        "Payment complete. The checkout wallet and recovery remain saved with this order.",
+        { exact: true }
+      )
       const assertScopedPaymentsComplete = async () => {
-        await expect(
-          recovery.getByText(
-            "Payment complete. The checkout wallet and recovery remain saved with this order.",
-            { exact: true }
-          )
-        ).toBeVisible()
+        await expect(completedPayment).toBeVisible()
         await expect(
           recovery.getByRole("button", {
             name: /^(?:Finish recovery|Continue this order|Pause|Pause coordination fee|Resume payment processing|Resume coordination fee)$/,
@@ -1834,11 +1833,7 @@ async function rehearseRouter(
             name: "Completing this order…",
             exact: true,
           })
-          .or(
-            recovery.getByText("Payment complete. Recovery remains saved.", {
-              exact: true,
-            })
-          )
+          .or(completedPayment)
       ).toBeVisible({ timeout: 30_000 })
       await expect
         .poll(

@@ -207,7 +207,11 @@ type RelayFrame =
   | { type: "transport_closed" }
   | { type: "transport_error" }
 
-type FrameListener = (frame: RelayFrame, wireBytes: number) => void
+type FrameListener = (
+  frame: RelayFrame,
+  wireBytes: number,
+  knownSubscription: boolean
+) => void
 
 const DEFAULT_MAX_FRAMES_PER_RELAY = 4_096
 const DEFAULT_MAX_EVENTS_PER_RELAY = 1_000
@@ -585,6 +589,7 @@ class RelayConnection {
   private readonly socket: RelayWebSocket
   private readonly onClosed: () => void
   private readonly listeners = new Set<FrameListener>()
+  private readonly subscriptions = new Set<string>()
   private readonly usedChallenges = new Set<string>()
   private readonly authConsumers = new Set<symbol>()
   private readonly signerInvocationListeners = new Set<() => void>()
@@ -667,10 +672,17 @@ class RelayConnection {
   }
 
   sendRequest(subscriptionId: string, filters: PlainNostrFilter[]): void {
-    this.send(["REQ", subscriptionId, ...filters])
+    this.subscriptions.add(subscriptionId)
+    try {
+      this.send(["REQ", subscriptionId, ...filters])
+    } catch (error) {
+      this.subscriptions.delete(subscriptionId)
+      throw error
+    }
   }
 
   closeSubscription(subscriptionId: string): void {
+    this.subscriptions.delete(subscriptionId)
     if (this.isClosed) return
     try {
       this.send(["CLOSE", subscriptionId])
@@ -1010,7 +1022,11 @@ class RelayConnection {
   }
 
   private emit(frame: RelayFrame, wireBytes = 0): void {
-    for (const listener of this.listeners) listener(frame, wireBytes)
+    // Capture ownership before an EOSE/CLOSED listener retires its request.
+    const knownSubscription =
+      "subscriptionId" in frame && this.subscriptions.has(frame.subscriptionId)
+    for (const listener of this.listeners)
+      listener(frame, wireBytes, knownSubscription)
   }
 
   private send(frame: unknown[]): void {
@@ -1021,6 +1037,7 @@ class RelayConnection {
   private markClosed(): void {
     if (!this.closed) {
       this.closed = true
+      this.subscriptions.clear()
       const error = new RelayAuthError("transport_unavailable")
       this.cancelAuthAttempt?.(error)
       this.pendingAuth?.reject(error)
@@ -1915,8 +1932,16 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
         authWork = work
       }
 
-      const onFrame: FrameListener = (frame, frameBytes) => {
+      const onFrame: FrameListener = (frame, frameBytes, knownSubscription) => {
         if (finished) return
+        // Concurrent reads share a socket but own separate resource budgets.
+        // Unknown subscription traffic and connection-level frames still count.
+        if (
+          knownSubscription &&
+          "subscriptionId" in frame &&
+          frame.subscriptionId !== subscriptionId
+        )
+          return
         frameCount += 1
         wireBytes += frameBytes
         if (frameCount > maxFramesPerRelay || wireBytes > maxBytesPerRelay) {
