@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "types": ["node"],
+    "typeRoots": ["../../node_modules/.bun/node_modules/@types"]
+  },
+  "include": ["address_gateway_release.ts"]
+}

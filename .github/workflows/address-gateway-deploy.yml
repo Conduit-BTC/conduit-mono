@@ -1,0 +1,85 @@
+name: Address Gateway Deployment
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: address-gateway-production
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.repository == 'Conduit-BTC/conduit-mono'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      revision: ${{ steps.authorize.outputs.revision }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - name: Verify successful CI and the exact maintainer-merged revision
+        id: authorize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATEWAY_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: bun scripts/deploy/address_gateway_release.ts gate
+
+  deploy:
+    needs: authorize
+    environment: address-gateway-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ needs.authorize.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - name: Install locked application dependencies without lifecycle scripts
+        run: bun install --frozen-lockfile --ignore-scripts
+      - name: Install the pinned deployment CLI without production credentials
+        run: npm install --prefix "$RUNNER_TEMP/gateway-tools" --ignore-scripts --no-package-lock --no-save wrangler@4.151.1
+      - name: Validate gateway authority, configuration, and release policy
+        run: |
+          bun test tests/address-gateway.test.ts tests/address-gateway-config.test.ts tests/address-gateway-router-receiver.test.ts tests/address-preview-origin.test.ts tests/address-gateway-release.test.ts
+          bun scripts/deploy/check_address_gateway.ts production
+          bunx --no-install tsc -p scripts/deploy/tsconfig.json
+      - name: Compile the gateway without production credentials
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: |
+          node "$RUNNER_TEMP/gateway-tools/node_modules/wrangler/bin/wrangler.js" versions upload --dry-run --env="" --config apps/address-gateway/wrangler.json --outdir "$RUNNER_TEMP/gateway-bundle"
+      - name: Preserve live settings, upload an immutable version, and verify deployment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATEWAY_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          GATEWAY_SOURCE_SHA: ${{ needs.authorize.outputs.revision }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.ADDRESS_GATEWAY_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.ADDRESS_GATEWAY_CLOUDFLARE_API_TOKEN }}
+          ADDRESS_GATEWAY_BOOTSTRAP_VERSION: ${{ vars.ADDRESS_GATEWAY_BOOTSTRAP_VERSION }}
+          GATEWAY_RELEASE_CONFIG: ${{ runner.temp }}/gateway-release.json
+          GATEWAY_BUNDLE: ${{ runner.temp }}/gateway-bundle/index.js
+          WRANGLER_BIN: ${{ runner.temp }}/gateway-tools/node_modules/wrangler/bin/wrangler.js
+          WRANGLER_SEND_METRICS: "false"
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/gateway-private-logs
+        run: bun scripts/deploy/address_gateway_release.ts release
