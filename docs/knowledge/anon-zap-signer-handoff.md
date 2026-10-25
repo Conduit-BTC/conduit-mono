@@ -474,3 +474,24 @@ and verification of the matching kind `9735` on an approved relay.
   request stays bound to the verified merchant, amount, LNURL, and receipt
   relay set.
 - NIP-01 defines the base Nostr event shape and kind `0` profile metadata.
+
+## Fixed project-tip address rollout
+
+Project tips use `receiver@conduit.cash`. The shared authorization pins its
+LNURL in the Pages request builder and the anonymous signer Worker; signed-in
+clients use the same receiving target. The recipient account, minimum amount,
+public message, and prohibition on browser-selected destinations are unchanged.
+
+Keep the address change unreleased until the approved-name binding has been
+reviewed, deployed, and activated by its wallet owner. A received name request
+is not an active Lightning address. Before releasing the tip change, verify the
+activated provider registration belongs to the approved Spark identity, then
+check live LNURL metadata for a supported amount range, `allowsNostr`, and a valid
+NIP-57 receipt signer. Do not treat mocked
+metadata or an offline request-signature check as proof of live receiving.
+
+Release the Pages applications and anonymous signer with matching fixed-target
+authorization. A mixed version rejects guest tips; do not relax authorization
+or fall back to the retired address to conceal that mismatch. Roll back the
+applications and signer together if receiving verification fails. Activation,
+deployment, and any funded payment test require separate maintainer approval.
