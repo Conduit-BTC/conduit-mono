@@ -743,15 +743,20 @@ export function useWallets(
           input.label,
           { priority: "foreground" }
         )
-        await manager.openWithMnemonic({
+        await openRegisteredSparkWallet({
           walletId: record.walletId,
-          mnemonic: record.mnemonic,
-          accountNumber: record.accountNumber,
-          shouldContinue: () => isWalletSignerCurrent(signer),
-          subscribeRevocation: (listener) =>
-            subscribeToAccountSignerChanges(() => {
-              if (!isWalletSignerCurrent(signer)) listener()
-            }),
+          manager,
+          expectedNetwork: getSparkWalletNetwork(),
+          listWallets: () => store.listVisible(signer.pubkey),
+          resolveOpenInput: async () => ({
+            mnemonic: record.mnemonic,
+            accountNumber: record.accountNumber,
+            shouldContinue: () => isWalletSignerCurrent(signer),
+            subscribeRevocation: (listener) =>
+              subscribeToAccountSignerChanges(() => {
+                if (!isWalletSignerCurrent(signer)) listener()
+              }),
+          }),
         })
         assertWalletSignerCurrent(signer)
         const wallet = (await store.listVisible(signer.pubkey)).find(
@@ -831,15 +836,20 @@ export function useWallets(
           ))
         const manager = requireSparkManager()
         options?.onProgress?.("opening")
-        await manager.openWithMnemonic({
+        await openRegisteredSparkWallet({
           walletId: record.walletId,
-          mnemonic,
-          accountNumber,
-          shouldContinue: () => isWalletSignerCurrent(signer),
-          subscribeRevocation: (listener) =>
-            subscribeToAccountSignerChanges(() => {
-              if (!isWalletSignerCurrent(signer)) listener()
-            }),
+          manager,
+          expectedNetwork: getSparkWalletNetwork(),
+          listWallets: () => store.listVisible(signer.pubkey),
+          resolveOpenInput: async () => ({
+            mnemonic,
+            accountNumber,
+            shouldContinue: () => isWalletSignerCurrent(signer),
+            subscribeRevocation: (listener) =>
+              subscribeToAccountSignerChanges(() => {
+                if (!isWalletSignerCurrent(signer)) listener()
+              }),
+          }),
         })
         assertWalletSignerCurrent(signer)
         const wallet = (await store.listVisible(signer.pubkey)).find(

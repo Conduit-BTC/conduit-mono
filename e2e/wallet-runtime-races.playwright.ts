@@ -86,6 +86,183 @@ type WalletRaceWindow = Window & {
   __controlledWalletController: UseWalletsReturn
 }
 
+type WalletSetupRemovalWindow = WalletFixtureWindow & {
+  __walletSetupBarrier?: () => Promise<void>
+  __setupRemoval: {
+    opening: boolean
+    cleanupObserved: boolean
+    walletId: string
+    readyCallbacks: number
+    release(): void
+    result: Promise<{ rejected: boolean; removalError: boolean }>
+  }
+}
+
+for (const mode of ["create", "import"] as const)
+  test(`${mode} retires a native wallet removed while opening @market`, async ({
+    page,
+  }) => {
+    const identity = createRuntimeSignerIdentity()
+    try {
+      await prepareControlledWallet(page)
+      await observeWalletController(page)
+      await installRealTestSigner(page, identity, relay)
+      await page.goto(apps.market + "/wallet")
+      await installControlledWallet(page)
+      await page.evaluate(async () => {
+        await (
+          window as unknown as WalletFixtureWindow
+        ).__controlledWalletController.retryRecovery()
+      })
+      await page.evaluate(
+        async ({ mode, sparkSdk }) => {
+          const w = window as unknown as WalletSetupRemovalWindow
+          const manager = (await import(sparkSdk)).getSparkWalletManager()
+          let release!: () => void
+          const gate = new Promise<void>((resolve) => {
+            release = resolve
+          })
+          const state: WalletSetupRemovalWindow["__setupRemoval"] = {
+            opening: false,
+            cleanupObserved: false,
+            walletId: "",
+            readyCallbacks: 0,
+            release,
+            result: Promise.resolve({ rejected: false, removalError: false }),
+          }
+          w.__setupRemoval = state
+          w.__walletSetupBarrier = async () => {
+            state.opening = true
+            await gate
+          }
+          const closeUnused = manager.closeWalletsExcept.bind(manager)
+          manager.closeWalletsExcept = async (ids: ReadonlySet<string>) => {
+            await closeUnused(ids)
+            if (state.walletId && !ids.has(state.walletId))
+              state.cleanupObserved = true
+          }
+          const options = {
+            onRecoveryReady: () => {
+              state.readyCallbacks++
+            },
+          }
+          const setup =
+            mode === "create"
+              ? w.__controlledWalletController.createSpark(
+                  "Removal race",
+                  options
+                )
+              : w.__controlledWalletController.importSpark(
+                  {
+                    label: "Removal race",
+                    mnemonic: w.__walletProbe.importMnemonic,
+                    accountNumber: 0,
+                  },
+                  options
+                )
+          state.result = setup.then(
+            () => ({ rejected: false, removalError: false }),
+            (error: unknown) => ({
+              rejected: true,
+              removalError:
+                error instanceof Error &&
+                error.message.includes("removed while it was unlocking"),
+            })
+          )
+        },
+        { mode, sparkSdk }
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as WalletSetupRemovalWindow).__setupRemoval
+                .opening
+          )
+        )
+        .toBe(true)
+      // A valid newer record arrives through the real bounded relay reader while
+      // the native factory is held. Setup's account lock must not hide this race.
+      await page.evaluate(
+        async ({ core, syncUrl, transportUrl, relay }) => {
+          const w = window as unknown as WalletSetupRemovalWindow
+          const { db, getAccountSigner } = await import(core)
+          const { getPortableWalletSync } = await import(syncUrl)
+          const { createAccountWalletTransport } = await import(transportUrl)
+          const signer = getAccountSigner()
+          const service = getPortableWalletSync(signer)
+          const account = await db.portableWalletAccounts.get(signer.pubkey)
+          const saved = Object.values(account.wallets)[0] as {
+            event: { created_at: number; kind: number; tags: string[][] }
+          }
+          const walletId = Object.keys(account.wallets)[0]
+          w.__setupRemoval.walletId = walletId
+          const record = await service.get(walletId, { priority: "foreground" })
+          const event = await signer.signEvent({
+            pubkey: signer.pubkey,
+            kind: saved.event.kind,
+            tags: saved.event.tags,
+            created_at: saved.event.created_at + 1,
+            content: await signer.encryptNip44(
+              signer.pubkey,
+              JSON.stringify({ ...record, lifecycle: "removed" })
+            ),
+          })
+          const status = await createAccountWalletTransport(signer).publish(
+            relay,
+            event,
+            () => true
+          )
+          if (status !== "acked")
+            throw new Error("Removal fixture was not stored")
+          await service.sync({ priority: "background" })
+        },
+        {
+          core,
+          relay,
+          syncUrl:
+            "/@fs" +
+            path.resolve("packages/core/src/wallets/portable-wallet-sync.ts"),
+          transportUrl:
+            "/@fs" +
+            path.resolve(
+              "packages/core/src/wallets/portable-wallet-transport.ts"
+            ),
+        }
+      )
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as WalletSetupRemovalWindow).__setupRemoval
+                .cleanupObserved
+          )
+        )
+        .toBe(true)
+      const result = await page.evaluate(async (sparkSdk) => {
+        const w = window as unknown as WalletSetupRemovalWindow
+        w.__setupRemoval.release()
+        const result = await w.__setupRemoval.result
+        const manager = (await import(sparkSdk)).getSparkWalletManager()
+        return {
+          ...result,
+          open: manager.isOpen(w.__setupRemoval.walletId),
+          disconnects: w.__walletProbe.disconnects,
+          readyCallbacks: w.__setupRemoval.readyCallbacks,
+        }
+      }, sparkSdk)
+      expect(result).toEqual({
+        rejected: true,
+        removalError: true,
+        open: false,
+        disconnects: 1,
+        readyCallbacks: 0,
+      })
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+
 test("wallet reload cannot overwrite a newer lock state @market", async ({
   page,
 }) => {

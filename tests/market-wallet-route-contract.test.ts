@@ -46,10 +46,10 @@ describe("Market wallet route contracts", () => {
     expect(route).not.toContain("Wallet data on this device was left unchanged")
   })
 
-  it("serializes Spark unlock and removal and cleans removed manager state on reload", async () => {
+  it("serializes Spark setup, unlock and removal and cleans removed manager state on reload", async () => {
     const hook = await readFile("packages/core/src/hooks/useWallets.ts", "utf8")
 
-    expect(hook.match(/await openRegisteredSparkWallet\(\{/g)).toHaveLength(1)
+    expect(hook.match(/await openRegisteredSparkWallet\(\{/g)).toHaveLength(3)
     expect(hook).toMatch(/await closeUnusedSparkWallets\(\s*sparkManager,/)
     expect(hook.match(/afterOpen: \(\) =>/g)).toHaveLength(1)
     expect(hook).not.toContain("onValidated")
