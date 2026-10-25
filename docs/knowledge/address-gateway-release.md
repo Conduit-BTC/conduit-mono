@@ -190,3 +190,67 @@ request signing. A final fence after signing rejects changed signer or wallet
 authority. Decrypted records are session-scoped and cleared when authority is
 retired. Synchronization uses the shared wallet coordinator and exact-event
 readback; there is no separate request journal, membership gate or repair flow.
+
+## Deployments after approved merges
+
+The address gateway is a Worker, independent of the Market and Merchant Pages
+builds. A name approval becomes effective only after the gateway receives the
+updated manifest; merging an approval does not activate or register the name.
+
+`Address Gateway Deployment` runs after successful **push-to-main** `CI`. Its
+credential-free authorization job verifies the actual CI run, exact current
+main revision, repository, and associated PR merged into main by a human
+maintainer. PR/fork runs, direct pushes, failed CI, bot-only merges and stale
+revisions cannot release. The maintainer's merge is release approval for this
+workflow, subject to any production environment protection rules.
+
+The deployment job uses the `address-gateway-production` environment. It installs
+locked application dependencies and a pinned Wrangler CLI, runs gateway and
+release-policy tests, and compiles before any production credential is provided.
+The release step rechecks merge/CI authority, reads current Worker **metadata**,
+and builds a temporary no-bundle configuration from the live variables. It
+preserves qualification, trusted-preview admission, secret bindings, D1,
+rate limits and runtime. Unknown binding types, changed database/limits/runtime,
+missing required secret bindings and mixed-version traffic stop the release.
+No provider credentials are read; secret names are presence checks only.
+
+Upload and activation use Worker **versions**, leaving routes and DNS alone.
+The uploaded version must retain the exact live binding/runtime metadata before
+traffic changes. Main and the live baseline are rechecked immediately before
+activation. Successful releases identify their exact source with a `main-<SHA>`
+version tag. Subsequent runs compare gateway/shared-core/dependency changes
+against that last actual release, so an unrelated newer merge can carry forward
+an approval whose earlier CI run became stale. Unchanged gateway inputs skip
+upload. Production readiness and untrusted private preflight are checked after
+deployment. Failures report a stopped release; they do not automatically roll
+back approvals, mutate D1 or register an address.
+
+### One-time operator setup
+
+Before enabling unattended releases, an authorized operator configures the
+production environment to permit only main and provides:
+
+- Secret `ADDRESS_GATEWAY_CLOUDFLARE_API_TOKEN`: a deployment credential limited
+  to the owning account's Workers Scripts read/edit operations. It needs no D1
+  query, Pages administration, DNS or provider-secret read authority.
+- Variable `ADDRESS_GATEWAY_CLOUDFLARE_ACCOUNT_ID`: the owning account ID.
+- Variable `ADDRESS_GATEWAY_BOOTSTRAP_VERSION`: the exact reviewed active Worker
+  version ID for the first automated release. This explicit bootstrap accepts
+  the existing manual release once; tagged automated releases supersede it.
+
+Creating or expanding credentials, changing environment access and enabling the
+first production run remain operator-owned. No credential or environment
+setting is created by this PR. A later manual dashboard change produces an
+unrecognized baseline and requires fresh review/bootstrap before automation can
+resume. Never use bootstrap to bypass an unresolved code or configuration drift.
+
+The live trusted-preview admission implementation is included in the gateway
+source. Checked-in qualification and preview variables remain disabled staging
+defaults; the release controller preserves the reviewed effective live values.
+A raw deployment of those defaults is not the automated release path. Name
+activation, public profile publication and funded receiving tests remain
+separate owner actions.
+
+Sources: [GitHub workflow_run security](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
+[Worker versions and deployments](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/),
+and [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/).
