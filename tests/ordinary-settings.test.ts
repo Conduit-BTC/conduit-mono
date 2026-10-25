@@ -441,12 +441,10 @@ describe("ordinary settings coordination", () => {
   test("restart retries exact signed bytes and offline reads preserve state", async () => {
     const f = fixture()
     f.offline(true)
-    const saved = await f
-      .coordinator()
-      .publishPrivateSettings({
-        baseline: emptyPrivateSettings(),
-        changes: [{ path: "display.currency", value: "EUR" }],
-      })
+    const saved = await f.coordinator().publishPrivateSettings({
+      baseline: emptyPrivateSettings(),
+      changes: [{ path: "display.currency", value: "EUR" }],
+    })
     expect(saved.delivery).toBe("local")
     expect(
       (await f.coordinator().readPrivate()).document.settings.display?.currency
@@ -461,12 +459,10 @@ describe("ordinary settings coordination", () => {
     const f = fixture()
     f.fail(true)
     await expect(
-      f
-        .coordinator()
-        .publishPrivateSettings({
-          baseline: emptyPrivateSettings(),
-          changes: [{ path: "display.currency", value: "EUR" }],
-        })
+      f.coordinator().publishPrivateSettings({
+        baseline: emptyPrivateSettings(),
+        changes: [{ path: "display.currency", value: "EUR" }],
+      })
     ).rejects.toThrow("storage")
     expect(f.published).toHaveLength(0)
   })
@@ -517,12 +513,10 @@ describe("ordinary settings coordination", () => {
       return value
     }
     await expect(
-      f
-        .coordinator()
-        .publishPrivateSettings({
-          baseline: emptyPrivateSettings(),
-          changes: [{ path: "display.currency", value: "EUR" }],
-        })
+      f.coordinator().publishPrivateSettings({
+        baseline: emptyPrivateSettings(),
+        changes: [{ path: "display.currency", value: "EUR" }],
+      })
     ).rejects.toThrow("session")
     expect(f.rows.size).toBe(0)
     expect(f.published).toHaveLength(0)
@@ -570,12 +564,10 @@ describe("settings restart and persistence boundaries", () => {
   test("restart rebases disjoint pending edits onto the newest relay snapshot", async () => {
     const f = fixture()
     f.offline(true)
-    await f
-      .coordinator()
-      .publishPrivateSettings({
-        baseline: emptyPrivateSettings(),
-        changes: [{ path: "display.currency", value: "EUR" }],
-      })
+    await f.coordinator().publishPrivateSettings({
+      baseline: emptyPrivateSettings(),
+      changes: [{ path: "display.currency", value: "EUR" }],
+    })
     f.remote.push(
       f.event(
         PRIVATE_SETTINGS_KIND,
@@ -597,12 +589,10 @@ describe("settings restart and persistence boundaries", () => {
   test("restart keeps overlapping encrypted draft without republishing the loser", async () => {
     const f = fixture()
     f.offline(true)
-    const draft = await f
-      .coordinator()
-      .publishPrivateSettings({
-        baseline: emptyPrivateSettings(),
-        changes: [{ path: "display.currency", value: "EUR" }],
-      })
+    const draft = await f.coordinator().publishPrivateSettings({
+      baseline: emptyPrivateSettings(),
+      changes: [{ path: "display.currency", value: "EUR" }],
+    })
     f.remote.push(
       f.event(
         PRIVATE_SETTINGS_KIND,
@@ -657,12 +647,10 @@ describe("settings restart and persistence boundaries", () => {
       return event
     }
     await expect(
-      f
-        .coordinator()
-        .publishPrivateSettings({
-          baseline: emptyPrivateSettings(),
-          changes: [{ path: "display.currency", value: "EUR" }],
-        })
+      f.coordinator().publishPrivateSettings({
+        baseline: emptyPrivateSettings(),
+        changes: [{ path: "display.currency", value: "EUR" }],
+      })
     ).rejects.toThrow("storage")
     expect(f.counts().signs).toBe(1)
     expect(f.published).toHaveLength(0)
@@ -675,12 +663,10 @@ describe("settings restart and persistence boundaries", () => {
       content: "changed",
     })
     await expect(
-      f
-        .coordinator()
-        .publishPrivateSettings({
-          baseline: emptyPrivateSettings(),
-          changes: [{ path: "display.currency", value: "EUR" }],
-        })
+      f.coordinator().publishPrivateSettings({
+        baseline: emptyPrivateSettings(),
+        changes: [{ path: "display.currency", value: "EUR" }],
+      })
     ).rejects.toThrow("invalid")
     expect(f.rows.size).toBe(0)
     expect(f.published).toHaveLength(0)
@@ -707,12 +693,10 @@ describe("settings restart and persistence boundaries", () => {
     const f = fixture()
     f.remote.push(f.event(PRIVATE_SETTINGS_KIND, emptyPrivateSettings(), 1060))
     await expect(
-      f
-        .coordinator()
-        .publishPrivateSettings({
-          baseline: emptyPrivateSettings(),
-          changes: [{ path: "display.currency", value: "EUR" }],
-        })
+      f.coordinator().publishPrivateSettings({
+        baseline: emptyPrivateSettings(),
+        changes: [{ path: "display.currency", value: "EUR" }],
+      })
     ).rejects.toThrow("clock")
     expect(f.counts().signs).toBe(0)
   })
