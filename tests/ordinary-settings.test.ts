@@ -455,6 +455,29 @@ describe("ordinary settings coordination", () => {
     expect(f.published[0]!.id).toBe(saved.event!.id)
     expect(f.counts().signs).toBe(count)
   })
+  test("readback failure and offline restart retain a prior relay acknowledgment", async () => {
+    const f = fixture()
+    const read = f.transport.read
+    f.transport.read = async (owner, kind, current, id) => {
+      if (id) throw new Error("Synthetic readback failure")
+      return read(owner, kind, current, id)
+    }
+    const saved = await f.coordinator().publishPrivateSettings({
+      baseline: emptyPrivateSettings(),
+      changes: [{ path: "display.currency", value: "EUR" }],
+    })
+    expect(saved.delivery).toBe("acknowledged")
+    expect([...f.rows.values()][0]!.pending?.event.id).toBe(saved.event!.id)
+    const signs = f.counts().signs
+    f.transport.read = read
+    f.offline(true)
+    const restored = await f.coordinator().readPrivate()
+    expect(restored.delivery).toBe("acknowledged")
+    expect(restored.document.settings.display?.currency).toBe("EUR")
+    expect(f.counts().signs).toBe(signs)
+    f.offline(false)
+    expect((await f.coordinator().readPrivate()).delivery).toBe("observed")
+  })
   test("storage failure prevents all egress and does not fabricate local success", async () => {
     const f = fixture()
     f.fail(true)

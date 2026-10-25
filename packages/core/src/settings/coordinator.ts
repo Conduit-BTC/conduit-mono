@@ -234,6 +234,12 @@ export class SettingsCoordinator {
         foreground ? "foreground" : "background"
       )
       this.check()
+      if (ack && row.delivery !== "acknowledged") {
+        const acknowledged: SettingsRow = { ...row, delivery: "acknowledged" }
+        await this.store.put(acknowledged, row.head?.id)
+        this.check()
+        row = acknowledged
+      }
       const readback = await this.transport.read(
         this.signer.pubkey,
         pending.event.kind,
@@ -248,7 +254,11 @@ export class SettingsCoordinator {
       )
       const next: SettingsRow = {
         ...row,
-        delivery: observed ? "observed" : ack ? "acknowledged" : "local",
+        delivery: observed
+          ? "observed"
+          : ack || row.delivery === "acknowledged"
+            ? "acknowledged"
+            : "local",
         ...(observed ? { pending: undefined } : {}),
       }
       await this.store.put(next, row.head?.id)
