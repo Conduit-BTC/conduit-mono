@@ -540,10 +540,11 @@ test("a newer signed media-server revision stops a pending upload before PUT @me
   })
 
   await dialog.locator("#product-image-file").setInputFiles(image192)
+  // This scenario changes authority during signing, after real preparation finishes.
+  await signerStarted
   await expect(
     dialog.getByText("Waiting for upload authorization", { exact: true })
   ).toBeVisible()
-  await signerStarted
 
   const replacement = finalizeEvent(
     {
