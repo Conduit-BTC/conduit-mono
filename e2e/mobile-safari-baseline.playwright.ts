@@ -1369,7 +1369,7 @@ test.describe("CND-162 mobile browser baseline", () => {
 
     await page.goto(`${marketUrl}/preferences`)
     await expect(
-      page.getByRole("heading", { name: "Preferences" })
+      page.getByRole("heading", { name: "Preferences", level: 1, exact: true })
     ).toBeVisible()
     await assertMobileViewport(page)
 
