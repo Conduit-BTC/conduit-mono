@@ -1004,6 +1004,7 @@ export function useWallets(
           await openRegisteredSparkWallet({
             walletId,
             manager: {
+              isOpen: (id) => manager.isOpen(id),
               openWithMnemonic: async (input) => {
                 await manager.openWithMnemonic(input)
                 ownsOpenSession = manager.captureSession(walletId)
