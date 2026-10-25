@@ -709,6 +709,11 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await expect(dialog.getByLabel("Primary image URL")).toHaveValue(
     /^https:\/\/cdn\.conduit\.market\//
   )
+  // The first verified URL is adopted before backup completes; cleanup follows
+  // completion of the full copy plan.
+  await expect(
+    dialog.getByRole("button", { name: "Add another image", exact: true })
+  ).toBeEnabled()
   const objectUrlAudit = await readObjectUrlAudit(page)
   expect(objectUrlAudit.created).toHaveLength(1)
   expect(objectUrlAudit.created[0]?.fileName).toBeNull()
@@ -716,9 +721,6 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   expect(objectUrlAudit.revoked).toEqual([objectUrlAudit.created[0]?.url])
   expect(state.putCount).toBe(1)
   expect(state.originalBodyObserved).toBe(false)
-  await expect(
-    dialog.getByRole("button", { name: "Add another image", exact: true })
-  ).toBeEnabled()
   expect(backup.putCount).toBe(1)
   expect(backup.requestHashes).toEqual(state.requestHashes)
 
