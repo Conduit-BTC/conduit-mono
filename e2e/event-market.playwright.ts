@@ -6022,16 +6022,25 @@ test("a host and merchant create, request, approve and offer through the screens
   )
   await expect(page.getByLabel(/^Start \(/)).toHaveValue("2030-06-01T11:00")
 
-  await page
-    .getByRole("button", { name: "I'm also selling", exact: true })
-    .click()
-  await page.getByRole("combobox", { name: "Who holds the stock?" }).click()
+  const selling = page.getByRole("button", {
+    name: "I'm also selling",
+    exact: true,
+  })
+  await expect(selling).toBeEnabled()
+  await selling.press("Enter")
+  const stockMode = page.getByRole("combobox", {
+    name: "Who holds the stock?",
+    exact: true,
+  })
+  await expect(stockMode).toBeVisible()
+  await stockMode.press("Enter")
   await expect(
     page.getByRole("option", { name: "Organizer-held pickup", exact: true })
   ).toBeDisabled()
   await page
     .getByRole("option", { name: "Merchant-managed pickup", exact: true })
-    .click()
+    .press("Enter")
+  await expect(stockMode).toHaveText("Merchant-managed pickup")
   await page.getByLabel("Public assignment").fill("Host booth")
   await page
     .getByRole("button", { name: "Approve merchant", exact: true })
