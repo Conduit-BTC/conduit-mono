@@ -404,3 +404,22 @@ describe("Conduit NIP-46 RPC transport", () => {
     expect(failures).toEqual([])
   })
 })
+
+it("isolates authenticated NIP-44 payload errors without reclassifying signer refusal or other methods", async () => {
+  const { signer, pool, readRequest, response } = createHarness()
+  for (const [method, error, code] of [
+    ["nip44_decrypt", "invalid MAC", "invalid_ciphertext"],
+    ["nip44_decrypt", "invalid padding", "invalid_ciphertext"],
+    ["nip44_decrypt", "permission denied", "rejected"],
+    ["nip44_decrypt", "unknown failure", "rejected"],
+    ["sign_event", "invalid MAC", "rejected"],
+  ]) {
+    const pending = signer.sendRequest(method, [])
+    pool.emit(RELAYS[0]!, response(readRequest().id, { error }))
+    await expect(pending).rejects.toMatchObject({ code })
+  }
+  const next = signer.sendRequest("ping", [])
+  pool.emit(RELAYS[0]!, response(readRequest().id, { result: "pong" }))
+  await expect(next).resolves.toBe("pong")
+  await signer.close()
+})

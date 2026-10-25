@@ -2,7 +2,6 @@ import path from "node:path"
 import type { WalletDescriptor } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, test, type Locator, type Page } from "@playwright/test"
-import { recordSmokeDiagnostic } from "./smoke-diagnostics"
 
 type ControlledWalletFixtureWindow = Window & {
   __walletFixtureFactory?: {
@@ -66,65 +65,21 @@ export async function walletRetryControlSettled(
 }
 
 export async function retryWalletRecovery(page: Page) {
-  const retry = page.getByRole("button", {
-    name: "Retry encrypted wallet sync",
-    exact: true,
-  })
-  const recoveryDialog = page.getByRole("dialog", { name: /^Recovery for / })
-  let phase = "open_details"
-  try {
-    if (!(await retry.count())) {
-      await page
-        .getByRole("button", { name: /^Manage / })
-        .first()
-        .click()
-      await page
-        .getByRole("menuitem", { name: "Recovery details", exact: true })
-        .click()
+  await page.evaluate(
+    async ({ core, sync }) => {
+      const { getAccountSigner } = await import(core)
+      const { getPortableWalletSync } = await import(sync)
+      await getPortableWalletSync(getAccountSigner()).sync({
+        priority: "foreground",
+      })
+    },
+    {
+      core: "/@fs" + path.resolve("packages/core/src/index.ts"),
+      sync:
+        "/@fs" +
+        path.resolve("packages/core/src/wallets/portable-wallet-sync.ts"),
     }
-    phase = "click_retry"
-    await retry.click()
-    phase = "await_sync"
-    await expect.poll(() => walletRetryControlSettled(retry)).toBe(true)
-    phase = "dismiss_details"
-    if (await recoveryDialog.count()) await page.keyboard.press("Escape")
-  } catch (error) {
-    const controlState = await walletRetryControlState(retry).catch(() => null)
-    const observed = await Promise.all([
-      retry.count(),
-      recoveryDialog.count(),
-      page.getByRole("button", { name: /^Manage / }).count(),
-    ]).catch(() => null)
-    recordSmokeDiagnostic(test.info(), "wallet-retry", {
-      phase,
-      observationAvailable: observed !== null,
-      retryPresent: !!observed?.[0],
-      retryVisible:
-        observed?.[0] === 1 && (await retry.isVisible().catch(() => false)),
-      retryEnabled:
-        observed?.[0] === 1 &&
-        controlState?.count === 1 &&
-        controlState.enabled,
-      recoveryDialogPresent: !!observed?.[1],
-      managePresent: !!observed?.[2],
-      syncCheckingVisible: await page
-        .getByText("Checking encrypted wallet recovery…", { exact: true })
-        .isVisible()
-        .catch(() => false),
-      recoveryBlockedVisible: await page
-        .getByText(
-          "Wallet recovery needs attention. Existing wallets remain usable. You can restore with your recovery phrase while sync is pending.",
-          { exact: true }
-        )
-        .isVisible()
-        .catch(() => false),
-      walletCardCount: await page
-        .locator("[data-wallet-group]")
-        .count()
-        .catch(() => 0),
-    })
-    throw error
-  }
+  )
 }
 
 export async function saveWalletRecovery(page: Page, makeMain = true) {
@@ -180,116 +135,131 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
 export async function prepareControlledWallet(page: Page) {
   // Replace network initialization at the existing single manager's factory.
   // Production modules and UI/hooks/storage/signers otherwise run unchanged.
-  await page.addInitScript(() => {
-    const fixtureWindow = window as unknown as ControlledWalletFixtureWindow
-    fixtureWindow.__walletFixtureFactory = {
-      network: "mainnet",
-      async open(input: {
-        mnemonic: string
-        accountNumber: number
-        walletId: string
-      }) {
-        if (!fixtureWindow.__walletProbe)
-          await new Promise<void>((resolve) => {
-            fixtureWindow.__walletFixtureReady = resolve
-          })
-        const probe = fixtureWindow.__walletProbe
-        probe.opens++
-        if (probe.failOpen) throw new Error("Injected SDK open failure")
-        probe.openedAccounts.push(input.accountNumber)
-        probe.lastAccount = input.accountNumber
-        probe.savedMnemonic = input.mnemonic
-        const imported = input.mnemonic === probe.importMnemonic
-        const recovered = !!probe.restoredAddress
-        if (fixtureWindow.__walletSetupBarrier)
-          await fixtureWindow.__walletSetupBarrier()
-        let registered = imported || recovered
-        let registrationPending = false
-        let selectedName: string | undefined
-        const lookup = async (domain = "breez.tips") =>
-          probe.addressUnavailableReason
-            ? { status: "unavailable", reason: probe.addressUnavailableReason }
-            : (
-                  domain === "breez.tips"
-                    ? registered
-                    : imported ||
-                      (recovered &&
-                        probe.restoredAddress!.endsWith("@conduit.cash"))
-                )
+  await page.addInitScript(
+    (sdkUrl) => {
+      const fixtureWindow = window as unknown as ControlledWalletFixtureWindow
+      fixtureWindow.__walletFixtureFactory = {
+        network: "mainnet",
+        async open(input: {
+          mnemonic: string
+          accountNumber: number
+          walletId: string
+        }) {
+          if (!fixtureWindow.__walletProbe)
+            await new Promise<void>((resolve) => {
+              fixtureWindow.__walletFixtureReady = resolve
+            })
+          const probe = fixtureWindow.__walletProbe
+          probe.opens++
+          if (probe.failOpen) throw new Error("Injected SDK open failure")
+          probe.openedAccounts.push(input.accountNumber)
+          probe.lastAccount = input.accountNumber
+          probe.savedMnemonic = input.mnemonic
+          const imported = input.mnemonic === probe.importMnemonic
+          const recovered = !!probe.restoredAddress
+          if (fixtureWindow.__walletSetupBarrier)
+            await fixtureWindow.__walletSetupBarrier()
+          let registered = imported || recovered
+          let registrationPending = false
+          let selectedName: string | undefined
+          const lookup = async (domain = "breez.tips") =>
+            probe.addressUnavailableReason
               ? {
-                  status: "registered",
-                  address:
-                    domain === "conduit.cash"
-                      ? imported
-                        ? "support@conduit.cash"
-                        : probe.restoredAddress
-                      : recovered &&
-                          probe.restoredAddress!.endsWith("@breez.tips")
-                        ? probe.restoredAddress
-                        : `${selectedName ?? `wallet${probe.registrations}`}@breez.tips`,
-                  lnurl: `https://${domain}/lnurlp/test`,
-                  publicLookup: "verified",
-                  zap: { status: "unsupported" },
+                  status: "unavailable",
+                  reason: probe.addressUnavailableReason,
                 }
-              : registrationPending
-                ? { status: "unavailable", reason: "registration_pending" }
-                : { status: "absent" }
-        return {
-          async disconnect() {
-            probe.disconnects++
-          },
-          async getInfo() {
-            probe.balanceReads = (probe.balanceReads ?? 0) + 1
-            if (probe.delayBalance)
-              await new Promise<void>((resolve) => {
-                probe.releaseBalance = resolve
+              : (
+                    domain === "breez.tips"
+                      ? registered
+                      : imported ||
+                        (recovered &&
+                          probe.restoredAddress!.endsWith("@conduit.cash"))
+                  )
+                ? {
+                    status: "registered",
+                    address:
+                      domain === "conduit.cash"
+                        ? imported
+                          ? "support@conduit.cash"
+                          : probe.restoredAddress
+                        : recovered &&
+                            probe.restoredAddress!.endsWith("@breez.tips")
+                          ? probe.restoredAddress
+                          : `${selectedName ?? `wallet${probe.registrations}`}@breez.tips`,
+                    lnurl: `https://${domain}/lnurlp/test`,
+                    publicLookup: "verified",
+                    zap: { status: "unsupported" },
+                  }
+                : registrationPending
+                  ? { status: "unavailable", reason: "registration_pending" }
+                  : { status: "absent" }
+          return {
+            async disconnect() {
+              probe.disconnects++
+            },
+            async getAddressIdentity() {
+              const { deriveSparkRecoveryIdentity } = await import(sdkUrl)
+              return deriveSparkRecoveryIdentity({
+                mnemonic: input.mnemonic,
+                accountNumber: input.accountNumber,
+                network: "mainnet",
               })
-            if (probe.infoBarrier) await probe.infoBarrier()
-            if (probe.failBalance) throw new Error("Injected post-open failure")
-            return { balanceSats: probe.balanceSats ?? 0 }
-          },
-          async listPayments() {
-            return { payments: [] }
-          },
-          async lookupBreezAddress(domain?: string) {
-            return lookup(domain)
-          },
-          async ensureBreezAddress(username?: string, domain = "breez.tips") {
-            if (domain === "conduit.cash") return lookup(domain)
-            if (registered) return lookup(domain)
-            if (probe.delayRegistration)
-              await new Promise<void>((resolve) => {
-                probe.releaseRegistration = resolve
-              })
-            if (probe.failRegistration) {
-              registrationPending = true
-              return { status: "unavailable", reason: "registration_pending" }
-            }
-            selectedName = username
-            probe.registrations++
-            registered = true
-            registrationPending = false
-            return lookup()
-          },
-          async receivePayment() {
-            if (probe.delayReceive) {
-              probe.receiveStarted = true
-              await new Promise<void>((resolve) => {
-                probe.releaseReceive = resolve
-              })
-            }
-            return { paymentRequest: "controlled-invoice", fee: 0n }
-          },
-          async prepareSendPayment() {
-            throw new Error("Controlled unfunded wallet")
-          },
-          async sendPayment() {
-            throw new Error("No payment is authorized in this test")
-          },
-        }
-      },
-    }
-  })
+            },
+            async getInfo() {
+              probe.balanceReads = (probe.balanceReads ?? 0) + 1
+              if (probe.delayBalance)
+                await new Promise<void>((resolve) => {
+                  probe.releaseBalance = resolve
+                })
+              if (probe.infoBarrier) await probe.infoBarrier()
+              if (probe.failBalance)
+                throw new Error("Injected post-open failure")
+              return { balanceSats: probe.balanceSats ?? 0 }
+            },
+            async listPayments() {
+              return { payments: [] }
+            },
+            async lookupBreezAddress(domain?: string) {
+              return lookup(domain)
+            },
+            async ensureBreezAddress(username?: string, domain = "breez.tips") {
+              if (domain === "conduit.cash") return lookup(domain)
+              if (registered) return lookup(domain)
+              if (probe.delayRegistration)
+                await new Promise<void>((resolve) => {
+                  probe.releaseRegistration = resolve
+                })
+              if (probe.failRegistration) {
+                registrationPending = true
+                return { status: "unavailable", reason: "registration_pending" }
+              }
+              selectedName = username
+              probe.registrations++
+              registered = true
+              registrationPending = false
+              return lookup()
+            },
+            async receivePayment() {
+              if (probe.delayReceive) {
+                probe.receiveStarted = true
+                await new Promise<void>((resolve) => {
+                  probe.releaseReceive = resolve
+                })
+              }
+              return { paymentRequest: "controlled-invoice", fee: 0n }
+            },
+            async prepareSendPayment() {
+              throw new Error("Controlled unfunded wallet")
+            },
+            async sendPayment() {
+              throw new Error("No payment is authorized in this test")
+            },
+          }
+        },
+      }
+    },
+    "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts")
+  )
   await page.route(
     "**/packages/core/src/wallets/spark-sdk.ts*",
     async (route) => {
@@ -506,7 +476,7 @@ export async function installWalletReloadObservationBarrier(page: Page) {
     async (route) => {
       const response = await route.fetch()
       const body = await response.text()
-      const marker = ["const", "hasPasswordWallets", "="].join(" ")
+      const marker = ["const", "account", "=", "ownerPubkey"].join(" ")
       if (body.split(marker).length !== 2)
         throw new Error("Wallet reload observation seam changed")
       await route.fulfill({
@@ -531,8 +501,6 @@ export async function openWalletDuringDescriptorReload(page: Page) {
         __controlledWalletController: UseWalletsReturn & {
           unlockSpark(
             walletId: string,
-            password?: string,
-            migrate?: boolean,
             options?: { priority?: "foreground" | "background" }
           ): Promise<void>
         }
@@ -580,7 +548,7 @@ export async function openWalletDuringDescriptorReload(page: Page) {
       // consumer completes the explicitly authorized native open.
       let denied = false
       try {
-        await controller.unlockSpark(wallet.id, "", false, {
+        await controller.unlockSpark(wallet.id, {
           priority: "background",
         })
       } catch {

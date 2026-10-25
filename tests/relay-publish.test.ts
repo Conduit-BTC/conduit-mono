@@ -416,14 +416,8 @@ describe("planPublishRelays", () => {
   })
 
   for (const coordinate of [
-    "conduit:spark:primary:v1",
-    "conduit:spark:main:v1",
-    ...["mainnet", "testnet", "signet", "regtest"].flatMap((network) => [
-      `conduit:spark:primary:v1:${network}`,
-      `conduit:spark:main:v1:${network}`,
-      `conduit:spark:registry:v1:${network}`,
-      `conduit:wallet-names:v1:${network}`,
-    ]),
+    "conduit:portable-wallet:v1:" + "a".repeat(64),
+    "conduit:portable-wallet:v1:" + "b".repeat(64),
   ]) {
     it(`carries author intent into an exact owned ${coordinate} recovery write`, async () => {
       const relayUrl = "wss://auth.nostr1.com"
@@ -482,7 +476,7 @@ describe("planPublishRelays", () => {
     })
   }
 
-  it("publishes only exact owned address-request coordinates through the authenticated WebSocket writer", async () => {
+  it("publishes only exact owned complete-wallet coordinates through the authenticated WebSocket writer", async () => {
     const relayUrl = "wss://request-write.fixture.conduit.market"
     const socket = installRelayPublishWebSocket()
     try {
@@ -500,7 +494,7 @@ describe("planPublishRelays", () => {
         (network) =>
           signedRawTestEvent({
             kind: 30078,
-            tags: [["d", `conduit:address-requests:v1:${network}`]],
+            tags: [["d", `conduit:portable-wallet:v1:${"a".repeat(64)}`]],
             content: `opaque-request-${network}`,
           })
       )
