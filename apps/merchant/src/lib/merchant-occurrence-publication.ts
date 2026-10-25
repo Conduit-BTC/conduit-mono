@@ -165,6 +165,7 @@ function checkpointFailureNotice(
     disconnected: "disconnected",
     authority_changed: "authority changed",
     invalid_response: "invalid response",
+    invalid_ciphertext: "invalid encrypted payload",
     identity_changed: "identity changed",
     background_paused: "background work paused",
     queue_full: "queue full",

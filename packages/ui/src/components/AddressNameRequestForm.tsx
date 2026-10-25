@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { ADDRESS_REQUEST_ACTION } from "@conduit/core/wallets/address-name-request"
 import { requestEvidence } from "@conduit/core/wallets/address-request-record"
-import type {
-  AddressRequestSyncDiagnosis,
-  AddressRequestSyncReason,
-} from "@conduit/core/wallets/address-request-service"
 import type { AddressRequestView } from "@conduit/core/wallets/address-request-workflow"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { Button, Input } from "../index"
@@ -14,49 +10,6 @@ interface ChallengeApi {
   remove(id: string): void
 }
 type ChallengeWindow = Window & { turnstile?: ChallengeApi }
-const syncReasonText: Record<AddressRequestSyncReason, string> = {
-  recovery_unconfirmed: "Wallet recovery evidence is not fully confirmed.",
-  membership_unconfirmed: "Wallet membership is not confirmed on all relays.",
-  request_read_unavailable:
-    "The saved request could not be read from every relay.",
-  request_heads_disagree: "Relays disagree about the saved request.",
-  local_event_pending:
-    "A signed request record is still pending on this device.",
-  legacy_registry_only: "Request progress was found only in older wallet data.",
-  request_event_missing: "The request record has not been found on relays.",
-  request_contents_unconfirmed:
-    "The relay record does not yet contain the latest request progress.",
-  membership_read_unavailable:
-    "Current wallet membership could not be checked on a relay.",
-  membership_head_mismatch:
-    "A relay's wallet membership record did not match the confirmed one.",
-  relay_write_failed: "A relay did not accept the encrypted request record.",
-  readback_unavailable: "A relay could not confirm the encrypted record.",
-  readback_absent: "A relay did not return the encrypted record after writing.",
-  readback_different: "A relay returned a different encrypted record.",
-}
-const syncSourceText: Record<
-  NonNullable<AddressRequestSyncDiagnosis["eventSource"]>,
-  string
-> = {
-  legacy: "Source: older wallet data.",
-  pending: "Source: signed record retained on this device.",
-  observed: "Source: previously observed signed record.",
-  new: "Source: newly saved signed record.",
-  relay: "Source: relay record.",
-}
-const writeStatusText: Record<
-  NonNullable<AddressRequestSyncDiagnosis["writeStatus"]>,
-  string
-> = {
-  acked: "accepted",
-  rejected: "rejected",
-  timed_out: "timed out",
-  auth_required: "authentication required",
-  cancelled: "interrupted",
-  policy_blocked: "blocked by relay policy",
-  error: "failed",
-}
 let loading: Promise<ChallengeApi> | undefined
 function loadChallenge(): Promise<ChallengeApi> {
   const existing = (window as ChallengeWindow).turnstile
@@ -222,7 +175,7 @@ export function AddressNameRequestForm({
       () => {
         if (active)
           setError(
-            "Saved request could not be checked. Retry wallet sync before requesting a name."
+            "Saved request could not be checked. Approve wallet access in your signer, then check again."
           )
       }
     )
@@ -297,8 +250,7 @@ export function AddressNameRequestForm({
   const phase = view?.record.phase
   const unresolved = phase === "pending" || phase === "received"
   const retry =
-    unresolved &&
-    (view?.status === "not_received" || view?.publication === "local")
+    unresolved && (view?.status === "not_received" || phase === "pending")
   const message = !loaded
     ? "Restoring your saved request…"
     : phase === "complete"
@@ -363,18 +315,6 @@ export function AddressNameRequestForm({
       >
         {pending ? "Saving and checking your request…" : message}
       </p>
-      {!pending && view?.publication === "local" && view.sync && (
-        <p className="text-pretty text-xs text-[var(--text-secondary)]">
-          Progress saved on this device. Optional relay sync is pending.{" "}
-          {syncReasonText[view.sync.reason]}{" "}
-          {view.sync.eventSource && syncSourceText[view.sync.eventSource]}{" "}
-          {view.sync.writeStatus &&
-            `Relay write ${writeStatusText[view.sync.writeStatus]}. `}
-          {view.sync.confirmedTargets !== undefined &&
-            view.sync.targetCount !== undefined &&
-            `This attempt confirmed ${view.sync.confirmedTargets}/${view.sync.targetCount} exact relay readbacks.`}
-        </p>
-      )}
       {error && (
         <p role="alert" className="text-sm">
           {error}
@@ -391,22 +331,18 @@ export function AddressNameRequestForm({
           Check request status
         </Button>
       )}
-      {phase &&
-        (["approved", "activating", "registered"].includes(phase) ||
-          (phase === "complete" && view?.publication === "local")) && (
-          <Button
-            size="sm"
-            type="button"
-            disabled={pending || !writesEnabled}
-            onClick={() => void run("activate")}
-          >
-            {phase === "complete"
-              ? "Finish syncing address"
-              : phase === "registered"
-                ? "Finish profile update"
-                : "Activate and use address"}
-          </Button>
-        )}
+      {phase && ["approved", "activating", "registered"].includes(phase) && (
+        <Button
+          size="sm"
+          type="button"
+          disabled={pending || !writesEnabled}
+          onClick={() => void run("activate")}
+        >
+          {phase === "registered"
+            ? "Finish profile update"
+            : "Activate and use address"}
+        </Button>
+      )}
     </form>
   )
 }

@@ -1376,6 +1376,7 @@ async function markDelivered(
 }
 
 const CHECKPOINT_SIGNER_CODES = [
+  "invalid_ciphertext",
   "authorization_denied",
   "timeout",
   "unavailable",

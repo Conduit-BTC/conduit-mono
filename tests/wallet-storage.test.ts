@@ -20,12 +20,17 @@ const ENCRYPTED_RECOVERY = {
 }
 
 const BOUND_RECOVERY = {
-  type: "password" as const,
+  type: "signer" as const,
+  version: 1 as const,
+  ownerPubkey: "a".repeat(64),
+  identityKey: "b".repeat(64),
+  ciphertext: Buffer.from(crypto.getRandomValues(new Uint8Array(48))).toString(
+    "base64"
+  ),
   walletId: "spark-wallet",
   providerId: "spark" as const,
   network: "mainnet" as const,
   accountNumber: 1,
-  recovery: ENCRYPTED_RECOVERY,
 }
 
 const SPARK_WALLET: WalletDescriptor = {
@@ -74,13 +79,14 @@ describe("Spark wallet recovery storage", () => {
       parseStoredSparkWalletRecovery(
         JSON.stringify({
           ...BOUND_RECOVERY,
+          type: "password",
           recovery: { ...ENCRYPTED_RECOVERY, version: 1 },
         })
       )
     ).toBeNull()
   })
 
-  it("round-trips a password recovery record", () => {
+  it("round-trips a signer recovery record", () => {
     expect(
       parseStoredSparkWalletRecovery(
         serializeStoredSparkWalletRecovery(BOUND_RECOVERY)

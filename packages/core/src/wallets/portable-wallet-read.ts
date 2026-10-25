@@ -8,19 +8,19 @@ import {
 } from "../protocol/account-network-local-state"
 import { getProtectedReadAuthorization } from "../protocol/protected-read-authorization"
 import {
-  SparkRecoveryError,
-  SPARK_RECOVERY_KIND,
-} from "./spark-recovery-contract"
-import { type SparkRecoveryTransport } from "./spark-recovery-service"
+  PORTABLE_WALLET_KIND,
+  PORTABLE_WALLET_TAG,
+} from "./portable-wallet-record"
+import type { WalletRecordTransport } from "./portable-wallet-transport"
 import { accountStorageRelayTargets } from "../protocol/account-storage-relay-policy"
 
 /** Uses the existing bounded reader. Relay auth failures stay unavailable, never absence. */
-export function createSparkRecoveryReader(
+export function createPortableWalletReader(
   executor: CommerceRelayExecutor = commerceRelayExecutor,
   accountNetworkRepository?: Pick<AccountNetworkLocalStateRepository, "get">
-): SparkRecoveryTransport["read"] {
-  return async (url, owner, eventId, shouldContinue, dTag) => {
-    if (!shouldContinue()) throw new SparkRecoveryError("transport_unavailable")
+): WalletRecordTransport["read"] {
+  return async (url, owner, eventId, shouldContinue) => {
+    if (!shouldContinue()) throw new Error("Wallet connection changed.")
     const targets = accountStorageRelayTargets("read").filter(
       (target) => target.url === url
     )
@@ -45,10 +45,10 @@ export function createSparkRecoveryReader(
         filters: [
           {
             authors: [owner],
-            kinds: [SPARK_RECOVERY_KIND],
+            kinds: [PORTABLE_WALLET_KIND],
             ...(eventId ? { ids: [eventId] } : {}),
-            ...(dTag ? { "#d": [dTag] } : {}),
-            limit: eventId || dTag ? 1 : 128,
+            "#t": [PORTABLE_WALLET_TAG],
+            limit: eventId ? 1 : 128,
           },
         ],
       },
@@ -61,7 +61,7 @@ export function createSparkRecoveryReader(
         maxBytesPerRelay: 1024 * 1024,
       }
     )
-    if (!shouldContinue()) throw new SparkRecoveryError("transport_unavailable")
+    if (!shouldContinue()) throw new Error("Wallet connection changed.")
     const source = result.relays[0]
     const complete =
       result.status === "success" &&
