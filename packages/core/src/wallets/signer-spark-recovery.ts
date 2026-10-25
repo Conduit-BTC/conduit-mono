@@ -6,7 +6,6 @@ import {
 } from "@conduit/core"
 
 import {
-  decryptSparkMnemonic,
   isValidSparkAccountNumber,
   isValidSparkMnemonic,
   normalizeSparkMnemonic,
@@ -76,7 +75,7 @@ export async function sealSignerSparkRecovery(
     identityKey,
     mnemonic,
   })
-  const ciphertext = await signer.encryptNip44(ownerPubkey, plaintext)
+  const ciphertext = await signer.encryptNip44(ownerPubkey, plaintext, options)
   assertWalletSignerCurrent(signer)
   if (!ciphertext || ciphertext.length > 4096)
     throw new Error("The signer returned invalid wallet encryption.")
@@ -138,31 +137,12 @@ export async function openSignerSparkRecovery(
   return normalizeSparkMnemonic(value.mnemonic)
 }
 
-/** A migrated wallet keeps its original encrypted password fallback. */
+/** Open only the current owner-bound provider credential. */
 export async function recoverStoredSparkMnemonic(
   stored: StoredSparkWalletRecovery,
   binding: SparkRecoveryBinding,
-  password = "",
   options: { priority?: "foreground" | "background" } = {}
-): Promise<{ mnemonic: string; signer?: AccountSigner }> {
-  if (stored.type === "password")
-    return {
-      mnemonic: await decryptSparkMnemonic(stored.recovery, password, binding),
-    }
-  if (password) {
-    if (!stored.legacyRecovery)
-      throw new Error("This wallet opens with its Nostr identity.")
-    const mnemonic = await decryptSparkMnemonic(
-      stored.legacyRecovery.recovery,
-      password,
-      binding
-    )
-    if (
-      (await sparkRecoveryIdentityKey(mnemonic, binding)) !== stored.identityKey
-    )
-      throw new Error("Wallet recovery data does not match this wallet.")
-    return { mnemonic }
-  }
+): Promise<{ mnemonic: string; signer: AccountSigner }> {
   const signer = requireWalletSigner()
   return {
     mnemonic: await openSignerSparkRecovery(stored, binding, signer, options),

@@ -12,12 +12,17 @@ import type { BunkerPointer } from "nostr-tools/nip46"
 import { SimplePool } from "nostr-tools/pool"
 
 import { generateId } from "../utils"
+import { isInvalidNip44CiphertextError } from "./nostr-event-signer"
 
 const NIP46_EVENT_KIND = 24133
 const RESPONSE_REPLAY_WINDOW_SECONDS = 10
 
 export type Nip46TransportErrorCode =
-  "unavailable" | "invalid_response" | "rejected" | "unsupported"
+  | "unavailable"
+  | "invalid_response"
+  | "rejected"
+  | "unsupported"
+  | "invalid_ciphertext"
 
 export class Nip46TransportError extends Error {
   constructor(
@@ -56,6 +61,7 @@ export interface ConduitNip46SignerOptions {
 }
 
 interface PendingRequest {
+  method: string
   generation: number
   resolve: (result: string | null) => void
   reject: (error: Nip46TransportError) => void
@@ -152,7 +158,7 @@ export class ConduitNip46Signer {
         close: (reason?: string) => void
         generation: number
       } = {
-        close: (_reason?: string) => undefined,
+        close: () => undefined,
         generation: subscriptionGeneration,
       }
       this.subscriptions.set(relay, record)
@@ -235,7 +241,7 @@ export class ConduitNip46Signer {
 
   private handleResponse(event: Event): void {
     if (this.state !== "active") return
-    let signatureIsValid = false
+    let signatureIsValid: boolean
     try {
       signatureIsValid = verifyEvent(event)
     } catch {
@@ -321,14 +327,19 @@ export class ConduitNip46Signer {
         record.error
       )
         ? "unsupported"
-        : "rejected"
+        : pending.method === "nip44_decrypt" &&
+            isInvalidNip44CiphertextError(record.error)
+          ? "invalid_ciphertext"
+          : "rejected"
       this.settleRequest(
         id,
         new Nip46TransportError(
           code,
           code === "unsupported"
             ? "The remote signer does not support this request."
-            : "The remote signer rejected the request."
+            : code === "invalid_ciphertext"
+              ? "The encrypted payload is invalid."
+              : "The remote signer rejected the request."
         )
       )
       return
@@ -446,6 +457,7 @@ export class ConduitNip46Signer {
       }
       options.signal?.addEventListener("abort", abort, { once: true })
       this.pending.set(id, {
+        method,
         generation: this.generation,
         resolve,
         reject,
@@ -568,7 +580,7 @@ export class ConduitNip46Signer {
         { cause }
       )
     }
-    let valid = false
+    let valid: boolean
     try {
       valid = verifyEvent(signed as Event)
     } catch {
