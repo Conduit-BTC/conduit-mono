@@ -230,9 +230,11 @@ back approvals, mutate D1 or register an address.
 Before enabling unattended releases, an authorized operator configures the
 production environment to permit only main and provides:
 
-- Secret `ADDRESS_GATEWAY_CLOUDFLARE_API_TOKEN`: a deployment credential limited
-  to the owning account's Workers Scripts read/edit operations. It needs no D1
-  query, Pages administration, DNS or provider-secret read authority.
+- Secret `ADDRESS_GATEWAY_CLOUDFLARE_API_TOKEN`: a dedicated token with
+  `Individual Workers Editor` permission scoped only to
+  `conduit-address-gateway` in the owning account. It needs no account-wide
+  Worker access, D1 query, Pages administration, DNS or provider-secret read
+  authority.
 - Variable `ADDRESS_GATEWAY_CLOUDFLARE_ACCOUNT_ID`: the owning account ID.
 - Variable `ADDRESS_GATEWAY_BOOTSTRAP_VERSION`: the exact reviewed active Worker
   version ID for the first automated release. This explicit bootstrap accepts
