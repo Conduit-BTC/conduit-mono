@@ -3,6 +3,7 @@ import { ImagePlus, RotateCcw, Trash2 } from "lucide-react"
 import {
   EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH,
   normalizeEventMarketCalendarSummary,
+  PRODUCT_IMAGE_HOSTING_NOTE,
   useProductImageUpload,
 } from "@conduit/core"
 import {
@@ -127,14 +128,14 @@ export function EventBannerField({
     setFailedFile(null)
     onBusyChange?.(true)
     try {
-      const url = await upload.uploadFile({
+      const result = await upload.uploadFile({
         scopeId,
         itemId: `${scopeId}:banner`,
         file,
         target,
         onPhase: setPhase,
       })
-      onChange(url)
+      onChange(result.image.url)
     } catch (cause) {
       setFailedFile(file)
       setError(
@@ -237,37 +238,13 @@ export function EventBannerField({
         {canUpload ? (
           upload.target.kind === "fallback" ? (
             <>
-              Uploads use the public media fallback at{" "}
-              <a
-                className="underline"
-                href="https://blossom.nostr.build/"
-                target="_blank"
-                rel="noreferrer"
-              >
-                nostr.build
+              {PRODUCT_IMAGE_HOSTING_NOTE}{" "}
+              <a href="/network" className="underline">
+                Manage media servers
               </a>
-              . One banner can be uploaded per event. Review its{" "}
-              <a
-                className="underline"
-                href="https://account.nostr.build/tos"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Terms of Service
-              </a>{" "}
-              and{" "}
-              <a
-                className="underline"
-                href="https://account.nostr.build/privacy"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Privacy Policy
-              </a>
-              .
             </>
           ) : (
-            "Uploads use your configured media server."
+            "Uploads use your configured media servers."
           )
         ) : (
           <a href="/network" className="underline">

@@ -49,6 +49,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
   evidence, independent relay grants, operation policy, and final I/O ownership
 - `docs/knowledge/commerce-inbox-recovery.md`: account-owned encrypted inbox,
   history recovery, commerce codecs, immutable delivery and runtime evidence
+- `docs/knowledge/product-image-hosting.md`: runtime media defaults, verified copies,
+  partial failure, and product-image recovery
 - `docs/knowledge/signed-event-publication.md`: plain signed-event writer,
   fixed relay targets, retry ownership, and per-relay delivery evidence
 - `docs/specs/event-markets.md`: organizer-authored Event Market and NIP-52

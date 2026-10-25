@@ -1200,7 +1200,6 @@ function ProductsPage() {
   const discardedProductDraftKeyRef = useRef<string | null>(null)
   const productPublishStartedAtRef = useRef<number | null>(null)
   const productPublishInFlightRef = useRef(false)
-  const dirtyCreateDraftKeyRef = useRef<string | null>(null)
   const productWorkOwnerRef = useRef(accountPubkey)
   const signerRestoredNoticeRef = useRef<HTMLDivElement | null>(null)
   const [form, setForm] = useState<ProductFormState>(EMPTY_FORM)
@@ -1868,84 +1867,52 @@ function ProductsPage() {
         }
       }
 
-      const fallbackSourceScope = getProductImageUploadScopeId(
-        getProductDraftTarget(currentPayload.merchantPubkey)
+      return await publishProduct(
+        currentPayload.merchantPubkey,
+        currentPayload.form,
+        currentPayload.presetShippingConfig,
+        currentPayload.dTag,
+        async (signedBundle, authoringTarget) => {
+          if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
+            setProductDeliveryRetry({
+              action: "publish",
+              payload: { ...currentPayload, signedBundle },
+            })
+          }
+          completeLocalProductSave(currentPayload, authoringTarget)
+          await showLocalProductProjection(
+            "publish",
+            currentPayload.merchantPubkey
+          )
+        },
+        currentPayload.existing,
+        (progress) => {
+          if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
+            setProductSignerProgress(progress)
+          }
+        },
+        () => {
+          if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
+            setProductSignerProgress(null)
+            setProductSignerRequestsComplete(true)
+          }
+        },
+        authStatus === "connected" ? pubkey : null,
+        () => authGenerationRef.current === authGeneration,
+        currentPayload.familyEvidenceComplete,
+        async (signedBundle) => {
+          if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
+            setProductDeliveryRetry({
+              action: "publish",
+              payload: { ...currentPayload, signedBundle },
+            })
+          }
+        },
+        assertCurrentFamilyRevision,
+        recoveryDTags,
+        recoveryDeletionJob,
+        recoveryDTags ? payload.recoveryJobId : undefined
       )
-      const fallbackDestinationScope = getProductImageUploadScopeId({
-        merchantPubkey: currentPayload.merchantPubkey,
-        productAddressId: `30402:${currentPayload.merchantPubkey}:${currentPayload.dTag}`,
-      })
-      let fallbackMovePrepared = false
-      let signedLocally = false
-      try {
-        if (!currentPayload.existing) {
-          fallbackMovePrepared = productImageUpload.prepareFallbackClaimMove(
-            fallbackSourceScope,
-            fallbackDestinationScope
-          )
-        }
-        return await publishProduct(
-          currentPayload.merchantPubkey,
-          currentPayload.form,
-          currentPayload.presetShippingConfig,
-          currentPayload.dTag,
-          async (signedBundle, authoringTarget) => {
-            signedLocally = true
-            if (fallbackMovePrepared) {
-              productImageUpload.commitFallbackClaimMove(
-                fallbackSourceScope,
-                fallbackDestinationScope
-              )
-            }
-            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
-              setProductDeliveryRetry({
-                action: "publish",
-                payload: { ...currentPayload, signedBundle },
-              })
-            }
-            completeLocalProductSave(currentPayload, authoringTarget)
-            await showLocalProductProjection(
-              "publish",
-              currentPayload.merchantPubkey
-            )
-          },
-          currentPayload.existing,
-          (progress) => {
-            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
-              setProductSignerProgress(progress)
-            }
-          },
-          () => {
-            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
-              setProductSignerProgress(null)
-              setProductSignerRequestsComplete(true)
-            }
-          },
-          authStatus === "connected" ? pubkey : null,
-          () => authGenerationRef.current === authGeneration,
-          currentPayload.familyEvidenceComplete,
-          async (signedBundle) => {
-            if (isCurrentProductOwner(currentPayload.merchantPubkey)) {
-              setProductDeliveryRetry({
-                action: "publish",
-                payload: { ...currentPayload, signedBundle },
-              })
-            }
-          },
-          assertCurrentFamilyRevision,
-          recoveryDTags,
-          recoveryDeletionJob,
-          recoveryDTags ? payload.recoveryJobId : undefined
-        )
-      } catch (error) {
-        if (fallbackMovePrepared && !signedLocally) {
-          productImageUpload.cancelFallbackClaimMove(
-            fallbackSourceScope,
-            fallbackDestinationScope
-          )
-        }
-        throw error
-      }
     },
     onMutate: (payload) => {
       if (!isCurrentProductOwner(payload.merchantPubkey)) return
@@ -2109,11 +2076,6 @@ function ProductsPage() {
     onSuccess: async (data, variables) => {
       const { product } = variables
       if (product) {
-        productImageUpload.clearFallbackClaim(
-          getProductImageUploadScopeId(
-            getProductDraftTarget(product.product.pubkey, product)
-          )
-        )
         const draftCleared = productDraftStoreRef.current.clear(
           getProductDraftTarget(product.product.pubkey, product)
         )
@@ -2344,25 +2306,11 @@ function ProductsPage() {
       return
     }
     const isCreateDraft = !activeProductDraftTarget.productAddressId
-    const createDraftKey = isCreateDraft
-      ? `${activeProductDraftTarget.merchantPubkey}:${productImageUploadScopeId}`
-      : null
 
     if (!hasProductChanges) {
       const returnIntentCleared = isCreateDraft
         ? clearProductDraftReturnIntent(activeProductDraftTarget.merchantPubkey)
         : true
-      if (
-        createDraftKey &&
-        dirtyCreateDraftKeyRef.current === createDraftKey &&
-        productImageUpload.getFallbackClaimState(productImageUploadScopeId) ===
-          "consumed"
-      ) {
-        productImageUpload.clearFallbackClaim(productImageUploadScopeId)
-      }
-      if (dirtyCreateDraftKeyRef.current === createDraftKey) {
-        dirtyCreateDraftKeyRef.current = null
-      }
       const draftCleared = productDraftStoreRef.current.clear(
         activeProductDraftTarget
       )
@@ -2378,9 +2326,6 @@ function ProductsPage() {
       activeProductDraftTarget,
       form
     )
-    if (createDraftKey) {
-      dirtyCreateDraftKeyRef.current = createDraftKey
-    }
     setDraftStorageAvailable(saved)
     if (isCreateDraft && saved) setHasResumableCreateDraft(true)
   }, [
@@ -2745,11 +2690,6 @@ function ProductsPage() {
         discardedProductDraftKeyRef.current = previousDiscardedDraftKey
         setDraftStorageAvailable(false)
         return
-      }
-      if (!activeProductDraftTarget.productAddressId) {
-        productImageUpload.clearFallbackClaim(
-          getProductImageUploadScopeId(activeProductDraftTarget)
-        )
       }
     }
     setPendingProductPublish(null)

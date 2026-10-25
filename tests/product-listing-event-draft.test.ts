@@ -2112,3 +2112,58 @@ describe("product listing event parsing", () => {
     expect(parsed.summary).toBe("Listed by hand and signed by the artist.")
   })
 })
+
+describe("redundant product image round-trip", () => {
+  it("preserves 24 ordered images and their same-hash alternate URLs through protocol and editing", async () => {
+    const images = Array.from({ length: 24 }, (_, index) => {
+      const sha256 = index.toString(16).padStart(64, "0")
+      return {
+        url: `https://primary.conduit.market/${sha256}.png`,
+        sha256,
+        fallbackUrls: [`https://backup.conduit.market/${sha256}.png`],
+      }
+    })
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({
+        images,
+        format: "digital",
+        shippingOptionId: undefined,
+        shippingOptionDTag: undefined,
+      }),
+      dTag: "redundant",
+    })
+    expect(draft.tags.filter((t) => t[0] === "image").map((t) => t[1])).toEqual(
+      images.map((i) => i.url)
+    )
+    const parsed = parseProductEvent(
+      await signFixture(
+        {
+          id: "event",
+          pubkey: publicFixturePubkey,
+          created_at: 100,
+          content: draft.content,
+          tags: draft.tags,
+        },
+        30402
+      )
+    )
+    expect(getProductImageCandidates(parsed)).toEqual(images)
+    const edit = buildProductListingEventDraft({
+      product: { ...parsed, images: [...parsed.images].reverse() },
+      dTag: "redundant",
+    })
+    const edited = parseProductEvent(
+      await signFixture(
+        {
+          id: "edited",
+          pubkey: publicFixturePubkey,
+          created_at: 101,
+          content: edit.content,
+          tags: edit.tags,
+        },
+        30402
+      )
+    )
+    expect(getProductImageCandidates(edited)).toEqual([...images].reverse())
+  })
+})

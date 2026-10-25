@@ -123,6 +123,69 @@ function decodeLegacyAuthorization(value: string): Record<string, unknown> {
 }
 
 describe("product image upload target resolution", () => {
+  it("bounds copies without blocking the preferred host or rewriting a long personal list", () => {
+    const serverUrls = Array.from(
+      { length: 12 },
+      (_, index) => `https://media-${index}.conduit.market`
+    )
+    const signedResolution = resolution({
+      status: "published",
+      publishedServerUrls: serverUrls,
+      publishedRevision: { eventId: "b".repeat(64), createdAt: 100 },
+      frontier: { eventId: "b".repeat(64), createdAt: 100, state: "valid" },
+    })
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        resolution: signedResolution,
+      })
+    ).toEqual({
+      kind: "configured",
+      serverUrl: serverUrls[0],
+      backupServerUrls: serverUrls.slice(1, 10),
+    })
+    expect(signedResolution.publishedServerUrls).toEqual(serverUrls)
+  })
+
+  it("uses the newer pending signed server list for every copy before relay acknowledgement", () => {
+    const serverUrls = [CONFIGURED_SERVER, DRAFT_SERVER]
+    const signedEvent = finalizeEvent(
+      {
+        kind: 10063,
+        created_at: 101,
+        content: "",
+        tags: serverUrls.map((server) => ["server", server]),
+      },
+      generateSecretKey()
+    )
+    const target = resolveProductImageUploadTarget({
+      owner: signedEvent.pubkey,
+      signerAvailable: true,
+      resolution: resolution({
+        owner: signedEvent.pubkey,
+        status: "lookup_partial",
+        coverage: "partial",
+        publishedServerUrls: ["https://old.conduit.market"],
+        publishedRevision: { eventId: "b".repeat(64), createdAt: 100 },
+        pending: {
+          signedEvent,
+          serverUrls,
+          publishRelayUrls: ["wss://relay.conduit.market"],
+          acknowledgedRelayUrls: [],
+          rejectedRelayUrls: [],
+          timedOutRelayUrls: [],
+          stagedAt: 101,
+        },
+      }),
+    })
+    expect(target).toEqual({
+      kind: "configured",
+      serverUrl: CONFIGURED_SERVER,
+      backupServerUrls: [DRAFT_SERVER],
+    })
+  })
+
   it("uses a clean local CND-186 mirror only when it matches signed authority", () => {
     const publishedRevision = {
       eventId: "b".repeat(64),
@@ -1171,8 +1234,6 @@ describe("verified Blossom product image upload", () => {
     ]
     const codes: ProductImageUploadFailureCode[] = [
       "unsupported_type",
-      "fallback_retry_mismatch",
-      "fallback_guard_unavailable",
       "payment_required",
       "policy_rejected",
       "integrity_failed",

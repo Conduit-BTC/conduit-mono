@@ -7,12 +7,6 @@ const uploadFile: ProductImageUploadController["uploadFile"] = async () => {
   throw new Error("render-only upload stub")
 }
 const uploadLifecycle = {
-  getFallbackClaimState: () => "available" as const,
-  releaseFallbackClaim: () => false,
-  clearFallbackClaim: () => {},
-  prepareFallbackClaimMove: () => false,
-  commitFallbackClaimMove: () => {},
-  cancelFallbackClaimMove: () => {},
   uploadFile,
 }
 
@@ -31,7 +25,7 @@ describe("ProductImageUrlCollectionField", () => {
     expect(html).not.toContain("Image 2 URL")
     expect(html).toContain("Add image")
     expect(html).not.toContain("Add another image")
-    expect(html).toContain("up to 12")
+    expect(html).toContain("up to 24")
     expect(html).toContain("Conduit Market card preview")
     expect(html).toContain("centered 4:3 crop")
   })
@@ -103,7 +97,7 @@ describe("ProductImageUrlCollectionField", () => {
     expect(html).not.toContain("Add another image")
     expect(html).toContain("Add by URL")
     expect(html).not.toContain("Primary image URL")
-    expect(html).toContain("your first configured media server")
+    expect(html).toContain("your configured media servers")
     expect(html).not.toContain("nostr.build")
     expect(html).toContain('accept="image/jpeg,image/png,image/webp"')
     expect(html).toContain("multiple")
@@ -137,69 +131,49 @@ describe("ProductImageUrlCollectionField", () => {
     expect(html).not.toContain("Primary image URL")
   })
 
-  it("discloses the one-file public fallback and all required links", () => {
+  it("offers batch uploads with a gentle hosting note and both links", () => {
     const html = renderToStaticMarkup(
       <ProductImageUrlCollectionField
-        id="fallback-product-image"
+        id="default-images"
         images={[]}
         onChange={() => {}}
-        previewTitle="Fallback product"
+        previewTitle="Product"
         upload={{
           isBusy: false,
-          target: {
-            kind: "fallback",
-            serverUrl: "https://blossom.nostr.build",
-          },
+          target: { kind: "fallback", serverUrl: "https://blossom.ditto.pub" },
           ...uploadLifecycle,
         }}
       />
     )
-
-    expect(html).toContain("one uploaded image per listing")
-    expect(html).toContain("Pasted image URLs do not count")
-    expect(html).toContain('href="https://nostr.build/"')
-    expect(html).toContain('href="https://blossom.nostr.build/"')
+    expect(html).toContain("multiple")
+    expect(html).toContain("Add up to 24")
+    expect(html).toContain("You’re using shared public media hosting.")
+    expect(html).toContain("Compare nostr.build plans")
     expect(html).toContain('href="https://account.nostr.build/plans"')
-    expect(html).toContain("nostr.build plans")
-    expect(html).toContain('href="https://account.nostr.build/tos"')
-    expect(html).toContain('href="https://account.nostr.build/privacy"')
+    expect(html).toContain("Manage media servers")
     expect(html).toContain('href="/network"')
-    expect(html).toContain("Availability and retention are not guaranteed")
-    expect(html).not.toContain("additional built-in uploads")
-    expect(html.indexOf("Conduit Market card preview")).toBeLessThan(
-      html.indexOf("No media server is configured")
-    )
-    expect(html).not.toContain("multiple")
+    expect(html).not.toContain("one uploaded image")
+    expect(html).not.toContain("bg-[var(--warning)]")
   })
-
-  it("offers the picker only as a same-image retry for an ambiguous fallback", () => {
+  it("allows additional uploads after a verified default image", () => {
     const html = renderToStaticMarkup(
       <ProductImageUrlCollectionField
-        id="fallback-product-image"
-        images={[]}
+        id="default-images"
+        images={[{ url: "https://cdn.example.com/one.png" }]}
         onChange={() => {}}
-        previewTitle="Fallback retry"
+        previewTitle="Product"
         upload={{
           isBusy: false,
-          target: {
-            kind: "fallback",
-            serverUrl: "https://blossom.nostr.build",
-          },
+          target: { kind: "fallback", serverUrl: "https://blossom.ditto.pub" },
           ...uploadLifecycle,
-          getFallbackClaimState: () => "retry_same_hash",
         }}
       />
     )
-
-    const addImageIndex = html.indexOf("Add image")
-    const addImageButtonStart = html.lastIndexOf("<button", addImageIndex)
-    const addImageButton = html.slice(
-      addImageButtonStart,
-      html.indexOf(">", addImageButtonStart) + 1
+    const index = html.indexOf("Add another image")
+    expect(html.slice(html.lastIndexOf("<button", index), index)).not.toContain(
+      'disabled=""'
     )
-    expect(addImageButton).not.toContain('disabled=""')
-    expect(html).toContain("Choose the same image to retry")
-    expect(html).toContain("A different file will not be sent")
+    expect(html).toContain("multiple")
   })
 
   it("keeps URL entry available while server authority is unresolved", () => {
