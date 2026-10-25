@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { isDeepStrictEqual } from "node:util"
 
 import { boundedText } from "../../apps/address-gateway/src/bounded-text"
 import { validateGatewayDeployment } from "../../apps/address-gateway/src/deployment-config"
@@ -122,19 +123,9 @@ export function affectsGateway(path: string): boolean {
   )
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
-  if (value && typeof value === "object")
-    return `{${Object.entries(value)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`)
-      .join(",")}}`
-  return JSON.stringify(value) ?? "null"
-}
-
-export function bindingFingerprint(version: GatewayVersion): string {
-  return canonical(
-    [...version.resources.bindings].sort((a, b) => a.name.localeCompare(b.name))
+export function sortedBindings(version: GatewayVersion): Binding[] {
+  return [...version.resources.bindings].sort((a, b) =>
+    a.name.localeCompare(b.name)
   )
 }
 
@@ -149,8 +140,10 @@ export function preserveLiveConfig(
   const runtime = version.resources.script_runtime
   if (
     runtime.compatibility_date !== source.compatibility_date ||
-    canonical(runtime.compatibility_flags ?? []) !==
-      canonical(source.compatibility_flags ?? [])
+    !isDeepStrictEqual(
+      runtime.compatibility_flags ?? [],
+      source.compatibility_flags ?? []
+    )
   )
     throw new ReleaseError("Runtime drift requires explicit review.")
   const bindings = version.resources.bindings
@@ -220,7 +213,7 @@ export function preserveLiveConfig(
           (b) =>
             b.name === limit.name &&
             String(b.namespace_id) === String(limit.namespace_id) &&
-            canonical(b.simple) === canonical(limit.simple)
+            isDeepStrictEqual(b.simple, limit.simple)
         )
     )
   )
@@ -375,9 +368,11 @@ async function release(): Promise<void> {
   const uploaded = await cf<GatewayVersion>(`/versions/${uploadedId}`)
   if (
     uploaded.annotations?.["workers/tag"] !== `main-${sha}` ||
-    bindingFingerprint(uploaded) !== bindingFingerprint(baseline) ||
-    canonical(uploaded.resources.script_runtime) !==
-      canonical(baseline.resources.script_runtime)
+    !isDeepStrictEqual(sortedBindings(uploaded), sortedBindings(baseline)) ||
+    !isDeepStrictEqual(
+      uploaded.resources.script_runtime,
+      baseline.resources.script_runtime
+    )
   )
     throw new ReleaseError(
       "Uploaded gateway settings differ; traffic was not changed."

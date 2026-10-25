@@ -4,7 +4,7 @@ import {
   activeVersion,
   affectsGateway,
   assertApprovedMerge,
-  bindingFingerprint,
+  sortedBindings,
   preserveLiveConfig,
   previousRelease,
   type GatewayVersion,
@@ -157,11 +157,11 @@ describe("gateway live configuration preservation", () => {
     const baseline = version()
     const reordered = structuredClone(baseline)
     reordered.resources.bindings.reverse()
-    expect(bindingFingerprint(reordered)).toBe(bindingFingerprint(baseline))
+    expect(sortedBindings(reordered)).toEqual(sortedBindings(baseline))
     reordered.resources.bindings.find(
       (b) => b.name === "PROVIDER_PROXY_QUALIFIED"
     )!.text = "false"
-    expect(bindingFingerprint(reordered)).not.toBe(bindingFingerprint(baseline))
+    expect(sortedBindings(reordered)).not.toEqual(sortedBindings(baseline))
   })
   test("preserves a disabled management boundary rather than enabling it", () => {
     const baseline = version()
