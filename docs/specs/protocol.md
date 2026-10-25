@@ -458,7 +458,7 @@ This exception is constrained as follows:
   that explicitly permits anonymous public zaps. Project-tip drafts are created
   by the trusted server boundary with recipient pubkey
   `9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146`,
-  Lightning address `conduithodlings@strike.me`, fixed nonempty public message, and a
+  Lightning address `receiver@conduit.cash`, fixed nonempty public message, and a
   server-checked whole-sat amount of at least 100 sats within the live LNURL
   provider range. They cannot reference a merchant, product, cart, or order,
   and the browser cannot choose their recipient, endpoint, tags, or content.
