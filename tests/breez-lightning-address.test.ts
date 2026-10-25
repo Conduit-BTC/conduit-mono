@@ -12,6 +12,7 @@ import {
   generateBreezUsername,
   normalizeBreezUsername,
   verifyBreezPublicLookup,
+  addressRetryAt,
   type BreezAddressCheckpoint,
   type BreezAddressFetch,
   type BreezAddressSigner,
@@ -49,6 +50,46 @@ const PUBLIC = (username = USERNAME) => ({
 })
 const response = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status })
+
+it("retains provider retry timing and uses a conservative fallback", () => {
+  for (const [header, milliseconds] of [
+    ["30", 30_000],
+    [new Date(FIXED_TIME + 90_000).toUTCString(), 90_000],
+    ["invalid", 60_000],
+    ["", 60_000],
+  ] as const)
+    expect(
+      addressRetryAt(
+        new Response(null, { status: 429, headers: { "Retry-After": header } }),
+        FIXED_TIME
+      )
+    ).toBe(FIXED_TIME + milliseconds)
+})
+
+it("checks wallet authorization again after account signing before sending registration", async () => {
+  const f = await fixture()
+  let changed = false
+  const client = new BreezLightningAddressClient({
+    domain: "conduit.cash",
+    apiKey: "fixture",
+    signer: f.signer,
+    store: { read: async () => null, write: async () => {} },
+    runExclusive: async (_scope, run) => run(),
+    fetch: f.fetcher,
+    signAccountProof: async () => {
+      changed = true
+      return "Nostr fixture"
+    },
+  })
+  await client.ensure("alice", {
+    activateApprovedName: true,
+    beforeRegister: async () => async () => {
+      if (changed) throw new Error("Wallet changed")
+    },
+  })
+  expect(changed).toBe(true)
+  expect(f.calls.filter((call) => call === "register")).toHaveLength(0)
+})
 
 it("explicit custom-name activation replaces only the requested domain while ordinary recovery preserves it", async () => {
   const f = await fixture()
@@ -696,7 +737,11 @@ describe("Breez address lifecycle on the existing first-party Spark identity", (
         await verifyBreezPublicLookup(USERNAME, async () =>
           response({ ...PUBLIC(), ...update })
         )
-      ).toEqual({ status: "unavailable", zapAdvertised: false })
+      ).toEqual({
+        status: "unavailable",
+        zapAdvertised: false,
+        reason: "invalid_response",
+      })
     }
   })
   it("preserves recovered ownership when checkpoint storage is unavailable", async () => {

@@ -258,8 +258,16 @@ test("verified address remains available during refusal and pending metadata ret
         manager: {
           getLightningAddress: async (_id, _register, _name, domain) =>
             domain === "conduit.cash"
-              ? { status: "registered", address: "synthetic@conduit.cash" }
-              : { status: "registered", address: "synthetic@breez.tips" },
+              ? {
+                  status: "registered",
+                  address: "synthetic@conduit.cash",
+                  publicLookup: "verified",
+                }
+              : {
+                  status: "registered",
+                  address: "synthetic@breez.tips",
+                  publicLookup: "verified",
+                },
         },
         assertCurrent: () => {
           if (f.signer.pubkey !== f.wallet.ownerPubkey)
@@ -274,6 +282,7 @@ test("verified address remains available during refusal and pending metadata ret
     expect(await resolve("background")).toEqual({
       status: "registered",
       address: "synthetic@conduit.cash",
+      publicLookup: "verified",
     })
     await expect(delivery!).rejects.toMatchObject({ code: "background_paused" })
     expect((await f.service.get(f.wallet.walletId)).lightningAddress).toBeNull()
@@ -282,6 +291,7 @@ test("verified address remains available during refusal and pending metadata ret
     expect(await resolve("foreground")).toEqual({
       status: "registered",
       address: "synthetic@conduit.cash",
+      publicLookup: "verified",
     })
     await delivery
     expect(

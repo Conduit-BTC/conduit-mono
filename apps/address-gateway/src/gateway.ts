@@ -107,6 +107,7 @@ function response(value: unknown, status = 200): Response {
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
+      ...(status === 429 ? { "Retry-After": "60" } : {}),
     },
   })
 }
@@ -630,6 +631,7 @@ export async function handleAddressGateway(
       publicReceiving ? "*" : origin
     )
     result.headers.set("Vary", "Origin")
+    result.headers.set("Access-Control-Expose-Headers", "Retry-After")
     result.headers.set(
       "Access-Control-Allow-Methods",
       "GET, POST, DELETE, OPTIONS"

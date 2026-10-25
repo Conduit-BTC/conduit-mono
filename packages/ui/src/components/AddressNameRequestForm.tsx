@@ -3,6 +3,7 @@ import { ADDRESS_REQUEST_ACTION } from "@conduit/core/wallets/address-name-reque
 import { requestEvidence } from "@conduit/core/wallets/address-request-record"
 import type { AddressRequestView } from "@conduit/core/wallets/address-request-workflow"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
+import type { BreezAddressState } from "@conduit/core/wallets/breez-lightning-address"
 import { Button, Input } from "../index"
 
 interface ChallengeApi {
@@ -140,6 +141,68 @@ function AddressRequestFields({
   )
 }
 
+function requestStatus(
+  view: AddressRequestView | undefined,
+  loaded: boolean,
+  available: boolean
+) {
+  const phase = view?.record.phase
+  const activation = view?.activation
+  const activationMessage =
+    activation?.step === "approval"
+      ? "Checking current approval…"
+      : activation?.step === "registration"
+        ? phase === "activating"
+          ? "Checking whether registration completed. No additional registration will be sent while its outcome is uncertain."
+          : "Checking wallet ownership before registration."
+        : activation?.step === "public_lookup"
+          ? "Registration confirmed. Public receiving lookup still needs verification before this address can be used."
+          : activation?.step === "profile"
+            ? "Address verified. Your public profile still needs confirmation."
+            : undefined
+  const reasonMessage =
+    activation?.reason === "rate_limited"
+      ? "The service is limiting lookups."
+      : activation?.reason === "invalid_response"
+        ? "The service returned invalid address information. Check again later."
+        : activation?.reason === "identity_mismatch"
+          ? "The returned address does not match this request. Reopen the correct wallet."
+          : activation?.reason === "locked"
+            ? "Open this wallet to continue."
+            : activation?.reason === "invalid_api_key"
+              ? "The service rejected authorization. Reconnect the approved account."
+              : activation?.reason &&
+                  !["registration_pending", "not_found"].includes(
+                    activation.reason
+                  )
+                ? "Address verification is unavailable. Check the wallet and service before trying again."
+                : ""
+  const message = !loaded
+    ? "Restoring your saved request…"
+    : phase === "complete"
+      ? "Your address is activated and your public profile is updated."
+      : activationMessage
+        ? activationMessage
+        : phase === "registered"
+          ? "Address activated. Finish updating your public profile."
+          : phase === "activating"
+            ? "Activation needs confirmation. Resume to check and finish."
+            : phase === "approved"
+              ? "Name approved. Activate it when you are ready."
+              : phase === "declined"
+                ? "Request declined. Your existing receiving address still works."
+                : phase === "received"
+                  ? "Pending approval. Your existing receiving address still works."
+                  : phase === "pending"
+                    ? view?.status === "not_received"
+                      ? "No submission found. Retry the same saved request."
+                      : "Submission is uncertain. Your saved request will be checked again."
+                    : !available
+                      ? "Name requests are temporarily unavailable."
+                      : "Requests do not reserve or approve names."
+  return { message, reasonMessage }
+}
+
 export function AddressNameRequestForm({
   walletId,
   ownerPubkey,
@@ -150,7 +213,7 @@ export function AddressNameRequestForm({
   walletId: string
   ownerPubkey: string
   submit: NonNullable<UseWalletsReturn["requestAddressName"]>
-  onActivated(): Promise<void>
+  onActivated(state: Extract<BreezAddressState, { status: "registered" }>): void
   siteKey?: string
 }) {
   const [name, setName] = useState("")
@@ -160,10 +223,17 @@ export function AddressNameRequestForm({
   const [pending, setPending] = useState(false)
   const [token, setToken] = useState("")
   const [challengeRevision, setChallengeRevision] = useState(0)
-  const current = useRef(true)
+  const generation = useRef(0)
+  const operation = useRef<AbortController | undefined>(undefined)
+  const [now, setNow] = useState(Date.now())
   useEffect(() => {
-    current.current = true
+    const revision = ++generation.current
     let active = true
+    setView(undefined)
+    setName("")
+    setError("")
+    setPending(false)
+    setToken("")
     setLoaded(false)
     void submit.load(walletId).then(
       (saved) => {
@@ -181,18 +251,31 @@ export function AddressNameRequestForm({
     )
     return () => {
       active = false
-      current.current = false
+      generation.current = revision + 1
+      operation.current?.abort()
+      operation.current = undefined
     }
   }, [submit, walletId, ownerPubkey])
+  const retryAt = view?.activation?.retryAt
+  useEffect(() => {
+    if (!retryAt) return
+    setNow(Date.now())
+    if (retryAt <= Date.now()) return
+    const timer = window.setInterval(() => {
+      const time = Date.now()
+      setNow(time)
+      if (time >= retryAt) window.clearInterval(timer)
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [retryAt])
   const onToken = useCallback((value: string) => setToken(value), [])
   const apply = (saved: AddressRequestView | undefined) => {
-    if (!current.current) return
     setView(saved)
     if (saved) setName(requestEvidence(saved.record).desiredName)
     setLoaded(true)
   }
   const run = async (action: "submit" | "check" | "activate") => {
-    if (pending) return
+    if (operation.current) return
     if (
       action === "submit" &&
       !view &&
@@ -207,40 +290,58 @@ export function AddressNameRequestForm({
     }
     setPending(true)
     setError("")
+    const revision = generation.current
+    const controller = new AbortController()
+    operation.current = controller
+    const current = () =>
+      revision === generation.current && !controller.signal.aborted
+    const update = (saved: AddressRequestView | undefined) => {
+      if (!current()) return
+      apply(saved)
+      const address = saved?.activation?.address
+      if (address?.publicLookup === "verified") onActivated(address)
+    }
     try {
-      apply(
+      update(
         action === "activate"
-          ? await submit.activate(walletId)
+          ? await submit.activate(walletId, {
+              signal: controller.signal,
+              onProgress: update,
+            })
           : action === "check"
             ? await submit.check(walletId)
             : await submit.submit(walletId, { desiredName: name, token })
       )
     } catch (caught) {
-      if (current.current)
+      if (current())
         setError(
           caught instanceof Error
             ? caught.message
             : "Progress is uncertain. Retry using this saved request."
         )
       // Recover any locally retained progress, including successful registration.
-      try {
-        apply(await submit.load(walletId))
-      } catch {
-        /* Keep the stronger visible checkpoint. */
+      const saved = current()
+        ? await submit.load(walletId).catch(() => undefined) // Keep stronger visible progress on a failed read.
+        : undefined
+      if (current() && saved) {
+        setView((previous) => ({
+          ...saved,
+          activation: previous?.activation,
+        }))
       }
     } finally {
-      if (action === "activate") {
-        try {
-          await onActivated()
-        } catch {
-          if (current.current)
-            setError(
-              "Address display could not refresh. Saved progress is retained."
-            )
-        }
-      }
-      if (current.current) {
+      if (revision === generation.current) {
         setPending(false)
+        if (controller.signal.aborted)
+          setView((previous) =>
+            previous?.activation
+              ? {
+                  ...previous,
+                  activation: { ...previous.activation, exhausted: true },
+                }
+              : previous
+          )
+        operation.current = undefined
         setToken("")
         setChallengeRevision((value) => value + 1)
       }
@@ -251,27 +352,13 @@ export function AddressNameRequestForm({
   const unresolved = phase === "pending" || phase === "received"
   const retry =
     unresolved && (view?.status === "not_received" || phase === "pending")
-  const message = !loaded
-    ? "Restoring your saved request…"
-    : phase === "complete"
-      ? "Your address is activated and your public profile is updated."
-      : phase === "registered"
-        ? "Address activated. Finish updating your public profile."
-        : phase === "activating"
-          ? "Activation needs confirmation. Resume to check and finish."
-          : phase === "approved"
-            ? "Name approved. Activate it when you are ready."
-            : phase === "declined"
-              ? "Request declined. Your existing receiving address still works."
-              : phase === "received"
-                ? "Pending approval. Your existing receiving address still works."
-                : phase === "pending"
-                  ? view?.status === "not_received"
-                    ? "No submission found. Retry the same saved request."
-                    : "Submission is uncertain. Your saved request will be checked again."
-                  : !siteKey || !writesEnabled
-                    ? "Name requests are temporarily unavailable."
-                    : "Requests do not reserve or approve names."
+  const activation = view?.activation
+  const seconds = retryAt ? Math.max(0, Math.ceil((retryAt - now) / 1000)) : 0
+  const { message, reasonMessage } = requestStatus(
+    view,
+    loaded,
+    !!siteKey && writesEnabled
+  )
   return (
     <form
       className="grid min-w-0 gap-2"
@@ -313,8 +400,28 @@ export function AddressNameRequestForm({
         id={`address-request-status-${walletId}`}
         className="text-pretty text-sm"
       >
-        {pending ? "Saving and checking your request…" : message}
+        {pending && !activation ? "Saving and checking your request…" : message}
       </p>
+      {phase !== "complete" && activation && (
+        <p className="text-sm" role="status">
+          {reasonMessage}{" "}
+          {pending && seconds > 0
+            ? `Checking again in ${seconds}s.`
+            : activation.exhausted
+              ? `Automatic checks stopped. ${seconds > 0 ? `Try again in ${seconds}s.` : "Check again when you are ready."}`
+              : ""}
+        </p>
+      )}
+      {pending && retryAt && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={() => operation.current?.abort()}
+        >
+          Stop checking
+        </Button>
+      )}
       {error && (
         <p role="alert" className="text-sm">
           {error}
@@ -335,12 +442,14 @@ export function AddressNameRequestForm({
         <Button
           size="sm"
           type="button"
-          disabled={pending || !writesEnabled}
+          disabled={pending || !writesEnabled || seconds > 0}
           onClick={() => void run("activate")}
         >
           {phase === "registered"
             ? "Finish profile update"
-            : "Activate and use address"}
+            : phase === "activating"
+              ? "Check activation"
+              : "Activate and use address"}
         </Button>
       )}
     </form>

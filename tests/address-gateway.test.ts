@@ -23,6 +23,10 @@ import {
 } from "../apps/address-gateway/src/request-review"
 import { BreezLightningAddressClient } from "../packages/core/src/wallets/breez-lightning-address"
 import {
+  createAddressRequestWorkflow,
+  type AddressRequestView,
+} from "../packages/core/src/wallets/address-request-workflow"
+import {
   ADDRESS_REQUEST_PATH,
   addressNameRequestMessage,
   addressNameRequestPayload,
@@ -416,8 +420,14 @@ describe("approved-name gateway", () => {
         await decodeAddressNameRequestResponse(Response.json({ status }))
       ).toBe(status)
   })
-  test("shared address client registers with both approved account and Spark proofs", async () => {
+  test("workflow and signed client activate within the five-recovery budget after two ordinary lookups", async () => {
     const f = fixture()
+    const counts = new Map<string, number>()
+    f.env.REQUEST_RATE_LIMITER.limit = async ({ key }) => {
+      const count = (counts.get(key) ?? 0) + 1
+      counts.set(key, count)
+      return { success: count <= 5 }
+    }
     const client = new BreezLightningAddressClient({
       domain: "conduit.cash",
       apiKey: "test-client-key",
@@ -452,14 +462,62 @@ describe("approved-name gateway", () => {
       },
       runExclusive: async (_scope, run) => run(),
       now: () => f.now * 1000,
-      fetch: async (input, init) => f.handle(new Request(input, init)),
+      fetch: async (input, init) => {
+        if (String(input).includes(".well-known"))
+          return Response.json({
+            tag: "payRequest",
+            minSendable: 1,
+            maxSendable: 1000,
+            callback: "https://conduit.cash/lnurlp/alice/invoice",
+            metadata: JSON.stringify([
+              ["text/identifier", "alice@conduit.cash"],
+            ]),
+          })
+        return f.handle(new Request(input, init))
+      },
     })
+    await client.lookup()
+    await client.lookup()
+    const original = f.nameRequest()
+    const payload = await original.clone().text()
+    await f.handle(original.clone())
+    let view: AddressRequestView = {
+      record: {
+        payload,
+        accountProof: atob(original.headers.get("Authorization")!.slice(6)),
+        phase: "approved",
+      },
+      publication: "confirmed",
+    }
+    const workflow = createAddressRequestWorkflow({
+      owner: f.owner,
+      assertCurrent() {},
+      load: async () => view,
+      save: async (_id, record) => (view = { record, publication: "local" }),
+      signWallet: async () => {
+        throw new Error("Retained request")
+      },
+      signAccount: async (draft) => finalizeEvent(draft, f.accountSecret),
+      fetch: (async (input, init) => {
+        const headers = new Headers(init?.headers)
+        headers.set("Origin", "https://shop.conduit.market")
+        return f.handle(new Request(input, { ...init, headers }))
+      }) as typeof fetch,
+      address: async (_id, register, name, beforeRegister) =>
+        register
+          ? client.ensure(name, { activateApprovedName: true, beforeRegister })
+          : client.lookup(),
+      publishProfile: async () => "a".repeat(64),
+    })
+    expect((await workflow.activate("wallet")).record.phase).toBe("complete")
     expect(
-      await client.ensure("alice", { activateApprovedName: true })
-    ).toMatchObject({
-      status: "registered",
-      username: "alice",
-    })
+      [...counts.entries()]
+        .filter(([key]) => key.startsWith("recover:"))
+        .map(([, count]) => count)
+    ).toEqual([5, 5])
+    expect(
+      f.calls.filter((call) => call.path === `/lnurlpay/${f.identity}`)
+    ).toHaveLength(1)
     const registration = f.calls.find(
       (call) => call.path === `/lnurlpay/${f.identity}`
     )
@@ -736,9 +794,15 @@ describe("approved-name gateway", () => {
       const request = f.management("recover")
       const headers = new Headers(request.headers)
       headers.set("CF-Connecting-IP", `192.0.2.${attempt + 1}`)
-      expect((await f.handle(new Request(request, { headers }))).status).toBe(
-        attempt < 5 ? 200 : 429
-      )
+      headers.set("Origin", "https://shop.conduit.market")
+      const result = await f.handle(new Request(request, { headers }))
+      if (attempt >= 5) {
+        expect(result.headers.get("Retry-After")).toBe("60")
+        expect(result.headers.get("Access-Control-Expose-Headers")).toBe(
+          "Retry-After"
+        )
+      }
+      expect(result.status).toBe(attempt < 5 ? 200 : 429)
     }
     expect(f.calls).toHaveLength(5)
     expect(

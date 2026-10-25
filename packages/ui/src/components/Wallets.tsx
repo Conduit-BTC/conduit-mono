@@ -1265,7 +1265,7 @@ function WalletReceivingAddress({
         data-wallet-address
         className="break-all text-base text-[var(--text-primary)]"
       >
-        {state?.status === "registered"
+        {state?.status === "registered" && state.publicLookup === "verified"
           ? state.address
           : ready
             ? walletAddressStatus(state)
@@ -1292,7 +1292,7 @@ function WalletReceivingAddress({
             Retry receiving address
           </Button>
         )}
-      {state?.status === "registered" && (
+      {state?.status === "registered" && state.publicLookup === "verified" && (
         <WalletAddressActions address={state.address} showAddress={false} />
       )}
       {feedback && <p role="status">{feedback}</p>}
@@ -1302,13 +1302,7 @@ function WalletReceivingAddress({
           ownerPubkey={accountPubkey}
           walletId={walletId}
           submit={requestAddressName}
-          onActivated={async () => {
-            setState(
-              await resolve(walletId, false, undefined, undefined, {
-                priority: "foreground",
-              })
-            )
-          }}
+          onActivated={setState}
         />
       )}
       {state?.status === "registered" && state.publicLookup !== "verified" && (

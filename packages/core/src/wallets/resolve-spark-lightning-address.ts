@@ -26,6 +26,7 @@ export async function resolveSparkLightningAddress(input: {
         return existing.status === "registered" ? existing : breez
       })()
   input.assertCurrent()
-  if (state.status === "registered") input.onRegistered(state.address)
+  if (state.status === "registered" && state.publicLookup === "verified")
+    input.onRegistered(state.address)
   return state
 }
