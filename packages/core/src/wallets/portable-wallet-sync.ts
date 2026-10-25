@@ -22,6 +22,7 @@ import {
 import { getMarketWalletStore, getMarketWalletRegistry } from "./wallet-storage"
 import {
   compareWalletEvents,
+  InvalidPortableWalletRecordError,
   isPortableWalletEvent,
   parsePortableWalletRecord,
   portableWalletId,
@@ -219,7 +220,7 @@ export class PortableWalletSync {
   ): Promise<PortableWalletRecord> {
     this.current()
     if (!isPortableWalletEvent(event, this.d.signer.pubkey))
-      throw new Error("Invalid wallet event.")
+      throw new InvalidPortableWalletRecordError("Invalid wallet event.")
     const cached = this.decoded.get(event.id)
     if (cached) return cached
     const plaintext = await this.d.signer.decryptNip44(
@@ -230,7 +231,9 @@ export class PortableWalletSync {
     this.current()
     const record = parsePortableWalletRecord(plaintext, event)
     if ((await this.d.deriveIdentity(record)) !== record.identityPublicKey)
-      throw new Error("Wallet identity does not match its seed.")
+      throw new InvalidPortableWalletRecordError(
+        "Wallet identity does not match its seed."
+      )
     this.current()
     this.decoded.set(event.id, record)
     return record
@@ -463,10 +466,14 @@ export class PortableWalletSync {
               winners.set(record.walletId, event)
           } catch (error) {
             this.current()
+            // Only proven invalid data is skippable. SDK loading and other
+            // operational failures must not erase retained signed intent.
             if (
-              (error instanceof NostrSignerError &&
-                error.code !== "invalid_ciphertext") ||
-              error instanceof SessionSignerError
+              !(error instanceof InvalidPortableWalletRecordError) &&
+              !(
+                error instanceof NostrSignerError &&
+                error.code === "invalid_ciphertext"
+              )
             )
               throw error
             invalidCount++

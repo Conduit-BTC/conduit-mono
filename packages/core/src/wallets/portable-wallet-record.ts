@@ -101,20 +101,38 @@ export function isPortableWalletEvent(
     event.tags.some((t) => t[0] === "t" && t[1] === PORTABLE_WALLET_TAG)
   )
 }
+/** A record was checked and is invalid, rather than temporarily unverifiable. */
+export class InvalidPortableWalletRecordError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "InvalidPortableWalletRecordError"
+  }
+}
 export function parsePortableWalletRecord(
   plaintext: string,
   event: SignedNostrEvent
 ): PortableWalletRecord {
   if (plaintext.length > 16000 || !isPortableWalletEvent(event, event.pubkey))
-    throw new Error("Invalid wallet record.")
-  const record = portableWalletRecordSchema.parse(JSON.parse(plaintext))
+    throw new InvalidPortableWalletRecordError("Invalid wallet record.")
+  let payload: unknown
+  try {
+    payload = JSON.parse(plaintext)
+  } catch {
+    throw new InvalidPortableWalletRecordError("Invalid wallet record.")
+  }
+  const parsed = portableWalletRecordSchema.safeParse(payload)
+  if (!parsed.success)
+    throw new InvalidPortableWalletRecordError("Invalid wallet record.")
+  const record = parsed.data
   if (
     record.ownerPubkey !== event.pubkey ||
     portableWalletId(record) !== record.walletId ||
     event.tags.find((t) => t[0] === "d")?.[1] !==
       PORTABLE_WALLET_PREFIX + record.walletId
   )
-    throw new Error("Wallet record identity does not match.")
+    throw new InvalidPortableWalletRecordError(
+      "Wallet record identity does not match."
+    )
   if (record.addressRequest) {
     const request = requestEvidence(record.addressRequest)
     if (
@@ -122,7 +140,9 @@ export function parsePortableWalletRecord(
       request.sparkIdentity !== record.identityPublicKey ||
       request.network !== record.network
     )
-      throw new Error("Address request does not belong to this wallet.")
+      throw new InvalidPortableWalletRecordError(
+        "Address request does not belong to this wallet."
+      )
   }
   return record
 }

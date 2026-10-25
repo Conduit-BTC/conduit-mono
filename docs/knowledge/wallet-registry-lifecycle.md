@@ -19,8 +19,12 @@ address activation; saved address/request metadata cannot grant approval.
 Local signed bytes survive interrupted delivery. The coordinator refreshes on
 sign-in, reconnect, foreground wakeup and bounded periodic retries. Actual
 readback confirms storage; a prior receipt does not excuse a currently missing
-copy. Valid local records survive unavailable, stale or empty sources. Signer
-refusal stops background consent attempts. A foreground Continue action resumes.
+copy. Valid local records survive unavailable, stale or empty sources. Native
+validation outages also preserve the exact retained bytes: synchronization
+retries validation before replacing account state or publishing. Only proven
+invalid records are discarded; an SDK/module-load failure cannot report ready
+or erase an unpublished record or removal. Signer refusal stops background
+consent attempts. A foreground Continue action resumes.
 
 A signed removal excludes a wallet from automatic opening. It does not destroy
 funds or independently held recovery. Explicit seed import can reactivate it.
