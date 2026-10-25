@@ -25,6 +25,7 @@ export const PRODUCT_IMAGE_FALLBACK_SERVER = "https://blossom.ditto.pub"
 /** Runtime defaults; never automatically save or publish as owner preferences. */
 export const PRODUCT_IMAGE_DEFAULT_SERVERS: readonly string[] = [
   PRODUCT_IMAGE_FALLBACK_SERVER,
+  "https://blossom.nostr.build",
 ]
 export const PRODUCT_IMAGE_HOSTING_NOTE =
   "You’re using shared public media hosting. Images may become unavailable or be removed. For more control, consider a paid media plan or your own server."
@@ -262,7 +263,11 @@ export function resolveProductImageUploadTarget(input: {
       : { kind: "unavailable", reason: "malformed_preferences" }
   }
   if (preference.kind === "fallback")
-    return { kind: "fallback", serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER }
+    return {
+      kind: "fallback",
+      serverUrl: PRODUCT_IMAGE_DEFAULT_SERVERS[0],
+      backupServerUrls: PRODUCT_IMAGE_DEFAULT_SERVERS.slice(1),
+    }
   if (preference.kind === "malformed")
     return { kind: "unavailable", reason: "malformed_preferences" }
   return { kind: "pending", reason: "lookup_incomplete" }

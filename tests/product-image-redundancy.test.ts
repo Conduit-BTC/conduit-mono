@@ -6,6 +6,7 @@ import {
 } from "nostr-tools/pure"
 import { computeBlobSha256 } from "nostr-tools/nipb7"
 import {
+  PRODUCT_IMAGE_DEFAULT_SERVERS,
   getProductImageSources,
   readProductImageMetadata,
   uploadPreparedProductImageCopies,
@@ -16,7 +17,7 @@ const servers = [
   "https://primary.conduit.market",
   "https://backup.conduit.market",
 ]
-async function fixture() {
+async function fixture(copyServers: readonly string[] = servers) {
   const blob = new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" })
   const prepared = {
     blob,
@@ -35,8 +36,8 @@ async function fixture() {
     prepared,
     target: {
       kind: "configured" as const,
-      serverUrl: servers[0],
-      backupServerUrls: [servers[1]],
+      serverUrl: copyServers[0],
+      backupServerUrls: [copyServers[1]],
     },
     expectedPubkey: pubkey,
     signer: {
@@ -74,7 +75,7 @@ async function fixture() {
           )
         }
         return new Response(
-          corrupt && server === servers[1]
+          corrupt && server === copyServers[1]
             ? new Blob(["bad"], { type: blob.type })
             : blob,
           { headers: { "Content-Type": blob.type } }
@@ -98,6 +99,36 @@ async function fixture() {
 }
 
 describe("verified product image copies", () => {
+  for (const failed of [undefined, ...PRODUCT_IMAGE_DEFAULT_SERVERS]) {
+    it(`uploads the default pair and preserves verified work when ${failed ?? "neither provider"} fails`, async () => {
+      const f = await fixture(PRODUCT_IMAGE_DEFAULT_SERVERS)
+      if (failed) f.fail(failed)
+      const input = {
+        ...f.input,
+        target: { ...f.input.target, kind: "fallback" as const },
+      }
+      const result = await uploadPreparedProductImageCopies(input)
+      expect(f.uploads).toEqual([...PRODUCT_IMAGE_DEFAULT_SERVERS])
+      expect(f.authorizations).toEqual(
+        PRODUCT_IMAGE_DEFAULT_SERVERS.map((server) => new URL(server).hostname)
+      )
+      expect(f.bodies).toEqual([f.input.prepared.blob, f.input.prepared.blob])
+      expect(getProductImageSources(result.image)).toHaveLength(failed ? 1 : 2)
+      if (failed) {
+        expect(
+          result.copies.find((copy) => copy.serverUrl === failed)?.failureCode
+        ).toBe("rate_limited")
+        f.repair()
+        const retried = await uploadPreparedProductImageCopies({
+          ...input,
+          previousResult: result,
+        })
+        expect(f.uploads).toEqual([...PRODUCT_IMAGE_DEFAULT_SERVERS, failed])
+        expect(getProductImageSources(retried.image)).toHaveLength(2)
+      }
+    })
+  }
+
   it("stores identical prepared bytes, verifies both and exposes only verified sources", async () => {
     const f = await fixture()
     const updates: ProductImageUploadResult[] = []

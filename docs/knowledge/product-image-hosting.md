@@ -17,14 +17,15 @@ unknown preferences with defaults. The shared media preference selector owns
 signed, pending, retained and empty evidence; a display-only local mirror cannot
 authorize an upload.
 
-The current default is `https://blossom.ditto.pub`. Adding another shared public
-provider requires both technical validation and permission for the intended
-merchant workflow. In particular, nostr.build's published terms restrict free
-business use and commercial exploitation without a paid account. A server URL
-does not establish paid status or permission. Merchants can consciously configure
-servers through Network settings. The note beside default uploads links to
-nostr.build's plan comparison and that settings surface without blocking uploads
-or promising permanence.
+The app defaults are `https://blossom.ditto.pub`, followed by
+`https://blossom.nostr.build`. Both receive the same prepared image through the
+verified-copy pipeline. Either provider can supply the first usable copy; an
+additional provider failure preserves successful work and offers retry.
+Explicit signed server lists replace this default pair, rather than appending to
+it. A hostname does not establish paid entitlement or permanent hosting.
+Merchants can configure servers through Network settings. The note beside
+default uploads links to nostr.build's plan comparison and that settings surface
+without blocking uploads or promising permanence.
 
 ## Verified copies and partial failure
 

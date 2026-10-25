@@ -10,6 +10,7 @@ import {
   MAX_PRODUCT_IMAGE_DECODED_PIXELS,
   MAX_PRODUCT_IMAGE_INPUT_DIMENSION,
   MAX_PRODUCT_IMAGE_OUTPUT_DIMENSION,
+  PRODUCT_IMAGE_DEFAULT_SERVERS,
   PRODUCT_IMAGE_FALLBACK_SERVER,
   PRODUCT_IMAGE_UPLOAD_AUTH_TTL_SECONDS,
   ProductImageUploadError,
@@ -266,6 +267,7 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      backupServerUrls: ["https://blossom.nostr.build"],
     })
 
     expect(
@@ -371,6 +373,7 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      backupServerUrls: ["https://blossom.nostr.build"],
     })
   })
 
@@ -414,7 +417,11 @@ describe("product image upload target resolution", () => {
     ).toEqual({ kind: "unavailable", reason: "malformed_preferences" })
   })
 
-  it("offers the approved fallback only after complete positive absence", () => {
+  it("offers Ditto and nostr.build only after complete positive absence", () => {
+    expect(PRODUCT_IMAGE_DEFAULT_SERVERS).toEqual([
+      "https://blossom.ditto.pub",
+      "https://blossom.nostr.build",
+    ])
     expect(
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
@@ -424,6 +431,7 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      backupServerUrls: ["https://blossom.nostr.build"],
     })
   })
 })
