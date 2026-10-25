@@ -70,7 +70,7 @@ function DraftReview({
   onCancel: () => void
 }) {
   return (
-    <div className="space-y-3 rounded-xl border border-[var(--border)] p-4">
+    <div className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
       <h3 className="font-semibold">Review your changes</h3>
       <p>
         Compare the latest observed settings with your draft. Keeping your draft
@@ -283,7 +283,7 @@ function PrivatePreferences({ settings }: { settings: Controller }) {
   return (
     <section
       aria-label="Private preferences"
-      className="space-y-5 rounded-2xl border border-[var(--border)] p-5"
+      className="space-y-5 border-t border-[var(--border)] pt-5"
     >
       <h2 className="text-xl font-semibold">Private preferences</h2>
       <p>
@@ -482,7 +482,7 @@ function PublicPreferences({ settings }: { settings: Controller }) {
   return (
     <section
       aria-label="Public storefront settings"
-      className="space-y-4 rounded-2xl border border-[var(--border)] p-5"
+      className="space-y-4 border-t border-[var(--border)] pt-5"
     >
       <h2 className="text-xl font-semibold">Public storefront settings</h2>
       <p>
@@ -573,7 +573,7 @@ function SavedAddressesEditor({
       {Object.entries(shipping.savedAddresses).map(([id, item]) => (
         <div
           key={id}
-          className="space-y-2 rounded-xl border border-[var(--border)] p-3"
+          className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3"
         >
           <p>
             {item.label || item.recipientName}
@@ -621,7 +621,7 @@ function SavedAddressesEditor({
         </div>
       ))}
       {address ? (
-        <div className="space-y-3 rounded-xl border border-[var(--border)] p-4">
+        <div className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
           {(
             [
               "label",

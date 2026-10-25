@@ -47,6 +47,7 @@ const routes = {
     "/profile",
     "/wallet",
     "/shipping",
+    "/preferences",
     "/network",
     "/about",
     "/terms-of-service",
