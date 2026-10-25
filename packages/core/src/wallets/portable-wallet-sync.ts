@@ -22,6 +22,7 @@ import {
 import { getMarketWalletStore, getMarketWalletRegistry } from "./wallet-storage"
 import {
   compareWalletEvents,
+  InvalidPortableWalletRecordError,
   isPortableWalletEvent,
   parsePortableWalletRecord,
   portableWalletId,
@@ -97,21 +98,22 @@ export class PortableWalletSync {
         if (
           !active ||
           running ||
-          this.snapshot.status === "blocked" ||
+          (this.snapshot.status === "blocked" &&
+            this.snapshot.blockedReason !== "storage") ||
           (!force && Date.now() < nextAt)
         )
           return
         running = true
         try {
           await this.sync({ priority: "background" })
-          delay =
-            this.snapshot.status === "ready"
-              ? 30_000
-              : Math.min(delay * 2, 300_000)
         } catch {
           /* Shared status records access failure; background never repeats denied consent. */
         } finally {
           running = false
+          delay =
+            this.snapshot.status === "ready"
+              ? 30_000
+              : Math.min(delay * 2, 300_000)
           nextAt = Date.now() + delay + Math.floor(Math.random() * 1000)
         }
       }
@@ -146,6 +148,8 @@ export class PortableWalletSync {
   private synchronization?: Promise<void>
   private queue: Promise<unknown> = Promise.resolve()
   private decoded = new Map<string, PortableWalletRecord>()
+  // Provider observations are session-local; restart obtains them from the provider again.
+  private pendingAddresses = new Map<string, string>()
   private listeners = new Set<() => void>()
   snapshot: WalletSyncSnapshot = {
     status: "idle",
@@ -160,9 +164,11 @@ export class PortableWalletSync {
       relays: string[]
       deriveIdentity: (bundle: SparkRecoveryBundle) => Promise<string>
       assertCurrent?: () => void
+      // Prepare credentials first, then retain signed bytes in the projection transaction.
       project?: (
         records: PortableWalletRecord[],
-        options: AccountSignerOperationOptions
+        options: AccountSignerOperationOptions,
+        retain: () => Promise<void>
       ) => Promise<void>
       saveName?: (walletId: string, name: string) => Promise<void>
       now?: () => number
@@ -170,6 +176,7 @@ export class PortableWalletSync {
   ) {}
   clear() {
     this.decoded.clear()
+    this.pendingAddresses.clear()
     this.stopBackground?.()
   }
   private current() {
@@ -213,7 +220,7 @@ export class PortableWalletSync {
   ): Promise<PortableWalletRecord> {
     this.current()
     if (!isPortableWalletEvent(event, this.d.signer.pubkey))
-      throw new Error("Invalid wallet event.")
+      throw new InvalidPortableWalletRecordError("Invalid wallet event.")
     const cached = this.decoded.get(event.id)
     if (cached) return cached
     const plaintext = await this.d.signer.decryptNip44(
@@ -224,7 +231,9 @@ export class PortableWalletSync {
     this.current()
     const record = parsePortableWalletRecord(plaintext, event)
     if ((await this.d.deriveIdentity(record)) !== record.identityPublicKey)
-      throw new Error("Wallet identity does not match its seed.")
+      throw new InvalidPortableWalletRecordError(
+        "Wallet identity does not match its seed."
+      )
     this.current()
     this.decoded.set(event.id, record)
     return record
@@ -242,20 +251,35 @@ export class PortableWalletSync {
   }
   private async project(
     account: PortableWalletAccount,
-    options: AccountSignerOperationOptions
+    options: AccountSignerOperationOptions,
+    retain: () => Promise<void> = async () => {}
   ) {
     const records: PortableWalletRecord[] = []
     for (const saved of Object.values(account.wallets))
       records.push(await this.decode(saved.event, options))
     this.current()
-    await this.d.project?.(
+    if (!this.d.project) {
+      await retain()
+      return
+    }
+    await this.d.project(
       records.map((r) => ({
         ...r,
         name: account.pendingNames?.[r.walletId] ?? r.name,
       })),
-      options
+      options,
+      retain
     )
     this.current()
+  }
+  /** Queue only a provider-verified observation; signing never gates address display. */
+  rememberLightningAddress(walletId: string, address: string): void {
+    this.current()
+    const valid = portableWalletRecordSchema.shape.lightningAddress
+      .unwrap()
+      .parse(address)
+    this.pendingAddresses.set(walletId, valid)
+    this.changed({ status: "pending" })
   }
   async import(
     bundle: SparkRecoveryBundle,
@@ -314,11 +338,20 @@ export class PortableWalletSync {
       const before = await this.decode(saved.event, options)
       if (before.lifecycle === "removed")
         throw new Error("This wallet was removed.")
-      await this.write(
-        account,
-        portableWalletRecordSchema.parse({ ...before, ...patch }),
-        options
-      )
+      const next = portableWalletRecordSchema.parse({ ...before, ...patch })
+      const selections = (
+        ["paySelectedAt", "receiveSelectedAt"] as const
+      ).filter((field) => patch[field] !== undefined && next[field] > 0)
+      // Explicit choices supersede known preferences even when this device's
+      // clock is behind or tied. Compute inside the account's serialized update.
+      if (selections.length)
+        for (const known of Object.values(account.wallets)) {
+          const record = await this.decode(known.event, options)
+          if (record.network !== next.network) continue
+          for (const field of selections)
+            next[field] = Math.max(next[field], record[field] + 1)
+        }
+      await this.write(account, portableWalletRecordSchema.parse(next), options)
     })
   }
   private async write(
@@ -374,8 +407,9 @@ export class PortableWalletSync {
     if (account.pendingNames?.[record.walletId] === record.name)
       delete account.pendingNames[record.walletId]
     this.current()
-    await this.d.store.save(account)
-    await this.project(account, options)
+    await this.project(account, options, () => this.d.store.save(account))
+    if (this.pendingAddresses.get(record.walletId) === record.lightningAddress)
+      this.pendingAddresses.delete(record.walletId)
     this.changed({ status: "pending" })
   }
   sync(
@@ -432,10 +466,14 @@ export class PortableWalletSync {
               winners.set(record.walletId, event)
           } catch (error) {
             this.current()
+            // Only proven invalid data is skippable. SDK loading and other
+            // operational failures must not erase retained signed intent.
             if (
-              (error instanceof NostrSignerError &&
-                error.code !== "invalid_ciphertext") ||
-              error instanceof SessionSignerError
+              !(error instanceof InvalidPortableWalletRecordError) &&
+              !(
+                error instanceof NostrSignerError &&
+                error.code === "invalid_ciphertext"
+              )
             )
               throw error
             invalidCount++
@@ -451,17 +489,36 @@ export class PortableWalletSync {
         this.current()
         await this.d.store.save(account)
         await this.project(account, options)
-        for (const [id, name] of Object.entries(account.pendingNames ?? {})) {
+        for (const id of new Set([
+          ...Object.keys(account.pendingNames ?? {}),
+          ...this.pendingAddresses.keys(),
+        ])) {
           const saved = account.wallets[id]
           if (!saved) continue
           const record = await this.decode(saved.event, options)
           if (record.lifecycle !== "active") {
-            delete account.pendingNames![id]
+            if (account.pendingNames) delete account.pendingNames[id]
+            this.pendingAddresses.delete(id)
+            continue
+          }
+          const name = account.pendingNames?.[id] ?? record.name
+          const lightningAddress =
+            this.pendingAddresses.get(id) ?? record.lightningAddress
+          if (
+            name === record.name &&
+            lightningAddress === record.lightningAddress
+          ) {
+            if (account.pendingNames) delete account.pendingNames[id]
+            this.pendingAddresses.delete(id)
             continue
           }
           await this.write(
             account,
-            portableWalletRecordSchema.parse({ ...record, name }),
+            portableWalletRecordSchema.parse({
+              ...record,
+              name,
+              lightningAddress,
+            }),
             options
           )
         }
@@ -508,6 +565,7 @@ export class PortableWalletSync {
           invalidCount,
           status:
             this.d.relays.length > 0 &&
+            this.pendingAddresses.size === 0 &&
             coverage === "complete" &&
             Object.values(account.wallets).every((w) =>
               this.d.relays.every((r) => w.observed.includes(r))
@@ -548,8 +606,8 @@ export function getPortableWalletSync(
         typeof r === "string" ? r : r.url
       ),
       deriveIdentity: deriveSparkRecoveryIdentity,
-      project: (records, options) =>
-        projectPortableWallets(signer, records, options),
+      project: (records, options, retain) =>
+        projectPortableWallets(signer, records, options, { retain }),
       saveName: (id, name) => getMarketWalletStore().rename(id, name),
     })
     services.set(signer, service)
@@ -571,6 +629,7 @@ export async function projectPortableWallets(
   records: PortableWalletRecord[],
   options: AccountSignerOperationOptions = {},
   dependencies: {
+    retain?: () => Promise<void>
     store?: ReturnType<typeof getMarketWalletStore>
     registry?: ReturnType<typeof getMarketWalletRegistry>
   } = {}
@@ -680,6 +739,7 @@ export async function projectPortableWallets(
           await registry.setDefault(chosen.walletId, intent)
       }
     }
+    await dependencies.retain?.()
     assertWalletSignerCurrent(signer)
   })
 }

@@ -16,6 +16,7 @@ import {
   PORTABLE_WALLET_PREFIX,
   PORTABLE_WALLET_TAG,
   compareWalletEvents,
+  portableWalletId,
   type PortableWalletRecord,
 } from "../packages/core/src/wallets/portable-wallet-record"
 import { generateSparkMnemonic } from "../packages/core/src/wallets/spark-recovery"
@@ -34,6 +35,7 @@ function fixture() {
     denied = false,
     now = 1_000_000
   let decrypts = 0
+  let derivationError: Error | undefined
   const signer: AccountSigner = {
     pubkey: owner,
     revision: "fixture",
@@ -92,16 +94,18 @@ function fixture() {
       )
     )
   // The identity fixture deliberately uses only the recovery tuple, as the native adapter does.
-  const derive = (b: {
+  const derive = async (b: {
     mnemonic: string
     accountNumber: number
     network: string
-  }) =>
-    deriveIdentity({
+  }) => {
+    if (derivationError) throw derivationError
+    return deriveIdentity({
       mnemonic: b.mnemonic,
       accountNumber: b.accountNumber,
       network: b.network,
     })
+  }
   function device(accountSigner = signer) {
     let account: PortableWalletAccount = { ownerPubkey: owner, wallets: {} }
     let projected: PortableWalletRecord[] = []
@@ -122,7 +126,8 @@ function fixture() {
         assertCurrent: () => {
           if (!current) throw new NostrSignerError("authority_changed")
         },
-        project: async (records) => {
+        project: async (records, _options, retain) => {
+          await retain()
           projected = records
         },
       })
@@ -157,6 +162,9 @@ function fixture() {
     sent,
     derive,
     decrypts: () => decrypts,
+    failDerivation: (error?: Error) => {
+      derivationError = error
+    },
     deny: () => {
       denied = true
     },
@@ -405,6 +413,120 @@ describe("complete Portable Wallet records", () => {
 })
 
 describe("wallet convergence after interruption", () => {
+  for (const lifecycle of ["active", "removed"] as const)
+    it(`retains an unpublished ${lifecycle} record through native validation failure and restart`, async () => {
+      const f = fixture(),
+        a = f.device()
+      const wallet = await a.service.import(f.bundle(), "Retained")
+      if (lifecycle === "removed")
+        await a.service.update(wallet.walletId, { lifecycle })
+      const retained = structuredClone(a.account())
+      const projected = structuredClone(a.projected())
+      const original = retained.wallets[wallet.walletId].event
+      a.restart()
+      const failure = new TypeError(
+        "Failed to fetch dynamically imported module"
+      )
+      f.failDerivation(failure)
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(a.service.sync()).rejects.toBe(failure)
+        expect(a.service.snapshot).toMatchObject({
+          status: "blocked",
+          blockedReason: "storage",
+          invalidCount: 0,
+        })
+        // Do not print signed bytes or recovery material if retention regresses.
+        expect(JSON.stringify(a.account()) === JSON.stringify(retained)).toBe(
+          true
+        )
+        expect(f.sent).toHaveLength(0)
+        expect(
+          JSON.stringify(a.projected()) === JSON.stringify(projected)
+        ).toBe(true)
+        a.restart()
+      }
+      f.failDerivation()
+      await a.service.sync()
+      expect(a.service.snapshot.status).toBe("ready")
+      expect(f.sent).toHaveLength(f.relays.length)
+      expect(f.sent.every((id) => id === original.id)).toBe(true)
+      for (const url of f.relays)
+        expect(
+          JSON.stringify(f.data.get(url)?.[0]) === JSON.stringify(original)
+        ).toBe(true)
+      expect((await a.service.get(wallet.walletId)).lifecycle).toBe(lifecycle)
+    })
+
+  it("rejects malformed payloads and verified native mismatches independently of a valid wallet", async () => {
+    const f = fixture(),
+      a = f.device(),
+      b = f.device()
+    const wallet = await a.service.import(f.bundle(), "Valid")
+    const valid = a.account().wallets[wallet.walletId].event
+    const mismatch = {
+      ...wallet,
+      identityPublicKey: await f.derive(f.bundle(7)),
+    }
+    mismatch.walletId = portableWalletId(mismatch)
+    const invalidIdentity = await f.forge(mismatch, 9000)
+    const invalidSchema = await f.forge({ ...wallet, name: "" }, 9001)
+    const invalidJson = await f.signer.signEvent({
+      pubkey: valid.pubkey,
+      kind: valid.kind,
+      created_at: 9002,
+      tags: valid.tags,
+      content: await f.signer.encryptNip44(f.owner, "{"),
+    })
+    f.data.set(f.relays[0], [
+      valid,
+      invalidIdentity,
+      invalidSchema,
+      invalidJson,
+    ])
+    await b.service.sync()
+    expect(b.service.snapshot).toMatchObject({
+      status: "ready",
+      invalidCount: 3,
+    })
+    expect(Object.keys(b.account().wallets)).toHaveLength(1)
+    expect((await b.service.get(wallet.walletId)).name).toBe("Valid")
+  })
+
+  it("keeps preference ordering scoped to its network and leaves metadata-only edits neutral", async () => {
+    const f = fixture(),
+      a = f.device()
+    const wallet = await a.service.import(f.bundle(), "Mainnet")
+    const other = await a.service.import(
+      { ...f.bundle(), network: "testnet" },
+      "Testnet"
+    )
+    await a.service.update(wallet.walletId, {
+      paySelectedAt: 2_000,
+      receiveSelectedAt: 3_000,
+    })
+    await a.service.update(other.walletId, {
+      paySelectedAt: 9_000,
+      receiveSelectedAt: 9_000,
+    })
+    await a.service.update(wallet.walletId, { name: "Renamed" })
+    expect(await a.service.get(wallet.walletId)).toMatchObject({
+      paySelectedAt: 2_000,
+      receiveSelectedAt: 3_000,
+    })
+    await a.service.update(wallet.walletId, {
+      paySelectedAt: 1_999,
+      receiveSelectedAt: 1_999,
+    })
+    expect(await a.service.get(wallet.walletId)).toMatchObject({
+      paySelectedAt: 2_001,
+      receiveSelectedAt: 3_001,
+    })
+    expect(await a.service.get(other.walletId)).toMatchObject({
+      paySelectedAt: 9_000,
+      receiveSelectedAt: 9_000,
+    })
+  })
+
   it("retains an offline rename through denied consent and restart, merging it into the newest complete record", async () => {
     const f = fixture(),
       a = f.device(),

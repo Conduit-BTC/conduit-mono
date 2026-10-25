@@ -1279,7 +1279,9 @@ function WalletReceivingAddress({
             variant="outline"
             onClick={() => {
               onPendingChange(true)
-              void resolve(walletId)
+              void resolve(walletId, false, undefined, undefined, {
+                priority: "foreground",
+              })
                 .then(setState)
                 .catch(() =>
                   setFeedback("Could not refresh the receiving address.")
@@ -1301,7 +1303,11 @@ function WalletReceivingAddress({
           walletId={walletId}
           submit={requestAddressName}
           onActivated={async () => {
-            setState(await resolve(walletId))
+            setState(
+              await resolve(walletId, false, undefined, undefined, {
+                priority: "foreground",
+              })
+            )
           }}
         />
       )}

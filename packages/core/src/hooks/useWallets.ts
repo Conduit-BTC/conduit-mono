@@ -1,3 +1,4 @@
+import { resolveSparkLightningAddress } from "../wallets/resolve-spark-lightning-address"
 import { getAccountStorageRelays } from "../protocol/account-storage-relay-policy"
 import {
   lockedWalletRuntime as lockedRuntime,
@@ -185,7 +186,8 @@ export interface UseWalletsReturn {
     walletId: string,
     register?: boolean,
     username?: string,
-    domain?: "breez.tips" | "conduit.cash"
+    domain?: "breez.tips" | "conduit.cash",
+    options?: AccountSignerOperationOptions
   ): Promise<import("@conduit/core").BreezAddressState>
   requestAddressName?: AddressRequestWorkflow
   receiveSparkLightning(walletId: string, amountSats?: number): Promise<string>
@@ -741,15 +743,20 @@ export function useWallets(
           input.label,
           { priority: "foreground" }
         )
-        await manager.openWithMnemonic({
+        await openRegisteredSparkWallet({
           walletId: record.walletId,
-          mnemonic: record.mnemonic,
-          accountNumber: record.accountNumber,
-          shouldContinue: () => isWalletSignerCurrent(signer),
-          subscribeRevocation: (listener) =>
-            subscribeToAccountSignerChanges(() => {
-              if (!isWalletSignerCurrent(signer)) listener()
-            }),
+          manager,
+          expectedNetwork: getSparkWalletNetwork(),
+          listWallets: () => store.listVisible(signer.pubkey),
+          resolveOpenInput: async () => ({
+            mnemonic: record.mnemonic,
+            accountNumber: record.accountNumber,
+            shouldContinue: () => isWalletSignerCurrent(signer),
+            subscribeRevocation: (listener) =>
+              subscribeToAccountSignerChanges(() => {
+                if (!isWalletSignerCurrent(signer)) listener()
+              }),
+          }),
         })
         assertWalletSignerCurrent(signer)
         const wallet = (await store.listVisible(signer.pubkey)).find(
@@ -829,15 +836,20 @@ export function useWallets(
           ))
         const manager = requireSparkManager()
         options?.onProgress?.("opening")
-        await manager.openWithMnemonic({
+        await openRegisteredSparkWallet({
           walletId: record.walletId,
-          mnemonic,
-          accountNumber,
-          shouldContinue: () => isWalletSignerCurrent(signer),
-          subscribeRevocation: (listener) =>
-            subscribeToAccountSignerChanges(() => {
-              if (!isWalletSignerCurrent(signer)) listener()
-            }),
+          manager,
+          expectedNetwork: getSparkWalletNetwork(),
+          listWallets: () => store.listVisible(signer.pubkey),
+          resolveOpenInput: async () => ({
+            mnemonic,
+            accountNumber,
+            shouldContinue: () => isWalletSignerCurrent(signer),
+            subscribeRevocation: (listener) =>
+              subscribeToAccountSignerChanges(() => {
+                if (!isWalletSignerCurrent(signer)) listener()
+              }),
+          }),
         })
         assertWalletSignerCurrent(signer)
         const wallet = (await store.listVisible(signer.pubkey)).find(
@@ -992,6 +1004,7 @@ export function useWallets(
           await openRegisteredSparkWallet({
             walletId,
             manager: {
+              isOpen: (id) => manager.isOpen(id),
               openWithMnemonic: async (input) => {
                 await manager.openWithMnemonic(input)
                 ownsOpenSession = manager.captureSession(walletId)
@@ -1121,51 +1134,34 @@ export function useWallets(
       walletId: string,
       register = false,
       username?: string,
-      domain?: "breez.tips" | "conduit.cash"
+      domain?: "breez.tips" | "conduit.cash",
+      options: AccountSignerOperationOptions = { priority: "background" }
     ) => {
-      const manager = requireSparkManager()
       const signer = getAccountSigner()
-      const state = domain
-        ? await manager.getLightningAddress(
-            walletId,
-            register,
-            username,
-            domain
-          )
-        : await (async () => {
-            const [breez, existing] = await Promise.all([
-              manager.getLightningAddress(
-                walletId,
-                true,
-                undefined,
-                "breez.tips"
-              ),
-              manager.getLightningAddress(
-                walletId,
-                false,
-                undefined,
-                "conduit.cash"
-              ),
-            ])
-            return existing.status === "registered" ? existing : breez
-          })()
-      if (signer && state.status === "registered") {
-        const service = getPortableWalletSync(signer)
-        const record = await service.get(walletId, { priority: "background" })
-        if (record.lightningAddress !== state.address) {
-          await service.update(
-            walletId,
-            { lightningAddress: state.address },
-            { priority: "background" }
-          )
-          void synchronizeRecovery(signer).catch(() => {
+      return resolveSparkLightningAddress({
+        manager: requireSparkManager(),
+        walletId,
+        register,
+        username,
+        domain,
+        assertCurrent: () => {
+          if (getAccountSigner() !== signer)
+            throw new Error("Your Nostr sign-in changed.")
+          if (signer) assertWalletSignerCurrent(signer)
+        },
+        onRegistered: (address) => {
+          if (!signer) return
+          const service = getPortableWalletSync(signer)
+          service.rememberLightningAddress(walletId, address)
+          // Address metadata does not change wallet descriptors or balances.
+          // A reload here would retrigger the runtime-driven address lookup.
+          void service.sync(options).catch(() => {
             if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
           })
-        }
-      }
-      return state
+        },
+      })
     },
-    [synchronizeRecovery]
+    []
   )
 
   const addressRequestSigner = getAccountSigner()

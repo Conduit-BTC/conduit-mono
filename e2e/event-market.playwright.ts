@@ -5596,15 +5596,19 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         })
         .inputValue()
       await gotoAs(page, merchantUrl, eventPath, "merchant")
-      await page
-        .getByRole("combobox", {
-          name: "Stock for organizer pickup",
-          exact: true,
-        })
-        .click()
-      await page
-        .getByRole("option", { name: /synthetic-existing-product/ })
-        .click()
+      const stock = page.getByRole("combobox", {
+        name: "Stock for organizer pickup",
+        exact: true,
+      })
+      await expect(stock).toBeEnabled()
+      // Exercise Radix's focused keyboard path, then confirm the exact selection.
+      await stock.press("Enter")
+      const product = page.getByRole("option", {
+        name: /synthetic-existing-product/,
+      })
+      await expect(product).toBeVisible()
+      await product.press("Enter")
+      await expect(stock).toContainText(/synthetic-existing-product/)
       await page
         .getByRole("textbox", { name: "Quantity to reserve", exact: true })
         .fill("2")
@@ -5774,7 +5778,9 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   })
   await expect(complete).toBeEnabled()
   const completionStart = result.relay.publications.length
-  await complete.click()
+  // Mobile WebKit can release a scripted pointer outside this button.
+  // Focused keyboard activation starts exactly one action without retrying it.
+  await complete.press("Enter")
   // Settle the initiated action before checking its exact private receipt.
   await complete.waitFor({ state: "hidden" })
   await page
@@ -6016,16 +6022,25 @@ test("a host and merchant create, request, approve and offer through the screens
   )
   await expect(page.getByLabel(/^Start \(/)).toHaveValue("2030-06-01T11:00")
 
-  await page
-    .getByRole("button", { name: "I'm also selling", exact: true })
-    .click()
-  await page.getByRole("combobox", { name: "Who holds the stock?" }).click()
+  const selling = page.getByRole("button", {
+    name: "I'm also selling",
+    exact: true,
+  })
+  await expect(selling).toBeEnabled()
+  await selling.press("Enter")
+  const stockMode = page.getByRole("combobox", {
+    name: "Who holds the stock?",
+    exact: true,
+  })
+  await expect(stockMode).toBeVisible()
+  await stockMode.press("Enter")
   await expect(
     page.getByRole("option", { name: "Organizer-held pickup", exact: true })
   ).toBeDisabled()
   await page
     .getByRole("option", { name: "Merchant-managed pickup", exact: true })
-    .click()
+    .press("Enter")
+  await expect(stockMode).toHaveText("Merchant-managed pickup")
   await page.getByLabel("Public assignment").fill("Host booth")
   await page
     .getByRole("button", { name: "Approve merchant", exact: true })
@@ -7471,7 +7486,16 @@ async function acceptPickupOrder(
       (key) => localStorage.setItem(key, "1"),
       SYNTHETIC_SIGNER_UNAVAILABLE_KEY
     )
+  const pending = page.getByRole("button", { name: /^(Sending|Recording)…$/ })
+  const saved = page.getByRole("button", {
+    name: "Retry acceptance publication",
+    exact: true,
+  })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  // A click starts the async action; settle it before checking durable readback.
+  // Accept the saved control as the start signal when the action finishes quickly.
+  await pending.or(saved).first().waitFor({ state: "visible" })
+  await pending.waitFor({ state: "hidden" })
   if (interruptSigning)
     await expect(
       page.getByText(
@@ -7481,12 +7505,7 @@ async function acceptPickupOrder(
     ).toBeVisible()
   // This control exists only after the exact acceptance is read from storage.
   // Publication can replace the transient notice before the next render.
-  await expect(
-    page.getByRole("button", {
-      name: "Retry acceptance publication",
-      exact: true,
-    })
-  ).toBeVisible()
+  await expect(saved).toBeVisible()
   if (interruptSigning)
     await page.evaluate(
       (key) => localStorage.removeItem(key),
@@ -7541,7 +7560,9 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await page.clock.setFixedTime(new Date((newStart + 600) * 1000))
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   const from = relay.publications.length
-  await complete.click()
+  await expect(complete).toBeEnabled()
+  // Use the same focused activation as the free-pickup reconciliation case.
+  await complete.press("Enter")
   await complete.waitFor({ state: "hidden" })
   await page
     .getByRole("button", { name: /^(Sending|Recording)…$/ })
