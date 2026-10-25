@@ -25,10 +25,6 @@ const contracts = [
     ],
   },
   {
-    path: "packages/core/src/protocol/shopper-presets.ts",
-    calls: [{ intent: "author_event", identity: "owner", count: 1 }],
-  },
-  {
     path: "packages/core/src/protocol/event-market-calendar-retry.ts",
     calls: [
       {

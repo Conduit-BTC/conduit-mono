@@ -83,7 +83,7 @@ import {
 import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type UseWalletsReturn } from "../hooks/useWallets"
-import { useShopperPresets } from "../hooks/useShopperPresets"
+import { useShoppingSettings } from "@conduit/core"
 import {
   getCartShippingDestinationEligibility,
   getCartShippingOptionCoordinates,
@@ -991,7 +991,7 @@ function CartPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
-  const shopperPresets = useShopperPresets()
+  const shopperPresets = useShoppingSettings()
   const [estimateOpen, setEstimateOpen] = useState(false)
   const [estimate, setEstimate] = useState(() => ({
     owner: accountPubkey,

@@ -12,7 +12,7 @@ import {
   type MerchantCartReadiness,
 } from "./useCartReadiness"
 import { useShopperPricing } from "./useShopperPricing"
-import { useShopperPresets } from "./useShopperPresets"
+import { useShoppingSettings } from "@conduit/core"
 import { useWallets, type UseWalletsReturn } from "./useWallets"
 import {
   deriveMerchantCheckoutCapability,
@@ -73,7 +73,7 @@ export function useMerchantCheckoutCapability(input: {
   })
   const wallets = input.wallets ?? ownedWallets
   const shopperPricing = useShopperPricing()
-  const shopperPresets = useShopperPresets()
+  const shopperPresets = useShoppingSettings()
   const [webLnAvailable, setWebLnAvailable] = useState(false)
   useEffect(() => {
     const check = () => setWebLnAvailable(hasWebLN())
@@ -99,7 +99,7 @@ export function useMerchantCheckoutCapability(input: {
   const shippingPreset = restorePendingPubkey
     ? DEFAULT_CHECKOUT_SHIPPING
     : readCheckoutShippingCapabilityInitialization(
-        shopperPresets.unlockState === "unlocked"
+        shopperPresets.presetOwnerPubkey
           ? getIdentityBoundShippingPreset(
               identityPubkey,
               shopperPresets.presetOwnerPubkey,

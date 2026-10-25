@@ -5,11 +5,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import {
   AuthProvider,
+  OrdinarySettingsSync,
+  useOrdinarySettings,
   ConduitSessionProvider,
   pruneShopperTrustSnapshots,
   useAuth,
 } from "@conduit/core"
-import { isProductLegalPath } from "@conduit/ui"
+import { isProductLegalPath, OrdinarySettingsAppearance } from "@conduit/ui"
 import { initializeTheme } from "@conduit/ui/theme"
 import { routeTree } from "./routeTree.gen"
 import { startProductDeletionDeliveryWorker } from "./lib/product-deletion-delivery"
@@ -52,6 +54,11 @@ function ProductDeliveryWorkers(): null {
   return null
 }
 
+function AccountAppearance() {
+  const settings = useOrdinarySettings()
+  return <OrdinarySettingsAppearance settings={settings} />
+}
+
 const root = createRoot(document.getElementById("root")!)
 
 if (isPublicEntry) {
@@ -69,6 +76,8 @@ if (isPublicEntry) {
         <AuthProvider signerClientIcon="/merchant-icon-192.png">
           <ProductDeliveryWorkers />
           <ConduitSessionProvider appId="merchant" allowGuest={false}>
+            <OrdinarySettingsSync />
+            <AccountAppearance />
             <RouterProvider router={router} />
           </ConduitSessionProvider>
         </AuthProvider>

@@ -11,8 +11,8 @@ describe("critical signer recovery flows", () => {
         source("apps/merchant/src/routes/products.tsx"),
         source("packages/ui/src/components/RelaySettingsPanel.tsx"),
         source("apps/market/src/routes/checkout.tsx"),
-        source("apps/market/src/hooks/useShopperPresets.tsx"),
-        source("apps/market/src/routes/preferences.tsx"),
+        source("packages/core/src/hooks/useOrdinarySettings.ts"),
+        source("packages/ui/src/components/OrdinarySettingsPanel.tsx"),
         source("apps/market/src/routes/orders.tsx"),
       ])
 
@@ -67,32 +67,9 @@ describe("critical signer recovery flows", () => {
       "setShipping(DEFAULT_CHECKOUT_SHIPPING)\n    setNote"
     )
 
-    const presetOwnerEffect = presets.slice(
-      presets.indexOf("if (!identityPubkey) {"),
-      presets.indexOf("if (!identityPubkey || signerReady) return")
-    )
-    const sameOwnerReturn = presetOwnerEffect.indexOf(
-      "if (stateOwnerPubkeyRef.current === identityPubkey)"
-    )
-    expect(presets).toContain("const identityPubkey = accountPubkey")
-    expect(sameOwnerReturn).toBeGreaterThan(-1)
-    expect(presetOwnerEffect.indexOf("return", sameOwnerReturn)).toBeLessThan(
-      presetOwnerEffect.indexOf("setDecryptedPreset(null)", sameOwnerReturn)
-    )
-
-    const readinessEffect = preferences.slice(
-      preferences.indexOf("if (presets.signerReady) return"),
-      preferences.indexOf(
-        "const reconnectSigner",
-        preferences.indexOf("if (presets.signerReady) return")
-      )
-    )
-    expect(readinessEffect).toContain("setClearOpen(false)")
-    expect(readinessEffect).not.toContain("setDraft(")
-    expect(readinessEffect).not.toContain("clearPlaintextDraft")
-    expect(preferences).toContain(
-      'key={presets.identityPubkey ?? "no-account"}'
-    )
+    expect(presets).toContain("getAccountSigner() !== signer")
+    expect(preferences).toContain("key={`private:${settings.owner}`}")
+    expect(preferences).toContain("key={`public:${settings.owner}`}")
 
     const orderRecoveryEffect = orders.slice(
       orders.indexOf("if (!actionsReady && sparkFeeApproval.quote)"),
@@ -112,7 +89,7 @@ describe("critical signer recovery flows", () => {
       source("apps/merchant/src/routes/products.tsx"),
       source("packages/ui/src/components/RelaySettingsPanel.tsx"),
       source("apps/market/src/routes/checkout.tsx"),
-      source("apps/market/src/hooks/useShopperPresets.tsx"),
+      source("packages/core/src/hooks/useOrdinarySettings.ts"),
       source("apps/market/src/routes/orders.tsx"),
     ])
 
@@ -140,9 +117,7 @@ describe("critical signer recovery flows", () => {
       "if (!actionsReady && sparkFeeApproval.quote) sparkFeeApproval.decline()"
     )
     expect(orders).toContain("approveFee: sparkFeeApproval.requestApproval")
-    expect(presets).toContain(
-      "signerAuthorityRef.current.authGeneration !==\n            expectedAuthority.authGeneration"
-    )
+    expect(presets).toContain("getAccountSigner() !== signer")
 
     const ordersReconnect = orders.slice(
       orders.indexOf("const reconnectSigner = useCallback"),
@@ -195,7 +170,7 @@ describe("critical signer recovery flows", () => {
       source("apps/merchant/src/routes/products.tsx"),
       source("packages/ui/src/components/RelaySettingsPanel.tsx"),
       source("apps/market/src/routes/checkout.tsx"),
-      source("apps/market/src/hooks/useShopperPresets.tsx"),
+      source("packages/core/src/hooks/useOrdinarySettings.ts"),
       source("apps/market/src/routes/orders.tsx"),
     ])
 
@@ -204,8 +179,8 @@ describe("critical signer recovery flows", () => {
     expect(network).toContain('key={accountPubkey ?? "no-account"}')
     expect(checkout).toContain("previousOwner === draftOwnerIdentity")
     expect(checkout).toContain('setNote("")')
-    expect(presets).toContain("stateOwnerPubkeyRef.current = identityPubkey")
-    expect(presets).toContain("setDecryptedPreset(null)")
+    expect(presets).toContain("owned.stop()")
+    expect(presets).toContain("coordinators.delete(signer)")
     expect(orders).toContain(
       "key={`${activeBuyerPubkey}:${selectedRow.merchantPubkey}:${selectedRow.orderId}`}"
     )

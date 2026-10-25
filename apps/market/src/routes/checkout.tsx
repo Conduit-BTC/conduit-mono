@@ -134,7 +134,7 @@ import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
 import { useEventActorIdentity } from "../hooks/useEventActorIdentity"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets, type WalletRuntimeState } from "../hooks/useWallets"
-import { useShopperPresets } from "../hooks/useShopperPresets"
+import { useShoppingSettings } from "@conduit/core"
 import type { EventActorIdentityView } from "../lib/event-actor-identity"
 import {
   type NwcSessionBalanceState,
@@ -1254,7 +1254,7 @@ function CheckoutPage() {
   const search = Route.useSearch()
   const navigate = useNavigate()
   const shopperPricing = useShopperPricing()
-  const shopperPresets = useShopperPresets()
+  const shopperPresets = useShoppingSettings()
   const btcUsdRateQuery = shopperPricing.rateQuery
   const wallets = useWallets()
   const checkoutWalletNetwork = getWalletNetworkFromLightningConfig(

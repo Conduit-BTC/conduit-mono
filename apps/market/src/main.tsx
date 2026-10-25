@@ -10,6 +10,8 @@ import {
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import {
   AuthProvider,
+  OrdinarySettingsSync,
+  useOrdinarySettings,
   ConduitSessionProvider,
   pruneCommerceCaches,
   pruneExpiredGuestOrderData,
@@ -18,13 +20,12 @@ import {
   useBtcUsdRate,
   useConduitSession,
 } from "@conduit/core"
-import { isProductLegalPath } from "@conduit/ui"
+import { isProductLegalPath, OrdinarySettingsAppearance } from "@conduit/ui"
 import { initializeTheme } from "@conduit/ui/theme"
 import poppinsMediumUrl from "../../../packages/ui/src/assets/fonts/poppins-latin-500.woff2?url"
 import poppinsRegularUrl from "../../../packages/ui/src/assets/fonts/poppins-latin-400.woff2?url"
 import poppinsSemiBoldUrl from "../../../packages/ui/src/assets/fonts/poppins-latin-600.woff2?url"
 import { routeTree } from "./routeTree.gen"
-import { ShopperPresetsProvider } from "./hooks/useShopperPresets"
 import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
 import { captureCheckoutIntentFragment } from "./lib/checkout-intent-stage"
 import { checkoutReferralSessionFence } from "./lib/checkout-referral-session"
@@ -155,6 +156,11 @@ function pruneGuestRecoveryState() {
   void pruneExpiredGuestOrderData().catch(() => {})
 }
 
+function AccountAppearance() {
+  const settings = useOrdinarySettings()
+  return <OrdinarySettingsAppearance settings={settings} />
+}
+
 const root = createRoot(document.getElementById("root")!)
 
 if (isProductLegalEntry) {
@@ -178,10 +184,12 @@ if (isProductLegalEntry) {
         <AuthProvider signerClientIcon="/pwa-192x192.png">
           <ConduitSessionProvider appId="market">
             <MarketAuthQueryBoundary>
-              <ShopperPresetsProvider>
+              <>
+                <OrdinarySettingsSync />
+                <AccountAppearance />
                 <MarketPricingWarmup />
                 <RouterProvider router={router} />
-              </ShopperPresetsProvider>
+              </>
             </MarketAuthQueryBoundary>
           </ConduitSessionProvider>
         </AuthProvider>

@@ -2225,6 +2225,49 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toBe(false)
   })
 
+  it("constrains private settings reads separately from wallet recovery", async () => {
+    const event = finalizeEvent(
+      {
+        kind: 10421,
+        created_at: 1000,
+        tags: [["d", "openmarkets.private-settings"]],
+        content: "encrypted-fixture",
+      },
+      PRIVATE_KEY_A
+    )
+    const relay = config.appReadRelayUrls[0]!
+    const harness = new FakeRelayHarness().at(relay, {
+      onOpen: (socket) => socket.relay(["AUTH", "settings"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] === "REQ") {
+          socket.relay(["EVENT", frame[1], event])
+          socket.relay(["EOSE", frame[1]])
+        }
+      },
+    })
+    const executor = createExecutor(harness),
+      { authorization } = authorize()
+    const request = {
+      relayUrls: [relay],
+      operation: "private_settings_read" as const,
+      filters: [{ authors: [PUBKEY_A], kinds: [10421], limit: 8 }],
+    }
+    expect(
+      (await executor.query(request, { authorization })).events.map((e) => e.id)
+    ).toEqual([event.id])
+    for (const filter of [
+      { authors: [PUBKEY_B], kinds: [10421], limit: 8 },
+      { authors: [PUBKEY_A], kinds: [30078], limit: 8 },
+      { authors: [PUBKEY_A], kinds: [10421], limit: 9 },
+    ]) {
+      await expect(
+        executor.query({ ...request, filters: [filter] }, { authorization })
+      ).rejects.toThrow()
+    }
+    await expect(executor.query(request)).rejects.toThrow()
+  })
+
   it("reads signed owner app-data without inbox recipient tags and rejects other authors", async () => {
     const event = finalizeEvent(
       {

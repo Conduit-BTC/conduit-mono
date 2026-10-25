@@ -28,7 +28,7 @@ describe("Merchant live account authority", () => {
       source("apps/merchant/src/routes/products.tsx"),
       source("apps/merchant/src/components/FutureEventMarketManager.tsx"),
       source("apps/merchant/src/hooks/useMerchantEventTimeline.ts"),
-      source("apps/merchant/src/routes/shipping.tsx"),
+      source("apps/merchant/src/components/MerchantShippingPolicyEditor.tsx"),
       source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
     ])
 
@@ -52,7 +52,9 @@ describe("Merchant live account authority", () => {
     expect(eventTimeline).toMatch(
       /!signal\.aborted &&\s+!marketSignal\.aborted &&\s+authGenerationRef\.current === authGeneration/
     )
-    expect(shipping.match(generationGuard)).toHaveLength(1)
+    expect(shipping).toContain(
+      "shouldContinue: () => generationRef.current === authGeneration"
+    )
     expect(readiness.match(generationGuard)).toHaveLength(1)
   })
 

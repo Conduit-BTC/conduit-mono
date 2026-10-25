@@ -394,3 +394,9 @@ export {
   type CheckoutSparkPerformanceObservation,
   type CheckoutSparkPerformanceObserver,
 } from "./protocol/checkout-spark-performance"
+
+export * from "./settings/documents"
+export * from "./settings/edits"
+export * from "./hooks/useOrdinarySettings"
+
+export * from "./hooks/usePublicOrdinarySettings"

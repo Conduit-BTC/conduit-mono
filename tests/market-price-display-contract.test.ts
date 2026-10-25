@@ -9,7 +9,6 @@ const SHOPPER_PRICE_ROUTES = [
   "apps/market/src/routes/checkout.tsx",
   "apps/market/src/routes/orders.tsx",
   "apps/market/src/routes/messages.tsx",
-  "apps/market/src/routes/preferences.tsx",
   "apps/market/src/routes/zapouts.tsx",
 ] as const
 
@@ -26,14 +25,13 @@ describe("Market shopper price display contract", () => {
 
   it("offers connected shoppers the constrained currency and sats controls", async () => {
     const preferences = await readFile(
-      "apps/market/src/routes/preferences.tsx",
+      "packages/ui/src/components/OrdinarySettingsPanel.tsx",
       "utf8"
     )
 
-    expect(preferences).toContain("SUPPORTED_SHOPPER_DISPLAY_CURRENCIES")
-    expect(preferences).toContain("Preferred currency")
-    expect(preferences).toContain("Sats the standard")
-    expect(preferences).toContain("₿10,000 equals 10,000 sats")
+    expect(preferences).toContain('label="Display currency"')
+    expect(preferences).toContain('label="Bitcoin unit"')
+    expect(preferences).toContain('change("display.currency", v)')
     expect(preferences).toContain(
       "never changes a listing, order, invoice, or payment"
     )

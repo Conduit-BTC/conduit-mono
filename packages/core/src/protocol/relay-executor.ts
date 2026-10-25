@@ -1,3 +1,4 @@
+import { PRIVATE_SETTINGS_KIND } from "../settings/identifiers"
 import {
   fetchSignedEventsFanoutDetailed,
   closePublicRelayConnections,
@@ -52,6 +53,7 @@ export interface RelayRequest {
     | "private_inbox_read"
     | "legacy_inbox_read"
     | "account_recovery_read"
+    | "private_settings_read"
 }
 
 export type RelayQuery = RelayRequest
@@ -481,6 +483,30 @@ function assertRequest(
     throw new Error("Private inbox read requires active authorization")
   }
   assertProtectedReadAuthorization(authorization, authorization.expectedPubkey)
+  if (request.operation === "private_settings_read") {
+    for (const filter of request.filters) {
+      if (
+        Object.keys(filter).some(
+          (key) => !["authors", "ids", "kinds", "limit"].includes(key)
+        ) ||
+        filter.authors?.length !== 1 ||
+        filter.authors[0] !== authorization.expectedPubkey ||
+        filter.kinds?.length !== 1 ||
+        filter.kinds[0] !== PRIVATE_SETTINGS_KIND ||
+        (filter.ids !== undefined &&
+          (filter.ids.length !== 1 ||
+            !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||
+        !Number.isSafeInteger(filter.limit) ||
+        filter.limit! < 1 ||
+        filter.limit! > 8
+      ) {
+        throw new Error(
+          "Private settings read requires the active owner and experimental kind 10421"
+        )
+      }
+    }
+    return
+  }
   if (request.operation === "account_recovery_read") {
     for (const filter of request.filters) {
       if (
@@ -1959,6 +1985,7 @@ export class WebSocketCommerceRelayExecutor implements CommerceRelayExecutor {
             if (
               authorization &&
               request.operation !== "account_recovery_read" &&
+              request.operation !== "private_settings_read" &&
               event.tags.filter((tag) => tag[0] === "p").length !== 1
             ) {
               unusableCount += 1

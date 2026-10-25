@@ -1,4 +1,6 @@
-import { getShippingDimensionWarnings, useAuth } from "@conduit/core"
+import { useState } from "react"
+import { useOrdinarySettings } from "@conduit/core"
+import { getShippingDimensionWarnings } from "@conduit/core"
 import {
   InputWithSuffix,
   Label,
@@ -11,8 +13,6 @@ import {
 import type { ProductPublishFormValues } from "../lib/productForm"
 import { getProductShippingMeasurements } from "../lib/shippingPolicyForm"
 import {
-  getShippingWeightUnitPreference,
-  saveShippingWeightUnitPreference,
   SHIPPING_WEIGHT_UNITS,
   type ShippingWeightUnit,
 } from "../lib/shippingWeightUnits"
@@ -48,9 +48,12 @@ export function ProductShippingMeasurements({
   hideMeasurements?: boolean
   disabled?: boolean
 }) {
-  const { pubkey } = useAuth()
+  const ordinarySettings = useOrdinarySettings()
+  const [preferenceError, setPreferenceError] = useState(false)
   const unit =
-    form.shippingWeightUnit ?? getShippingWeightUnitPreference(pubkey)
+    form.shippingWeightUnit ??
+    ordinarySettings.privateDocument.settings.working?.weightUnit ??
+    "g"
   let warnings: string[] = []
   try {
     const parsed = getProductShippingMeasurements(form)
@@ -66,7 +69,10 @@ export function ProductShippingMeasurements({
       aria-label={label}
       className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3"
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div
+        data-preference-error={preferenceError || undefined}
+        className="grid grid-cols-2 gap-3"
+      >
         {!hideMeasurements && (
           <div className="min-w-0 space-y-1">
             <Label htmlFor={`${idPrefix}-shipping-weight`}>
@@ -96,7 +102,11 @@ export function ProductShippingMeasurements({
             onValueChange={(value) => {
               const weightUnit = value as ShippingWeightUnit
               onChange({ shippingWeightUnit: weightUnit })
-              saveShippingWeightUnitPreference(pubkey, weightUnit)
+              void ordinarySettings
+                .changePrivate([
+                  { path: "working.weightUnit", value: weightUnit },
+                ])
+                .catch(() => setPreferenceError(true))
             }}
           >
             <SelectTrigger id={`${idPrefix}-weight-unit`}>

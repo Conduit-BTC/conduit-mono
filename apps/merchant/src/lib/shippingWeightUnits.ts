@@ -53,32 +53,3 @@ export function displayShippingWeight(
   if (!Number.isFinite(value)) return grams
   return value.toFixed(3).replace(/\.?0+$/, "")
 }
-
-function preferenceKey(pubkey: string): string {
-  return `conduit:merchant:shipping-weight-unit:${pubkey}`
-}
-
-export function getShippingWeightUnitPreference(
-  pubkey?: string | null
-): ShippingWeightUnit {
-  if (!pubkey || typeof localStorage === "undefined") return "g"
-  try {
-    const unit = localStorage.getItem(preferenceKey(pubkey))
-    return isShippingWeightUnit(unit) ? unit : "g"
-  } catch {
-    return "g"
-  }
-}
-
-export function saveShippingWeightUnitPreference(
-  pubkey: string | null | undefined,
-  unit: ShippingWeightUnit
-): boolean {
-  if (!pubkey || typeof localStorage === "undefined") return false
-  try {
-    localStorage.setItem(preferenceKey(pubkey), unit)
-    return true
-  } catch {
-    return false
-  }
-}

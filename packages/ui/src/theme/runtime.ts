@@ -124,6 +124,7 @@ type ThemeListener = () => void
 
 const themeListeners = new Set<ThemeListener>()
 let browserThemeSnapshot = SERVER_THEME_SNAPSHOT
+let accountThemeWriter: ((preference: ThemePreference) => void) | null = null
 let browserThemeInitialized = false
 let browserStorage: Storage | null = null
 let browserSystemPreference: MediaQueryList | null = null
@@ -171,7 +172,8 @@ function handleSystemPreferenceChange(): void {
 function handleStorageChange(event: StorageEvent): void {
   if (event.storageArea && event.storageArea !== browserStorage) return
   if (event.key !== THEME_STORAGE_KEY && event.key !== null) return
-  updateBrowserPreference(parseThemePreference(event.newValue))
+  if (!accountThemeWriter)
+    updateBrowserPreference(parseThemePreference(event.newValue))
 }
 
 function createSystemPreferenceQuery(): MediaQueryList | null {
@@ -207,6 +209,10 @@ export function setThemePreference(preference: ThemePreference): void {
   if (!browserThemeInitialized) return
 
   const parsedPreference = parseThemePreference(preference)
+  if (accountThemeWriter) {
+    accountThemeWriter(parsedPreference)
+    return
+  }
   persistThemePreference(browserStorage, parsedPreference)
   updateBrowserPreference(parsedPreference)
 }
@@ -225,4 +231,19 @@ export function subscribeToTheme(listener: () => void): () => void {
 
 export function getServerThemeSnapshot(): ThemeSnapshot {
   return SERVER_THEME_SNAPSHOT
+}
+
+/** Account scope is ephemeral. Only explicit user choices invoke its writer. */
+export function bindAccountTheme(
+  preference: ThemePreference,
+  writer: (preference: ThemePreference) => void
+): () => void {
+  initializeTheme()
+  accountThemeWriter = writer
+  updateBrowserPreference(preference)
+  return () => {
+    if (accountThemeWriter !== writer) return
+    accountThemeWriter = null
+    updateBrowserPreference(readThemePreference(browserStorage))
+  }
 }

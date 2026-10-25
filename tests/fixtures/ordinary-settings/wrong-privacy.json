@@ -1,0 +1,9 @@
+{
+  "valid": false,
+  "documentType": "public",
+  "document": {
+    "format": "openmarkets.private-settings",
+    "version": 1,
+    "settings": {}
+  }
+}

@@ -265,8 +265,6 @@ export function getMerchantSetupReadiness({
 // Shipping
 // ---------------------------------------------------------------------------
 
-export const SHIPPING_STORAGE_KEY = "conduit:merchant:shipping_config"
-
 export interface ShippingCountryConfig {
   /** ISO-3166-1 alpha-2 country code */
   code: string
@@ -281,15 +279,6 @@ export interface ShippingCountryConfig {
 export interface ShippingConfig {
   countries: ShippingCountryConfig[]
   shipsFrom?: { location: string; geohash: string } | null
-}
-
-export function getShippingStorageKey(
-  pubkey: string | null | undefined
-): string {
-  const normalizedPubkey = pubkey?.trim()
-  return normalizedPubkey
-    ? `${SHIPPING_STORAGE_KEY}:${normalizedPubkey}`
-    : SHIPPING_STORAGE_KEY
 }
 
 function toStringArray(value: unknown): string[] {
@@ -351,23 +340,6 @@ function normalizeShippingConfig(value: unknown): ShippingConfig {
   }
 }
 
-export function loadShippingConfig(
-  pubkey?: string | null | undefined
-): ShippingConfig {
-  return parseShippingConfig(getStoredShippingConfigRaw(pubkey))
-}
-
-export function getStoredShippingConfigRaw(
-  pubkey?: string | null | undefined
-): string | null {
-  try {
-    if (typeof localStorage === "undefined") return null
-    return localStorage.getItem(getShippingStorageKey(pubkey))
-  } catch {
-    return null
-  }
-}
-
 export function parseShippingConfig(
   raw: string | null | undefined
 ): ShippingConfig {
@@ -378,18 +350,6 @@ export function parseShippingConfig(
   } catch {
     return { countries: [] }
   }
-}
-
-export function saveShippingConfig(
-  config: ShippingConfig,
-  pubkey?: string | null | undefined
-): void {
-  if (typeof localStorage === "undefined") return
-  localStorage.setItem(
-    getShippingStorageKey(pubkey),
-    serializeShippingConfig(config)
-  )
-  notifyMerchantReadinessStorageChange()
 }
 
 export function isShippingComplete(config: ShippingConfig): boolean {

@@ -60,7 +60,6 @@ import { visitProtectedInboxHistoryPage } from "../packages/core/src/protocol/pr
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
 import type { SignedNostrEvent } from "../packages/core/src/protocol/nostr-event-signer"
 import type { CommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
-import { fetchShopperPresets } from "../packages/core/src/protocol/shopper-presets"
 import { getShopperTrustEvidence } from "../packages/core/src/protocol/shopper-trust"
 import { futureMarketReadyReceiptSchema } from "../packages/core/src/schemas"
 
@@ -183,13 +182,6 @@ describe("account network read call contract", () => {
   it("carries account policy through owner preference and social reads", async () => {
     const relayListCalls: RelayListLookupOptions[] = []
     const finalReadCalls: PublicRelayReadOptions[] = []
-    const captureRelayLists = async (
-      _pubkeys: readonly string[],
-      options: RelayListLookupOptions = {}
-    ) => {
-      relayListCalls.push(options)
-      return new Map()
-    }
     const captureFinalRead = async (
       _filter: unknown,
       options: PublicRelayReadOptions = {}
@@ -205,13 +197,6 @@ describe("account network read call contract", () => {
       }
     }
 
-    await fetchShopperPresets(ACCOUNT, {
-      authenticatedPubkey: ACCOUNT,
-      readRelayUrls: [RELAY_URL],
-      getRelayLists: captureRelayLists,
-      fetchEvents: captureFinalRead,
-      accountNetworkLocalStateRepository: repository,
-    })
     await readLatestFollowLists(
       { pubkeys: [ACCOUNT], authenticatedPubkey: ACCOUNT },
       {
@@ -234,13 +219,13 @@ describe("account network read call contract", () => {
       storage: null,
     })
 
-    expect(relayListCalls).toHaveLength(2)
+    expect(relayListCalls).toHaveLength(1)
     relayListCalls.forEach((options) => {
       expect(options.accountPubkey).toBe(ACCOUNT)
       expect(options.authenticatedPubkey).toBe(ACCOUNT)
       expect(options.accountNetworkLocalStateRepository).toBe(repository)
     })
-    expect(finalReadCalls).toHaveLength(3)
+    expect(finalReadCalls).toHaveLength(2)
     finalReadCalls.forEach((options) => {
       expectAccountPolicy(options)
       expect(options.authenticatedPubkey).toBe(ACCOUNT)
@@ -251,13 +236,6 @@ describe("account network read call contract", () => {
     const openedRelayUrls: string[] = []
     const fetchEvents = finalIoRecorder(openedRelayUrls)
 
-    await fetchShopperPresets(ACCOUNT, {
-      authenticatedPubkey: ACCOUNT,
-      readRelayUrls: [RELAY_URL],
-      getRelayLists: async () => new Map([[ACCOUNT, relayList(ACCOUNT)]]),
-      fetchEvents,
-      accountNetworkLocalStateRepository: repository,
-    })
     await readLatestFollowLists(
       { pubkeys: [ACCOUNT], authenticatedPubkey: ACCOUNT },
       {

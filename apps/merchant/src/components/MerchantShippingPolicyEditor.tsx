@@ -1,3 +1,4 @@
+import { useOrdinarySettings } from "@conduit/core"
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -37,8 +38,6 @@ import {
 } from "../lib/shippingPolicyForm"
 
 import {
-  getShippingWeightUnitPreference,
-  saveShippingWeightUnitPreference,
   SHIPPING_WEIGHT_UNITS,
   type ShippingWeightUnit,
 } from "../lib/shippingWeightUnits"
@@ -76,9 +75,9 @@ export function MerchantShippingPolicyEditor() {
   const [draft, setDraft] = useState<ShippingPolicyDraft>(
     createShippingPolicyDraft
   )
-  const [weightUnit, setWeightUnit] = useState<ShippingWeightUnit>(() =>
-    getShippingWeightUnitPreference(pubkey)
-  )
+  const ordinarySettings = useOrdinarySettings()
+  const weightUnit =
+    ordinarySettings.privateDocument.settings.working?.weightUnit ?? "g"
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [withdrawOpen, setWithdrawOpen] = useState(false)
@@ -370,8 +369,17 @@ export function MerchantShippingPolicyEditor() {
                 value={weightUnit}
                 onValueChange={(value) => {
                   const unit = value as ShippingWeightUnit
-                  setWeightUnit(unit)
-                  saveShippingWeightUnitPreference(pubkey, unit)
+                  void ordinarySettings
+                    .changePrivate([
+                      { path: "working.weightUnit", value: unit },
+                    ])
+                    .catch(() =>
+                      setStatus({
+                        state: "error",
+                        message:
+                          "Weight preference could not be saved. Review Preferences.",
+                      })
+                    )
                 }}
               >
                 <SelectTrigger id="policy-weight-unit">

@@ -62,6 +62,7 @@ import {
   type OrderSummary,
   type SignedPublicNostrEvent,
   type LocalProductStockRecovery,
+  useOrdinarySettings,
   useAuth,
   useCommerceInbox,
   useConduitSession,
@@ -136,10 +137,6 @@ import {
   type MerchantOrderSort,
   type OrderQueueTab,
 } from "../lib/order-phase"
-import {
-  readMerchantOrderSort,
-  saveMerchantOrderSort,
-} from "../lib/order-sort-preference"
 import {
   parseMerchantOrderSearch,
   shouldStartMerchantOrderRecoveryAutomatically,
@@ -725,13 +722,18 @@ function OrdersWorkspace() {
   >(null)
   const [orderSearch, setOrderSearch] = useState("")
   const [phaseTab, setPhaseTab] = useState<OrderQueueTab>(selectedQueueFromUrl)
-  const [orderSort, setOrderSort] = useState<MerchantOrderSort>(() =>
-    readMerchantOrderSort()
-  )
-  const changeOrderSort = useCallback((nextSort: MerchantOrderSort) => {
-    setOrderSort(nextSort)
-    saveMerchantOrderSort(nextSort)
-  }, [])
+  const ordinarySettings = useOrdinarySettings()
+  const orderSort =
+    ordinarySettings.privateDocument.settings.working?.orderSort ?? "newest"
+  const [sortSaveError, setSortSaveError] = useState(false)
+  const changeOrderSort = (nextSort: MerchantOrderSort) => {
+    void ordinarySettings
+      .changePrivate([{ path: "working.orderSort", value: nextSort }])
+      .then(
+        () => setSortSaveError(false),
+        () => setSortSaveError(true)
+      )
+  }
   const [ordersSheetOpen, setOrdersSheetOpen] = useState(false)
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false)
   const [messagesOpen, setMessagesOpen] = useState(false)
@@ -3563,6 +3565,12 @@ function OrdersWorkspace() {
   return (
     <div className="space-y-6">
       <CommerceInboxRecovery {...inbox} />
+      {sortSaveError && (
+        <p role="status">
+          Order sorting could not be saved. Open Preferences to review your
+          signer or connection.
+        </p>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-4 xl:shrink-0">
         <div>
           <h1 className="text-balance text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
