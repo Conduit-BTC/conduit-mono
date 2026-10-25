@@ -7486,7 +7486,16 @@ async function acceptPickupOrder(
       (key) => localStorage.setItem(key, "1"),
       SYNTHETIC_SIGNER_UNAVAILABLE_KEY
     )
+  const pending = page.getByRole("button", { name: /^(Sending|Recording)…$/ })
+  const saved = page.getByRole("button", {
+    name: "Retry acceptance publication",
+    exact: true,
+  })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  // A click starts the async action; settle it before checking durable readback.
+  // Accept the saved control as the start signal when the action finishes quickly.
+  await pending.or(saved).first().waitFor({ state: "visible" })
+  await pending.waitFor({ state: "hidden" })
   if (interruptSigning)
     await expect(
       page.getByText(
@@ -7496,12 +7505,7 @@ async function acceptPickupOrder(
     ).toBeVisible()
   // This control exists only after the exact acceptance is read from storage.
   // Publication can replace the transient notice before the next render.
-  await expect(
-    page.getByRole("button", {
-      name: "Retry acceptance publication",
-      exact: true,
-    })
-  ).toBeVisible()
+  await expect(saved).toBeVisible()
   if (interruptSigning)
     await page.evaluate(
       (key) => localStorage.removeItem(key),
