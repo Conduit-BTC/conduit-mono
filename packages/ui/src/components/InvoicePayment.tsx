@@ -221,7 +221,7 @@ export function InvoicePayment({
             {cashAppUrl ? (
               <Button
                 asChild
-                className={`${funding ? "sm:hidden " : ""}h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90`}
+                className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
               >
                 <a
                   href={cashAppUrl}

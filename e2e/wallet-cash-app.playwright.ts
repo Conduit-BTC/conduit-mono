@@ -154,10 +154,15 @@ for (const app of ["market", "merchant"] as const) {
         await expect(cashQr).toBeVisible()
         const box = await cashQr.boundingBox()
         expect(box?.width).toBe(224)
-        await expect(cash).toBeHidden()
+        await expect(cash).toBeVisible()
       } else {
         await expect(cash).toBeVisible()
         await expect(cashQr).toBeHidden()
+        // A landscape phone must retain a same-device handoff above sm.
+        const portrait = page.viewportSize()!
+        await page.setViewportSize({ width: 844, height: 390 })
+        await expect(cash).toBeVisible()
+        await page.setViewportSize(portrait)
       }
       // Compare privately: no invoice values in assertion failure output.
       expect(
@@ -167,7 +172,7 @@ for (const app of ["market", "merchant"] as const) {
       await expect(
         page.getByText("Wallet receive fee: 3 sats.", { exact: false })
       ).toBeVisible()
-      if (!desktop) await cash.click()
+      await cash.click()
       await page.evaluate(() => window.dispatchEvent(new Event("focus")))
       await expect(
         page.getByText("Money received in this wallet.", { exact: true })

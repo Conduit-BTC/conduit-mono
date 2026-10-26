@@ -78,7 +78,8 @@ Market's checkout keeps its existing preparation and order-admission callbacks.
 Wallet funding prepares first, then uses an explicit native link click, rechecking
 invoice amount, mainnet, validity, expiry, and current wallet scope. Desktop
 funding shows a bounded QR containing the Cash App universal link, labeled for the
-phone camera; mobile shows Open Cash App. The separate Lightning fallback keeps
+phone camera. Open Cash App remains available at every width, including landscape
+phones and tablets, for same-device handoff. The separate Lightning fallback keeps
 the same BOLT11 invoice across its link, copy, and QR. Closing the dialog does not
 cancel it; the wallet's provider history remains the recovery surface after reload.
 
