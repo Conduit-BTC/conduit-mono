@@ -31,6 +31,29 @@ const playwrightCli = require.resolve("@playwright/test/cli")
 const playwrightImport = require.resolve("@playwright/test")
 const smokeDiagnosticsImport = resolve("e2e/helpers/smoke-diagnostics.ts")
 
+function createEventSmokeRunner(directory: string) {
+  const output = join(directory, "results.json")
+  const artifact = join(directory, "evidence.json")
+  const progress = join(directory, "progress.log")
+  const config = join(directory, "playwright.config.ts")
+  writeFileSync(
+    config,
+    `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
+  )
+  const run = (args: string[]) =>
+    spawnSync(
+      process.execPath,
+      [playwrightCli, "test", "-c", config, ...args],
+      {
+        cwd: directory,
+        encoding: "utf8",
+        timeout: 15000,
+        env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+      }
+    )
+  return { run, output, artifact, progress }
+}
+
 describe("composed smoke evidence", () => {
   it("keeps event prepaid confirmation observations private through the real reporter and verifier", () => {
     const directory = mkdtempSync(
@@ -69,25 +92,8 @@ describe("composed smoke evidence", () => {
           "});",
         ].join("\n")
       )
-      const output = join(directory, "results.json")
-      const artifact = join(directory, "evidence.json")
-      const progress = join(directory, "progress.log")
-      const config = join(directory, "playwright.config.ts")
-      writeFileSync(
-        config,
-        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
-      )
-      const run = (args: string[]) =>
-        spawnSync(
-          process.execPath,
-          [playwrightCli, "test", "-c", config, ...args],
-          {
-            cwd: directory,
-            encoding: "utf8",
-            timeout: 15000,
-            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
-          }
-        )
+      const { run, output, artifact, progress } =
+        createEventSmokeRunner(directory)
       const discovery = run(["--list", "--reporter=json"])
       expect(discovery.status).toBe(0)
       const manifest = buildPlaywrightSmokeManifest(
@@ -182,25 +188,8 @@ describe("composed smoke evidence", () => {
           "}",
         ].join("\n")
       )
-      const config = join(directory, "playwright.config.ts")
-      const output = join(directory, "results.json")
-      const artifact = join(directory, "evidence.json")
-      const progress = join(directory, "progress.log")
-      writeFileSync(
-        config,
-        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
-      )
-      const run = (args: string[]) =>
-        spawnSync(
-          process.execPath,
-          [playwrightCli, "test", "-c", config, ...args],
-          {
-            cwd: directory,
-            encoding: "utf8",
-            timeout: 15000,
-            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
-          }
-        )
+      const { run, output, artifact, progress } =
+        createEventSmokeRunner(directory)
       const discovery = run(["--list", "--reporter=json"])
       expect(discovery.status).toBe(0)
       const manifest = buildPlaywrightSmokeManifest(
