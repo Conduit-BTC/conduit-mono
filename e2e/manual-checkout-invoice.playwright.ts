@@ -341,6 +341,7 @@ for (const scenario of scenarios) {
     await expect(
       page.getByRole("link", { name: "Open Lightning wallet", exact: true })
     ).toHaveAttribute("href", `lightning:${generatedInvoice}`)
+    await expect(page).toHaveURL(/[?&]focus=payment(?:&|$)/)
     if (!scenario.stop && !scenario.legacyPublicZap) {
       await page.setViewportSize({ width: 390, height: 844 })
       await page.evaluate(() => window.scrollTo(0, 0))

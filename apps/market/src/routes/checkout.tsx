@@ -4528,8 +4528,8 @@ function CheckoutPage() {
         // Orders retains the accepted-order recovery marker if cleanup fails.
       })
 
-      paymentInFlightRef.current = false
-      void navigate({
+      // Keep recovery fenced until the destination component finishes loading.
+      await navigate({
         to: "/orders",
         search: {
           order: orderId,
@@ -4538,6 +4538,7 @@ function CheckoutPage() {
         },
         replace: true,
       })
+      paymentInFlightRef.current = false
     } catch (e) {
       void startOrderPostAcceptanceWork?.()
       const message = e instanceof Error ? e.message : "Payment failed"

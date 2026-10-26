@@ -1743,6 +1743,9 @@ async function createAssignedPickupOrder(
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  await expect(
+    page.getByRole("heading", { name: "Orders", exact: true })
+  ).toBeVisible()
   const orderMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -4989,6 +4992,9 @@ test("event shopping keeps pickup-only choices and merchant profile navigation @
         new URL(page.url()).pathname === `/${nip19.npubEncode(MERCHANT_PUBKEY)}`
     )
     .toBe(true)
+  await expect(
+    page.getByRole("heading", { name: "Choice merchant", exact: true })
+  ).toBeVisible()
   await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
   await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
   await expect(
@@ -5272,6 +5278,11 @@ for (const retention of ["screen", "file"] as const) {
         /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
       ).toBe(true)
       expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      // The Orders component must commit before starting a new document.
+      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
       receiptStage = "code-verification"
       await gotoAs(page, merchantUrl, "/orders", "merchant", {
         order: order.id,
