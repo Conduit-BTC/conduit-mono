@@ -19,6 +19,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react"
@@ -98,7 +99,9 @@ type SparkRecoveryState =
   | { status: "idle" }
   | { status: "checking" }
   | { status: "ready"; method: "signer" }
-  | { status: "missing"; reason: string }
+  | { status: "missing" | "unavailable"; reason: string }
+
+const SPARK_RECOVERY_READ_TIMEOUT_MS = 5_000
 
 const SPARK_HISTORY_LOAD_TIMEOUT_MS = 15_000
 
@@ -330,6 +333,7 @@ export function Wallets({
             {!wallets.initializationError && (
               <>
                 <WalletSection
+                  key={`${auth.accountPubkey}:${auth.authGeneration}`}
                   title="Wallet list"
                   profileAddress={profileAddress}
                   onPublicAddress={
@@ -781,9 +785,10 @@ function WalletRow({
   )
   const menuTrigger = useRef<HTMLButtonElement>(null)
   const isSpark = wallet.providerId === "spark"
-  const recoveryState = useSparkRecoveryState(
+  const { state: recoveryState, retry: retryRecovery } = useSparkRecoveryState(
     isSpark ? wallet.id : null,
-    getSparkRecoveryType
+    getSparkRecoveryType,
+    wallet.updatedAt
   )
   const ready = runtime.status === "ready" && !providerActionsDisabled
   const isDefault = wallet.defaultIntents.includes("pay_invoice")
@@ -794,7 +799,9 @@ function WalletRow({
       ? "Remove wallet from account"
       : recoveryState.status === "ready"
         ? "Remove from this device"
-        : "Check recovery before removing"
+        : recoveryState.status === "checking"
+          ? "Checking recovery…"
+          : "Check recovery before removing"
   const removalUnavailable = isSpark && recoveryState.status !== "ready"
   const run = async (action: () => Promise<void>) => {
     setPending(true)
@@ -996,6 +1003,17 @@ function WalletRow({
                   </DropdownMenuItem>
                 )}
                 <DropdownMenuSeparator />
+                {(recoveryState.status === "missing" ||
+                  recoveryState.status === "unavailable") && (
+                  <>
+                    <DropdownMenuLabel className="max-w-64 whitespace-normal font-normal">
+                      {recoveryState.reason}
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem onSelect={retryRecovery}>
+                      Retry recovery check
+                    </DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuItem
                   className="text-[var(--error-text)] focus:text-[var(--error-text)]"
                   disabled={removalUnavailable}
@@ -1398,51 +1416,63 @@ function WalletRuntimePill({ runtime }: { runtime: WalletRuntimeState }) {
 function useSparkRecoveryState(
   walletId: string | null,
   hasRecovery: UseWalletsReturn["getSparkRecoveryType"],
-  revision?: WalletDescriptor
-): SparkRecoveryState {
-  const [state, setState] = useState<SparkRecoveryState>({
-    status: "idle",
-  })
+  revision?: number
+): { state: SparkRecoveryState; retry: () => void } {
+  const [attempt, setAttempt] = useState(0)
+  const scope = useMemo(
+    () => ({ walletId, hasRecovery, revision, attempt }),
+    [walletId, hasRecovery, revision, attempt]
+  )
+  const [observation, setObservation] = useState<{
+    scope: typeof scope
+    state: SparkRecoveryState
+  } | null>(null)
 
   useEffect(() => {
-    if (!walletId) {
-      setState({ status: "idle" })
-      return
-    }
-
+    if (!walletId) return
     let current = true
-    setState({ status: "checking" })
-    void hasRecovery(walletId)
-      .then((available) => {
-        if (!current) return
-        setState(
+    const finish = (state: SparkRecoveryState) => {
+      if (!current) return
+      current = false
+      clearTimeout(timer)
+      setObservation({ scope, state })
+    }
+    const unavailable = () =>
+      finish({
+        status: "unavailable",
+        reason:
+          "The local recovery check is temporarily unavailable. Try again.",
+      })
+    // Bound only the metadata observation, never a signer or provider operation.
+    const timer = setTimeout(unavailable, SPARK_RECOVERY_READ_TIMEOUT_MS)
+    void Promise.resolve()
+      .then(() => hasRecovery(walletId))
+      .then((available) =>
+        finish(
           available
-            ? {
-                status: "ready",
-                method: available,
-              }
+            ? { status: "ready", method: available }
             : {
                 status: "missing",
                 reason:
-                  "No local recovery method was found. Restore this wallet again before using it.",
+                  "No local recovery method was found. Restore this wallet before removing it.",
               }
         )
-      })
-      .catch(() => {
-        if (current) {
-          setState({
-            status: "missing",
-            reason:
-              "The local recovery method could not be read. Retry or restore this wallet again.",
-          })
-        }
-      })
+      )
+      .catch(unavailable)
     return () => {
       current = false
+      clearTimeout(timer)
     }
-  }, [hasRecovery, walletId, revision])
+  }, [scope, hasRecovery, walletId])
 
-  return state
+  // A changed wallet/read/retry must not inherit a previous ready result,
+  // including the render before its effect cleanup runs.
+  const state: SparkRecoveryState = !walletId
+    ? { status: "idle" }
+    : observation?.scope === scope
+      ? observation.state
+      : { status: "checking" }
+  return { state, retry: () => setAttempt((value) => value + 1) }
 }
 
 function PortableWalletDialog({
@@ -3223,7 +3253,7 @@ function RemoveWalletDialog({
 }) {
   const current = useWalletDialogCurrent(auth, wallet)
   const portable = wallet?.kind === "portable"
-  const recoveryState = useSparkRecoveryState(
+  const { state: recoveryState, retry: retryRecovery } = useSparkRecoveryState(
     portable ? (wallet?.id ?? null) : null,
     wallets.getSparkRecoveryType
   )
@@ -3241,7 +3271,15 @@ function RemoveWalletDialog({
   }
 
   const remove = async () => {
-    if (!wallet || !current()) return
+    if (
+      !wallet ||
+      !current() ||
+      pending ||
+      !recoveryScopeReady ||
+      !signerReadyForRemoval ||
+      (portable && !confirmed)
+    )
+      return
     setPending(true)
     setError(null)
     try {
@@ -3289,10 +3327,30 @@ function RemoveWalletDialog({
                 ? `This removes the wallet from the active account list across devices. Its encrypted recovery remains available independently. Removing it does not delete the underlying wallet or move funds.${signerReadyForRemoval ? "" : " Sign in with this account to confirm removal."}`
                 : recoveryState.status === "ready"
                   ? "This removes the wallet registration and encrypted recovery from this browser. It does not delete the Portable Wallet or move its funds."
-                  : "Wallet recovery ownership could not be confirmed. Close this dialog and check recovery before removing it."
+                  : recoveryState.status === "checking"
+                    ? "Checking the local recovery method before removal…"
+                    : "Wallet recovery ownership could not be confirmed. Retry the recovery check before removing it."
               : "This removes the private NWC authorization from this browser. The external wallet and its funds are unchanged."}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {(recoveryState.status === "missing" ||
+          recoveryState.status === "unavailable") && (
+          <div className="space-y-2">
+            <p role="status" className="text-sm text-[var(--text-secondary)]">
+              {recoveryState.reason}
+            </p>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmed(false)
+                retryRecovery()
+              }}
+              disabled={pending}
+            >
+              Retry recovery check
+            </Button>
+          </div>
+        )}
         {portable && (
           <div className="flex items-center justify-between gap-4 rounded-[var(--radius-md)] border border-[var(--warning)] bg-[color-mix(in_srgb,var(--warning)_7%,transparent)] p-3">
             <Label htmlFor="remove-recovery" className="leading-5">
