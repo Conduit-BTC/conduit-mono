@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
+import { Nip47NetworkError, Nip47PublishError } from "@getalby/sdk/nwc"
+import { createNwcPaymentFixture } from "./support/nwc-payment-fixture"
 
 import type {
   RegisteredWalletProvider,
@@ -23,6 +25,33 @@ const NWC_CONNECTION = parseNwcUri(
 )
 const marketAdapterCoordinator = new WalletPaymentCoordinator(
   marketWalletProviderRegistry
+)
+
+it.each([Nip47PublishError, Nip47NetworkError])(
+  "never infers safe fallback from an unexpected session %p",
+  async (PaymentError) => {
+    const nwc = await createNwcPaymentFixture(async () => ({
+      preimage: "proof",
+    }))
+    try {
+      getBuyerNwcSession(nwc.target.walletId).payInvoice = async () => {
+        throw new PaymentError("Failed to connect to NWC relay(s).", "INTERNAL")
+      }
+      await expect(
+        nwc.payInvoice({
+          invoice: "lnbc1test",
+          amountMsats: 1_000,
+          walletPaymentAttemptId: crypto.randomUUID(),
+          paymentTarget: nwc.target,
+          timeoutMs: 100,
+          appId: "market",
+        })
+      ).rejects.toThrow("Check your wallet before trying another payment path.")
+      expect(nwc.submitted).toHaveLength(0)
+    } finally {
+      nwc.dispose()
+    }
+  }
 )
 
 class Nip47WalletError extends Error {

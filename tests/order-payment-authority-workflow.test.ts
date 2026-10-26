@@ -1,6 +1,7 @@
 import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
+import { Nip47NetworkError, Nip47PublishError } from "@getalby/sdk/nwc"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -14,6 +15,8 @@ import {
   createSelectedProfileContext,
   getProfiles,
   patchClaimedOrderLifecyclePayment,
+  reconcileInterruptedOrderPayment,
+  recordOrderPaymentWalletSuccessRecovery,
   type CachedProfile,
   type OrderLifecycle,
 } from "@conduit/core"
@@ -24,6 +27,7 @@ import {
   type OrderPaymentContext,
   type OrderPaymentDependencies,
 } from "../apps/market/src/lib/order-payment-service"
+import { createNwcPaymentFixture } from "./support/nwc-payment-fixture"
 import {
   bolt11PaymentHashField,
   bolt11PlainDescriptionField,
@@ -274,6 +278,161 @@ afterEach(() => {
 })
 
 describe("executor profile authority workflow", () => {
+  it("keeps final NWC admission denial retryable with zero SDK dispatches", async () => {
+    await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+    let current = true
+    const nwc = await createNwcPaymentFixture(
+      async () => {
+        throw new Nip47PublishError(
+          "Local acknowledgment unavailable",
+          "INTERNAL"
+        )
+      },
+      {
+        prepare: () => {
+          current = false
+        },
+      }
+    )
+    try {
+      current = true
+      stored.paymentTarget = nwc.target
+      const input = {
+        ...context(),
+        paymentTarget: nwc.target,
+        shouldContinue: () => current,
+      }
+      const deps = { ...dependencies(), payCheckoutInvoice: nwc.payInvoice }
+      const denied = await runOrderPayment(input, deps)
+      expect(nwc.submitted).toHaveLength(0)
+      expect(denied.lifecycle?.paymentStatus).toBe("failed")
+      current = true
+      // Explicit fresh authority now allows the next admission boundary.
+      await runOrderPayment({ ...input, shouldContinue: () => true }, deps)
+      expect(nwc.submitted).toHaveLength(1)
+      expect(stored.paymentStatus).toBe("ambiguous")
+    } finally {
+      nwc.dispose()
+    }
+  })
+
+  it("binds a late NWC success to the interrupted original attempt monotonically", async () => {
+    await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+    let entered!: () => void
+    let release!: () => void
+    const submitted = new Promise<void>((done) => {
+      entered = done
+    })
+    const held = new Promise<void>((done) => {
+      release = done
+    })
+    const nwc = await createNwcPaymentFixture(async () => {
+      entered()
+      await held
+      return { preimage: "f".repeat(64) }
+    })
+    const originalAttemptGet = db.paymentAttempts.get
+    db.paymentAttempts.get = (async () =>
+      undefined) as typeof originalAttemptGet
+    let pending: ReturnType<typeof runOrderPayment> | undefined
+    try {
+      stored.paymentTarget = nwc.target
+      const input = { ...context(), paymentTarget: nwc.target }
+      const deps = {
+        ...dependencies(),
+        payCheckoutInvoice: nwc.payInvoice,
+        savePaymentAttempt: async () => {},
+      }
+      pending = runOrderPayment(input, deps)
+      await submitted
+      const original = structuredClone(stored)
+      stored.paymentClaimLeaseExpiresAt = 0
+      expect(
+        (
+          await reconcileInterruptedOrderPayment(
+            stored.orderId,
+            stored.paymentClaimId!
+          )
+        ).status
+      ).toBe("marked_ambiguous")
+      expect(stored.invoice).toBe(original.invoice)
+      release()
+      expect((await pending).lifecycle?.paymentStatus).toBe("paid")
+      expect(stored.invoice).toBe(original.invoice)
+      expect(stored.walletPaymentAttemptId).toBe(
+        original.walletPaymentAttemptId
+      )
+      expect(stored.proofDeliveryStatus).toBe("retry_needed")
+      // Duplicate evidence cannot regress proof already sent for this attempt.
+      await recordOrderPaymentWalletSuccessRecovery(stored.orderId, {
+        invoice: original.invoice!,
+        preimage: stored.preimage!,
+        proofDeliveryStatus: "sent",
+      })
+      await recordOrderPaymentWalletSuccessRecovery(stored.orderId, {
+        invoice: original.invoice!,
+        preimage: stored.preimage!,
+        proofDeliveryStatus: "pending",
+      })
+      expect(stored.proofDeliveryStatus).toBe("sent")
+      await runOrderPayment(input, deps)
+      expect(nwc.submitted).toEqual([original.invoice!])
+      expect(counts.invoice).toBe(1)
+      expect(stored.phase).toBe("in_progress")
+    } finally {
+      release()
+      await pending
+      db.paymentAttempts.get = originalAttemptGet
+      nwc.dispose()
+    }
+  })
+
+  it.each([Nip47PublishError, Nip47NetworkError])(
+    "retains the original NWC obligation after %p, reconnect and restored storage",
+    async (PaymentError) => {
+      await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
+      const nwc = await createNwcPaymentFixture(async () => {
+        throw new PaymentError("Local acknowledgment unavailable", "INTERNAL")
+      })
+      try {
+        stored.paymentTarget = nwc.target
+        const input = { ...context(), paymentTarget: nwc.target }
+        const deps = { ...dependencies(), payCheckoutInvoice: nwc.payInvoice }
+        const first = await runOrderPayment(input, deps)
+        expect(first.lifecycle?.paymentStatus).toBe("ambiguous")
+        expect(first.lifecycle?.invoice).toBe(invoice("acquired"))
+        const retained = structuredClone(stored)
+        expect(retained.walletPaymentAttemptId).toBeDefined()
+        expect(retained.proofDeliveryStatus).toBe("not_started")
+        expect(retained.phase).toBe("in_progress")
+        await nwc.reconnect()
+        stored = JSON.parse(JSON.stringify(retained)) as OrderLifecycle
+        for (const paymentTarget of [
+          nwc.target,
+          { type: "manual" as const },
+          { type: "webln" as const },
+          { ...nwc.target, walletId: "replacement-wallet" },
+        ]) {
+          await runOrderPayment({ ...input, paymentTarget }, deps)
+          expect(stored.invoice).toBe(retained.invoice)
+          expect(stored.walletPaymentAttemptId).toBe(
+            retained.walletPaymentAttemptId
+          )
+          expect(stored.paymentTarget).toEqual(nwc.target)
+          expect(stored.paymentStatus).toBe("ambiguous")
+        }
+        expect(counts.invoice).toBe(1)
+        expect(nwc.submitted).toEqual([retained.invoice!])
+        expect(nwc.attempts).toHaveLength(1)
+        expect(nwc.attempts[0]?.idempotencyKey).toBe(
+          retained.walletPaymentAttemptId
+        )
+      } finally {
+        nwc.dispose()
+      }
+    }
+  )
+
   for (const change of ["removal", "session", "expiry", "none"] as const) {
     it(`rechecks ${change} after real WebLN enable before submitting`, async () => {
       await observeProfile(JSON.stringify({ lud16: SAVED_ADDRESS }))
