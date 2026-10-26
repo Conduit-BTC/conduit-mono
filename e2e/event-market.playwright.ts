@@ -8428,7 +8428,10 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
   try {
-    await retry.click()
+    await expect(retry).toBeVisible()
+    await expect(retry).toBeEnabled()
+    // Exercise the native button without the pointer-delivery gap seen in WebKit.
+    await retry.press("Enter")
     await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
     await pendingRetry.waitFor({ state: "hidden" })
     await expect(publishedNotice).toBeVisible()
