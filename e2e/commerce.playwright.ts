@@ -953,6 +953,9 @@ test("E2E-COM-01..06 buyer and merchant settle once across reload @commerce", as
         return `${url.pathname}?q=${url.searchParams.get("q")}`
       })
       .toBe(`/${merchantNpub}?q=${productTitle}`)
+    await expect(
+      buyerPage.getByRole("heading", { name: merchantName, exact: true })
+    ).toBeVisible()
     phase("store_ready")
     recordSmokeFailureContext(testInfo, "commerce_store_navigation_completed")
     const storeUrl = `${marketUrl}/${merchantNpub}`

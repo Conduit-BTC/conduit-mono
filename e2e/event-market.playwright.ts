@@ -1749,6 +1749,9 @@ async function createAssignedPickupOrder(
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  await expect(
+    page.getByRole("heading", { name: "Orders", exact: true })
+  ).toBeVisible()
   const orderMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -4995,6 +4998,9 @@ test("event shopping keeps pickup-only choices and merchant profile navigation @
         new URL(page.url()).pathname === `/${nip19.npubEncode(MERCHANT_PUBKEY)}`
     )
     .toBe(true)
+  await expect(
+    page.getByRole("heading", { name: "Choice merchant", exact: true })
+  ).toBeVisible()
   await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
   await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
   await expect(
@@ -5278,6 +5284,11 @@ for (const retention of ["screen", "file"] as const) {
         /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
       ).toBe(true)
       expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      // The Orders component must commit before starting a new document.
+      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
       receiptStage = "code-verification"
       await gotoAs(page, merchantUrl, "/orders", "merchant", {
         order: order.id,
@@ -8382,10 +8393,105 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   )
   const pendingRetry = retry.and(page.locator(":disabled"))
-  await retry.click()
-  await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
-  await pendingRetry.waitFor({ state: "hidden" })
-  await expect(publishedNotice).toBeVisible()
+  const retryObservation = await page.evaluateHandle((unavailableKey) => {
+    const seen = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      pendingObserved: false,
+      publishedObserved: false,
+      publicationErrorObserved: false,
+    }
+    const trigger = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) =>
+          button.textContent?.trim() === "Retry acceptance publication"
+      )
+    const observe = () => {
+      seen.pendingObserved ||= trigger()?.disabled === true
+      seen.publishedObserved ||= [
+        ...document.querySelectorAll('[role="status"]'),
+      ].some(
+        (status) =>
+          status.textContent?.trim() === "Accepted inventory updates published."
+      )
+      seen.publicationErrorObserved ||= [
+        ...document.querySelectorAll('[role="alert"]'),
+      ].some((alert) =>
+        alert.textContent?.includes(
+          "Acceptance remains saved. Publication could not finish;"
+        )
+      )
+    }
+    const isTrigger = (event: Event) =>
+      event.target instanceof Node && trigger()?.contains(event.target) === true
+    const down = (event: Event) => {
+      if (isTrigger(event)) seen.pointerDownOnTrigger = true
+    }
+    const up = (event: Event) => {
+      if (isTrigger(event)) seen.pointerUpOnTrigger = true
+    }
+    const click = (event: Event) => {
+      if (isTrigger(event)) seen.clickOnTrigger = true
+    }
+    document.addEventListener("pointerdown", down, true)
+    document.addEventListener("pointerup", up, true)
+    document.addEventListener("click", click, true)
+    const observer = new MutationObserver(observe)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    })
+    observe()
+    return {
+      read() {
+        observe()
+        return {
+          observationAvailable: true,
+          ...seen,
+          signerDenied: localStorage.getItem(unavailableKey) === "1",
+          signerAttempts:
+            (
+              window as typeof window & {
+                __conduitSyntheticSignAttempts?: number
+              }
+            ).__conduitSyntheticSignAttempts ?? 0,
+          retryPresent: !!trigger(),
+          retryEnabled: !!trigger() && !trigger()!.disabled,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", down, true)
+        document.removeEventListener("pointerup", up, true)
+        document.removeEventListener("click", click, true)
+      },
+    }
+  }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
+  try {
+    await retry.click()
+    await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
+    await pendingRetry.waitFor({ state: "hidden" })
+    await expect(publishedNotice).toBeVisible()
+  } catch (error) {
+    let safe: Record<string, unknown> = { observationAvailable: false }
+    try {
+      safe = await retryObservation.evaluate((observation) =>
+        observation.read()
+      )
+    } catch {
+      /* Retain the original failure if the page is unavailable. */
+    }
+    recordSmokeDiagnostic(test.info(), "inventory-publication-retry", safe)
+    throw error
+  } finally {
+    await retryObservation
+      .evaluate((observation) => observation.dispose())
+      .catch(() => {})
+    await retryObservation.dispose()
+  }
   const state = await page.evaluate(
     async ({ root, coordinate, orderId }) => {
       const { db } = await import(`${root}/db/index.ts`)

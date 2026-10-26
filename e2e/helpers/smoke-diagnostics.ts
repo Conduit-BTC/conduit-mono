@@ -605,6 +605,22 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         draftKeyState: ["absent", "one", "multiple", "unavailable"],
       },
     },
+    "inventory-publication-retry": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        observationAvailable: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        pendingObserved: "boolean",
+        publishedObserved: "boolean",
+        publicationErrorObserved: "boolean",
+        signerDenied: "boolean",
+        retryPresent: "boolean",
+        retryEnabled: "boolean",
+        signerAttempts: "number",
+      },
+    },
     "manual-checkout-stop": {
       file: "e2e/manual-checkout-invoice.playwright.ts",
       fields: {
@@ -1237,6 +1253,7 @@ export function recordSmokeDiagnostic(
     | "merchant-image-reload"
     | "merchant-image-dialog-open"
     | "manual-checkout-stop"
+    | "inventory-publication-retry"
     | "commerce-inbox-reconnect"
     | "commerce-inbox-self-copy"
     | "router-retirement"
