@@ -70,6 +70,7 @@ const mobileTestFiles = [
 const responsiveCoverageFiles = [
   "**/local-key-signer.playwright.ts",
   "**/local-key-clipboard.playwright.ts",
+  "**/wallet-cash-app.playwright.ts",
   "**/checkout-recovery-storage.playwright.ts",
   "**/event-market.playwright.ts",
   "**/event-market-discovery.playwright.ts",

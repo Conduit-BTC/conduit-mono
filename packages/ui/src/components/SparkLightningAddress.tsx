@@ -74,22 +74,40 @@ export function SparkLightningAddress({
         "locked",
       ].includes(value.reason))
   return (
-    <div className="grid gap-2 rounded-lg border border-[var(--border)] p-3">
-      <p className="text-sm font-medium">Lightning address</p>
-      <p role="status" className="text-sm text-[var(--text-secondary)]">
-        {walletAddressStatus(value)}
-      </p>
-      <p className="text-xs text-[var(--text-secondary)]">
-        You can create a Lightning invoice below while address setup is
-        unavailable.
-      </p>
+    <div className="grid min-w-0 gap-3 text-center">
       {verified && (
-        <div role="img" aria-label="Reusable Lightning address QR code">
+        <div
+          role="img"
+          aria-label="Reusable Lightning address QR code"
+          className="mx-auto size-56 max-w-full"
+        >
           <QRCodeSVG
             value={encodeLnurl(value.lnurl).toUpperCase()}
-            size={160}
+            size={224}
+            marginSize={4}
+            className="!size-full"
           />
         </div>
+      )}
+      <div>
+        {!verified && (
+          <p className="text-sm text-[var(--text-secondary)]">
+            Lightning address
+          </p>
+        )}
+        <p role="status" className="mt-1 break-words text-sm">
+          {walletAddressStatus(value)}
+        </p>
+      </div>
+      {value && !verified && (
+        <p className="text-sm text-[var(--text-secondary)]">
+          You can still receive with a Lightning invoice.
+        </p>
+      )}
+      {verified && (
+        <p className="text-sm text-[var(--text-secondary)]">
+          Scan with a Lightning wallet to send sats.
+        </p>
       )}
       {verified && (
         <Button
@@ -103,7 +121,7 @@ export function SparkLightningAddress({
             }
           }}
         >
-          {copyStatus === "copied" ? "Copied" : "Copy Lightning address"}
+          {copyStatus === "copied" ? "Copied" : "Copy address"}
         </Button>
       )}
       {copyStatus === "error" && (
