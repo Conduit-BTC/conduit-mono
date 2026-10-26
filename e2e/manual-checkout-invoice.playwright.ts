@@ -71,6 +71,37 @@ for (const scenario of scenarios) {
     page,
   }) => {
     test.setTimeout(60_000)
+    let releaseRecovery = () => {}
+    if (!scenario.stop && !scenario.legacyPublicZap) {
+      const recoveryBarrier = new Promise<void>((resolve) => {
+        releaseRecovery = resolve
+      })
+      await page.exposeFunction(
+        "__manualCheckoutRecoveryBarrier",
+        () => recoveryBarrier
+      )
+      await page.route(
+        (url) =>
+          url.pathname.endsWith("/src/routes/checkout.tsx") &&
+          url.searchParams.get("tsr-split") === "component",
+        async (route) => {
+          const response = await route.fetch()
+          const body = await response.text()
+          const seam =
+            "async function resolveCheckoutOrderAttemptAfterPaymentProgress(orderId) {"
+          if (body.split(seam).length !== 2)
+            throw new Error("Checkout recovery fixture seam changed")
+          // Hold automatic completion while checking the pending recovery layout.
+          await route.fulfill({
+            response,
+            body: body.replace(
+              seam,
+              seam + "await window.__manualCheckoutRecoveryBarrier();"
+            ),
+          })
+        }
+      )
+    }
     const buyerSecret = generateSecretKey()
     const buyerPubkey = getPublicKey(buyerSecret)
     const merchantSecret = generateSecretKey()
@@ -343,21 +374,25 @@ for (const scenario of scenarios) {
     ).toHaveAttribute("href", `lightning:${generatedInvoice}`)
     await expect(page).toHaveURL(/[?&]focus=payment(?:&|$)/)
     if (!scenario.stop && !scenario.legacyPublicZap) {
-      await page.setViewportSize({ width: 390, height: 844 })
-      await page.evaluate(() => window.scrollTo(0, 0))
-      const walletAction = page.getByRole("link", {
-        name: "Open Lightning wallet",
-        exact: true,
-      })
-      await expect(walletAction).toBeInViewport()
-      const recoveryAction = page.getByRole("button", {
-        name: "Finish saving this order",
-        exact: true,
-      })
-      await expect(recoveryAction).toBeVisible()
-      const walletBounds = await walletAction.boundingBox()
-      const recoveryBounds = await recoveryAction.boundingBox()
-      expect(recoveryBounds!.y).toBeGreaterThan(walletBounds!.y)
+      try {
+        await page.setViewportSize({ width: 390, height: 844 })
+        await page.evaluate(() => window.scrollTo(0, 0))
+        const walletAction = page.getByRole("link", {
+          name: "Open Lightning wallet",
+          exact: true,
+        })
+        await expect(walletAction).toBeInViewport()
+        const recoveryAction = page.getByRole("button", {
+          name: "Finish saving this order",
+          exact: true,
+        })
+        await expect(recoveryAction).toBeVisible()
+        const walletBounds = await walletAction.boundingBox()
+        const recoveryBounds = await recoveryAction.boundingBox()
+        expect(recoveryBounds!.y).toBeGreaterThan(walletBounds!.y)
+      } finally {
+        releaseRecovery()
+      }
     }
     await expect(
       page.getByRole("button", { name: "Use merchant invoice", exact: true })
