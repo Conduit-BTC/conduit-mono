@@ -2267,12 +2267,10 @@ function ReceiveWalletDialog({
       <DialogContent showCloseButton={!pending} className="max-w-[400px]">
         <DialogHeader className="text-left">
           <DialogTitle className="pr-8">
-            {method === "cash-app"
-              ? "Add funds with Cash App"
-              : "Receive bitcoin"}
+            {method === "cash-app" ? "Add funds with Cash App" : "Receive"}
           </DialogTitle>
           <DialogDescription className="break-words text-sm">
-            {wallet?.label}
+            To {wallet?.label}
           </DialogDescription>
         </DialogHeader>
         {method === "cash-app" ? (
@@ -2298,7 +2296,7 @@ function ReceiveWalletDialog({
                   onPendingChange={setAddressPending}
                 />
                 <Button
-                  variant="outline"
+                  variant="ghost"
                   disabled={pending}
                   onClick={() => setView("amount")}
                 >
@@ -2394,11 +2392,13 @@ function ReceiveWalletDialog({
             )}
           </div>
         )}
-        <DialogFooter>
-          <Button variant="ghost" onClick={close} disabled={pending}>
-            Done
-          </Button>
-        </DialogFooter>
+        {method === "cash-app" && (
+          <DialogFooter>
+            <Button variant="ghost" onClick={close} disabled={pending}>
+              Done
+            </Button>
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   )

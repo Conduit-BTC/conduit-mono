@@ -90,16 +90,23 @@ export function SparkLightningAddress({
         </div>
       )}
       <div>
-        <p className="text-sm text-[var(--text-secondary)]">
-          Lightning address
-        </p>
+        {!verified && (
+          <p className="text-sm text-[var(--text-secondary)]">
+            Lightning address
+          </p>
+        )}
         <p role="status" className="mt-1 break-words text-sm">
           {walletAddressStatus(value)}
         </p>
       </div>
+      {value && !verified && (
+        <p className="text-sm text-[var(--text-secondary)]">
+          You can still receive with a Lightning invoice.
+        </p>
+      )}
       {verified && (
         <p className="text-sm text-[var(--text-secondary)]">
-          Scan with a Lightning wallet to send bitcoin.
+          Scan with a Lightning wallet to send sats.
         </p>
       )}
       {verified && (
@@ -114,7 +121,7 @@ export function SparkLightningAddress({
             }
           }}
         >
-          {copyStatus === "copied" ? "Copied" : "Copy Lightning address"}
+          {copyStatus === "copied" ? "Copied" : "Copy address"}
         </Button>
       )}
       {copyStatus === "error" && (

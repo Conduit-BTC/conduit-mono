@@ -1,4 +1,5 @@
 import path from "node:path"
+import type { AuthContextValue } from "@conduit/core"
 import { expect, test, type Page } from "@playwright/test"
 import { decodeLightningInvoicePaymentHash } from "../packages/core/src/protocol/lightning"
 import { makeSignedBolt11Fixture } from "../tests/support/signed-bolt11-fixture"
@@ -15,6 +16,31 @@ import {
   installRealTestSigner,
   replaceRealTestSigner,
 } from "./helpers/real-nip07-signer"
+
+type FundingFixtureWindow = Window & {
+  __walletProbe: {
+    receiveInvoice: string
+    receiveRequestId: string
+    receiveFee: number
+    receiveObservation: {
+      type: string
+      state: string
+      invoice: string
+      paymentHash: string
+      amountMsats: number
+      settledAt?: number
+    }
+    receiveCalls: number
+    receiveAmount: number
+    checkedRequestId: string
+    balanceSats: number
+  }
+  __fundingCaptures: { copies: string[]; links: boolean[] }
+  __controlledWalletAuth: Pick<
+    AuthContextValue,
+    "accountPubkey" | "connect" | "disconnect"
+  >
+}
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
@@ -51,9 +77,11 @@ async function setInvoice(page: Page, secondsAgo = 0) {
     hrp: "lnbc400u",
     createdAt: Math.floor(Date.now() / 1000) - secondsAgo,
   })
+  const hash = decodeLightningInvoicePaymentHash(invoice)
+  if (!hash) throw new Error("Invalid funding invoice fixture")
   await page.evaluate(
     ({ invoice, hash }) => {
-      const probe = (window as any).__walletProbe
+      const probe = (window as unknown as FundingFixtureWindow).__walletProbe
       probe.receiveInvoice = invoice
       probe.receiveRequestId = "deposit-request"
       probe.receiveFee = 3
@@ -65,7 +93,7 @@ async function setInvoice(page: Page, secondsAgo = 0) {
         amountMsats: 40_000_000,
       }
       const captures = { copies: [] as string[], links: [] as boolean[] }
-      ;(window as any).__fundingCaptures = captures
+      ;(window as unknown as FundingFixtureWindow).__fundingCaptures = captures
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
@@ -84,7 +112,7 @@ async function setInvoice(page: Page, secondsAgo = 0) {
         }
       })
     },
-    { invoice, hash: decodeLightningInvoicePaymentHash(invoice) }
+    { invoice, hash }
   )
   return invoice
 }
@@ -138,7 +166,9 @@ for (const app of ["market", "merchant"] as const) {
         .click()
       expect(
         await page.evaluate(
-          (invoice) => (window as any).__fundingCaptures.copies[0] === invoice,
+          (invoice) =>
+            (window as unknown as FundingFixtureWindow).__fundingCaptures
+              .copies[0] === invoice,
           invoice
         )
       ).toBe(true)
@@ -155,19 +185,28 @@ for (const app of ["market", "merchant"] as const) {
         .getByText("Use another Lightning wallet", { exact: true })
         .click()
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.receiveCalls)
+        await page.evaluate(
+          () =>
+            (window as unknown as FundingFixtureWindow).__walletProbe
+              .receiveCalls
+        )
       ).toBe(1)
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.receiveAmount)
+        await page.evaluate(
+          () =>
+            (window as unknown as FundingFixtureWindow).__walletProbe
+              .receiveAmount
+        )
       ).toBe(40000)
       expect(
         await page.evaluate(
           () =>
-            (window as any).__walletProbe.checkedRequestId === "deposit-request"
+            (window as unknown as FundingFixtureWindow).__walletProbe
+              .checkedRequestId === "deposit-request"
         )
       ).toBe(true)
       await page.evaluate(() => {
-        const probe = (window as any).__walletProbe
+        const probe = (window as unknown as FundingFixtureWindow).__walletProbe
         probe.receiveObservation = {
           ...probe.receiveObservation,
           state: "settled",
@@ -220,7 +259,7 @@ for (const app of ["market", "merchant"] as const) {
           })
       }
       await page.evaluate(() => {
-        const probe = (window as any).__walletProbe
+        const probe = (window as unknown as FundingFixtureWindow).__walletProbe
         probe.receiveObservation.amountMsats = 40_000_000
       })
       await page
@@ -231,7 +270,11 @@ for (const app of ["market", "merchant"] as const) {
       ).toBeVisible()
       await expect(cash).toHaveCount(0)
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.receiveCalls)
+        await page.evaluate(
+          () =>
+            (window as unknown as FundingFixtureWindow).__walletProbe
+              .receiveCalls
+        )
       ).toBe(1)
     } finally {
       disposeRuntimeSignerIdentity(identity)
@@ -264,7 +307,9 @@ test("Cash App expiry and account replacement cannot reuse stale funding control
         Date.now = () => expiredNow
         try {
           link.click()
-          return (window as any).__fundingCaptures.links.at(-1)
+          return (
+            window as unknown as FundingFixtureWindow
+          ).__fundingCaptures.links.at(-1)
         } finally {
           Date.now = originalNow
         }
@@ -282,18 +327,26 @@ test("Cash App expiry and account replacement cannot reuse stale funding control
     ).toHaveCount(0)
     await page.clock.setFixedTime(new Date())
     await page.evaluate(async () => {
-      await (window as any).__controlledWalletAuth.disconnect()
+      await (
+        window as unknown as FundingFixtureWindow
+      ).__controlledWalletAuth.disconnect()
     })
     await expect
       .poll(() =>
         page.evaluate(
-          () => (window as any).__controlledWalletAuth.accountPubkey
+          () =>
+            (window as unknown as FundingFixtureWindow).__controlledWalletAuth
+              .accountPubkey
         )
       )
       .toBeNull()
     await replaceRealTestSigner(page, replacement)
     await page.evaluate(async () => {
-      await (window as any).__controlledWalletAuth.connect({ method: "nip07" })
+      await (
+        window as unknown as FundingFixtureWindow
+      ).__controlledWalletAuth.connect({
+        method: "nip07",
+      })
     })
     await expect(
       page.getByRole("dialog", { name: "Add funds with Cash App" })
@@ -314,7 +367,7 @@ for (const app of ["market", "merchant"] as const) {
     const identity = await begin(page, app, false)
     try {
       const dialog = page.getByRole("dialog", {
-        name: "Receive bitcoin",
+        name: "Receive",
         exact: true,
       })
       const qr = dialog.getByRole("img", {
@@ -375,7 +428,7 @@ for (const app of ["market", "merchant"] as const) {
           mask: [qr, dialog.locator('[role="status"]')],
           animations: "disabled",
         })
-      await dialog.getByRole("button", { name: "Done", exact: true }).click()
+      await dialog.getByRole("button", { name: "Close", exact: true }).click()
       const card = page.getByRole("article", { name: / wallet$/ }).first()
       await expect(
         card.getByLabel("Desired name", { exact: true })
