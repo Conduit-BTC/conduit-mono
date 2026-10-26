@@ -265,7 +265,46 @@ for (const app of ["market", "merchant"] as const) {
       expect(privateBalance.snapshot().balanceReads).toBe(0)
       expect(nwc.snapshot().counters.payInvoice).toBe(0)
       expect(nwc.snapshot().counters.makeInvoice).toBe(0)
-      await page.goto(`http://127.0.0.1:${port}/products`)
+      // Exercise route cleanup without destroying the document's timers.
+      await page.evaluate(() => {
+        Reflect.set(window, "__walletBalanceExitDocument", document)
+      })
+      if (app === "market") {
+        await page
+          .getByRole("link", { name: "Conduit Market home", exact: true })
+          .click()
+      } else {
+        await page
+          .getByRole("button", { name: "Open menu", exact: true })
+          .click()
+        const navigation = page.getByRole("dialog", {
+          name: "Conduit Merchant navigation",
+          exact: true,
+        })
+        await navigation
+          .getByRole("link", { name: "Products", exact: true })
+          .click()
+        await expect(navigation).toBeHidden()
+      }
+      await expect(page).toHaveURL(`http://127.0.0.1:${port}/products`)
+      if (app === "market")
+        await expect(
+          page
+            .getByRole("navigation", { name: "Market browse", exact: true })
+            .getByRole("link", { name: "Products", exact: true })
+        ).toHaveAttribute("aria-current", "page")
+      else
+        await expect(
+          page.getByRole("heading", { name: "Products", exact: true })
+        ).toBeVisible()
+      await expect(
+        page.getByRole("heading", { name: "Wallets", exact: true })
+      ).toHaveCount(0)
+      expect(
+        await page.evaluate(
+          () => Reflect.get(window, "__walletBalanceExitDocument") === document
+        )
+      ).toBe(true)
       const readsAfterLeaving = nwc.snapshot().balanceReads
       await page.clock.fastForward(60_001)
       expect(nwc.snapshot().balanceReads).toBe(readsAfterLeaving)
