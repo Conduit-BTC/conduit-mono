@@ -17,7 +17,8 @@ import { SessionSigner } from "../packages/core/src/protocol/session-signer"
 
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
 afterEach(() => {
-  if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
+  if (originalWindow)
+    Object.defineProperty(globalThis, "window", originalWindow)
   else Reflect.deleteProperty(globalThis, "window")
 })
 
@@ -162,7 +163,9 @@ for (const operation of operations) {
       it(`prevents provider dispatch after ${change}`, async () => {
         const f = await fixture(change === "timeout" ? 20 : 1000)
         f.holdIdentity()
-        const outcome = f.operations[operation]().catch((error: unknown) => error)
+        const outcome = f.operations[operation]().catch(
+          (error: unknown) => error
+        )
         await f.identityEntered.promise
         if (change === "logout") {
           expect(
@@ -231,7 +234,9 @@ for (const operation of operations) {
       it(`fences a late result after already-dispatched ${change}`, async () => {
         const f = await fixture(change === "timeout" ? 20 : 1000)
         f.holdDispatch()
-        const outcome = f.operations[operation]().catch((error: unknown) => error)
+        const outcome = f.operations[operation]().catch(
+          (error: unknown) => error
+        )
         await f.dispatched.promise
         if (change === "cancellation") f.signer.invalidateLocal()
         expect(await outcome).toMatchObject({
