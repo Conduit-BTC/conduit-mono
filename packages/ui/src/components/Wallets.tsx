@@ -25,7 +25,6 @@ import {
 import {
   formatBitcoinBaseUnits,
   type AuthContextValue,
-  type BreezAddressState,
   type BtcUsdRateQuote,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
@@ -33,6 +32,7 @@ import {
   isAmountlessLightningInvoice,
   type WalletDescriptor,
 } from "@conduit/core"
+import type { WalletLightningAddressState } from "@conduit/core/wallets/resolve-spark-lightning-address"
 import {
   AlertDialog,
   AlertDialogContent,
@@ -344,6 +344,12 @@ export function Wallets({
                   key={`${auth.accountPubkey}:${auth.authGeneration}`}
                   title="Wallet list"
                   profileAddress={profileAddress}
+                  profileConfirmed={addressController.confirmed}
+                  onManageAddress={(trigger) => {
+                    profileTriggerRef.current = trigger
+                    addressController.onDismiss()
+                    setProfileReviewOpen(true)
+                  }}
                   onPublicAddress={
                     auth.accountPubkey
                       ? (address, trigger) => {
@@ -416,6 +422,9 @@ export function Wallets({
 
         <div className="px-0 sm:px-8">
           <ProfileLightningAddressEditor
+            dialogOnly={wallets.portableWallets.some(
+              (wallet) => wallet.providerId === "spark"
+            )}
             key={`${auth.accountPubkey}:${auth.authGeneration}`}
             controller={addressController}
             returnFocusRef={profileTriggerRef}
@@ -622,6 +631,8 @@ function RecoverySyncNotice({
 function WalletSection({
   title,
   profileAddress,
+  profileConfirmed,
+  onManageAddress,
   description,
   empty,
   loading,
@@ -651,6 +662,8 @@ function WalletSection({
   onPublicAddress?: (address: string, trigger: HTMLElement) => void
   title: string
   profileAddress: string | null
+  profileConfirmed: boolean
+  onManageAddress(trigger: HTMLElement): void
   description: string
   empty: string
   loading: boolean
@@ -682,6 +695,8 @@ function WalletSection({
       key={wallet.id}
       wallet={wallet}
       profileAddress={profileAddress}
+      profileConfirmed={profileConfirmed}
+      onManageAddress={onManageAddress}
       displayLabel={displayLabels.get(wallet.id) ?? wallet.label}
       runtime={runtime[wallet.id] ?? lockedRuntime()}
       nwcSnapshot={nwcSnapshots[wallet.id]}
@@ -749,6 +764,8 @@ function WalletSectionLoading({ title }: { title: string }) {
 function WalletRow({
   wallet,
   profileAddress,
+  profileConfirmed,
+  onManageAddress,
   displayLabel,
   runtime,
   nwcSnapshot,
@@ -775,6 +792,8 @@ function WalletRow({
   onPublicAddress?: (address: string, trigger: HTMLElement) => void
   wallet: WalletDescriptor
   profileAddress: string | null
+  profileConfirmed: boolean
+  onManageAddress(trigger: HTMLElement): void
   displayLabel: string
   runtime: WalletRuntimeState
   nwcSnapshot?: NwcSessionSnapshot
@@ -800,9 +819,8 @@ function WalletRow({
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [addressState, setAddressState] = useState<BreezAddressState | null>(
-    null
-  )
+  const [addressState, setAddressState] =
+    useState<WalletLightningAddressState | null>(null)
   const addressObservation = useRef<AbortController | null>(null)
   const menuTrigger = useRef<HTMLButtonElement>(null)
   const isSpark = wallet.providerId === "spark"
@@ -850,29 +868,37 @@ function WalletRow({
           false,
           undefined,
           undefined,
-          { priority, signal: observation.signal }
+          {
+            priority,
+            signal: observation.signal,
+            lookupAvailable: ready,
+            onSavedAddress: (state) => {
+              if (!observation.signal.aborted) setAddressState(state)
+            },
+          }
         )
         if (!observation.signal.aborted) setAddressState(state)
       } catch (error) {
         if (observation.signal.aborted) return
         if (priority === "foreground") throw error
-        setAddressState({
-          status: "unavailable",
-          reason: "provider_unavailable",
-        })
+        setAddressState((previous) =>
+          previous?.status === "saved"
+            ? { ...previous, availability: "unavailable" }
+            : { status: "unavailable", reason: "provider_unavailable" }
+        )
       }
     },
-    [addressResolver, wallet.id]
+    [addressResolver, wallet.id, ready]
   )
   const acceptActivatedAddress = useCallback(
-    (state: Extract<BreezAddressState, { status: "registered" }>) => {
+    (state: Extract<WalletLightningAddressState, { status: "registered" }>) => {
       addressObservation.current?.abort()
       setAddressState(state)
     },
     []
   )
   useEffect(() => {
-    if (!isSpark || !ready || !addressResolver) return
+    if (!isSpark || !addressResolver) return
     void refreshReceivingAddress()
     return () => {
       addressObservation.current?.abort()
@@ -1194,6 +1220,10 @@ function WalletRow({
           {isSpark && addressResolver && (
             <div className="min-w-0 border-t border-[var(--border)] pt-6 md:border-l md:border-t-0 md:pl-7 md:pt-0">
               <WalletReceivingAddress
+                profileAddress={profileAddress}
+                profileConfirmed={profileConfirmed}
+                onManageAddress={onManageAddress}
+                onPublicAddress={onPublicAddress}
                 state={addressState}
                 onActivated={acceptActivatedAddress}
                 walletId={wallet.id}
@@ -1221,7 +1251,7 @@ function WalletRow({
           </p>
         )}
       </article>
-      {receivingAddress && onPublicAddress && (
+      {!isSpark && receivingAddress && onPublicAddress && (
         <div
           data-wallet-profile-row
           tabIndex={-1}
@@ -1316,6 +1346,10 @@ function WalletAddressActions({
 }
 
 function WalletReceivingAddress({
+  profileAddress,
+  profileConfirmed,
+  onManageAddress,
+  onPublicAddress,
   walletId,
   onPendingChange,
   ready,
@@ -1325,16 +1359,26 @@ function WalletReceivingAddress({
   requestAddressName,
   accountPubkey,
 }: {
+  profileAddress: string | null
+  profileConfirmed: boolean
+  onManageAddress(trigger: HTMLElement): void
+  onPublicAddress?: (address: string, trigger: HTMLElement) => void
   requestAddressName?: UseWalletsReturn["requestAddressName"]
   accountPubkey?: string | null
-  state: BreezAddressState | null
-  onActivated(state: Extract<BreezAddressState, { status: "registered" }>): void
+  state: WalletLightningAddressState | null
+  onActivated(
+    state: Extract<WalletLightningAddressState, { status: "registered" }>
+  ): void
   walletId: string
   onPendingChange(pending: boolean): void
   ready: boolean
   refresh(): Promise<void>
 }) {
-  const [feedback, setFeedback] = useState("")
+  const address =
+    state?.status === "saved" ||
+    (state?.status === "registered" && state.publicLookup === "verified")
+      ? state.address
+      : null
   return (
     <div className="grid min-w-0 gap-3 text-sm">
       <h4 className="text-pretty text-base font-semibold">Lightning address</h4>
@@ -1342,15 +1386,79 @@ function WalletReceivingAddress({
         data-wallet-address
         className="break-all text-base text-[var(--text-primary)]"
       >
-        {state?.status === "registered" && state.publicLookup === "verified"
-          ? state.address
+        {address
+          ? address
           : ready
             ? walletAddressStatus(state)
             : "Open wallet to check"}
       </p>
+      {address && (
+        <WalletAddressActions address={address} showAddress={false} />
+      )}
+      <WalletAddressAvailability
+        state={state}
+        ready={ready}
+        refresh={refresh}
+        onPendingChange={onPendingChange}
+      />
+      {accountPubkey && (
+        <WalletProfileAddress
+          address={address}
+          verifiedAddress={
+            state?.status === "registered" && state.publicLookup === "verified"
+              ? state.address
+              : null
+          }
+          profileAddress={profileAddress}
+          profileConfirmed={profileConfirmed}
+          onPublicAddress={onPublicAddress}
+          onManageAddress={onManageAddress}
+        />
+      )}
+      {ready && requestAddressName && accountPubkey && (
+        <AddressNameRequestForm
+          hideCompleted
+          key={`${accountPubkey}:${walletId}`}
+          ownerPubkey={accountPubkey}
+          walletId={walletId}
+          submit={requestAddressName}
+          onActivated={onActivated}
+        />
+      )}
+      {state?.status === "registered" && state.publicLookup !== "verified" && (
+        <p className="text-xs">
+          Receiving availability needs verification. Open Receive to retry.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function WalletAddressAvailability({
+  state,
+  ready,
+  refresh,
+  onPendingChange,
+}: {
+  state: WalletLightningAddressState | null
+  ready: boolean
+  refresh(): Promise<void>
+  onPendingChange(pending: boolean): void
+}) {
+  const [feedback, setFeedback] = useState("")
+  return (
+    <>
+      {state?.status === "saved" && (
+        <p role="status" className="text-sm text-[var(--text-secondary)]">
+          {walletAddressStatus(state)}
+        </p>
+      )}
       {ready &&
-        state?.status === "unavailable" &&
-        !["unconfigured", "unsupported_network"].includes(state.reason) && (
+        ((state?.status === "saved" && state.availability !== "checking") ||
+          (state?.status === "unavailable" &&
+            !["unconfigured", "unsupported_network"].includes(
+              state.reason
+            ))) && (
           <Button
             size="sm"
             variant="outline"
@@ -1366,25 +1474,79 @@ function WalletReceivingAddress({
             Retry receiving address
           </Button>
         )}
-      {state?.status === "registered" && state.publicLookup === "verified" && (
-        <WalletAddressActions address={state.address} showAddress={false} />
-      )}
       {feedback && <p role="status">{feedback}</p>}
-      {ready && requestAddressName && accountPubkey && (
-        <AddressNameRequestForm
-          key={`${accountPubkey}:${walletId}`}
-          ownerPubkey={accountPubkey}
-          walletId={walletId}
-          submit={requestAddressName}
-          onActivated={onActivated}
-        />
+    </>
+  )
+}
+
+function WalletProfileAddress({
+  address,
+  verifiedAddress,
+  profileAddress,
+  profileConfirmed,
+  onPublicAddress,
+  onManageAddress,
+}: {
+  address: string | null
+  verifiedAddress: string | null
+  profileAddress: string | null
+  profileConfirmed: boolean
+  onPublicAddress?: (address: string, trigger: HTMLElement) => void
+  onManageAddress(trigger: HTMLElement): void
+}) {
+  const inUse =
+    !!address && profileAddress?.toLowerCase() === address.toLowerCase()
+  return (
+    <>
+      <p
+        data-wallet-profile-status
+        className={
+          profileConfirmed && inUse
+            ? "flex items-center gap-1 text-[var(--success-text)]"
+            : "text-[var(--text-secondary)]"
+        }
+      >
+        {profileConfirmed && inUse && (
+          <Check className="size-4" aria-hidden="true" />
+        )}
+        {!profileConfirmed ? (
+          "Checking your Nostr profile…"
+        ) : inUse ? (
+          "Used on your Nostr profile"
+        ) : profileAddress ? (
+          <>
+            Your Nostr profile uses{" "}
+            <span className="break-all">{profileAddress}</span>.
+          </>
+        ) : (
+          "No Nostr receiving address set."
+        )}
+      </p>
+      {profileConfirmed && !inUse && verifiedAddress && onPublicAddress && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="justify-self-start"
+          onClick={(event) =>
+            onPublicAddress(verifiedAddress, event.currentTarget)
+          }
+        >
+          Use this address
+        </Button>
       )}
-      {state?.status === "registered" && state.publicLookup !== "verified" && (
-        <p className="text-xs">
-          Receiving availability needs verification. Open Receive to retry.
-        </p>
-      )}
-    </div>
+      <details className="text-[var(--text-secondary)]">
+        <summary className="cursor-pointer text-sm">Manage address</summary>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="mt-2 h-auto justify-start px-0 text-left whitespace-normal"
+          onClick={(event) => onManageAddress(event.currentTarget)}
+        >
+          Change public receiving address{" "}
+          <ArrowRight className="size-4 shrink-0" aria-hidden="true" />
+        </Button>
+      </details>
+    </>
   )
 }
 
@@ -1567,7 +1729,9 @@ function PortableWalletDialog({
     useState<WalletDescriptor | null>(null)
   const [makeMain, setMakeMain] = useState(false)
   const [phase, setPhase] = useState<WalletSetupPhase>("checking")
-  const [address, setAddress] = useState<BreezAddressState | null>(null)
+  const [address, setAddress] = useState<WalletLightningAddressState | null>(
+    null
+  )
   const [recoveredFromRelay, setRecoveredFromRelay] = useState(false)
   const [firstWallet, setFirstWallet] = useState(false)
   const [setupSettled, setSetupSettled] = useState(false)

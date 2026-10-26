@@ -1,5 +1,5 @@
 import { useState } from "react"
-import type { BreezAddressState } from "@conduit/core"
+import type { WalletLightningAddressState } from "@conduit/core/wallets/resolve-spark-lightning-address"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { Button } from "../index"
 import { walletAddressStatus } from "./wallet-address-status"
@@ -13,9 +13,9 @@ export function WalletAddressSetup({
   onPendingChange,
 }: {
   walletId: string
-  value: BreezAddressState | null
+  value: WalletLightningAddressState | null
   resolve: UseWalletsReturn["getSparkLightningAddress"]
-  onChange(value: BreezAddressState): void
+  onChange(value: WalletLightningAddressState): void
   onPendingChange(pending: boolean): void
 }) {
   const [pending, setPending] = useState(false)
@@ -29,6 +29,9 @@ export function WalletAddressSetup({
     ].includes(value.reason)
   return (
     <div className="grid gap-2 text-sm">
+      {value?.status === "saved" && (
+        <p className="break-all">{value.address}</p>
+      )}
       <p role="status" className="text-pretty">
         {walletAddressStatus(value)}
       </p>
@@ -47,10 +50,14 @@ export function WalletAddressSetup({
                 })
               )
             } catch {
-              onChange({
-                status: "unavailable",
-                reason: "provider_unavailable",
-              })
+              onChange(
+                value?.status === "saved"
+                  ? { ...value, availability: "unavailable" }
+                  : {
+                      status: "unavailable",
+                      reason: "provider_unavailable",
+                    }
+              )
             } finally {
               setPending(false)
               onPendingChange(false)

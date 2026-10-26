@@ -7,6 +7,8 @@ import { bytesToHex } from "../packages/core/node_modules/@noble/hashes/utils.js
 import { addressNameRequestMessage } from "../packages/core/src/wallets/address-name-request"
 import { createAddressRequestWorkflow } from "../packages/core/src/wallets/address-request-workflow"
 import { mergeAddressRequestRecord } from "../packages/core/src/wallets/address-request-record"
+import { resolveSparkLightningAddress } from "../packages/core/src/wallets/resolve-spark-lightning-address"
+import { savedWalletAddress } from "../packages/core/src/wallets/saved-wallet-address"
 import {
   PortableWalletSync,
   type PortableWalletAccount,
@@ -615,7 +617,7 @@ describe("address progress in the complete wallet", () => {
   })
 
   for (const later of ["alice@breez.tips", "later@conduit.cash"])
-    it(`preserves a newer observation received during explicit persistence: ${later.endsWith("breez.tips") ? "same" : "different"} value`, async () => {
+    it(`does not let a newer provider alias replace an explicit selection: ${later.endsWith("breez.tips") ? "same" : "different"} value`, async () => {
       const f = fixture(),
         a = f.device(),
         wallet = await a.service.import(f.bundle(), "Address wallet")
@@ -634,7 +636,7 @@ describe("address progress in the complete wallet", () => {
       )
       await a.service.sync({ priority: "foreground" })
       expect((await a.service.get(wallet.walletId)).lightningAddress).toBe(
-        later
+        "alice@conduit.cash"
       )
     })
 
@@ -765,6 +767,54 @@ describe("address progress in the complete wallet", () => {
     const restored = (await a.service.get(wallet.walletId)).addressRequest!
     expect(restored.phase).toBe("complete")
     expect(restored.accountProof).toBe(proof.accountProof)
+    // Independent cold restore uses the complete record even if the provider
+    // is unavailable. No default-domain observation or new event is needed.
+    const cold = f.device()
+    await cold.service.sync()
+    const before = cold.account().wallets[wallet.walletId]!.event.id
+    const calls: unknown[] = []
+    const displayed: string[] = []
+    const state = await resolveSparkLightningAddress({
+      walletId: wallet.walletId,
+      loadSavedAddress: async () =>
+        savedWalletAddress(await cold.service.get(wallet.walletId)),
+      onSavedAddress: (state) => displayed.push(state.address),
+      manager: {
+        getLightningAddress: async (...args) => {
+          calls.push(args)
+          expect(displayed).toEqual(["alice@conduit.cash"])
+          return { status: "unavailable", reason: "provider_unavailable" }
+        },
+      },
+      assertCurrent() {},
+      onRegistered: (address) =>
+        cold.service.rememberLightningAddress(wallet.walletId, address),
+    })
+    expect(state).toMatchObject({
+      status: "saved",
+      address: "alice@conduit.cash",
+      availability: "unavailable",
+    })
+    expect(calls).toEqual([[wallet.walletId, false, undefined, "conduit.cash"]])
+    // Even a separate/late source cannot write a fallback over this record.
+    cold.service.rememberLightningAddress(wallet.walletId, "alice@breez.tips")
+    await cold.service.sync()
+    expect(cold.account().wallets[wallet.walletId]!.event.id).toBe(before)
+    const other = f.device()
+    await other.service.sync()
+    expect((await other.service.get(wallet.walletId)).lightningAddress).toBe(
+      "alice@conduit.cash"
+    )
+    expect((await other.service.get(wallet.walletId)).addressRequest).toEqual(
+      restored
+    )
+    // Historical contradictory metadata does not demote completed selection.
+    await other.service.update(wallet.walletId, {
+      lightningAddress: "alice@breez.tips",
+    })
+    expect(savedWalletAddress(await other.service.get(wallet.walletId))).toBe(
+      "alice@conduit.cash"
+    )
   })
 })
 

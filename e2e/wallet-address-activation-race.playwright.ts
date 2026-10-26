@@ -262,9 +262,9 @@ for (const mode of ["automatic", "retry"] as const) {
             exact: true,
           })
           .click()
-        await expect(card).toContainText(
-          "Your address is activated and your public profile is updated."
-        )
+        await expect(
+          card.getByLabel("Desired name", { exact: true })
+        ).toHaveCount(0)
         await expect(card.locator("[data-wallet-address]")).toHaveText(
           "fixture@conduit.cash"
         )

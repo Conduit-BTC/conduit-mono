@@ -205,8 +205,8 @@ for (const app of ["market", "merchant"] as const) {
     ).toHaveCount(0)
     expect(await counts()).toEqual({ suggestions: 1, saves: 1 })
     // A failed observation does not erase the separately published profile.
-    await expect(
-      surface.getByRole("region", { name: "Nostr profile receiving address" })
-    ).toContainText("fixture@conduit.cash")
+    await expect(card.locator("[data-wallet-profile-status]")).toContainText(
+      "fixture@conduit.cash"
+    )
   })
 }

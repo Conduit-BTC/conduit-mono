@@ -26,6 +26,7 @@ type ControlledWalletFixtureWindow = Window & {
     lastAccount: number
     failOpen?: boolean
     addressUnavailableReason?: string
+    addressDomains?: string[]
     balanceReads?: number
     delayBalance?: boolean
     releaseBalance?: () => void
@@ -170,8 +171,9 @@ export async function prepareControlledWallet(page: Page) {
           let registered = imported || recovered
           let registrationPending = false
           let selectedName: string | undefined
-          const lookup = async (domain = "breez.tips") =>
-            probe.addressUnavailableReason
+          const lookup = async (domain = "breez.tips") => {
+            ;(probe.addressDomains ??= []).push(domain)
+            return probe.addressUnavailableReason
               ? {
                   status: "unavailable",
                   reason: probe.addressUnavailableReason,
@@ -201,6 +203,7 @@ export async function prepareControlledWallet(page: Page) {
                 : registrationPending
                   ? { status: "unavailable", reason: "registration_pending" }
                   : { status: "absent" }
+          }
           return {
             async disconnect() {
               probe.disconnects++
@@ -310,13 +313,15 @@ export async function prepareControlledWallet(page: Page) {
 export async function installControlledWallet(
   page: Page,
   failRegistration = false,
-  restoredAddress?: string
+  restoredAddress?: string,
+  availability: { failOpen?: boolean; addressUnavailableReason?: string } = {}
 ) {
   await page.evaluate(
-    async ({ failRegistration, modulePath, restoredAddress }) => {
+    async ({ failRegistration, modulePath, restoredAddress, availability }) => {
       const recovery = await import("/@fs" + modulePath)
       Object.assign(window, {
         __walletProbe: {
+          ...availability,
           restoredAddress,
           registrations: 0,
           opens: 0,
@@ -334,6 +339,7 @@ export async function installControlledWallet(
     },
     {
       restoredAddress,
+      availability,
       failRegistration,
       modulePath: path.resolve("packages/core/src/wallets/spark-recovery.ts"),
     }
