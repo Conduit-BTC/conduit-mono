@@ -32,6 +32,119 @@ const playwrightImport = require.resolve("@playwright/test")
 const smokeDiagnosticsImport = resolve("e2e/helpers/smoke-diagnostics.ts")
 
 describe("composed smoke evidence", () => {
+  it("keeps event prepaid confirmation observations private through the real reporter and verifier", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "conduit-event-prepaid-evidence-")
+    )
+    const sentinel = "private-" + crypto.randomUUID()
+    const kind = "event-prepaid-confirmation"
+    const observation = {
+      observationAvailable: true,
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: true,
+      clickOnTrigger: false,
+      expectedDialogMounted: true,
+      expectedDialogRemoved: true,
+      expectedDialogHidden: false,
+      expectedDialogVisible: false,
+      triggerCardinality: "single",
+      triggerEnabled: true,
+    }
+    const privateFields = {
+      privateValue: sentinel,
+      inputValue: sentinel,
+      rawError: sentinel,
+      payload: { content: sentinel },
+    }
+    try {
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        join(directory, "e2e/event-market.playwright.ts"),
+        [
+          `import { test, expect } from ${JSON.stringify(playwrightImport)}`,
+          `import { recordSmokeDiagnostic } from ${JSON.stringify(smokeDiagnosticsImport)}`,
+          'test("controlled prepaid dialog evidence @market", ({}, info) => {',
+          `  recordSmokeDiagnostic(info, ${JSON.stringify(kind)}, ${JSON.stringify({ ...observation, ...privateFields })});`,
+          "  expect(false).toBe(true);",
+          "});",
+        ].join("\n")
+      )
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      const progress = join(directory, "progress.log")
+      const config = join(directory, "playwright.config.ts")
+      writeFileSync(
+        config,
+        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
+      )
+      const run = (args: string[]) =>
+        spawnSync(
+          process.execPath,
+          [playwrightCli, "test", "-c", config, ...args],
+          {
+            cwd: directory,
+            encoding: "utf8",
+            timeout: 15000,
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+          }
+        )
+      const discovery = run(["--list", "--reporter=json"])
+      expect(discovery.status).toBe(0)
+      const manifest = buildPlaywrightSmokeManifest(
+        JSON.parse(discovery.stdout),
+        ["market"],
+        evidence
+      )
+      expect(manifest.selectedTestCount).toBe(1)
+      expect(run([]).status).toBe(1)
+      const reportText = readFileSync(output, "utf8")
+      const artifactText = readFileSync(artifact, "utf8")
+      const progressText = readFileSync(progress, "utf8")
+      expect(reportText + artifactText + progressText).not.toContain(sentinel)
+      const report = JSON.parse(reportText) as PlaywrightJsonReport
+      const retained = JSON.parse(artifactText)
+      expect(retained.status).toBe("failed")
+      expect(retained.timing.completedAttempts).toBe(1)
+      const result = retained.tests[0].tests[0].results[0]
+      expect(result.retry).toBe(0)
+      expect(result.status).toBe("failed")
+      expect(result.failure.category).toBe("assertion")
+      expect(result.diagnostics).toEqual([{ kind, ...observation }])
+      expect(progressText).toContain("diagnostic retry=0")
+      expect(progressText).toContain(`"kind":"${kind}"`)
+
+      const verifierFailure = (value: PlaywrightJsonReport) => {
+        try {
+          validatePlaywrightSmokeExecution(
+            value,
+            manifest,
+            ["market"],
+            evidence
+          )
+        } catch (error) {
+          return String(error)
+        }
+        throw new Error("Controlled failure was not rejected by the verifier")
+      }
+      const failure = verifierFailure(report)
+      expect(failure).toContain("did not pass cleanly")
+      expect(failure).toContain(`"kind":"${kind}"`)
+      expect(failure).not.toContain(sentinel)
+
+      const injected = structuredClone(report)
+      injected.suites![0]!.specs![0]!.tests![0]!.results![0]!.diagnostics = [
+        { kind, ...observation, ...privateFields },
+      ]
+      const injectedFailure = verifierFailure(injected)
+      expect(injectedFailure).toContain(`"kind":"${kind}"`)
+      expect(injectedFailure).not.toContain(sentinel)
+      for (const field of Object.keys(privateFields))
+        expect(injectedFailure).not.toContain(field)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 30000)
+
   it("keeps event stock control failures typed and private through the real reporter and verifier", () => {
     const directory = mkdtempSync(
       join(tmpdir(), "conduit-event-stock-evidence-")

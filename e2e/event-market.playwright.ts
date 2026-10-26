@@ -24,7 +24,10 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  observePrepaidConfirmationTrigger,
+  recordSmokeDiagnostic,
+} from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
@@ -7915,13 +7918,22 @@ for (const scenario of [
         : order.items[0]!.fulfillment!.calendar.end
       await page.clock.setFixedTime(expiry + 1)
     }
-    await page
-      .getByRole("button", { name: "Confirm payment", exact: true })
-      .click()
     const dialog = page.getByRole("alertdialog", {
       name: "Confirm payment received?",
     })
-    await expect(dialog).toBeVisible()
+    const confirmationObservation =
+      await observePrepaidConfirmationTrigger(page)
+    try {
+      await page
+        .getByRole("button", { name: "Confirm payment", exact: true })
+        .click()
+      await expect(dialog).toBeVisible()
+    } catch (error) {
+      await confirmationObservation.recordFailure(info)
+      throw error
+    } finally {
+      await confirmationObservation.dispose()
+    }
     const from = relay.publications.length
     const confirmationAck = relay.holdNextPublicationAck(
       (event) =>

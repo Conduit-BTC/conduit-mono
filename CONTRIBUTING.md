@@ -396,6 +396,14 @@ These observations do not establish stock delivery or settlement. Input values,
 pickup codes, identifiers, error text, DOM and coordinates remain excluded;
 the original operation error and test deadlines are unchanged.
 
+The prepaid-confirmation seam retains only matching input-event and expected
+dialog-lifecycle booleans, closed trigger cardinality, and control enablement.
+It observes the original gesture without dispatching input or changing order
+state. Failure reads and cleanup are best-effort bounded; unavailable observation
+is not evidence that an event or dialog never occurred. These observations do
+not establish payment or signer state. The original click, assertions, deadlines
+and retry policy remain unchanged.
+
 ## Code Conventions
 
 ### General

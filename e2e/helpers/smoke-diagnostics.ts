@@ -108,6 +108,156 @@ export async function observeMessagesDialogTrigger(page: Page) {
   })
 }
 
+// Observe this test's original outer gesture; never dispatch input or order actions.
+export async function observePrepaidConfirmationTrigger(page: Page) {
+  const bounded = async <T>(operation: () => Promise<T>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), 250)
+        }),
+      ])
+    } catch {
+      return undefined
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+  const pendingObservation = page.evaluateHandle(() => {
+    const seen = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      expectedDialogMounted: false,
+      expectedDialogRemoved: false,
+      expectedDialogHidden: false,
+    }
+    const dialogs = new Set<HTMLElement>()
+    const isTrigger = (element: EventTarget) =>
+      element instanceof HTMLButtonElement &&
+      !element.closest('[role="alertdialog"]') &&
+      (element.getAttribute("aria-label") ?? element.textContent?.trim()) ===
+        "Confirm payment"
+    const isExpectedDialog = (element: Element): element is HTMLElement =>
+      element instanceof HTMLElement &&
+      element.matches('[role="alertdialog"]') &&
+      element.querySelector("h2")?.textContent?.trim() ===
+        "Confirm payment received?"
+    const visible = (element: HTMLElement) =>
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility === "visible"
+    const remember = (element: Element) => {
+      if (isExpectedDialog(element)) {
+        dialogs.add(element)
+        seen.expectedDialogMounted = true
+      }
+      for (const dialog of element.querySelectorAll('[role="alertdialog"]'))
+        if (isExpectedDialog(dialog)) {
+          dialogs.add(dialog)
+          seen.expectedDialogMounted = true
+        }
+    }
+    const observe = (records: MutationRecord[] = []) => {
+      // Read removed subtrees as well, so an entire short-lived portal is seen.
+      for (const record of records)
+        for (const node of [...record.addedNodes, ...record.removedNodes])
+          if (node instanceof Element) remember(node)
+      for (const dialog of document.querySelectorAll('[role="alertdialog"]'))
+        remember(dialog)
+      for (const dialog of dialogs) {
+        if (!dialog.isConnected) seen.expectedDialogRemoved = true
+        else if (!visible(dialog)) seen.expectedDialogHidden = true
+      }
+    }
+    // The event path survives replacement of the clicked node. Matching a
+    // newly queried node instead would make a delivered event look absent.
+    const onDown = (event: Event) => {
+      if (event.composedPath().some(isTrigger)) seen.pointerDownOnTrigger = true
+    }
+    const onUp = (event: Event) => {
+      if (event.composedPath().some(isTrigger)) seen.pointerUpOnTrigger = true
+    }
+    const onClick = (event: Event) => {
+      if (event.composedPath().some(isTrigger)) seen.clickOnTrigger = true
+    }
+    const observer = new MutationObserver(observe)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["hidden", "style", "class", "aria-hidden"],
+    })
+    document.addEventListener("pointerdown", onDown, true)
+    document.addEventListener("pointerup", onUp, true)
+    document.addEventListener("click", onClick, true)
+    observe()
+    return {
+      read() {
+        observe(observer.takeRecords())
+        const triggers = [...document.querySelectorAll("button")].filter(
+          isTrigger
+        )
+        const trigger = triggers.length === 1 ? triggers[0] : undefined
+        return {
+          observationAvailable: true,
+          ...seen,
+          expectedDialogVisible: [...dialogs].some(
+            (dialog) =>
+              dialog.isConnected && isExpectedDialog(dialog) && visible(dialog)
+          ),
+          triggerCardinality:
+            triggers.length === 0
+              ? "absent"
+              : triggers.length === 1
+                ? "single"
+                : "multiple",
+          triggerEnabled:
+            !!trigger &&
+            !trigger.disabled &&
+            trigger.getAttribute("aria-disabled") !== "true",
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", onDown, true)
+        document.removeEventListener("pointerup", onUp, true)
+        document.removeEventListener("click", onClick, true)
+      },
+    }
+  })
+  const observation = await bounded(() => pendingObservation)
+  if (!observation)
+    void pendingObservation
+      .then(async (late) => {
+        await bounded(() => late.evaluate((value) => value.dispose()))
+        await bounded(() => late.dispose())
+      })
+      .catch(() => {})
+  return {
+    async recordFailure(info: TestInfo) {
+      try {
+        const values = observation
+          ? await bounded(() => observation.evaluate((value) => value.read()))
+          : undefined
+        recordSmokeDiagnostic(
+          info,
+          "event-prepaid-confirmation",
+          values ?? { observationAvailable: false }
+        )
+      } catch {
+        // Observation and recording must not replace the original failure.
+      }
+    },
+    async dispose() {
+      if (!observation) return
+      await bounded(() => observation.evaluate((value) => value.dispose()))
+      await bounded(() => observation.dispose())
+    },
+  }
+}
+
 export const commerceJourneyPhases = [
   "seed_profiles",
   "start_wallets",
@@ -580,6 +730,21 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         draftKeyStateBefore: ["absent", "one", "multiple", "unavailable"],
         resumeDraftPresent: "boolean",
         draftKeyState: ["absent", "one", "multiple", "unavailable"],
+      },
+    },
+    "event-prepaid-confirmation": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        observationAvailable: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        expectedDialogMounted: "boolean",
+        expectedDialogRemoved: "boolean",
+        expectedDialogHidden: "boolean",
+        expectedDialogVisible: "boolean",
+        triggerCardinality: ["absent", "single", "multiple"],
+        triggerEnabled: "boolean",
       },
     },
     "inventory-publication-retry": {
@@ -1231,6 +1396,7 @@ export function recordSmokeDiagnostic(
     | "merchant-image-dialog-open"
     | "manual-checkout-stop"
     | "inventory-publication-retry"
+    | "event-prepaid-confirmation"
     | "commerce-inbox-reconnect"
     | "commerce-inbox-self-copy"
     | "router-retirement"
