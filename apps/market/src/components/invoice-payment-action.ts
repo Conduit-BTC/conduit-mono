@@ -3,12 +3,16 @@ import {
   normalizeLightningInvoice,
   validateLightningInvoiceForPayment,
 } from "@conduit/core"
-import { getCashAppLightningUrl } from "../lib/cash-app-lightning"
+import type {
+  ExternalInvoicePaymentAction,
+  ExternalInvoicePaymentActionResult,
+} from "@conduit/ui"
+export type {
+  ExternalInvoicePaymentAction,
+  ExternalInvoicePaymentActionResult,
+} from "@conduit/ui"
 
-export type ExternalInvoicePaymentAction =
-  "cash_app" | "lightning" | "copy" | "qr"
-export type ExternalInvoicePaymentActionResult =
-  "wallet_ready" | "copied" | "copy_failed" | "qr_ready" | "unavailable"
+import { getCashAppLightningUrl } from "../lib/cash-app-lightning"
 
 /** Finish invoice preparation; wallet launch requires a fresh native link click. */
 export async function performExternalInvoicePaymentAction(input: {

@@ -35,6 +35,14 @@ type ControlledWalletFixtureWindow = Window & {
     delayRegistration?: boolean
     releaseRegistration?: () => void
     delayReceive?: boolean
+    receiveCalls?: number
+    receiveAmount?: number
+    receiveChecks?: number
+    checkedRequestId?: string
+    receiveInvoice?: string
+    receiveFee?: number
+    receiveRequestId?: string
+    receiveObservation?: unknown
     receiveStarted?: boolean
     releaseReceive?: () => void
   }
@@ -198,7 +206,10 @@ export async function prepareControlledWallet(page: Page) {
               probe.disconnects++
             },
             async getAddressIdentity() {
-              const { deriveSparkRecoveryIdentity } = await import(sdkUrl)
+              // Init scripts have a web-inspector: base URL in WebKit.
+              const { deriveSparkRecoveryIdentity } = await import(
+                new URL(sdkUrl, window.location.origin).href
+              )
               return deriveSparkRecoveryIdentity({
                 mnemonic: input.mnemonic,
                 accountNumber: input.accountNumber,
@@ -239,14 +250,29 @@ export async function prepareControlledWallet(page: Page) {
               registrationPending = false
               return lookup()
             },
-            async receivePayment() {
+            async lookupReceivingInvoice(_invoice: string, requestId?: string) {
+              probe.receiveChecks = (probe.receiveChecks ?? 0) + 1
+              probe.checkedRequestId = requestId
+              if (!probe.receiveObservation)
+                throw new Error("Receipt unavailable")
+              return probe.receiveObservation
+            },
+            async receivePayment(request: {
+              paymentMethod: { amountSats?: number }
+            }) {
+              probe.receiveCalls = (probe.receiveCalls ?? 0) + 1
+              probe.receiveAmount = request.paymentMethod.amountSats
               if (probe.delayReceive) {
                 probe.receiveStarted = true
                 await new Promise<void>((resolve) => {
                   probe.releaseReceive = resolve
                 })
               }
-              return { paymentRequest: "controlled-invoice", fee: 0n }
+              return {
+                paymentRequest: probe.receiveInvoice ?? "controlled-invoice",
+                fee: BigInt(probe.receiveFee ?? 0),
+                requestId: probe.receiveRequestId,
+              }
             },
             async prepareSendPayment() {
               throw new Error("Controlled unfunded wallet")
@@ -261,7 +287,10 @@ export async function prepareControlledWallet(page: Page) {
     "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts")
   )
   await page.route(
-    "**/packages/core/src/wallets/spark-sdk.ts*",
+    // WebKit also requests web-inspector: sources; only rewrite the HTTP module.
+    (url) =>
+      (url.protocol === "http:" || url.protocol === "https:") &&
+      url.pathname.endsWith("/packages/core/src/wallets/spark-sdk.ts"),
     async (route) => {
       const response = await route.fetch()
       const body = await response.text()
@@ -373,65 +402,70 @@ export async function observeWalletController(
   page.on("request", (request) => {
     if (request.isNavigationRequest()) navigationRequests++
   })
-  await page.route("**/src/routes/wallet.tsx*", async (route) => {
-    routeStarts++
-    const startedNavigations = navigations
-    const startedNavigationRequests = navigationRequests
-    const navigationRequest = route.request().isNavigationRequest()
-    let response
-    try {
-      response = await route.fetch()
-      routeCompletes++
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ""
-      const category = /closed|disposed|destroyed/i.test(message)
-        ? "closed"
-        : /abort|cancel/i.test(message)
-          ? "aborted"
-          : /timeout/i.test(message)
-            ? "timeout"
-            : /net::|network/i.test(message)
-              ? "network"
-              : "other"
-      const diagnostic: WalletRouteFetchDiagnostic = {
-        routeFetchCategory: category,
-        routeFetchPageClosed: page.isClosed(),
-        routeFetchNavigationRequest: navigationRequest,
-        routeFetchNavigations: navigations,
-        routeFetchStarts: routeStarts,
-        routeFetchCompletes: routeCompletes,
+  await page.route(
+    (url) =>
+      url.pathname.endsWith("/src/routes/wallet.tsx") &&
+      url.searchParams.get("tsr-split") === "component",
+    async (route) => {
+      routeStarts++
+      const startedNavigations = navigations
+      const startedNavigationRequests = navigationRequests
+      const navigationRequest = route.request().isNavigationRequest()
+      let response
+      try {
+        response = await route.fetch()
+        routeCompletes++
+      } catch (error) {
+        const message = error instanceof Error ? error.message : ""
+        const category = /closed|disposed|destroyed/i.test(message)
+          ? "closed"
+          : /abort|cancel/i.test(message)
+            ? "aborted"
+            : /timeout/i.test(message)
+              ? "timeout"
+              : /net::|network/i.test(message)
+                ? "network"
+                : "other"
+        const diagnostic: WalletRouteFetchDiagnostic = {
+          routeFetchCategory: category,
+          routeFetchPageClosed: page.isClosed(),
+          routeFetchNavigationRequest: navigationRequest,
+          routeFetchNavigations: navigations,
+          routeFetchStarts: routeStarts,
+          routeFetchCompletes: routeCompletes,
+        }
+        onFetchErrorDetail?.({
+          ...diagnostic,
+          routeFetchStartNavigations: startedNavigations,
+          routeFetchStartNavRequests: startedNavigationRequests,
+          routeFetchFailureNavRequests: navigationRequests,
+          routeFetchNewNavRequested:
+            navigationRequests > startedNavigationRequests ||
+            navigations > startedNavigations,
+        })
+        onFetchError?.(diagnostic)
+        throw error
       }
-      onFetchErrorDetail?.({
-        ...diagnostic,
-        routeFetchStartNavigations: startedNavigations,
-        routeFetchStartNavRequests: startedNavigationRequests,
-        routeFetchFailureNavRequests: navigationRequests,
-        routeFetchNewNavRequested:
-          navigationRequests > startedNavigationRequests ||
-          navigations > startedNavigations,
+      const body = await response.text()
+      const marker = [
+        "const wallets = useWallets();",
+        "const wallets = automation.wallets;",
+      ].find((candidate) => body.includes(candidate))
+      if (!marker || body.split(marker).length !== 2)
+        throw new Error("Wallet controller observation seam changed")
+      if (observeAccount && !body.includes("const auth = useAuth();"))
+        throw new Error("Wallet account observation seam changed")
+      await route.fulfill({
+        response,
+        body: body.replace(
+          marker,
+          marker +
+            "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
+            (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
+        ),
       })
-      onFetchError?.(diagnostic)
-      throw error
     }
-    const body = await response.text()
-    const marker = [
-      "const wallets = useWallets();",
-      "const wallets = automation.wallets;",
-    ].find((candidate) => body.includes(candidate))
-    if (!marker || body.split(marker).length !== 2)
-      throw new Error("Wallet controller observation seam changed")
-    if (observeAccount && !body.includes("const auth = useAuth();"))
-      throw new Error("Wallet account observation seam changed")
-    await route.fulfill({
-      response,
-      body: body.replace(
-        marker,
-        marker +
-          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
-          (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
-      ),
-    })
-  })
+  )
 }
 
 /** Retain deliberate-lock semantics after removal of the user-facing Lock control. */
