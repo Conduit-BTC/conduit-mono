@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import { Nip47NetworkError, Nip47PublishError } from "@getalby/sdk/nwc"
+import { createNwcPaymentFixture } from "./support/nwc-payment-fixture"
 import {
   calculateCheckoutSparkSettledGrossFundingSats,
   calculateConduitCheckoutFeeSats,
@@ -354,6 +356,106 @@ function fixture() {
 }
 
 describe("settled external funding disclosure", () => {
+  it.each([Nip47PublishError, Nip47NetworkError])(
+    "retains exact NWC funding after %p across reconnect, reload, expiry and fallback",
+    async (PaymentError) => {
+      const test = fixture()
+      const nwc = await createNwcPaymentFixture(async () => {
+        throw new PaymentError("Local acknowledgment unavailable", "INTERNAL")
+      })
+      try {
+        test.dependencies.payInvoice = nwc.payInvoice
+        const input = {
+          exposeExternalInvoice: false,
+          paymentTarget: nwc.target,
+          walletPaymentAttemptId: crypto.randomUUID(),
+        }
+        expect(await test.run(input)).toMatchObject({
+          status: "awaiting_reconciliation",
+          paymentSubmission: "unknown",
+          reconciliation: { credit: null },
+        })
+        expect(test.metadata().fundingSubmissionState).toBe("provisional")
+        await nwc.reconnect()
+        const restored = new MemoryStorage()
+        for (const [key, value] of test.storage.values)
+          restored.values.set(key, value)
+        test.dependencies.storage = restored
+        for (const paymentTarget of [
+          nwc.target,
+          { type: "webln" as const },
+          { ...nwc.target, walletId: "replacement-wallet" },
+        ]) {
+          expect(await test.run({ ...input, paymentTarget })).toMatchObject({
+            status: "awaiting_reconciliation",
+            reconciliation: { credit: null },
+          })
+        }
+        expect((await test.run()).status).toBe("awaiting_reconciliation")
+        test.setNow(test.plan.funding.expiresAt + 1)
+        expect((await test.run(input)).status).toBe("awaiting_reconciliation")
+        expect(test.plan.funding.paymentRequest).toBe(INVOICE)
+        expect(nwc.submitted).toEqual([INVOICE])
+        expect(nwc.attempts[0]?.idempotencyKey).toBe(
+          input.walletPaymentAttemptId
+        )
+        expect(test.counts().creditRecords).toBe(0)
+        test.setProofAvailable(true)
+        const late = await test.run(input)
+        expect(late.status).toBe("funded")
+        const duplicate = await test.run(input)
+        expect(duplicate.reconciliation.credit).toEqual(
+          late.reconciliation.credit
+        )
+        expect(nwc.submitted).toEqual([INVOICE])
+      } finally {
+        nwc.dispose()
+      }
+    }
+  )
+
+  it("releases a genuine final NWC admission denial but never treats payer success as credit", async () => {
+    const test = fixture()
+    let deny = false
+    const nwc = await createNwcPaymentFixture(
+      async () => ({ preimage: "f".repeat(64) }),
+      {
+        prepare: () => {
+          deny = true
+        },
+      }
+    )
+    try {
+      test.dependencies.payInvoice = nwc.payInvoice
+      const input = {
+        exposeExternalInvoice: false,
+        paymentTarget: nwc.target,
+        walletPaymentAttemptId: crypto.randomUUID(),
+        beforeSend: async () => {
+          if (deny) throw new Error("Local admission denied")
+        },
+      }
+      // Warm is preparation too; the coordinator's first check must be admitted.
+      deny = false
+      expect((await test.run(input)).status).toBe("payment_retryable")
+      expect(nwc.submitted).toHaveLength(0)
+      expect(test.metadata().fundingSubmissionState).toBe("not_started")
+      const accepted = await test.run({ ...input, beforeSend: async () => {} })
+      expect(accepted).toMatchObject({
+        status: "awaiting_reconciliation",
+        paymentSubmission: "accepted",
+        reconciliation: { credit: null },
+      })
+      expect(nwc.submitted).toEqual([INVOICE])
+      expect(test.metadata().fundingSubmissionState).toBe("provisional")
+      expect((await test.run(input)).status).toBe("awaiting_reconciliation")
+      expect(test.counts().creditRecords).toBe(0)
+      expect(nwc.submitted).toHaveLength(1)
+    } finally {
+      nwc.dispose()
+    }
+  })
+
   it.each(["sender_changed", "session_revoked"] as const)(
     "waits for asynchronous recovery authority and stops when %s",
     async (change) => {
