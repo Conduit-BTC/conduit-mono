@@ -24,7 +24,10 @@ import type {
   SparkCheckoutLightningClosedReturnedInspectionInput,
 } from "../protocol/spark-lightning-returned-attempt"
 import type { WalletPaymentFeeApproval } from "./provider"
-import type { BreezAddressState } from "./breez-lightning-address"
+import type {
+  BreezAddressState,
+  BreezAddressOperationOptions,
+} from "./breez-lightning-address"
 
 import {
   acquireSparkWalletManagerSessionLease,
@@ -294,10 +297,14 @@ export interface SparkSdkClient {
   ): Promise<NwcLookupInvoiceResult>
 
   getAddressIdentity?(): Promise<string>
-  lookupBreezAddress?(domain?: string): Promise<BreezAddressState>
+  lookupBreezAddress?(
+    domain?: string,
+    options?: BreezAddressOperationOptions
+  ): Promise<BreezAddressState>
   ensureBreezAddress?(
     username?: string,
-    domain?: string
+    domain?: string,
+    options?: BreezAddressOperationOptions
   ): Promise<BreezAddressState>
   signAddressNameRequest?(
     value: Omit<AddressNameRequest, "sparkIdentity">
@@ -549,7 +556,8 @@ export class SparkWalletManager {
     walletId: string,
     register = false,
     username?: string,
-    domain = "breez.tips"
+    domain = "breez.tips",
+    options?: BreezAddressOperationOptions
   ): Promise<BreezAddressState> {
     let client: SparkSdkClient
     try {
@@ -562,8 +570,8 @@ export class SparkWalletManager {
       : client.lookupBreezAddress
     if (!operation) return { status: "unavailable", reason: "unconfigured" }
     const result = register
-      ? await client.ensureBreezAddress!(username, domain)
-      : await client.lookupBreezAddress!(domain)
+      ? await client.ensureBreezAddress!(username, domain, options)
+      : await client.lookupBreezAddress!(domain, options)
     // Ignore address results if the exact session was locked/replaced meanwhile.
     if (
       this.#clients.get(walletId) !== client ||

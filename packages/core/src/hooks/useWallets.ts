@@ -188,7 +188,7 @@ export interface UseWalletsReturn {
     register?: boolean,
     username?: string,
     domain?: "breez.tips" | "conduit.cash",
-    options?: AccountSignerOperationOptions
+    options?: AccountSignerOperationOptions & { signal?: AbortSignal }
   ): Promise<import("@conduit/core").BreezAddressState>
   requestAddressName?: AddressRequestWorkflow
   receiveSparkLightning(
@@ -1150,7 +1150,9 @@ export function useWallets(
       register = false,
       username?: string,
       domain?: "breez.tips" | "conduit.cash",
-      options: AccountSignerOperationOptions = { priority: "background" }
+      options: AccountSignerOperationOptions & { signal?: AbortSignal } = {
+        priority: "background",
+      }
     ) => {
       const signer = getAccountSigner()
       return resolveSparkLightningAddress({
@@ -1159,6 +1161,7 @@ export function useWallets(
         register,
         username,
         domain,
+        signal: options.signal,
         assertCurrent: () => {
           if (getAccountSigner() !== signer)
             throw new Error("Your Nostr sign-in changed.")
@@ -1170,7 +1173,7 @@ export function useWallets(
           service.rememberLightningAddress(walletId, address)
           // Address metadata does not change wallet descriptors or balances.
           // A reload here would retrigger the runtime-driven address lookup.
-          void service.sync(options).catch(() => {
+          void service.sync({ priority: options.priority }).catch(() => {
             if (isWalletSignerCurrent(signer)) setRecoverySync("blocked")
           })
         },

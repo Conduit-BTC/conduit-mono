@@ -18,6 +18,8 @@ export function walletAddressStatus(value: BreezAddressState | null): string {
     return "Choose 3–64 letters, numbers, dots, hyphens or underscores. Protected names are unavailable."
   if (value.reason === "name_unavailable")
     return "That name is unavailable. Choose another name."
+  if (value.reason === "rate_limited")
+    return "Address lookups are temporarily limited. Wait a minute before checking again."
   return value.reason === "registration_pending"
     ? "Address setup is pending. Retry to check the same wallet."
     : "Lightning addresses are currently unavailable."

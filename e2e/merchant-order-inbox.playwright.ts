@@ -717,17 +717,31 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
       if (scenario.app === "market") {
         const browse = page.getByRole("button", { name: "Browse", exact: true })
         const compact = await browse.isVisible()
+        const orders = page.getByRole("dialog", { name: "Your orders" })
         const filterOrders = async (query: string) => {
-          if (compact) await browse.click()
-          await page
+          if (compact) {
+            await browse.evaluate((element) =>
+              element.scrollIntoView({ behavior: "instant", block: "center" })
+            )
+            if (testInfo.project.use.hasTouch) await browse.tap()
+            else await browse.click()
+            await expect(orders).toBeVisible()
+          }
+          await (compact ? orders : page)
             .getByRole("searchbox", { name: "Search orders" })
             .filter({ visible: true })
             .fill(query)
           if (compact) {
-            await page
-              .getByRole("dialog", { name: "Your orders" })
-              .getByRole("button", { name: "Close", exact: true })
-              .click()
+            const close = orders.getByRole("button", {
+              name: "Close",
+              exact: true,
+            })
+            await close.evaluate((element) =>
+              element.scrollIntoView({ behavior: "instant", block: "center" })
+            )
+            if (testInfo.project.use.hasTouch) await close.tap()
+            else await close.click()
+            await expect(orders).toBeHidden()
           }
         }
         // A filter must not replace the participant named in the restored URL.

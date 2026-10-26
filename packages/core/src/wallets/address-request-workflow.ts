@@ -22,6 +22,19 @@ export interface AddressRequestView {
   record: AddressRequestRecord
   publication: "confirmed" | "local"
   status?: AddressNameRequestStatus
+  /** Session evidence only; never persisted or used as approval/ownership authority. */
+  activation?: {
+    step:
+      "approval" | "registration" | "public_lookup" | "persistence" | "profile"
+    reason?: string
+    retryAt?: number
+    exhausted?: boolean
+    address?: Extract<BreezAddressState, { status: "registered" }>
+  }
+}
+export interface AddressActivationOptions {
+  signal?: AbortSignal
+  onProgress?(view: AddressRequestView): void
 }
 export interface AddressRequestWorkflowDependencies {
   owner: string
@@ -45,10 +58,16 @@ export interface AddressRequestWorkflowDependencies {
   fetch: typeof fetch
   address(
     walletId: string,
-    register: boolean,
-    name: string
+    register: boolean | "retry",
+    name: string,
+    beforeRegister?: () => Promise<void | (() => Promise<void>)>,
+    signal?: AbortSignal
   ): Promise<BreezAddressState>
-  publishProfile(address: string): Promise<string>
+  /** Persist a verified receiving address after session progress is exposed. */
+  saveAddress(walletId: string, address: string): Promise<void>
+  publishProfile(address: string, assertCurrent?: () => void): Promise<string>
+  now?(): number
+  wait?(milliseconds: number, signal?: AbortSignal): Promise<void>
 }
 export interface AddressRequestWorkflow {
   /** Enabled by default; an explicit false disables new writes in an emergency. */
@@ -59,7 +78,28 @@ export interface AddressRequestWorkflow {
     input: { desiredName: string; token: string; requestId?: string }
   ): Promise<AddressRequestView>
   check(walletId: string): Promise<AddressRequestView | undefined>
-  activate(walletId: string): Promise<AddressRequestView>
+  activate(
+    walletId: string,
+    options?: AddressActivationOptions
+  ): Promise<AddressRequestView>
+}
+
+function waitForRecheck(
+  milliseconds: number,
+  signal?: AbortSignal
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted()
+    const abort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new Error("Activation cancelled."))
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort)
+      resolve()
+    }, milliseconds)
+    signal?.addEventListener("abort", abort, { once: true })
+  })
 }
 /** No provider/network write precedes retained intent. Account state never grants approval. */
 export function createAddressRequestWorkflow(
@@ -179,7 +219,12 @@ export function createAddressRequestWorkflow(
         return view
       return observe(walletId, view, await send(walletId, view.record, true))
     },
-    async activate(walletId) {
+    async activate(walletId, options = {}) {
+      const current = () => {
+        options.signal?.throwIfAborted()
+        d.assertCurrent()
+      }
+      current()
       let view = await load(walletId)
       if (!view) throw new Error("Restore your saved request first.")
       const request = requestEvidence(view.record)
@@ -189,44 +234,126 @@ export function createAddressRequestWorkflow(
           : save(walletId, view.record)
       if (view.record.phase === "declined")
         throw new Error("This request was declined.")
+      const progress = (
+        activation: NonNullable<AddressRequestView["activation"]>
+      ) => {
+        current()
+        view = { ...view!, activation }
+        options.onProgress?.(view)
+        return view
+      }
+      progress({ step: "approval" })
       // A user-authored phase is only a resume hint, including registered progress.
       if ((await send(walletId, view.record, true)) !== "approved")
         throw new Error("Gateway approval could not be confirmed.")
-      // Verify current provider state before deciding whether registration is needed.
-      let address = await d.address(walletId, false, request.desiredName)
-      d.assertCurrent()
-      if (address.status !== "registered") {
-        if (view.record.phase === "registered")
-          throw new Error(
-            "The activated address could not be verified. Retry its lookup."
-          )
-        if (address.status !== "absent")
-          throw new Error(
-            "Address lookup is unavailable. Your existing address is preserved."
-          )
-        view = await save(walletId, { ...view.record, phase: "activating" })
-        await d.authorize?.(walletId, view.record)
-        address = await d.address(walletId, true, request.desiredName)
-        d.assertCurrent()
-      }
-      if (
-        address.status !== "registered" ||
-        address.username !== request.desiredName ||
-        address.address !== `${request.desiredName}@conduit.cash` ||
-        address.publicLookup !== "verified"
+      current()
+      // The client owns the locked recovery/race check. A retained intent may
+      // retry only with an exact checkpoint proving non-submission/rejection.
+      // Missing checkpoints and potentially committed attempts stay read-only.
+      const register =
+        view.record.phase === "registered"
+          ? false
+          : view.record.phase === "activating"
+            ? "retry"
+            : true
+      progress({ step: "registration" })
+      let address = await d.address(
+        walletId,
+        register,
+        request.desiredName,
+        async () => {
+          current()
+          view = await save(walletId, { ...view!.record, phase: "activating" })
+          const fence = await d.authorize?.(walletId, view.record)
+          await fence?.()
+          current()
+          progress({ step: "registration" })
+          return async () => {
+            await fence?.()
+            current()
+          }
+        },
+        options.signal
       )
-        throw new Error(
-          "The approved address is not yet verified. Your existing address is preserved."
+      for (let recheck = 0; ; recheck++) {
+        current()
+        const owned =
+          address.status === "registered" &&
+          address.username === request.desiredName &&
+          address.address === `${request.desiredName}@conduit.cash`
+        if (
+          owned &&
+          address.status === "registered" &&
+          address.publicLookup === "verified"
         )
+          break
+        const step = owned ? "public_lookup" : "registration"
+        const reason =
+          address.status === "unavailable"
+            ? address.reason
+            : owned && address.status === "registered"
+              ? (address.publicFailure ?? "provider_unavailable")
+              : address.status === "registered"
+                ? "identity_mismatch"
+                : "registration_pending"
+        const retryable = [
+          "rate_limited",
+          "provider_unavailable",
+          "registration_pending",
+          "not_found",
+        ].includes(reason)
+        const now = (d.now ?? Date.now)()
+        const retryAt =
+          address.status !== "absent" && address.retryAt
+            ? address.retryAt
+            : now + [20_000, 40_000, 60_000][Math.min(recheck, 2)]!
+        const exhausted = !retryable || recheck >= 3 || retryAt - now > 60_000
+        const state = progress({
+          step,
+          reason,
+          retryAt: retryable ? retryAt : undefined,
+          exhausted,
+          ...(owned && address.status === "registered" ? { address } : {}),
+        })
+        if (exhausted) return state
+        await (d.wait ?? waitForRecheck)(
+          Math.max(0, retryAt - now),
+          options.signal
+        )
+        current()
+        await d.authorize?.(walletId, view.record)
+        current()
+        // Rechecks are reads only, including when the original response was lost.
+        address = await d.address(
+          walletId,
+          false,
+          request.desiredName,
+          undefined,
+          options.signal
+        )
+      }
+      if (address.status !== "registered")
+        throw new Error("Address verification failed.")
+      progress({ step: "persistence", address })
+      current()
+      await d.authorize?.(walletId, view.record)
+      current()
+      await d.saveAddress(walletId, address.address)
+      current()
       view = await save(walletId, { ...view.record, phase: "registered" })
+      progress({ step: "profile", address })
+      current()
+      await d.authorize?.(walletId, view.record)
+      current()
       // If this fails, next action verifies registration and ONLY resumes profile publication.
-      const profileEventId = await d.publishProfile(address.address)
-      d.assertCurrent()
-      return save(walletId, {
+      const profileEventId = await d.publishProfile(address.address, current)
+      current()
+      view = await save(walletId, {
         ...view.record,
         phase: "complete",
         profileEventId,
       })
+      return progress({ step: "profile", address })
     },
   }
 }

@@ -109,6 +109,17 @@ for (const mode of ["create", "import"] as const)
       await installRealTestSigner(page, identity, relay)
       await page.goto(apps.market + "/wallet")
       await installControlledWallet(page)
+      // Navigation can finish before the split wallet component has rendered.
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            Boolean(
+              (window as unknown as WalletFixtureWindow)
+                .__controlledWalletController
+            )
+          )
+        )
+        .toBe(true)
       await page.evaluate(async () => {
         await (
           window as unknown as WalletFixtureWindow

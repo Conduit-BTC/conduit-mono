@@ -5,7 +5,7 @@ import {
   mnemonicToSeedSync,
 } from "../apps/market/node_modules/@scure/bip39/index.js"
 import { wordlist } from "../apps/market/node_modules/@scure/bip39/wordlists/english.js"
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import { verifyEvent, type Event } from "nostr-tools/pure"
 import { addressRequestHash } from "../packages/core/src/wallets/address-name-request"
 import {
@@ -14,9 +14,243 @@ import {
   signRuntimeTestEvent,
 } from "./helpers/real-nip07-signer"
 
+type ActivationFixtureWindow = Window & {
+  __activationFixture: {
+    counts(): { calls: number; loads: number }
+    switch(): void
+  }
+}
+
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const source = (file: string) => `/@fs${path.resolve(process.cwd(), file)}`
 test.use({ trace: "off", screenshot: "off", video: "off" })
+
+async function mountActivation(
+  page: Page,
+  scenario: "throttle" | "public" | "profile" | "persistence" | "switch"
+) {
+  await page.goto(`${marketUrl}/wallet`)
+  await page.clock.install()
+  await page.evaluate(
+    async ({ url, scenario }) => {
+      const React = (await import("/@id/react")).default
+      const { createRoot } = (await import("/@id/react-dom/client")).default
+      const { AddressNameRequestForm } = await import(url)
+      const host = document.createElement("div")
+      host.id = "activation-fixture"
+      host.style.cssText =
+        "position:fixed;inset:40px 24px;z-index:1000;overflow:auto;background:var(--background);padding:24px"
+      document.body.append(host)
+      const root = createRoot(host)
+      let calls = 0,
+        loads = 0
+      let saved = {
+        record: {
+          phase: "approved",
+          payload: JSON.stringify({ desiredName: "alice" }),
+          accountProof: "{}",
+        },
+        publication: "confirmed",
+      }
+      const address = {
+        status: "registered",
+        username: "alice",
+        address: "alice@conduit.cash",
+        lnurl: "https://conduit.cash/.well-known/lnurlp/alice",
+        publicLookup: "verified",
+        zapAdvertised: false,
+        receiveEvidence: "unverified",
+      }
+      const submit = {
+        load: async () => {
+          loads++
+          return saved
+        },
+        check: async () => saved,
+        submit: async () => saved,
+        activate: async (
+          _id: string,
+          options: { signal: AbortSignal; onProgress(value: unknown): void }
+        ) => {
+          calls++
+          saved = { ...saved, record: { ...saved.record, phase: "activating" } }
+          if (scenario === "profile" || scenario === "persistence") {
+            saved = {
+              ...saved,
+              record: {
+                ...saved.record,
+                phase: scenario === "profile" ? "registered" : "activating",
+              },
+            }
+            options.onProgress({
+              ...saved,
+              activation: { step: scenario, address },
+            })
+            if (calls === 1)
+              throw new Error(
+                scenario === "profile"
+                  ? "Address activated. Profile publication still needs confirmation."
+                  : "Wallet update refused."
+              )
+          } else {
+            const delay = scenario === "throttle" ? 60_000 : 20_000
+            options.onProgress({
+              ...saved,
+              activation: {
+                step: scenario === "public" ? "public_lookup" : "registration",
+                reason: scenario === "throttle" ? "rate_limited" : "not_found",
+                retryAt: Date.now() + delay,
+              },
+            })
+            await new Promise((resolve) => setTimeout(resolve, delay))
+          }
+          // Deliberately resolve even after cancellation: stale callers must be ignored.
+          saved = { ...saved, record: { ...saved.record, phase: "complete" } }
+          return { ...saved, activation: { step: "profile", address } }
+        },
+      }
+      const render = (id: string) =>
+        root.render(
+          React.createElement(AddressNameRequestForm, {
+            walletId: id,
+            ownerPubkey: id === "first" ? "owner-one" : "owner-two",
+            submit,
+            siteKey: "",
+            onActivated: () => (host.dataset.displayed = "verified"),
+          })
+        )
+      render("first")
+      Object.assign(window, {
+        __activationFixture: {
+          counts: () => ({ calls, loads }),
+          switch: () => {
+            saved = {
+              ...saved,
+              record: {
+                ...saved.record,
+                phase: "approved",
+                payload: JSON.stringify({ desiredName: "bob" }),
+              },
+            }
+            render("second")
+          },
+        },
+      })
+    },
+    {
+      url: source("packages/ui/src/components/AddressNameRequestForm.tsx"),
+      scenario,
+    }
+  )
+}
+
+for (const scenario of ["throttle", "public"] as const) {
+  test(`activation explains ${scenario} confirmation and updates display without another lookup @market`, async ({
+    page,
+  }) => {
+    await mountActivation(page, scenario)
+    const form = page.locator("#activation-fixture")
+    await form.getByRole("button", { name: "Activate and use address" }).click()
+    await expect(form).toContainText(
+      scenario === "throttle"
+        ? "service is limiting lookups"
+        : "Registration confirmed. Public receiving lookup"
+    )
+    await expect(form).toContainText(
+      `Checking again in ${scenario === "throttle" ? 60 : 20}s`
+    )
+    await expect(form).not.toHaveAttribute("data-displayed")
+    if (scenario === "public")
+      await form.screenshot({
+        path: "test-results/address-activation-public.png",
+      })
+    await page.clock.fastForward(scenario === "throttle" ? 60_000 : 20_000)
+    await expect(form).toContainText(
+      "Your address is activated and your public profile is updated."
+    )
+    await expect(form).toHaveAttribute("data-displayed", "verified")
+    expect(
+      await page.evaluate(() =>
+        (window as ActivationFixtureWindow).__activationFixture.counts()
+      )
+    ).toEqual({ calls: 1, loads: 1 })
+  })
+}
+
+test("profile confirmation recovery keeps the verified address and offers the remaining step @market", async ({
+  page,
+}) => {
+  await mountActivation(page, "profile")
+  const form = page.locator("#activation-fixture")
+  await form.getByRole("button", { name: "Activate and use address" }).click()
+  await expect(form).toHaveAttribute("data-displayed", "verified")
+  await expect(form.getByRole("alert")).toContainText(
+    "Profile publication still needs confirmation"
+  )
+  await form.getByRole("button", { name: "Finish profile update" }).click()
+  await expect(form).toContainText(
+    "Your address is activated and your public profile is updated."
+  )
+})
+
+test("wallet persistence failure keeps verified receiving visible while saving remains retryable @market", async ({
+  page,
+}) => {
+  await mountActivation(page, "persistence")
+  const form = page.locator("#activation-fixture")
+  await form.getByRole("button", { name: "Activate and use address" }).click()
+  await expect(form).toHaveAttribute("data-displayed", "verified")
+  await expect(form.getByRole("alert")).toContainText("Wallet update refused")
+  await expect(form).toContainText(
+    "Saving it to your wallet still needs confirmation"
+  )
+  await form
+    .getByRole("button", { name: "Check activation", exact: true })
+    .click()
+  await expect(form).toContainText(
+    "Your address is activated and your public profile is updated."
+  )
+  // Initial load plus the failure-path recovery read; neither is a provider lookup.
+  expect(
+    await page.evaluate(() =>
+      (window as ActivationFixtureWindow).__activationFixture.counts()
+    )
+  ).toEqual({ calls: 2, loads: 2 })
+})
+
+test("switching account and wallet ignores late activation results @market", async ({
+  page,
+}) => {
+  await mountActivation(page, "switch")
+  const form = page.locator("#activation-fixture")
+  await form.getByRole("button", { name: "Activate and use address" }).click()
+  await expect(form).toContainText("Checking again in 20s")
+  await page.evaluate(() =>
+    (window as ActivationFixtureWindow).__activationFixture.switch()
+  )
+  await expect(form.getByLabel("Desired name")).toHaveValue("bob")
+  await page.clock.fastForward(20_000)
+  await expect(form.getByLabel("Desired name")).toHaveValue("bob")
+  await expect(form).not.toHaveAttribute("data-displayed")
+  await expect(form).toContainText(
+    "Name approved. Activate it when you are ready."
+  )
+})
+
+test("stopping automatic checks retains a resumable request and ignores its late result @market", async ({
+  page,
+}) => {
+  await mountActivation(page, "throttle")
+  const form = page.locator("#activation-fixture")
+  await form.getByRole("button", { name: "Activate and use address" }).click()
+  await form.getByRole("button", { name: "Stop checking" }).click()
+  await page.clock.fastForward(60_000)
+  await expect(form).not.toHaveAttribute("data-displayed")
+  await expect(
+    form.getByRole("button", { name: "Check activation", exact: true })
+  ).toBeEnabled()
+  await expect(form).toContainText("Automatic checks stopped")
+})
 
 test("Breez address controls preserve the invoice fallback when unconfigured @market", async ({
   page,

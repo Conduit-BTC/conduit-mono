@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -24,14 +24,17 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
-import {
-  observePrepaidConfirmationTrigger,
-  recordSmokeDiagnostic,
-} from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
-import { recordEventStockControlFailure } from "./helpers/smoke-diagnostics"
+import { observeEventFeeDropdown } from "./helpers/event-fee-dropdown-diagnostics"
+import {
+  classifySmokeBrowserError,
+  observePrepaidConfirmationTrigger,
+  recordEventStockControlFailure,
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -42,6 +45,33 @@ const marketUrl = `http://127.0.0.1:${
 const merchantUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 }`
+
+async function discoverAcceptedStock(scope: Page | Locator) {
+  const reconcile = scope.getByRole("button", {
+    name: "Reconcile accepted order stock",
+    exact: true,
+  })
+  const check = scope.getByRole("button", {
+    name: /^Check (?:for stock updates|more stock history)$/,
+  })
+  const more = scope.getByRole("button", {
+    name: "Check more stock history",
+    exact: true,
+  })
+  // This fixture has one relay and fewer than 50 retained wrappers. The first
+  // page can contain only retained history; follow the offered bounded pages.
+  for (let page = 0; page < 4; page++) {
+    await check.click()
+    await expect(check).toBeEnabled()
+    if (await reconcile.isVisible()) {
+      await expect(reconcile).toBeEnabled()
+      return reconcile
+    }
+    if (!(await more.isVisible())) break
+  }
+  await expect(reconcile).toBeVisible()
+  return reconcile
+}
 
 const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER_PUBKEY = getPublicKey(ORGANIZER_SECRET)
@@ -5521,12 +5551,62 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     beforeBuyer: async ({ relay, marketNaddr }) => {
       const eventPath = "/events/" + marketNaddr
       await gotoAs(page, merchantUrl, eventPath, "organizer")
-      await page
-        .getByRole("combobox", { name: "Fee setting", exact: true })
-        .click()
-      await page
-        .getByRole("option", { name: "Charge an organizer fee", exact: true })
-        .click()
+      let probe: Awaited<ReturnType<typeof observeEventFeeDropdown>> | undefined
+      let phase = "before_trigger"
+      let failure = "none"
+      try {
+        probe = await observeEventFeeDropdown(page)
+      } catch {
+        // Diagnostic unavailability must not replace the original interaction.
+      }
+      try {
+        await page
+          .getByRole("combobox", { name: "Fee setting", exact: true })
+          .click()
+        phase = "after_trigger"
+        await page
+          .getByRole("option", { name: "Charge an organizer fee", exact: true })
+          .click()
+        phase = "after_option"
+      } catch (error) {
+        const category = classifySmokeBrowserError(error)
+        failure = ["timeout", "target_closed"].includes(category)
+          ? category
+          : "unknown"
+        recordSmokeFailureContext(
+          test.info(),
+          phase === "before_trigger"
+            ? "event_fee_trigger_click_completed"
+            : "event_fee_option_click_completed",
+          "unmet"
+        )
+        throw error
+      } finally {
+        let observation: Record<string, unknown> = {
+          observationAvailable: false,
+        }
+        if (probe) {
+          try {
+            observation = await probe.evaluate((value) => {
+              try {
+                return value.read()
+              } finally {
+                value.dispose()
+              }
+            })
+          } catch {
+            // A closed page is represented by observationAvailable=false.
+          }
+          await probe.dispose().catch(() => {
+            /* The page may already be closed. */
+          })
+        }
+        recordSmokeDiagnostic(test.info(), "event-fee-dropdown", {
+          phase,
+          failure,
+          ...observation,
+        })
+      }
       await page
         .getByRole("textbox", { name: "Percentage", exact: true })
         .fill("2.5")
@@ -5753,16 +5833,8 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     page.getByText(/New sales are stopped for this pool/)
   ).toBeVisible()
   await gotoAs(page, merchantUrl, eventPath, "merchant")
-  await page
-    .getByRole("button", { name: "Check for stock updates", exact: true })
-    .click()
   try {
-    await page
-      .getByRole("button", {
-        name: "Reconcile accepted order stock",
-        exact: true,
-      })
-      .click()
+    await (await discoverAcceptedStock(page)).click()
   } catch (error) {
     await recordEventStockControlFailure(page, info, "stock_reconcile")
     throw error
@@ -5865,15 +5937,7 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   await history
     .getByText("Recover prior organizer stock history", { exact: true })
     .click()
-  await history
-    .getByRole("button", { name: "Check for stock updates", exact: true })
-    .click()
-  await history
-    .getByRole("button", {
-      name: "Reconcile accepted order stock",
-      exact: true,
-    })
-    .click()
+  await (await discoverAcceptedStock(history)).click()
   await expect(history.getByText(/already reconciled/)).toBeVisible()
   expect(
     await occurrenceInventory(

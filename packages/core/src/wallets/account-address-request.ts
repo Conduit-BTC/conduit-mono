@@ -95,28 +95,39 @@ export function accountAddressRequests(
       },
       signAccount: (draft) => signer.signEvent(draft, { priority }),
       fetch: (...args) => fetch(...args),
-      async address(walletId, register, name) {
+      async address(walletId, register, name, beforeRegister, signal) {
         await authorize(walletId)
         const state = await manager().getLightningAddress(
           walletId,
-          register,
+          register !== false,
           name,
-          "conduit.cash"
+          "conduit.cash",
+          {
+            beforeRegister,
+            signal,
+            retryKnownNonSubmissionOnly: register === "retry",
+          }
         )
-        if (state.status === "registered")
-          await service.update(
-            walletId,
-            { lightningAddress: state.address },
-            { priority }
-          )
+        current()
+        signal?.throwIfAborted()
         return state
       },
-      async publishProfile(address) {
+      async saveAddress(walletId, address) {
+        assertWritesEnabled()
+        await authorize(walletId)
+        await service.update(
+          walletId,
+          { lightningAddress: address },
+          { priority }
+        )
+      },
+      async publishProfile(address, assertActivationCurrent) {
         const options = {
           accountPubkey: signer.pubkey,
           authenticatedPubkey: signer.pubkey,
           shouldContinue: () => {
             current()
+            assertActivationCurrent?.()
             return true
           },
           skipCache: true,
@@ -125,6 +136,7 @@ export function accountAddressRequests(
         }
         const before = await fetchProfileContext(signer.pubkey, options)
         current()
+        assertActivationCurrent?.()
         if (
           before.frontier?.validity === "valid" &&
           before.freshness === "observed" &&
@@ -144,6 +156,7 @@ export function accountAddressRequests(
         )
         const after = await fetchProfileContext(signer.pubkey, options)
         current()
+        assertActivationCurrent?.()
         if (
           after.freshness !== "observed" ||
           after.frontier?.validity !== "valid" ||
@@ -173,9 +186,9 @@ export function accountAddressRequests(
       return run(() => makeWorkflow("foreground").submit(id, input))
     },
     check: (id) => run(() => makeWorkflow("foreground").check(id)),
-    activate: (id) => {
+    activate: (id, options) => {
       assertWritesEnabled()
-      return run(() => makeWorkflow("foreground").activate(id))
+      return run(() => makeWorkflow("foreground").activate(id, options))
     },
   }
 }

@@ -392,6 +392,10 @@ const failureConditions: Record<
   string,
   Readonly<Record<string, SmokeFailureBoundary>>
 > = {
+  "e2e/event-market.playwright.ts": {
+    event_fee_trigger_click_completed: "user-action",
+    event_fee_option_click_completed: "user-action",
+  },
   "e2e/commerce.playwright.ts": {
     commerce_store_navigation_completed: "app-readiness",
     commerce_buyer_paid_visible: "app-readiness",
@@ -534,6 +538,41 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "event-fee-dropdown": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        phase: ["before_trigger", "after_trigger", "after_option"],
+        failure: ["none", "timeout", "target_closed", "unknown"],
+        observationAvailable: "boolean",
+        triggerPresent: "boolean",
+        triggerConnected: "boolean",
+        triggerDetached: "boolean",
+        triggerReplaced: "boolean",
+        triggerVisible: "boolean",
+        triggerEnabled: "boolean",
+        triggerExpanded: "boolean",
+        triggerHitTarget: "boolean",
+        optionCount: "number",
+        visibleOptionCount: "number",
+        targetOptionHitTarget: "boolean",
+        listboxMounted: "boolean",
+        listboxRemoved: "boolean",
+        listboxPresent: "boolean",
+        listboxAnimating: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        pointerDownOnOption: "boolean",
+        pointerUpOnOption: "boolean",
+        pointerUpOutsideWithMovement: "boolean",
+        pointerType: ["mouse", "touch", "pen", "unavailable"],
+        blurWhileOpen: "boolean",
+        resizeWhileOpen: "boolean",
+        documentVisible: "boolean",
+        documentFocused: "boolean",
+        fontsLoaded: "boolean",
+      },
+    },
     "event-stock-control": {
       file: "e2e/event-market.playwright.ts",
       fields: {
@@ -1386,6 +1425,7 @@ export function safeRetainedSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "event-fee-dropdown"
     | "event-stock-control"
     | "wallet-import-menu"
     | "wallet-foreground-open"

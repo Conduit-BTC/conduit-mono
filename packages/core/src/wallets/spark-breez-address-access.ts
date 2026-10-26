@@ -7,6 +7,7 @@ import {
 import { getAccountSigner } from "../protocol/session-signer"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import type { BreezAddressOperationOptions } from "./breez-lightning-address"
 import {
   BreezLightningAddressClient,
   type BreezAddressCheckpoint,
@@ -58,7 +59,8 @@ export function createSparkBreezAddressAccess(input: {
   const run = async (
     register: boolean,
     username?: string,
-    domain = "breez.tips"
+    domain = "breez.tips",
+    options?: BreezAddressOperationOptions
   ): Promise<BreezAddressState> => {
     if (configuration.status === "unavailable")
       return { status: "unavailable", reason: configuration.reason }
@@ -108,10 +110,11 @@ export function createSparkBreezAddressAccess(input: {
     clients.set(domain, client)
     return register
       ? client.ensure(username, {
+          ...options,
           activateApprovedName:
             domain === "conduit.cash" && username !== undefined,
         })
-      : client.lookup()
+      : client.lookup(options)
   }
   return {
     async getAddressIdentity(): Promise<string> {
@@ -121,9 +124,15 @@ export function createSparkBreezAddressAccess(input: {
       input.signer.assertActive()
       return identity
     },
-    lookupBreezAddress: (domain?: string) => run(false, undefined, domain),
-    ensureBreezAddress: (username?: string, domain?: string) =>
-      run(true, username, domain),
+    lookupBreezAddress: (
+      domain?: string,
+      options?: BreezAddressOperationOptions
+    ) => run(false, undefined, domain, options),
+    ensureBreezAddress: (
+      username?: string,
+      domain?: string,
+      options?: BreezAddressOperationOptions
+    ) => run(true, username, domain, options),
     async signAddressNameRequest(
       value: Omit<AddressNameRequest, "sparkIdentity">
     ): Promise<SignedAddressNameRequest> {

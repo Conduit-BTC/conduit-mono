@@ -1,4 +1,5 @@
 import { resolveSparkLightningAddress } from "../packages/core/src/wallets/resolve-spark-lightning-address"
+
 import { expect, spyOn, test } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
@@ -258,8 +259,16 @@ test("verified address remains available during refusal and pending metadata ret
         manager: {
           getLightningAddress: async (_id, _register, _name, domain) =>
             domain === "conduit.cash"
-              ? { status: "registered", address: "synthetic@conduit.cash" }
-              : { status: "registered", address: "synthetic@breez.tips" },
+              ? {
+                  status: "registered",
+                  address: "synthetic@conduit.cash",
+                  publicLookup: "verified",
+                }
+              : {
+                  status: "registered",
+                  address: "synthetic@breez.tips",
+                  publicLookup: "verified",
+                },
         },
         assertCurrent: () => {
           if (f.signer.pubkey !== f.wallet.ownerPubkey)
@@ -274,6 +283,7 @@ test("verified address remains available during refusal and pending metadata ret
     expect(await resolve("background")).toEqual({
       status: "registered",
       address: "synthetic@conduit.cash",
+      publicLookup: "verified",
     })
     await expect(delivery!).rejects.toMatchObject({ code: "background_paused" })
     expect((await f.service.get(f.wallet.walletId)).lightningAddress).toBeNull()
@@ -282,6 +292,7 @@ test("verified address remains available during refusal and pending metadata ret
     expect(await resolve("foreground")).toEqual({
       status: "registered",
       address: "synthetic@conduit.cash",
+      publicLookup: "verified",
     })
     await delivery
     expect(
@@ -545,3 +556,49 @@ test("automatic wakeups stay paused after signer refusal until an explicit retry
     await f.close()
   }
 })
+
+for (const alreadyRetired of [false, true]) {
+  test(
+    "retired receiving observations cannot queue stale metadata " +
+      (alreadyRetired ? "before dispatch" : "after a delayed domain read"),
+    async () => {
+      const controller = new AbortController()
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let reads = 0,
+        retained = false
+      if (alreadyRetired) controller.abort()
+      const result = resolveSparkLightningAddress({
+        walletId: "synthetic",
+        signal: controller.signal,
+        manager: {
+          getLightningAddress: async (_id, _register, _name, domain) => {
+            reads++
+            if (domain === "conduit.cash") return { status: "absent" }
+            await gate
+            return {
+              status: "registered",
+              username: "synthetic",
+              address: "synthetic@breez.tips",
+              lnurl: "lnurlp://breez.tips/lnurlp/synthetic",
+              publicLookup: "verified",
+              zapAdvertised: false,
+              receiveEvidence: "unverified",
+            }
+          },
+        },
+        assertCurrent: () => {},
+        onRegistered: () => {
+          retained = true
+        },
+      })
+      controller.abort()
+      release()
+      await expect(result).rejects.toMatchObject({ name: "AbortError" })
+      expect(retained).toBe(false)
+      expect(reads).toBe(alreadyRetired ? 0 : 2)
+    }
+  )
+}

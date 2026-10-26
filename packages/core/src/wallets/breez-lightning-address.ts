@@ -37,6 +37,8 @@ export type BreezAddressFailure =
   | "invalid_api_key"
   | "domain_unavailable"
   | "provider_unavailable"
+  | "rate_limited"
+  | "cancelled"
   | "invalid_response"
   | "registration_pending"
   | "names_exhausted"
@@ -44,7 +46,7 @@ export type BreezAddressFailure =
   | "invalid_username"
 
 export type BreezAddressState =
-  | { status: "unavailable"; reason: BreezAddressFailure }
+  | { status: "unavailable"; reason: BreezAddressFailure; retryAt?: number }
   | { status: "absent" }
   | {
       status: "registered"
@@ -52,6 +54,12 @@ export type BreezAddressState =
       username: string
       lnurl: string
       publicLookup: "verified" | "unavailable"
+      publicFailure?:
+        | "rate_limited"
+        | "not_found"
+        | "provider_unavailable"
+        | "invalid_response"
+      retryAt?: number
       zapAdvertised: boolean
       // Registration and public lookup are not live/offline settlement evidence.
       receiveEvidence: "unverified"
@@ -124,10 +132,28 @@ export function breezAddressMessage(input: {
 class AddressError extends Error {
   constructor(
     readonly reason: BreezAddressFailure,
-    readonly registrationMayHaveCommitted = false
+    readonly registrationMayHaveCommitted = false,
+    readonly retryAt?: number
   ) {
     super("Lightning address setup is unavailable.")
   }
+}
+
+export interface BreezAddressOperationOptions {
+  /** Retain resumable intent under the wallet lock, immediately before mutation. */
+  beforeRegister?(): Promise<void | (() => Promise<void>)>
+  /** A retained intent may retry only an exact, positively unsubmitted checkpoint. */
+  retryKnownNonSubmissionOnly?: boolean
+  signal?: AbortSignal
+}
+
+/** A missing/unexposed Retry-After still respects the gateway's one-minute window. */
+export function addressRetryAt(response: Response, now = Date.now()): number {
+  const value = response.headers.get("Retry-After")
+  const seconds = value && /^\d+$/.test(value) ? Number(value) : NaN
+  const date = value ? Date.parse(value) : NaN
+  const deadline = Number.isFinite(seconds) ? now + seconds * 1000 : date
+  return Number.isFinite(deadline) && deadline > now ? deadline : now + 60_000
 }
 
 export class BreezLightningAddressClient {
@@ -175,20 +201,26 @@ export class BreezLightningAddressClient {
   }
 
   // A read never registers. Every restore uses this endpoint, not a local address cache.
-  lookup(): Promise<BreezAddressState> {
-    return this.#run(false)
+  lookup(options?: BreezAddressOperationOptions): Promise<BreezAddressState> {
+    return this.#run(false, undefined, false, options)
   }
   ensure(
     username?: string,
-    options?: { activateApprovedName?: boolean }
+    options?: BreezAddressOperationOptions & { activateApprovedName?: boolean }
   ): Promise<BreezAddressState> {
-    return this.#run(true, username, options?.activateApprovedName === true)
+    return this.#run(
+      true,
+      username,
+      options?.activateApprovedName === true,
+      options
+    )
   }
 
   async #run(
     register: boolean,
     requestedUsername?: string,
-    activateApprovedName = false
+    activateApprovedName = false,
+    options?: BreezAddressOperationOptions
   ): Promise<BreezAddressState> {
     try {
       if (!["conduit.cash", "breez.tips"].includes(this.#domain))
@@ -203,7 +235,8 @@ export class BreezLightningAddressClient {
         sha256(new TextEncoder().encode(`${this.#domain}\0${identity}`))
       )
       return await this.#runExclusive(scope, async () => {
-        const existing = await this.#recover(identity)
+        options?.signal?.throwIfAborted()
+        const existing = await this.#recover(identity, options?.signal)
         const explicitCustomName =
           activateApprovedName &&
           register &&
@@ -214,7 +247,7 @@ export class BreezLightningAddressClient {
           (!explicitCustomName ||
             existing.username === requestedUsername?.trim().toLowerCase())
         )
-          return this.#present(existing)
+          return this.#present(existing, options?.signal)
         if (!register) return { status: "absent" }
         // The Worker owns custom-name approval, including names reserved from
         // ordinary selection. This flag grants no authority at the provider.
@@ -240,6 +273,13 @@ export class BreezLightningAddressClient {
         ) {
           throw new AddressError("storage_unavailable")
         }
+        if (
+          options?.retryKnownNonSubmissionOnly &&
+          (!explicitCustomName ||
+            checkpoint?.username !== selected ||
+            checkpoint?.phase !== "selected")
+        )
+          throw new AddressError("registration_pending")
         if (selected && checkpoint?.username !== selected) {
           // Recovery of this exact name resolves a completed submission;
           // a different pending name may still commit and must stay pinned.
@@ -250,6 +290,9 @@ export class BreezLightningAddressClient {
             throw new AddressError("registration_pending")
           checkpoint = { username: selected, attempts: 1, phase: "selected" }
         }
+        // Neither availability nor absent/old recovery disproves a lost commit.
+        if (explicitCustomName && checkpoint?.phase === "registering")
+          throw new AddressError("registration_pending")
         for (
           let attempt = checkpoint?.attempts ?? 1;
           attempt <= MAX_ATTEMPTS;
@@ -265,18 +308,23 @@ export class BreezLightningAddressClient {
             phase: checkpoint?.phase ?? "selected",
           }
           await this.#save(scope, pending)
-          const available = await this.#request(identity, "available", {
-            username,
-          })
+          const available = await this.#request(
+            identity,
+            "available",
+            {
+              username,
+            },
+            options?.signal
+          )
           if (typeof available?.available !== "boolean")
             throw new AddressError("invalid_response")
           if (!available.available) {
-            const recovered = await this.#recover(identity)
+            const recovered = await this.#recover(identity, options?.signal)
             if (
               recovered &&
               (!explicitCustomName || recovered.username === selected)
             )
-              return this.#present(recovered)
+              return this.#present(recovered, options?.signal)
             // An earlier request may still be in flight. Never advance its name.
             if (pending.phase === "registering")
               throw new AddressError("registration_pending")
@@ -292,15 +340,24 @@ export class BreezLightningAddressClient {
             continue
           }
           // Another device may have registered while availability was checked.
-          const raced = await this.#recover(identity)
+          const raced = await this.#recover(identity, options?.signal)
           if (raced && (!explicitCustomName || raced.username === selected))
-            return this.#present(raced)
+            return this.#present(raced, options?.signal)
+          options?.signal?.throwIfAborted()
+          const assertAuthorized = await options?.beforeRegister?.()
+          options?.signal?.throwIfAborted()
           await this.#save(scope, { ...pending, phase: "registering" })
           try {
-            await this.#request(identity, "register", {
-              username,
-              description: `Pay to ${username}@${this.#domain}`,
-            })
+            await this.#request(
+              identity,
+              "register",
+              {
+                username,
+                description: `Pay to ${username}@${this.#domain}`,
+              },
+              options?.signal,
+              assertAuthorized || undefined
+            )
           } catch (error) {
             // Clear only this fresh attempt's uncertainty, before recovery can fail.
             // A definite rejection cannot disprove an earlier ambiguous submission.
@@ -310,14 +367,15 @@ export class BreezLightningAddressClient {
               !error.registrationMayHaveCommitted
             )
               await this.#save(scope, pending)
+            options?.signal?.throwIfAborted()
             // A conflict may be a collision, replay, or another device's success.
             // Resolve identity ownership before making any decision to change name.
-            const recovered = await this.#recover(identity)
+            const recovered = await this.#recover(identity, options?.signal)
             if (
               recovered &&
               (!explicitCustomName || recovered.username === selected)
             )
-              return this.#present(recovered)
+              return this.#present(recovered, options?.signal)
             if (
               error instanceof AddressError &&
               error.reason === "names_exhausted"
@@ -337,21 +395,27 @@ export class BreezLightningAddressClient {
             }
             throw error
           }
-          const confirmed = await this.#recover(identity)
+          const confirmed = await this.#recover(identity, options?.signal)
           if (
             !confirmed ||
             (explicitCustomName && confirmed.username !== selected)
           )
             throw new AddressError("registration_pending")
-          return this.#present(confirmed)
+          return this.#present(confirmed, options?.signal)
         }
         throw new AddressError("names_exhausted")
       })
     } catch (error) {
       return {
         status: "unavailable",
-        reason:
-          error instanceof AddressError ? error.reason : "provider_unavailable",
+        reason: options?.signal?.aborted
+          ? "cancelled"
+          : error instanceof AddressError
+            ? error.reason
+            : "provider_unavailable",
+        ...(error instanceof AddressError && error.retryAt
+          ? { retryAt: error.retryAt }
+          : {}),
       }
     }
   }
@@ -380,9 +444,10 @@ export class BreezLightningAddressClient {
   }
 
   async #recover(
-    identity: string
+    identity: string,
+    signal?: AbortSignal
   ): Promise<{ username: string; address: string } | null> {
-    const result = await this.#request(identity, "recover")
+    const result = await this.#request(identity, "recover", {}, signal)
     if (result === null) return null
     const username =
       typeof result.username === "string" && isBreezUsername(result.username)
@@ -401,11 +466,14 @@ export class BreezLightningAddressClient {
   async #request(
     identity: string,
     operation: "recover" | "available" | "register",
-    fields: { username?: string; description?: string } = {}
+    fields: { username?: string; description?: string } = {},
+    signal?: AbortSignal,
+    assertAuthorized?: () => Promise<void>
   ): Promise<Record<string, unknown> | null> {
     let registrationMayHaveCommitted = false
     try {
       this.#assertActive()
+      signal?.throwIfAborted()
       const timestamp = Math.floor(this.#now() / 1000)
       if (!Number.isSafeInteger(timestamp) || timestamp < 0)
         throw new AddressError("invalid_configuration")
@@ -468,12 +536,17 @@ export class BreezLightningAddressClient {
           "Content-Type": "application/json",
         },
         body: requestBody,
-        signal: AbortSignal.timeout(10_000),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000),
         redirect: "error",
         credentials: "omit",
         cache: "no-store",
       }
       let response: Response
+      await assertAuthorized?.()
+      this.#assertActive()
+      signal?.throwIfAborted()
       registrationMayHaveCommitted = operation === "register"
       try {
         response = await this.#fetch(url, request)
@@ -489,6 +562,20 @@ export class BreezLightningAddressClient {
       if ([400, 401, 403, 404, 405, 422, 429].includes(response.status))
         registrationMayHaveCommitted = false
       this.#assertActive()
+      if (response.status === 429)
+        throw new AddressError(
+          "rate_limited",
+          false,
+          addressRetryAt(response, this.#now())
+        )
+      if (response.status >= 500)
+        throw new AddressError(
+          "provider_unavailable",
+          registrationMayHaveCommitted,
+          response.headers.has("Retry-After")
+            ? addressRetryAt(response, this.#now())
+            : undefined
+        )
       if (response.status === 401 || response.status === 403) {
         throw new AddressError("invalid_api_key")
       }
@@ -520,26 +607,36 @@ export class BreezLightningAddressClient {
     } catch (error) {
       throw new AddressError(
         error instanceof AddressError ? error.reason : "provider_unavailable",
-        registrationMayHaveCommitted
+        registrationMayHaveCommitted,
+        error instanceof AddressError ? error.retryAt : undefined
       )
     }
   }
 
-  async #present(value: {
-    username: string
-    address: string
-  }): Promise<BreezAddressState> {
+  async #present(
+    value: {
+      username: string
+      address: string
+    },
+    signal?: AbortSignal
+  ): Promise<BreezAddressState> {
     const publicEvidence = await verifyBreezPublicLookup(
       value.username,
       this.#fetch,
-      this.#domain
+      this.#domain,
+      { signal, now: this.#now }
     )
     this.#assertActive()
+    signal?.throwIfAborted()
     return {
       status: "registered",
       ...value,
       lnurl: `https://${this.#domain}/.well-known/lnurlp/${value.username}`,
       publicLookup: publicEvidence.status,
+      ...(publicEvidence.reason
+        ? { publicFailure: publicEvidence.reason }
+        : {}),
+      ...(publicEvidence.retryAt ? { retryAt: publicEvidence.retryAt } : {}),
       zapAdvertised: publicEvidence.zapAdvertised,
       receiveEvidence: "unverified",
     }
@@ -549,19 +646,45 @@ export class BreezLightningAddressClient {
 export async function verifyBreezPublicLookup(
   username: string,
   fetcher: BreezAddressFetch = fetch,
-  domain: string = "conduit.cash"
-): Promise<{ status: "verified" | "unavailable"; zapAdvertised: boolean }> {
+  domain: string = "conduit.cash",
+  options?: { signal?: AbortSignal; now?: () => number }
+): Promise<{
+  status: "verified" | "unavailable"
+  zapAdvertised: boolean
+  reason?:
+    "rate_limited" | "not_found" | "provider_unavailable" | "invalid_response"
+  retryAt?: number
+}> {
+  let reason: "provider_unavailable" | "invalid_response" =
+    "provider_unavailable"
   try {
     if (!isBreezUsername(username)) throw new Error()
     const response = await fetcher(
       `https://${domain}/.well-known/lnurlp/${username}`,
       {
-        signal: AbortSignal.timeout(10_000),
+        signal: options?.signal
+          ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)])
+          : AbortSignal.timeout(10_000),
         redirect: "error",
         credentials: "omit",
         cache: "no-store",
       }
     )
+    if (!response.ok)
+      return {
+        status: "unavailable",
+        zapAdvertised: false,
+        reason:
+          response.status === 429
+            ? "rate_limited"
+            : response.status === 404
+              ? "not_found"
+              : "provider_unavailable",
+        ...(response.status === 429
+          ? { retryAt: addressRetryAt(response, options?.now?.()) }
+          : {}),
+      }
+    reason = "invalid_response"
     const text = await response.text()
     if (!response.ok || text.length > 16_384) throw new Error()
     const data = JSON.parse(text)
@@ -596,6 +719,6 @@ export async function verifyBreezPublicLookup(
         /^[a-f0-9]{64}$/.test(data.nostrPubkey),
     }
   } catch {
-    return { status: "unavailable", zapAdvertised: false }
+    return { status: "unavailable", zapAdvertised: false, reason }
   }
 }
