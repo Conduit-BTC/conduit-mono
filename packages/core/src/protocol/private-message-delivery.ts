@@ -346,6 +346,7 @@ export async function retryPrivateDeliveries(
 ): Promise<Map<string, PublishWithPlannerResult>> {
   if (options.replayAcknowledged && !onlyId)
     throw new Error("Exact replay requires one selected delivery")
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   const attempts = new Map<string, PublishWithPlannerResult>()
   const authorization = getProtectedReadAuthorization(principal)
   if (!authorization)
@@ -368,7 +369,9 @@ export async function retryPrivateDeliveries(
         (!onlyId || row.id === store.key(onlyId))
     )
     .toArray()
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   for (const row of rows) {
+    assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
     store.assertCurrent()
     const id = row.id.slice(principal.length + 1)
     const claimant = crypto.randomUUID()
@@ -378,6 +381,8 @@ export async function retryPrivateDeliveries(
       async () => {
         store.assertCurrent()
         const current = await store.database.commerceInboxDeliveries.get(row.id)
+        assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
+        store.assertCurrent()
         assertInboxTransportDeliveryRow(current)
         if (
           !current ||
@@ -453,17 +458,30 @@ export async function resumePrivateDelivery(
   rumorId: string,
   recipient: string,
   publisher = publishWithPlanner,
-  onDeliveryStarting?: () => void | Promise<void>
+  onDeliveryStarting?: () => void | Promise<void>,
+  options: Pick<PublishPrivateMessageInput, "shouldContinue"> = {}
 ) {
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   const id = `delivery:${rumorId}`
   let row = await store.database.commerceInboxDeliveries.get(store.key(id))
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   store.assertCurrent()
   assertInboxTransportDeliveryRow(row)
   if (!row) return null
   // A retained immutable send needs the same caller fence before recovery I/O.
+  // The checkpoint may await persistence while the caller operation is canceled.
   await onDeliveryStarting?.()
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
+  store.assertCurrent()
   if (row.state !== "accepted") {
-    await retryPrivateDeliveries(store.principal, publisher, id, store)
+    await retryPrivateDeliveries(
+      store.principal,
+      publisher,
+      id,
+      store,
+      undefined,
+      options
+    )
     row = await store.database.commerceInboxDeliveries.get(store.key(id))
     store.assertCurrent()
     assertInboxTransportDeliveryRow(row)
@@ -480,7 +498,22 @@ export async function resumePrivateDelivery(
   )
   const selfId = `${id}:self`
   try {
-    await retryPrivateDeliveries(store.principal, publisher, selfId, store)
+    // Retain the saved history status even when cancellation prevents its retry.
+    const retainedSelf = await store.database.commerceInboxDeliveries.get(
+      store.key(selfId)
+    )
+    assertInboxTransportDeliveryRow(retainedSelf)
+    if (retainedSelf)
+      self = (await store.open<PrivateDeliveryJob>(retainedSelf.value, selfId))
+        .legs[0]
+    await retryPrivateDeliveries(
+      store.principal,
+      publisher,
+      selfId,
+      store,
+      undefined,
+      options
+    )
     const row = await store.database.commerceInboxDeliveries.get(
       store.key(selfId)
     )
@@ -1063,7 +1096,8 @@ export async function publishPrivateMessage(
       stableRumor.id,
       recipientPubkey,
       input.publishFn,
-      input.onRecipientDeliveryStarting
+      input.onRecipientDeliveryStarting,
+      { shouldContinue: input.shouldContinue }
     )
     if (resumed) return resumed
   }

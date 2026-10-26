@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
   createInMemoryInboxDeclarationEvidenceRepository,
@@ -27,6 +27,7 @@ import { sendAccountInboxRumor } from "../packages/core/src/protocol/inbox-send"
 import {
   publishPrivateMessage,
   retryPrivateDeliveries,
+  resumePrivateDelivery,
   retryPrivateMessageWraps,
   type PublishPrivateMessageInput,
   type PrivateDeliveryJob,
@@ -369,6 +370,296 @@ function acknowledged(relay: string) {
 }
 
 describe("private delivery composed contract", () => {
+  it.each(["recipient", "self"] as const)(
+    "stops automatic retained %s recovery after a canceled starting callback",
+    async (lane) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 16)
+      input.selfCopy = lane === "self"
+      input.publishFn = (async (_event, options) => {
+        if (
+          lane === "recipient" ||
+          options.exclusiveRelayUrls?.[0] === SELF_RELAY
+        )
+          throw new Error("retained transport unavailable")
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      if (lane === "recipient")
+        await expect(publishPrivateMessage(input)).rejects.toThrow(
+          "retained transport unavailable"
+        )
+      else await publishPrivateMessage(input)
+      await updateInboxDeclaration(fixture, fixture.recipientSecret, [
+        RECIPIENT_RELAY,
+      ])
+      await updateInboxDeclaration(fixture, fixture.senderSecret, [SELF_RELAY])
+      const signs = fixture.signCalls()
+      const before = await fixture.database.commerceInboxDeliveries.toArray()
+      let current = true
+      let entered!: () => void
+      let release!: () => void
+      const starting = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      input.shouldContinue = () => current
+      input.onRecipientDeliveryStarting = async () => {
+        entered()
+        await held
+      }
+      let publications = 0
+      input.publishFn = (async (_event, options) => {
+        publications++
+        return acknowledged(options.exclusiveRelayUrls![0]!)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      const operation = publishPrivateMessage(input)
+      await starting
+      current = false
+      release()
+      await expect(operation).rejects.toThrow("signer session changed")
+      expect(publications).toBe(0)
+      expect(fixture.signCalls()).toBe(signs)
+      expect(await fixture.database.commerceInboxDeliveries.toArray()).toEqual(
+        before
+      )
+    }
+  )
+
+  it("stops automatic resume canceled during retained database lookup", async () => {
+    const fixture = await setup()
+    const { wrap } = await stageFailedRecipientWrap(fixture)
+    await updateInboxDeclaration(fixture, fixture.recipientSecret, [
+      RECIPIENT_RELAY,
+    ])
+    const input = sendInput(fixture, 14)
+    // Reuse the exact staged rumor rather than preparing another message.
+    const decoded = await unwrapPrivateMessageEnvelope(
+      wrap,
+      fixture.recipientSigner
+    )
+    input.rumor = decoded
+    input.selfCopy = false
+    let current = true
+    let entered!: () => void
+    let release!: () => void
+    const reading = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const table = fixture.database.commerceInboxDeliveries
+    const original = table.get.bind(table)
+    const lookup = spyOn(table, "get").mockImplementationOnce((async (
+      ...args: Parameters<typeof table.get>
+    ) => {
+      const row = await original(...args)
+      entered()
+      await held
+      return row
+    }) as typeof table.get)
+    let publications = 0
+    input.shouldContinue = () => current
+    input.publishFn = (async () => {
+      publications++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    const operation = publishPrivateMessage(input)
+    await reading
+    current = false
+    release()
+    try {
+      await expect(operation).rejects.toThrow("signer session changed")
+    } finally {
+      lookup.mockRestore()
+    }
+    expect(publications).toBe(0)
+  })
+
+  it("rejects already canceled direct resume and retry before retained work", async () => {
+    const fixture = await setup()
+    const { id } = await stageFailedRecipientWrap(fixture)
+    let publications = 0
+    const publisher = (async () => {
+      publications++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    const lookup = spyOn(fixture.database.commerceInboxDeliveries, "get")
+    try {
+      await expect(
+        resumePrivateDelivery(
+          fixture.store,
+          id.slice("delivery:".length),
+          fixture.recipient,
+          publisher,
+          undefined,
+          { shouldContinue: () => false }
+        )
+      ).rejects.toThrow("signer session changed")
+      expect(lookup).not.toHaveBeenCalled()
+      await expect(
+        retryForFixture(
+          fixture,
+          fixture.sender,
+          publisher,
+          id,
+          fixture.store,
+          undefined,
+          { shouldContinue: () => false }
+        )
+      ).rejects.toThrow("signer session changed")
+    } finally {
+      lookup.mockRestore()
+    }
+    expect(publications).toBe(0)
+  })
+
+  it.each(["same", "different"] as const)(
+    "blocks a %s-identity session replacement during retained starting work",
+    async (identity) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 16)
+      input.selfCopy = false
+      input.publishFn = (async () => {
+        throw new Error("retained transport unavailable")
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      await expect(publishPrivateMessage(input)).rejects.toThrow(
+        "retained transport unavailable"
+      )
+      let publications = 0
+      input.publishFn = (async () => {
+        publications++
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      input.onRecipientDeliveryStarting = async () => {
+        const replacement =
+          identity === "same"
+            ? keySigner(fixture.senderSecret)
+            : fixture.recipientSigner
+        installProtectedReadSigner(
+          replacement,
+          identity === "same" ? fixture.sender : fixture.recipient,
+          () => true
+        )
+      }
+      await expect(publishPrivateMessage(input)).rejects.toThrow()
+      expect(publications).toBe(0)
+    }
+  )
+
+  it("automatically resumes the exact saved recipient bytes without signing another message", async () => {
+    const fixture = await setup()
+    const input = sendInput(fixture, 16)
+    input.selfCopy = false
+    let savedBytes = ""
+    input.publishFn = (async (event) => {
+      savedBytes = JSON.stringify(event)
+      throw new Error("retained transport unavailable")
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    await expect(publishPrivateMessage(input)).rejects.toThrow(
+      "retained transport unavailable"
+    )
+    await updateInboxDeclaration(fixture, fixture.recipientSecret, [
+      RECIPIENT_RELAY,
+    ])
+    const signs = fixture.signCalls()
+    let publications = 0
+    let current = true
+    input.shouldContinue = () => current
+    const open = fixture.store.open.bind(fixture.store)
+    const opening = spyOn(fixture.store, "open").mockImplementation(
+      async (...args) => {
+        const result = await open(...args)
+        current = false
+        return result
+      }
+    )
+    input.publishFn = (async (event, options) => {
+      expect(JSON.stringify(event) === savedBytes).toBe(true)
+      expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
+      publications++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    try {
+      await expect(publishPrivateMessage(input)).rejects.toThrow(
+        "signer session changed"
+      )
+    } finally {
+      opening.mockRestore()
+    }
+    expect(publications).toBe(0)
+    expect(fixture.signCalls()).toBe(signs)
+    current = true
+    const resumed = await publishPrivateMessage(input)
+    expect(JSON.stringify(resumed.wrappedToRecipient) === savedBytes).toBe(true)
+    expect(fixture.signCalls()).toBe(signs)
+    expect(publications).toBe(1)
+    await publishPrivateMessage(input)
+    expect(publications).toBe(1)
+    expect(await fixture.database.commerceInboxDeliveries.count()).toBe(1)
+  })
+
+  it("preserves recipient ACK when cancellation stops the saved self-copy and reuses exact bytes later", async () => {
+    const fixture = await setup()
+    const input = sendInput(fixture, 16)
+    input.publishFn = (async (_event, options) => {
+      if (options.exclusiveRelayUrls?.[0] === SELF_RELAY)
+        throw new Error("history unavailable")
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    const initial = await publishPrivateMessage(input)
+    expect(initial.selfCopyError).toBeTruthy()
+    await updateInboxDeclaration(fixture, fixture.senderSecret, [SELF_RELAY])
+    const signs = fixture.signCalls()
+    let current = true
+    const publications: string[] = []
+    const open = fixture.store.open.bind(fixture.store)
+    const opening = spyOn(fixture.store, "open").mockImplementation(
+      async (...args) => {
+        const result = await open(...args)
+        if (args[1] === `delivery:${input.rumor.id}:self`) current = false
+        return result
+      }
+    )
+    input.shouldContinue = () => current
+    input.publishFn = (async (event, options) => {
+      publications.push(JSON.stringify(event))
+      return acknowledged(options.exclusiveRelayUrls![0]!)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    let resumed
+    try {
+      resumed = await publishPrivateMessage(input)
+    } finally {
+      opening.mockRestore()
+    }
+    expect(
+      JSON.stringify(resumed.wrappedToRecipient) ===
+        JSON.stringify(initial.wrappedToRecipient)
+    ).toBe(true)
+    expect(resumed.recipientDelivery.successfulRelayUrls).toEqual([
+      RECIPIENT_RELAY,
+    ])
+    expect(publications).toEqual([])
+    expect(resumed.selfCopyError).toBeTruthy()
+    expect(
+      JSON.stringify(resumed.wrappedToSelf) ===
+        JSON.stringify(initial.wrappedToSelf)
+    ).toBe(true)
+    current = true
+    const recovered = await publishPrivateMessage(input)
+    expect(publications).toEqual([JSON.stringify(initial.wrappedToSelf)])
+    expect(
+      JSON.stringify(recovered.wrappedToRecipient) ===
+        JSON.stringify(initial.wrappedToRecipient)
+    ).toBe(true)
+    expect(fixture.signCalls()).toBe(signs)
+    expect(await fixture.database.commerceInboxDeliveries.count()).toBe(2)
+    await publishPrivateMessage(input)
+    expect(publications).toHaveLength(1)
+  })
+
   it("prevents staging and relay I/O when the caller attempt fence fails", async () => {
     const fixture = await setup()
     const input = sendInput(fixture, 16)
