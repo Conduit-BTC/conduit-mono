@@ -104,33 +104,38 @@ for (const choice of ["untouched", "manual", "profile"] as const) {
       await page.addInitScript((value) => {
         window.__invoiceSourceConversations = value
       }, conversations)
-      await page.route("**/src/routes/orders.tsx*", async (route) => {
-        const response = await route.fetch()
-        let body = await response.text()
-        const walletSeam = "const nwc = useMerchantPaymentAutomation();"
-        const inboxSeam = "const ordersQuery = inbox.merchant;"
-        for (const seam of [walletSeam, inboxSeam]) {
-          if (body.split(seam).length !== 2)
-            throw new Error("Orders fixture input seam changed")
-        }
-        body = body
-          .replace(
-            walletSeam,
-            `const realNwc = useMerchantPaymentAutomation();
+      await page.route(
+        (url) =>
+          url.pathname.endsWith("/src/routes/orders.tsx") &&
+          url.searchParams.get("tsr-split") === "component",
+        async (route) => {
+          const response = await route.fetch()
+          let body = await response.text()
+          const walletSeam = "const nwc = useMerchantPaymentAutomation();"
+          const inboxSeam = "const ordersQuery = inbox.merchant;"
+          for (const seam of [walletSeam, inboxSeam]) {
+            if (body.split(seam).length !== 2)
+              throw new Error("Orders fixture input seam changed")
+          }
+          body = body
+            .replace(
+              walletSeam,
+              `const realNwc = useMerchantPaymentAutomation();
           const [receiving, setReceiving] = useState(null);
           const nwc = { ...realNwc, receivingWalletId: receiving };
           window.__invoiceSourceFixture = { receiving, setReceiving };`
-          )
-          .replace(
-            inboxSeam,
-            "const ordersQuery = { ...inbox.merchant, isPending: false, error: null, data: { data: window.__invoiceSourceConversations } };"
-          )
-          .replace(
-            /const profileLud16 =[\s\S]*?;/,
-            `const profileLud16 = ${JSON.stringify("merchant@invoice-source.invalid")};`
-          )
-        await route.fulfill({ response, body })
-      })
+            )
+            .replace(
+              inboxSeam,
+              "const ordersQuery = { ...inbox.merchant, isPending: false, error: null, data: { data: window.__invoiceSourceConversations } };"
+            )
+            .replace(
+              /const profileLud16 =[\s\S]*?;/,
+              `const profileLud16 = ${JSON.stringify("merchant@invoice-source.invalid")};`
+            )
+          await route.fulfill({ response, body })
+        }
+      )
       await page.goto(`${merchantUrl}/orders?order=source-first`)
       const source = page.locator("#invoice-source")
       await expect(source).toHaveText("Profile Lightning address")

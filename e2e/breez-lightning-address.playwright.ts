@@ -56,7 +56,7 @@ test("Breez address controls preserve the invoice fallback when unconfigured @ma
     "Lightning addresses are not enabled in this build."
   )
   await expect(control).toContainText(
-    "You can create a Lightning invoice below"
+    "You can still receive with a Lightning invoice."
   )
   await expect(control.getByRole("button")).toHaveCount(0)
 })
@@ -325,6 +325,9 @@ test("Breez receive setup exposes an address and QR after verified public lookup
     control.getByRole("img", { name: "Reusable Lightning address QR code" })
   ).toBeVisible()
   await expect(
-    control.getByRole("button", { name: "Copy Lightning address" })
+    control.getByRole("button", { name: "Copy address" })
   ).toBeVisible()
+  await expect(control).not.toContainText(
+    "You can still receive with a Lightning invoice."
+  )
 })

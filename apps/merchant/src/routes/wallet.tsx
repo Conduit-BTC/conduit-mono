@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
 import { useWalletBalanceUpdates } from "@conduit/core/hooks/useWallets"
-import { useAuth } from "@conduit/core"
+import { useAuth, useBtcUsdRate } from "@conduit/core"
 import {
   useWalletAddress,
   type WalletAddressSuggestion,
@@ -11,6 +11,7 @@ import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomat
 export const Route = createFileRoute("/wallet")({ component: WalletsPage })
 function WalletsPage() {
   const auth = useAuth()
+  const rateQuery = useBtcUsdRate()
   const automation = useMerchantPaymentAutomation()
   const wallets = automation.wallets
   useWalletBalanceUpdates(wallets)
@@ -25,6 +26,7 @@ function WalletsPage() {
   return (
     <Wallets
       auth={auth}
+      rateQuote={rateQuery.data ?? null}
       wallets={wallets}
       footer={
         <div

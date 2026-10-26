@@ -108,6 +108,7 @@ async function mountInvoice(
       const state = window as typeof window & {
         __invoicePreparationCalls: number
         __invoiceUseCalls: number
+        __allowInvoiceUse: boolean
         __invoiceReportCalls: number
         __invoiceRenewCalls: number
         __releaseInvoice: () => void
@@ -118,6 +119,7 @@ async function mountInvoice(
       }
       state.__invoicePreparationCalls = 0
       state.__invoiceUseCalls = 0
+      state.__allowInvoiceUse = false
       state.__invoiceReportCalls = 0
       state.__invoiceRenewCalls = 0
       state.__readBoundInvoice = () => db.orderLifecycles.get(order.orderId)
@@ -158,7 +160,7 @@ async function mountInvoice(
             boundMerchantInvoiceExpiresAt: lifecycle.invoiceExpiresAt ?? null,
             onBeforeInvoiceUse: () => {
               state.__invoiceUseCalls += 1
-              return false
+              return state.__allowInvoiceUse
             },
             onMarkPaid: () => {
               if (!direct)
@@ -221,8 +223,17 @@ test("merchant invoice appears automatically after exact persistent binding @mar
   await expect(host.getByRole("button", { name: "Copy invoice" })).toBeVisible()
   const qr = host.locator("svg:has(> title)")
   await expect(qr).toHaveCount(0)
+  // Persistent binding does not bypass the current payment-use guard.
+  await host.getByRole("button", { name: "Show QR code" }).click()
+  await expect(qr).toHaveCount(0)
+  expect(await page.evaluate(() => window.__invoiceUseCalls)).toBe(1)
+  await page.evaluate(() => {
+    ;(window as Window & { __allowInvoiceUse: boolean }).__allowInvoiceUse =
+      true
+  })
   await host.getByRole("button", { name: "Show QR code" }).click()
   await expect(qr).toHaveCount(1)
+  expect(await page.evaluate(() => window.__invoiceUseCalls)).toBe(2)
   await expect(qr).toBeVisible()
   expect(await page.evaluate(() => window.__readBoundInvoice())).toMatchObject({
     invoice,
