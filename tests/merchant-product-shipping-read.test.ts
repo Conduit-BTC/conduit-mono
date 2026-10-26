@@ -721,6 +721,57 @@ describe("Merchant storefront shipping preparation", () => {
     }
   }
 
+  for (const edit of ["untouched", "fixed", "digital"] as const) {
+    it(`refreshes newer signed child terms while preserving ${edit} fulfillment intent`, async () => {
+      const resolved = await readFamily()
+      const previous = editorForm(resolved)
+      const current = {
+        ...previous,
+        title: "Unsaved shoes",
+        variations:
+          edit === "untouched"
+            ? previous.variations
+            : updateProductVariationOverride(
+                previous.variations,
+                previous.variations.rows[0]!.identity,
+                edit === "digital" ? "format" : "shippingCost",
+                edit === "digital" ? "digital" : "11"
+              ),
+      }
+      shippingEvents = [
+        shipping[0]!,
+        finalizeEvent(
+          {
+            kind: 30406,
+            created_at: createdAt + 1,
+            content: "Synthetic newer terms",
+            tags: shipping[1]!.tags.map((tag) =>
+              tag[0] === "price" ? ["price", "9", "USD"] : tag
+            ),
+          },
+          secret
+        ),
+      ]
+      const prepared = editorForm(await readFamily())
+      expect(prepared.variations.rows[0]?.shippingCost).toBe("9")
+      const reconciled = reconcileProductFormFulfillmentResolution(
+        current,
+        previous,
+        prepared
+      )
+      expect(reconciled.title).toBe("Unsaved shoes")
+      expect(reconciled.variations.rows[0]?.shippingCost).toBe(
+        edit === "untouched" ? "9" : edit === "fixed" ? "11" : "7"
+      )
+      expect(reconciled.variations.rows[0]?.format).toBe(
+        edit === "digital" ? "digital" : previous.variations.rows[0]!.format
+      )
+      expect(
+        getProductVariationFormError(reconciled.variations, "USD")
+      ).toBeNull()
+    })
+  }
+
   for (const cancel of ["account", "signal"] as const) {
     it(`discards preparation when the ${cancel} changes during the shipping read`, async () => {
       let active = true

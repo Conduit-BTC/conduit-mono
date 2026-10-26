@@ -268,7 +268,8 @@ export function reconcileProductFormFulfillmentResolution(
       : {}),
     variations: reconcileProductVariationDraftResolution(
       { supported: true, state: prepared.variations },
-      current.variations
+      current.variations,
+      previous.variations
     ),
   }
 }

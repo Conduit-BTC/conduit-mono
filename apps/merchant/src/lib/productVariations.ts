@@ -911,8 +911,7 @@ export function setProductVariationCombinationIncluded(
 function markVariationShippingEdit(
   row: ProductVariationRow
 ): ProductVariationRow {
-  // Track deliberate replacements even when the original terms were resolved,
-  // so later evidence loss cannot turn authored fulfillment into uncertainty.
+  if (!row.shippingResolution) return row
   const hasExplicitReplacement =
     row.format === "digital" ||
     row.inheritShipping ||
@@ -920,7 +919,6 @@ function markVariationShippingEdit(
   if (hasExplicitReplacement) {
     return { ...row, shippingResolution: "replacement" }
   }
-  if (!row.shippingResolution) return row
   return {
     ...row,
     shippingResolution: "unresolved",
@@ -1592,13 +1590,20 @@ export function mergeProductVariationAuthoringState(
 
 export function reconcileProductVariationDraftResolution(
   published: ProductVariationFormResult,
-  draft: ProductVariationFormState
+  draft: ProductVariationFormState,
+  previous?: ProductVariationFormState
 ): ProductVariationFormState {
   const draftState = reconcileProductVariationForm(draft)
   if (!published.supported || !published.state.enabled || !draftState.enabled) {
     return draftState
   }
 
+  const previousRows = new Map(
+    previous?.rows.map((row) => [
+      getCombinationIdentity(row.specifications),
+      row,
+    ])
+  )
   const publishedRows = new Map(
     published.state.rows.map((row) => [
       getCombinationIdentity(row.specifications),
@@ -1628,10 +1633,36 @@ export function reconcileProductVariationDraftResolution(
       ) {
         return row
       }
+      const previousRow = previousRows.get(
+        getCombinationIdentity(row.specifications)
+      )
+      const hasResolvedBaseline =
+        !!previousRow?.dTag &&
+        previousRow.dTag === row.dTag &&
+        previousRow.shippingResolution !== "unresolved"
+      const shippingEdited =
+        previousRow &&
+        (previousRow.format !== row.format ||
+          previousRow.shippingCost !== row.shippingCost ||
+          previousRow.inheritShipping !== row.inheritShipping)
       if (publishedRow.shippingResolution === "unresolved") {
-        return { ...row, shippingResolution: "unresolved" }
+        // Evidence loss cannot veto a deliberate replacement of previously
+        // resolved terms. New rows and untouched terms still use existing guards.
+        const editedReplacement =
+          hasResolvedBaseline &&
+          shippingEdited &&
+          (row.format === "digital" ||
+            row.inheritShipping ||
+            !!row.shippingCost.trim())
+        return {
+          ...row,
+          shippingResolution: editedReplacement ? "replacement" : "unresolved",
+        }
       }
-      if (row.shippingResolution === "unresolved") {
+      if (
+        row.shippingResolution === "unresolved" ||
+        (hasResolvedBaseline && !shippingEdited)
+      ) {
         const resolvedRow = {
           ...row,
           format: publishedRow.format,
