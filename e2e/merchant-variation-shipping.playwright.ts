@@ -16,16 +16,25 @@ import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
-for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
+for (const scenario of [
+  "ready",
+  "late",
+  "restored",
+  "replacement",
+  "newer",
+] as const) {
+  const newer = scenario === "newer"
   const delayed = scenario === "late"
   const restoring = scenario === "restored" || scenario === "replacement"
   const replacement = scenario === "replacement"
   test(
-    restoring
-      ? `fixed family restores ${replacement ? "explicit fulfillment edits" : "current signed parent terms"} after unavailable reads @merchant`
-      : delayed
-        ? "fixed family refresh preserves an open draft and restores retained signed terms after restart @merchant"
-        : "fixed family reopen loads exact signed shipping before changing and publishing terms @merchant",
+    newer
+      ? "fixed family refresh adopts newer signed child terms before publication @merchant"
+      : restoring
+        ? `fixed family restores ${replacement ? "explicit fulfillment edits" : "current signed parent terms"} after unavailable reads @merchant`
+        : delayed
+          ? "fixed family refresh preserves an open draft and restores retained signed terms after restart @merchant"
+          : "fixed family reopen loads exact signed shipping before changing and publishing terms @merchant",
     async ({ page }, testInfo) => {
       test.setTimeout(120_000)
       page.setDefaultTimeout(25_000)
@@ -137,6 +146,28 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
         await expect(warning).toBeVisible()
         await publishTestRelayEvents(shipping)
       }
+      if (newer) {
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          "7"
+        )
+        await publishTestRelayEvents([
+          finalizeEvent(
+            {
+              kind: 30406,
+              created_at: createdAt + 1,
+              content: "Synthetic newer fixed terms",
+              tags: shipping[1]!.tags.map((tag) =>
+                tag[0] === "price" ? ["price", "9", "USD"] : tag
+              ),
+            },
+            secretKey
+          ),
+        ])
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          "9",
+          { timeout: 30_000 }
+        )
+      }
       if (restoring) {
         await expect.poll(() => blockedReads).toBeGreaterThan(0)
         await expect(warning).toBeVisible()
@@ -213,7 +244,7 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
       await expect(warning).toBeHidden({ timeout: 30_000 })
       await expect(edit.locator("#product-shipping")).toHaveValue("5")
       await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
-        "7"
+        newer ? "9" : "7"
       )
       await expect(edit.getByLabel("Title", { exact: true })).toHaveValue(
         "Edited fixed shoes"
@@ -251,7 +282,7 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
             exact: true,
           })
           .click()
-      } else {
+      } else if (!newer) {
         await edit.locator("#product-shipping").fill("6")
         await edit.locator("#product-variation-shipping-0").fill("9")
       }
@@ -295,7 +326,9 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
         .filter((event) => event.kind === 30406)
         .map((event) => event.tags.find(([name]) => name === "price")?.[1])
         .sort()
-      expect(amounts).toEqual(delayed ? ["5", "7"] : ["6", "9"])
+      expect(amounts).toEqual(
+        delayed ? ["5", "7"] : newer ? ["5", "9"] : ["6", "9"]
+      )
       expect(
         published.find(
           (event) =>

@@ -2292,6 +2292,7 @@ function ProductsPage() {
         ...editing.variationForm,
         state: reconcileProductVariationDraftResolution(
           prepared.variationForm,
+          editing.variationForm.state,
           editing.variationForm.state
         ),
       },
