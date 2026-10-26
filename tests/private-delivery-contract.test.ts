@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test"
+import { isDeepStrictEqual } from "node:util"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
 import {
   createInMemoryInboxDeclarationEvidenceRepository,
@@ -421,9 +422,12 @@ describe("private delivery composed contract", () => {
       await expect(operation).rejects.toThrow("signer session changed")
       expect(publications).toBe(0)
       expect(fixture.signCalls()).toBe(signs)
-      expect(await fixture.database.commerceInboxDeliveries.toArray()).toEqual(
-        before
-      )
+      expect(
+        isDeepStrictEqual(
+          await fixture.database.commerceInboxDeliveries.toArray(),
+          before
+        )
+      ).toBe(true)
     }
   )
 
@@ -641,7 +645,7 @@ describe("private delivery composed contract", () => {
     expect(resumed.recipientDelivery.successfulRelayUrls).toEqual([
       RECIPIENT_RELAY,
     ])
-    expect(publications).toEqual([])
+    expect(publications.length).toBe(0)
     expect(resumed.selfCopyError).toBeTruthy()
     expect(
       JSON.stringify(resumed.wrappedToSelf) ===
@@ -649,7 +653,8 @@ describe("private delivery composed contract", () => {
     ).toBe(true)
     current = true
     const recovered = await publishPrivateMessage(input)
-    expect(publications).toEqual([JSON.stringify(initial.wrappedToSelf)])
+    expect(publications.length).toBe(1)
+    expect(publications[0] === JSON.stringify(initial.wrappedToSelf)).toBe(true)
     expect(
       JSON.stringify(recovered.wrappedToRecipient) ===
         JSON.stringify(initial.wrappedToRecipient)
