@@ -30,6 +30,7 @@ import {
   safeSmokeDiagnostics,
   smokeFailureContextFromAnnotations,
 } from "../e2e/helpers/smoke-diagnostics"
+import { observeEventFeeDropdown } from "../e2e/helpers/event-fee-dropdown-diagnostics"
 
 import {
   PrivacySafeSmokeReporter,
@@ -112,6 +113,123 @@ describe("privacy-safe Playwright smoke reporter", () => {
     expect(classifySmokeBrowserError(timeout)).toBe("timeout")
     expect(classifySmokeBrowserError({ message: privateText })).toBe("unknown")
   })
+
+  browserIt(
+    "retains dropdown dismissal and obstruction without DOM contents",
+    async () => {
+      const browser = await chromium.launch()
+      const sentinel = "private-" + crypto.randomUUID()
+      try {
+        const page = await browser.newPage()
+        await page.setContent(
+          `<label for="${sentinel}">Fee setting</label><button id="${sentinel}" role="combobox" aria-expanded="false">${sentinel}</button>`
+        )
+        await page.evaluate((sentinel) => {
+          const trigger = document.querySelector("button")!
+          trigger.onclick = () => {
+            trigger.setAttribute("aria-expanded", "true")
+            trigger.setAttribute("aria-controls", "private-listbox")
+            const listbox = document.createElement("div")
+            listbox.id = "private-listbox"
+            listbox.setAttribute("role", "listbox")
+            listbox.innerHTML = `<button role="option">${sentinel}</button>`
+            document.body.append(listbox)
+          }
+          window.addEventListener("resize", () => {
+            trigger.setAttribute("aria-expanded", "false")
+            document.getElementById("private-listbox")?.remove()
+          })
+        }, sentinel)
+        const probe = await observeEventFeeDropdown(page)
+        try {
+          await page.getByRole("combobox", { name: "Fee setting" }).click()
+          await browserExpect
+            .poll(() => probe.evaluate((value) => value.read().optionCount))
+            .toBe(1)
+          await page.evaluate(() => {
+            const option = document.querySelector('[role="option"]')!
+            const rect = option.getBoundingClientRect()
+            const cover = document.createElement("div")
+            cover.style.cssText = `position:fixed;left:${rect.x}px;top:${rect.y}px;width:${rect.width}px;height:${rect.height}px;z-index:100`
+            document.body.append(cover)
+          })
+          const obstructed = await probe.evaluate((value) => value.read())
+          expect(obstructed).toMatchObject({
+            triggerExpanded: true,
+            optionCount: 1,
+            visibleOptionCount: 1,
+            targetOptionHitTarget: false,
+          })
+          await page.evaluate(() => window.dispatchEvent(new Event("resize")))
+          await browserExpect
+            .poll(() => probe.evaluate((value) => value.read().listboxRemoved))
+            .toBe(true)
+          const dismissed = await probe.evaluate((value) => value.read())
+          expect(dismissed).toMatchObject({
+            observationAvailable: true,
+            triggerConnected: true,
+            triggerExpanded: false,
+            pointerDownOnTrigger: true,
+            listboxMounted: true,
+            listboxRemoved: true,
+            optionCount: 0,
+            resizeWhileOpen: true,
+          })
+          expect(JSON.stringify([obstructed, dismissed])).not.toContain(
+            sentinel
+          )
+        } finally {
+          await probe.evaluate((value) => value.dispose())
+          await probe.dispose()
+        }
+      } finally {
+        await browser.close()
+      }
+    }
+  )
+
+  browserIt(
+    "distinguishes a replaced dropdown trigger and disposes listeners",
+    async () => {
+      const browser = await chromium.launch()
+      try {
+        const page = await browser.newPage()
+        await page.setContent(
+          '<label for="fee">Fee setting</label><button id="fee" role="combobox" aria-expanded="false">private value</button>'
+        )
+        const probe = await observeEventFeeDropdown(page)
+        try {
+          await page.evaluate(() => {
+            const trigger = document.querySelector("button")!
+            trigger.replaceWith(trigger.cloneNode(true))
+          })
+          await browserExpect
+            .poll(() => probe.evaluate((value) => value.read().triggerReplaced))
+            .toBe(true)
+          expect(await probe.evaluate((value) => value.read())).toMatchObject({
+            triggerPresent: true,
+            triggerConnected: false,
+            triggerDetached: true,
+            triggerReplaced: true,
+          })
+          await probe.evaluate((value) => value.dispose())
+          await page.evaluate(() => {
+            document
+              .querySelector("button")!
+              .setAttribute("aria-expanded", "true")
+            window.dispatchEvent(new Event("resize"))
+          })
+          expect(
+            (await probe.evaluate((value) => value.read())).resizeWhileOpen
+          ).toBe(false)
+        } finally {
+          await probe.dispose()
+        }
+      } finally {
+        await browser.close()
+      }
+    }
+  )
   browserIt(
     "uses the nested form status when an image announcement persists",
     async () => {
@@ -2398,6 +2516,44 @@ describe("wallet recovery and bounded control diagnostics", () => {
         dialogPresent: false,
         pointerDownOnTrigger: true,
         triggerMovementDuringGesture: "stable",
+      },
+    },
+    {
+      kind: "event-fee-dropdown",
+      file: "e2e/event-market.playwright.ts",
+      expected: "event_fee_option_click_completed",
+      boundary: "user-action",
+      values: {
+        phase: "after_trigger",
+        failure: "timeout",
+        observationAvailable: true,
+        triggerPresent: true,
+        triggerConnected: false,
+        triggerDetached: true,
+        triggerReplaced: true,
+        triggerVisible: true,
+        triggerEnabled: true,
+        triggerExpanded: false,
+        triggerHitTarget: false,
+        optionCount: 0,
+        visibleOptionCount: 0,
+        targetOptionHitTarget: false,
+        listboxMounted: true,
+        listboxRemoved: true,
+        listboxPresent: false,
+        listboxAnimating: false,
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        pointerDownOnOption: false,
+        pointerUpOnOption: false,
+        pointerUpOutsideWithMovement: false,
+        pointerType: "mouse",
+        blurWhileOpen: false,
+        resizeWhileOpen: true,
+        documentVisible: true,
+        documentFocused: true,
+        fontsLoaded: true,
       },
     },
   ] as const

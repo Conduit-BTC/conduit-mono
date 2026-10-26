@@ -27,6 +27,12 @@ import { interceptBlossom } from "./helpers/blossom"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
+import { observeEventFeeDropdown } from "./helpers/event-fee-dropdown-diagnostics"
+import {
+  classifySmokeBrowserError,
+  recordSmokeDiagnostic,
+  recordSmokeFailureContext,
+} from "./helpers/smoke-diagnostics"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -5505,12 +5511,62 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     beforeBuyer: async ({ relay, marketNaddr }) => {
       const eventPath = "/events/" + marketNaddr
       await gotoAs(page, merchantUrl, eventPath, "organizer")
-      await page
-        .getByRole("combobox", { name: "Fee setting", exact: true })
-        .click()
-      await page
-        .getByRole("option", { name: "Charge an organizer fee", exact: true })
-        .click()
+      let probe: Awaited<ReturnType<typeof observeEventFeeDropdown>> | undefined
+      let phase = "before_trigger"
+      let failure = "none"
+      try {
+        probe = await observeEventFeeDropdown(page)
+      } catch {
+        // Diagnostic unavailability must not replace the original interaction.
+      }
+      try {
+        await page
+          .getByRole("combobox", { name: "Fee setting", exact: true })
+          .click()
+        phase = "after_trigger"
+        await page
+          .getByRole("option", { name: "Charge an organizer fee", exact: true })
+          .click()
+        phase = "after_option"
+      } catch (error) {
+        const category = classifySmokeBrowserError(error)
+        failure = ["timeout", "target_closed"].includes(category)
+          ? category
+          : "unknown"
+        recordSmokeFailureContext(
+          test.info(),
+          phase === "before_trigger"
+            ? "event_fee_trigger_click_completed"
+            : "event_fee_option_click_completed",
+          "unmet"
+        )
+        throw error
+      } finally {
+        let observation: Record<string, unknown> = {
+          observationAvailable: false,
+        }
+        if (probe) {
+          try {
+            observation = await probe.evaluate((value) => {
+              try {
+                return value.read()
+              } finally {
+                value.dispose()
+              }
+            })
+          } catch {
+            // A closed page is represented by observationAvailable=false.
+          }
+          await probe.dispose().catch(() => {
+            /* The page may already be closed. */
+          })
+        }
+        recordSmokeDiagnostic(test.info(), "event-fee-dropdown", {
+          phase,
+          failure,
+          ...observation,
+        })
+      }
       await page
         .getByRole("textbox", { name: "Percentage", exact: true })
         .fill("2.5")
