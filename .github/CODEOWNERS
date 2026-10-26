@@ -26,3 +26,11 @@ packages/ui/src/components/ProductPrivacyPolicy.tsx @dylangolow @ericfj2140
 packages/ui/src/components/ProductTermsOfService.tsx @dylangolow @ericfj2140
 packages/ui/src/legal/** @dylangolow @ericfj2140
 LICENSE @dylangolow @ericfj2140
+
+# Browser execution policy and its enforcement evidence.
+scripts/vite/browser_security.ts @dylangolow @ericfj2140
+apps/*/vite.config.ts @dylangolow @ericfj2140
+playwright.security.config.ts @dylangolow @ericfj2140
+security-tests/** @dylangolow @ericfj2140
+scripts/dev/serve_security_build.mjs @dylangolow @ericfj2140
+tests/browser-security.test.ts @dylangolow @ericfj2140

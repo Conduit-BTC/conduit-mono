@@ -632,6 +632,11 @@ jobs:
   build-mainnet:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
+    defaults:
+      run:
+        shell: bash
     outputs:
       public-config-digest: ${{ steps.deployment-contract.outputs.public-config-digest }}
     env:
@@ -651,6 +656,8 @@ jobs:
       - name: Verify compiled deployment manifests
         id: deployment-contract
         run: bun scripts/ci/verify_deployment_artifacts.ts "$CONDUIT_DEPLOYMENT_PROFILE"
+      - name: Verify browser enforcement against built applications
+        run: bunx --no-install playwright test --config=playwright.security.config.ts
 
   preview-links:
     name: >-
