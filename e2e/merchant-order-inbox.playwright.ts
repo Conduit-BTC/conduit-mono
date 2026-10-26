@@ -732,9 +732,15 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
             .filter({ visible: true })
             .fill(query)
           if (compact) {
-            await orders
-              .getByRole("button", { name: "Close", exact: true })
-              .click()
+            const close = orders.getByRole("button", {
+              name: "Close",
+              exact: true,
+            })
+            await close.evaluate((element) =>
+              element.scrollIntoView({ behavior: "instant", block: "center" })
+            )
+            if (testInfo.project.use.hasTouch) await close.tap()
+            else await close.click()
             await expect(orders).toBeHidden()
           }
         }
