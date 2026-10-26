@@ -122,6 +122,182 @@ function testReceiveQuote(
 }
 
 describe("first-party Spark SDK adapter", () => {
+  for (const method of ["lightning", "spark"] as const) {
+    for (const cleanup of ["complete", "pending", "failed"] as const) {
+      it(`rejects direct ${method} send entry after disconnect with ${cleanup} cleanup`, async () => {
+        let sends = 0
+        const finishCleanup = deferred<void>()
+        const wallet = createNativeWallet({
+          async cleanup() {
+            if (cleanup === "pending") await finishCleanup.promise
+            if (cleanup === "failed") throw new Error("cleanup unconfirmed")
+          },
+          async transfer() {
+            sends++
+            throw new Error("native send must not run")
+          },
+          async payLightningInvoice() {
+            sends++
+            throw new Error("native send must not run")
+          },
+        })
+        const client = await openClient(createFactory(wallet))
+        const prepared = await client.prepareSendPayment({
+          paymentRequest: {
+            type: "input",
+            input:
+              method === "lightning"
+                ? ZERO_PREIMAGE_FIXED_INVOICE
+                : "spark1recipient",
+          },
+          amount: 1_000n,
+        })
+        const closing = client.disconnect().catch(() => undefined)
+        await expect(
+          client.sendPayment({
+            prepareResponse: prepared,
+            options:
+              method === "lightning"
+                ? { type: "bolt11Invoice", preferSpark: false }
+                : { type: "sparkAddress" },
+            idempotencyKey: PAYMENT_ATTEMPT_ID,
+          })
+        ).rejects.toThrow("Spark wallet is closed.")
+        expect(sends).toBe(0)
+        finishCleanup.resolve()
+        await closing
+      })
+    }
+  }
+
+  it("rejects a direct send whose fee preparation completed after disconnect", async () => {
+    const quoting = deferred<void>()
+    const fee = deferred<number>()
+    let sends = 0
+    const client = await openClient(
+      createFactory(
+        createNativeWallet({
+          async getLightningSendFeeEstimate() {
+            quoting.resolve()
+            return fee.promise
+          },
+          async payLightningInvoice() {
+            sends++
+            throw new Error("native send must not run")
+          },
+        })
+      )
+    )
+    const preparing = client.prepareSendPayment({
+      paymentRequest: { type: "input", input: ZERO_PREIMAGE_FIXED_INVOICE },
+      amount: 1_000n,
+    })
+    await quoting.promise
+    await client.disconnect()
+    fee.resolve(2)
+    const prepared = await preparing
+    await expect(
+      client.sendPayment({
+        prepareResponse: prepared,
+        options: { type: "bolt11Invoice", preferSpark: false },
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
+      })
+    ).rejects.toThrow("Spark wallet is closed.")
+    expect(sends).toBe(0)
+  })
+
+  for (const outcome of ["paid", "pending", "thrown"] as const) {
+    it(`preserves the native ${outcome} outcome after manager closure without resubmitting`, async () => {
+      const entered = deferred<void>()
+      const finish = deferred<void>()
+      let sends = 0
+      let persisted = false
+      const wallet = createNativeWallet({
+        async getLightningSendFeeEstimate() {
+          return 3
+        },
+        async payLightningInvoice(request) {
+          sends++
+          expect(persisted).toBe(true)
+          expect(request).toEqual({
+            invoice: ZERO_PREIMAGE_FIXED_INVOICE,
+            maxFeeSats: 5,
+            preferSpark: false,
+            transferId: PAYMENT_ATTEMPT_ID,
+          })
+          entered.resolve()
+          await finish.promise
+          if (outcome === "thrown") throw new Error("native outcome unknown")
+          return {
+            id: "original-native-attempt",
+            status:
+              outcome === "paid"
+                ? "LIGHTNING_PAYMENT_SUCCEEDED"
+                : "LIGHTNING_PAYMENT_INITIATED",
+            fee: { originalValue: 3, originalUnit: "SATOSHI" },
+            ...(outcome === "paid" ? { paymentPreimage: ZERO_PREIMAGE } : {}),
+          }
+        },
+      })
+      const manager = new SparkWalletManager(
+        createFactory(wallet),
+        async () => ({ async release() {} })
+      )
+      const open = () =>
+        manager.openWithMnemonic({
+          walletId: "wallet-personal",
+          mnemonic: MNEMONIC,
+          accountNumber: 1,
+        })
+      await open()
+      const input = {
+        invoice: ZERO_PREIMAGE_FIXED_INVOICE,
+        amountMsats: 1_000_000,
+        idempotencyKey: PAYMENT_ATTEMPT_ID,
+        completionTimeoutSecs: 0,
+        approveFee: async (quote: {
+          amountSats: number
+          feeSats: number
+          totalSats: number
+        }) => {
+          expect(quote).toEqual({
+            amountSats: 1_000,
+            feeSats: 5,
+            totalSats: 1_005,
+          })
+          return true
+        },
+        persistAttempt: async () => {
+          persisted = true
+        },
+      }
+      const original = manager.payInvoice("wallet-personal", input)
+      await Promise.race([
+        entered.promise,
+        original.then(() => {
+          throw new Error("Native dispatch was not reached")
+        }),
+      ])
+      await manager.close("wallet-personal")
+      await open()
+      finish.resolve()
+      const result = await original
+      expect(result.status).toBe(outcome === "paid" ? "paid" : "ambiguous")
+      if (outcome === "paid")
+        expect(result).toMatchObject({
+          paymentId: "original-native-attempt",
+          preimage: ZERO_PREIMAGE,
+          paymentHash: ZERO_PREIMAGE_PAYMENT_HASH,
+          feeMsats: 3_000,
+        })
+      expect((await manager.payInvoice("wallet-personal", input)).status).toBe(
+        "ambiguous"
+      )
+      expect(sends).toBe(1)
+      await manager.close("wallet-personal")
+    })
+  }
+
   it("keeps checkout and reusable wallets on the single shared Core runtime", () => {
     expect(SparkWalletManager).toBe(SharedSparkWalletManager)
     expect(FirstPartySparkSdkFactory).toBe(SharedSparkSdkFactory)
