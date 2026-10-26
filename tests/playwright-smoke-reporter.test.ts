@@ -9,7 +9,12 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "bun:test"
-import { chromium, expect as browserExpect } from "@playwright/test"
+import {
+  chromium,
+  expect as browserExpect,
+  type Page,
+  type TestInfo,
+} from "@playwright/test"
 
 import type {
   FullConfig,
@@ -25,6 +30,7 @@ import {
   classifySmokeBrowserError,
   observeMessagesDialogTrigger,
   parseSmokeFailureContext,
+  recordEventStockControlFailure,
   safeRetainedSmokeDiagnostics,
   safeRetainedSmokeFailureContext,
   safeSmokeDiagnostics,
@@ -38,10 +44,433 @@ import {
   serializeSmokeEvidence,
 } from "../scripts/ci/playwright_smoke_reporter"
 
+describe("event stock control failure diagnostic privacy", () => {
+  const file = "e2e/event-market.playwright.ts"
+  const observation = {
+    phase: "setup_code_read",
+    observationAvailable: true,
+    pageClosed: false,
+    controlCardinality: "single",
+    controlVisible: true,
+    controlEnabled: false,
+    controlHitTarget: false,
+    detailsPresent: true,
+    detailsOpen: true,
+    refreshControlCardinality: "absent",
+    refreshControlEnabled: false,
+  }
+  const annotation = (value: unknown) => ({
+    type: "smoke:event-stock-control",
+    description: JSON.stringify(value),
+  })
+
+  it("retains only the two phases, closed cardinalities and boolean observations", () => {
+    for (const phase of ["setup_code_read", "stock_reconcile"]) {
+      for (const cardinality of ["absent", "single", "multiple"]) {
+        const values = {
+          ...observation,
+          phase,
+          controlCardinality: cardinality,
+          refreshControlCardinality: cardinality,
+        }
+        const expected = [{ kind: "event-stock-control", ...values }]
+        expect(safeSmokeDiagnostics(file, [annotation(values)])).toEqual(
+          expected
+        )
+        expect(safeRetainedSmokeDiagnostics(file, expected)).toEqual(expected)
+      }
+    }
+  })
+
+  it("strips extra private fields and malformed scalar values at capture and retained-read boundaries", () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    const extra = {
+      pickupCode: sentinel,
+      inputValue: sentinel,
+      errorMessage: sentinel,
+      invoice: sentinel,
+      walletBalance: 1234,
+      coordinates: { x: 1, y: 2 },
+      ciphertext: sentinel,
+    }
+    const expected = [{ kind: "event-stock-control", ...observation }]
+    const captured = safeSmokeDiagnostics(file, [
+      annotation({ ...observation, ...extra }),
+    ])
+    const retained = safeRetainedSmokeDiagnostics(file, [
+      { kind: "event-stock-control", ...observation, ...extra },
+    ])
+    expect(captured).toEqual(expected)
+    expect(retained).toEqual(expected)
+    expect(JSON.stringify([captured, retained])).not.toContain(sentinel)
+
+    for (const field of Object.keys(observation)) {
+      for (const invalid of [sentinel, 2, null, [], { value: sentinel }]) {
+        const values = { ...observation, [field]: invalid }
+        for (const result of [
+          safeSmokeDiagnostics(file, [annotation(values)]),
+          safeRetainedSmokeDiagnostics(file, [
+            { kind: "event-stock-control", ...values },
+          ]),
+        ]) {
+          expect(result).toHaveLength(1)
+          expect(result[0]).not.toHaveProperty(field)
+          expect(JSON.stringify(result)).not.toContain(sentinel)
+        }
+      }
+    }
+  })
+
+  it("rejects malformed annotations and cross-file observations without adding failure contexts", () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    for (const description of [
+      "not-json",
+      "null",
+      "[]",
+      "true",
+      "{}",
+      JSON.stringify(sentinel),
+      JSON.stringify({ phase: sentinel }),
+    ])
+      expect(
+        safeSmokeDiagnostics(file, [
+          { type: "smoke:event-stock-control", description },
+        ])
+      ).toEqual([])
+    expect(
+      safeRetainedSmokeDiagnostics(file, [
+        null,
+        [],
+        { kind: "event-stock-control" },
+        { kind: sentinel, phase: "setup_code_read" },
+      ])
+    ).toEqual([])
+    for (const other of [
+      "e2e/commerce.playwright.ts",
+      "e2e/merchant-order-inbox.playwright.ts",
+      "e2e/event-market.playwright.ts/extra",
+    ]) {
+      expect(safeSmokeDiagnostics(other, [annotation(observation)])).toEqual([])
+      expect(
+        safeRetainedSmokeDiagnostics(other, [
+          { kind: "event-stock-control", ...observation },
+        ])
+      ).toEqual([])
+    }
+    expect(
+      parseSmokeFailureContext(file, {
+        expected: "setup_code_read",
+        observed: "pending",
+      })
+    ).toBeUndefined()
+  })
+
+  for (const mode of ["closed", "rejected", "unresponsive"] as const) {
+    it(`records a bounded content-free ${mode} fallback without a browser`, async () => {
+      const sentinel = "private-" + crypto.randomUUID()
+      const annotations: TestInfo["annotations"] = []
+      let observationCalls = 0
+      const page = {
+        isClosed: () => mode === "closed",
+        getByRole: () => {
+          observationCalls += 1
+          return {
+            evaluateAll: () =>
+              mode === "unresponsive"
+                ? new Promise(() => {})
+                : Promise.reject(new Error(sentinel)),
+          }
+        },
+      } as unknown as Page
+      await recordEventStockControlFailure(
+        page,
+        { annotations } as TestInfo,
+        "stock_reconcile"
+      )
+      expect(observationCalls === 0).toBe(mode === "closed")
+      expect(annotations).toHaveLength(1)
+      expect(JSON.parse(annotations[0]!.description!)).toEqual({
+        phase: "stock_reconcile",
+        observationAvailable: false,
+        pageClosed: mode === "closed",
+      })
+      expect(JSON.stringify(annotations)).not.toContain(sentinel)
+    })
+  }
+
+  it("does not let recording failure replace the original test failure", async () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    const info = {
+      get annotations() {
+        throw new Error(sentinel)
+      },
+    } as unknown as TestInfo
+    await expect(
+      recordEventStockControlFailure(
+        { isClosed: () => true } as Page,
+        info,
+        "setup_code_read"
+      )
+    ).resolves.toBeUndefined()
+  })
+})
+
+describe("event prepaid confirmation diagnostic privacy", () => {
+  const file = "e2e/event-market.playwright.ts"
+  const kind = "event-prepaid-confirmation"
+  const observation = {
+    observationAvailable: true,
+    pointerDownOnTrigger: false,
+    pointerUpOnTrigger: true,
+    clickOnTrigger: false,
+    expectedDialogMounted: true,
+    expectedDialogRemoved: true,
+    expectedDialogHidden: false,
+    expectedDialogVisible: false,
+    triggerCardinality: "single",
+    triggerEnabled: true,
+  }
+  const annotation = (value: unknown) => ({
+    type: `smoke:${kind}`,
+    description: JSON.stringify(value),
+  })
+
+  it("retains only closed trigger cardinalities and boolean observations", () => {
+    for (const triggerCardinality of ["absent", "single", "multiple"]) {
+      for (const enabled of [false, true]) {
+        const values = {
+          ...Object.fromEntries(
+            Object.keys(observation)
+              .filter((field) => field !== "triggerCardinality")
+              .map((field) => [field, enabled])
+          ),
+          triggerCardinality,
+        }
+        const expected = [{ kind, ...values }]
+        expect(safeSmokeDiagnostics(file, [annotation(values)])).toEqual(
+          expected
+        )
+        expect(safeRetainedSmokeDiagnostics(file, expected)).toEqual(expected)
+      }
+    }
+  })
+
+  it("rejects private fields, wrong files and malformed observations", () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    const privateFields = {
+      privateValue: sentinel,
+      inputValue: sentinel,
+      rawError: sentinel,
+      payload: { content: sentinel },
+      coordinates: { x: 1, y: 2 },
+      timestamp: 123456,
+    }
+    const expected = [{ kind, ...observation }]
+    const captured = safeSmokeDiagnostics(file, [
+      annotation({ ...observation, ...privateFields }),
+    ])
+    const retained = safeRetainedSmokeDiagnostics(file, [
+      { kind, ...observation, ...privateFields },
+    ])
+    expect(captured).toEqual(expected)
+    expect(retained).toEqual(expected)
+    expect(JSON.stringify([captured, retained])).not.toContain(sentinel)
+
+    for (const field of Object.keys(observation)) {
+      for (const invalid of [sentinel, 1, null, [], { value: sentinel }]) {
+        const values = { ...observation, [field]: invalid }
+        const validFields = Object.fromEntries(
+          Object.entries(values).filter(([key]) => key !== field)
+        )
+        for (const result of [
+          safeSmokeDiagnostics(file, [annotation(values)]),
+          safeRetainedSmokeDiagnostics(file, [{ kind, ...values }]),
+        ]) {
+          expect(result).toEqual([{ kind, ...validFields }])
+          expect(JSON.stringify(result)).not.toContain(sentinel)
+        }
+      }
+    }
+    for (const description of [
+      "not-json",
+      "null",
+      "[]",
+      "true",
+      "{}",
+      JSON.stringify(sentinel),
+      JSON.stringify({ triggerCardinality: "unknown", triggerEnabled: "true" }),
+      "x".repeat(2049),
+    ])
+      expect(
+        safeSmokeDiagnostics(file, [{ type: `smoke:${kind}`, description }])
+      ).toEqual([])
+    for (const other of [
+      "e2e/commerce.playwright.ts",
+      "e2e/merchant-order-inbox.playwright.ts",
+      "e2e/event-market.playwright.ts/extra",
+    ]) {
+      expect(safeSmokeDiagnostics(other, [annotation(observation)])).toEqual([])
+      expect(
+        safeRetainedSmokeDiagnostics(other, [{ kind, ...observation }])
+      ).toEqual([])
+    }
+    expect(safeRetainedSmokeDiagnostics(file, [null, [], { kind }])).toEqual([])
+  })
+})
+
 describe("privacy-safe Playwright smoke reporter", () => {
   // The regular unit job does not install browser binaries. Run this bounded
   // DOM control in a Playwright-capable environment with CONDUIT_DOM_CONTROL=1.
   const browserIt = process.env.CONDUIT_DOM_CONTROL === "1" ? it : it.skip
+  browserIt(
+    "event prepaid confirmation heading DOM revalidates a still-visible portal",
+    async () => {
+      const { observePrepaidConfirmationTrigger } =
+        await import("../e2e/helpers/smoke-diagnostics")
+      const browser = await chromium.launch()
+      try {
+        const page = await browser.newPage()
+        await page.setContent(
+          '<button type="button">Confirm payment</button><div role="alertdialog" aria-labelledby="confirmation-title"><h2 id="confirmation-title">Confirm payment received?</h2></div>'
+        )
+        const probe = await observePrepaidConfirmationTrigger(page)
+        try {
+          await browserExpect(
+            page.getByRole("alertdialog", {
+              name: "Confirm payment received?",
+              exact: true,
+            })
+          ).toBeVisible()
+          await page
+            .getByRole("heading", {
+              name: "Confirm payment received?",
+              exact: true,
+            })
+            .evaluate((heading) => {
+              heading.textContent = "Different dialog"
+            })
+          await browserExpect(
+            page.getByRole("alertdialog", {
+              name: "Different dialog",
+              exact: true,
+            })
+          ).toBeVisible()
+          const info = { annotations: [] } as unknown as TestInfo
+          await probe.recordFailure(info)
+          expect(
+            safeSmokeDiagnostics(
+              "e2e/event-market.playwright.ts",
+              info.annotations
+            )
+          ).toMatchObject([
+            {
+              kind: "event-prepaid-confirmation",
+              observationAvailable: true,
+              expectedDialogMounted: true,
+              expectedDialogVisible: false,
+            },
+          ])
+        } finally {
+          await probe.dispose()
+        }
+      } finally {
+        await browser.close()
+      }
+    }
+  )
+  browserIt(
+    "event prepaid confirmation trigger DOM preserves outer input and ephemeral dialog evidence",
+    async () => {
+      const { observePrepaidConfirmationTrigger } =
+        await import("../e2e/helpers/smoke-diagnostics")
+      if (typeof observePrepaidConfirmationTrigger !== "function")
+        throw new Error("Prepaid confirmation observer is not implemented.")
+      const browser = await chromium.launch()
+      try {
+        const page = await browser.newPage()
+        await page.setContent(
+          '<button type="button" id="outer-confirm"><span>Confirm payment</span></button>'
+        )
+        await page.evaluate(() => {
+          document.querySelector<HTMLButtonElement>("#outer-confirm")!.onclick =
+            () => {
+              const dialog = document.createElement("div")
+              dialog.setAttribute("role", "alertdialog")
+              dialog.setAttribute("aria-labelledby", "confirmation-title")
+              dialog.innerHTML =
+                '<h2 id="confirmation-title">Confirm payment received?</h2><button type="button">Confirm payment</button>'
+              dialog.querySelector("button")!.onclick = () => {
+                dialog.hidden = true
+                setTimeout(() => dialog.remove(), 0)
+              }
+              document.body.append(dialog)
+            }
+        })
+        const outer = await observePrepaidConfirmationTrigger(page)
+        let inner:
+          | Awaited<ReturnType<typeof observePrepaidConfirmationTrigger>>
+          | undefined
+        try {
+          await page
+            .getByRole("button", { name: "Confirm payment", exact: true })
+            .click()
+          const dialog = page.getByRole("alertdialog", {
+            name: "Confirm payment received?",
+          })
+          await browserExpect(dialog).toBeVisible()
+          inner = await observePrepaidConfirmationTrigger(page)
+          await dialog
+            .getByRole("button", { name: "Confirm payment", exact: true })
+            .click()
+          await browserExpect(dialog).toHaveCount(0)
+          const outerInfo = { annotations: [] } as unknown as TestInfo
+          const innerInfo = { annotations: [] } as unknown as TestInfo
+          await outer.recordFailure(outerInfo)
+          await inner.recordFailure(innerInfo)
+          const read = (info: TestInfo) =>
+            safeSmokeDiagnostics(
+              "e2e/event-market.playwright.ts",
+              info.annotations
+            )
+          expect(read(outerInfo)).toEqual([
+            {
+              kind: "event-prepaid-confirmation",
+              observationAvailable: true,
+              pointerDownOnTrigger: true,
+              pointerUpOnTrigger: true,
+              clickOnTrigger: true,
+              expectedDialogMounted: true,
+              expectedDialogRemoved: true,
+              expectedDialogHidden: true,
+              expectedDialogVisible: false,
+              triggerCardinality: "single",
+              triggerEnabled: true,
+            },
+          ])
+          expect(read(innerInfo)).toEqual([
+            {
+              kind: "event-prepaid-confirmation",
+              observationAvailable: true,
+              pointerDownOnTrigger: false,
+              pointerUpOnTrigger: false,
+              clickOnTrigger: false,
+              expectedDialogMounted: true,
+              expectedDialogRemoved: true,
+              expectedDialogHidden: true,
+              expectedDialogVisible: false,
+              triggerCardinality: "single",
+              triggerEnabled: true,
+            },
+          ])
+        } finally {
+          await inner?.dispose()
+          await outer.dispose()
+        }
+      } finally {
+        await browser.close()
+      }
+    }
+  )
   browserIt(
     "retains a delivered gesture when its dialog immediately unmounts",
     async () => {
@@ -1941,6 +2370,7 @@ describe("wallet balance route diagnostics", () => {
       })
       const privateValue = "private-" + crypto.randomUUID()
       const values = {
+        routeFetchBoundary: "spark_factory",
         routeFetchCategory: "closed",
         routeFetchStartNavRequests: 2,
         routeFetchFailureNavRequests: 2,
@@ -1960,6 +2390,7 @@ describe("wallet balance route diagnostics", () => {
         {
           file: "wallet-balances",
           values: {
+            routeFetchBoundary: privateValue,
             routeFetchCategory: privateValue,
             routeFetchStartNavRequests: privateValue,
             routeFetchFailureNavRequests: 32_769,
@@ -2031,6 +2462,7 @@ describe("wallet balance route diagnostics", () => {
   it("retains only bounded wallet route observations for its owning balance file", () => {
     const privateValue = "private-" + crypto.randomUUID()
     const values = {
+      routeFetchBoundary: "spark_factory",
       routeFetchCategory: "closed",
       routeFetchPageClosed: true,
       routeFetchNavigationRequest: false,
@@ -2064,6 +2496,18 @@ describe("wallet balance route diagnostics", () => {
         retained
       )
     ).toEqual([expected])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-balances.playwright.ts", [
+        {
+          type: annotation.type,
+          description: JSON.stringify({
+            routeFetchBoundary: "wallet_controller",
+          }),
+        },
+      ])
+    ).toEqual([
+      { kind: "wallet-balances", routeFetchBoundary: "wallet_controller" },
+    ])
     for (const file of [
       "e2e/wallet-cross-app.playwright.ts",
       "e2e/wallet-sign-in.playwright.ts",
@@ -2073,6 +2517,8 @@ describe("wallet balance route diagnostics", () => {
       expect(safeRetainedSmokeDiagnostics(file, retained)).toEqual([])
     }
     for (const [field, value] of [
+      ["routeFetchBoundary", privateValue],
+      ["routeFetchBoundary", true],
       ["routeFetchCategory", privateValue],
       ["routeFetchPageClosed", privateValue],
       ["routeFetchStarts", privateValue],

@@ -18,10 +18,22 @@ const HISTORICAL = getCheckoutSparkPricingAuthorityPublicKey(
   "0".repeat(63) + "7"
 )!
 
-function retainedTrustProfile(name: "preview" | "production" = "preview") {
-  const file = structuredClone(loadPagesProfiles())
+function disableTrustProfile(
+  file: ReturnType<typeof loadPagesProfiles>,
+  name: "preview" | "production"
+) {
   file.profiles[name].publicFeatures.quantumRouterEnabled = false
   file.profiles[name].publicFeatures.quantumRouterExecutionEnabled = false
+  file.quantumRouterTrust[name] = {
+    receiverContracts: [],
+    pricingUrl: null,
+    pricingPublicKeys: [],
+  }
+}
+
+function retainedTrustProfile(name: "preview" | "production" = "preview") {
+  const file = structuredClone(loadPagesProfiles())
+  disableTrustProfile(file, name)
   const policy = file.quantumRouterTrust[name]
   policy.pricingUrl = null
   policy.receiverContracts = [
@@ -234,12 +246,13 @@ describe("managed router public trust configuration", () => {
       parsePagesProfiles(file).profiles.preview.publicFeatures
         .quantumRouterEnabled
     ).toBe(true)
+    file.quantumRouterTrust.production.receiverContracts = []
     file.profiles.production.publicFeatures.quantumRouterEnabled = true
     expect(() => parsePagesProfiles(file)).toThrow(
       "production cannot enable Quantum Router"
     )
   })
-  it("activates reviewed private Breez and custom-domain receivers only in preview", () => {
+  it("configures reviewed private receivers and independent pricing trust for preview and production", () => {
     const file = loadPagesProfiles()
     expect(Object.keys(file.quantumRouterTrust).sort()).toEqual([
       "preview",
@@ -247,54 +260,63 @@ describe("managed router public trust configuration", () => {
     ])
     for (const name of ["preview", "production"] as const) {
       const policy = file.quantumRouterTrust[name]
-      expect(file.profiles[name].publicFeatures.quantumRouterEnabled).toBe(
-        name === "preview"
-      )
+      expect(file.profiles[name].publicFeatures.quantumRouterEnabled).toBe(true)
       expect(
         file.profiles[name].publicFeatures.quantumRouterExecutionEnabled
-      ).toBe(name === "preview")
+      ).toBe(true)
+      expect(policy.receiverContracts).toEqual([
+        {
+          schemaVersion: 1,
+          contractId: "breez-tips-private-v1",
+          qualification: "accepted",
+          payRequestOrigins: ["https://breez.tips"],
+          callbackOrigins: ["https://breez.tips"],
+          verifyOrigins: ["https://breez.tips"],
+          verifyPathPrefix: "/lnurlp/verify/",
+          modes: ["private"],
+          binding: "metadata_hash",
+        },
+        {
+          schemaVersion: 1,
+          contractId: "conduit-cash-private-v1",
+          qualification: "accepted",
+          payRequestOrigins: ["https://conduit.cash"],
+          callbackOrigins: ["https://conduit.cash"],
+          verifyOrigins: ["https://conduit.cash"],
+          verifyPathPrefix: "/lnurlp/verify/",
+          modes: ["private"],
+          binding: "metadata_hash",
+        },
+      ])
       if (name === "preview") {
-        expect(policy.receiverContracts).toEqual([
-          {
-            schemaVersion: 1,
-            contractId: "breez-tips-private-v1",
-            qualification: "accepted",
-            payRequestOrigins: ["https://breez.tips"],
-            callbackOrigins: ["https://breez.tips"],
-            verifyOrigins: ["https://breez.tips"],
-            verifyPathPrefix: "/lnurlp/verify/",
-            modes: ["private"],
-            binding: "metadata_hash",
-          },
-          {
-            schemaVersion: 1,
-            contractId: "conduit-cash-private-v1",
-            qualification: "accepted",
-            payRequestOrigins: ["https://conduit.cash"],
-            callbackOrigins: ["https://conduit.cash"],
-            verifyOrigins: ["https://conduit.cash"],
-            verifyPathPrefix: "/lnurlp/verify/",
-            modes: ["private"],
-            binding: "metadata_hash",
-          },
-        ])
         expect(policy.pricingUrl).toBe(
           "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing"
         )
-        expect(policy.pricingPublicKeys.map((entry) => entry.keyId)).toEqual([
-          "preview-20261007-01",
+        expect(policy.pricingPublicKeys).toEqual([
+          {
+            keyId: "preview-20261007-01",
+            publicKey:
+              "7d67f2698711a7b54187b613b66acb301af9d749b98f752cc7e2099145cc0dc8",
+          },
         ])
       } else {
-        expect(policy.receiverContracts).toHaveLength(0)
-        expect(policy.pricingPublicKeys.length).toBe(0)
-        expect(policy.pricingUrl === null).toBe(true)
+        expect(policy.pricingUrl).toBe(
+          "https://conduit-checkout-pricing.conduithodlings.workers.dev/api/checkout-spark-pricing"
+        )
+        expect(policy.pricingPublicKeys).toEqual([
+          {
+            keyId: "production-20261021-01",
+            publicKey:
+              "7baf813fa54b1288c51635db4935802883750b91a360d5c7016be9a0b5dae553",
+          },
+        ])
       }
     }
     for (const name of ["preview", "production", "staging"] as const) {
       const profile = resolveDeploymentProfile({
         CONDUIT_DEPLOYMENT_PROFILE: name,
       })
-      if (name !== "preview") {
+      if (name === "staging") {
         expect(profile.publicFeatures.quantumRouterEnabled).toBe(false)
         expect(profile.publicFeatures.quantumRouterExecutionEnabled).toBe(false)
         expect(
@@ -302,11 +324,10 @@ describe("managed router public trust configuration", () => {
             (value) => value === ""
           )
         ).toBe(true)
-      }
-      if (name === "preview") {
+      } else {
         expect(
           JSON.parse(profile.quantumRouterTrust.receiverContracts)
-        ).toEqual(file.quantumRouterTrust.preview.receiverContracts)
+        ).toEqual(file.quantumRouterTrust[name].receiverContracts)
       }
       expect(
         profile.quantumRouterTrustDigest ===
@@ -318,53 +339,118 @@ describe("managed router public trust configuration", () => {
     }
   })
 
-  it("still rejects an active preview with missing, pending or public-only receiver qualification", () => {
-    for (const receiverState of ["empty", "pending", "public-only"] as const) {
-      const file = structuredClone(loadPagesProfiles())
-      if (receiverState === "empty") {
-        file.quantumRouterTrust.preview.receiverContracts = []
-      } else {
-        file.quantumRouterTrust.preview.receiverContracts =
-          file.quantumRouterTrust.preview.receiverContracts.map((contract) => ({
-            ...contract,
-            ...(receiverState === "pending"
-              ? { qualification: "pending" as const }
-              : {
-                  modes: ["public" as const],
-                  binding: "verifier_recipient" as const,
-                }),
-          }))
+  it("rejects either active profile with missing, pending or public-only receiver qualification", () => {
+    for (const name of ["preview", "production"] as const) {
+      for (const receiverState of [
+        "empty",
+        "pending",
+        "public-only",
+      ] as const) {
+        const file = structuredClone(loadPagesProfiles())
+        if (receiverState === "empty") {
+          file.quantumRouterTrust[name].receiverContracts = []
+        } else {
+          file.quantumRouterTrust[name].receiverContracts =
+            file.quantumRouterTrust[name].receiverContracts.map((contract) => ({
+              ...contract,
+              ...(receiverState === "pending"
+                ? { qualification: "pending" as const }
+                : {
+                    modes: ["public" as const],
+                    binding: "verifier_recipient" as const,
+                  }),
+            }))
+        }
+        expect(() => parsePagesProfiles(file)).toThrow(
+          "without a qualified private receiver"
+        )
       }
-      expect(() => parsePagesProfiles(file)).toThrow(
-        "without a qualified private receiver"
-      )
     }
   })
 
-  it("compiles the configured preview receiver and activation through both apps without production fallback", async () => {
+  it("rejects missing selected policy and invalid configured pricing without borrowing the other profile's trust", () => {
+    for (const name of ["preview", "production"] as const) {
+      const missing = structuredClone(loadPagesProfiles()) as unknown as {
+        quantumRouterTrust: Partial<Record<"preview" | "production", unknown>>
+      }
+      delete missing.quantumRouterTrust[name]
+      expect(() => parsePagesProfiles(missing)).toThrow(
+        "router trust profiles are invalid"
+      )
+      for (const invalidUrl of [
+        "http://pricing.router-fixture.com/api/checkout-spark-pricing",
+        "https://pricing.router-fixture.com/api/another-route",
+        "https://pricing.router-fixture.com/api/checkout-spark-pricing?override=true",
+      ]) {
+        const file = structuredClone(loadPagesProfiles())
+        file.quantumRouterTrust[name].pricingUrl = invalidUrl
+        expect(() => parsePagesProfiles(file)).toThrow(
+          "router trust configuration is invalid"
+        )
+      }
+      for (const publicKeys of [
+        [],
+        [{ keyId: "invalid", publicKey: "not-a-public-key" }],
+        [
+          { keyId: "duplicate", publicKey: CURRENT },
+          { keyId: "duplicate", publicKey: HISTORICAL },
+        ],
+      ]) {
+        const file = structuredClone(loadPagesProfiles())
+        file.quantumRouterTrust[name].pricingPublicKeys = publicKeys
+        expect(() => parsePagesProfiles(file)).toThrow(
+          "router trust configuration is invalid"
+        )
+      }
+    }
+  })
+
+  it("ignores dashboard trust overrides for both managed mainnet profiles and staging", () => {
+    for (const name of ["preview", "production", "staging"] as const) {
+      const baseline = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: name,
+      })
+      const overridden = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: name,
+        VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS: "[]",
+        VITE_CHECKOUT_SPARK_PRICING_URL:
+          "https://pricing.router-fixture.com/api/checkout-spark-pricing",
+        VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS: `fixture:${CURRENT}`,
+      })
+      expect(overridden.quantumRouterTrust).toEqual(baseline.quantumRouterTrust)
+      expect(overridden.quantumRouterTrustDigest).toBe(
+        baseline.quantumRouterTrustDigest
+      )
+      expect(overridden.configDigest).toBe(baseline.configDigest)
+    }
+  })
+
+  it("compiles each selected receiver, pricing policy and activation through both apps without fallback", async () => {
     for (const app of ["market", "merchant"] as const) {
-      const preview = resolveDeploymentProfile({
-        CONDUIT_DEPLOYMENT_PROFILE: "preview",
-      })
-      const compiled = await compiledCore(preview, app)
-      expect(compiled.config.quantumRouterEnabled).toBe(true)
-      expect(compiled.config.quantumRouterExecutionEnabled).toBe(true)
-      expect(compiled.config.checkoutSparkReceiverContracts).toBe(
-        preview.quantumRouterTrust.receiverContracts
-      )
-      expect(compiled.readCompiledCheckoutSparkPublicTrust()).toEqual(
-        preview.quantumRouterTrust
-      )
-      const production = resolveDeploymentProfile({
-        CONDUIT_DEPLOYMENT_PROFILE: "production",
-      })
-      const inactive = await compiledCore(production, app)
-      expect(inactive.config.quantumRouterEnabled).toBe(false)
-      expect(inactive.config.quantumRouterExecutionEnabled).toBe(false)
-      expect(inactive.config.checkoutSparkReceiverContracts).toBeNull()
-      expect(inactive.readCompiledCheckoutSparkPublicTrust()).toEqual(
-        production.quantumRouterTrust
-      )
+      for (const name of ["preview", "production"] as const) {
+        const profile = resolveDeploymentProfile({
+          CONDUIT_DEPLOYMENT_PROFILE: name,
+        })
+        const compiled = await compiledCore(profile, app)
+        expect(compiled.config.quantumRouterEnabled).toBe(true)
+        expect(compiled.config.quantumRouterExecutionEnabled).toBe(true)
+        expect(compiled.config.checkoutSparkReceiverContracts).toBe(
+          profile.quantumRouterTrust.receiverContracts
+        )
+        expect(compiled.readCompiledCheckoutSparkPublicTrust()).toEqual(
+          profile.quantumRouterTrust
+        )
+        expect(compiled.getCheckoutSparkPricingConfiguration()?.url).toBe(
+          profile.quantumRouterTrust.pricingUrl
+        )
+        expect(
+          Array.from(compiled.getCheckoutSparkPricingAuthorityTrust() ?? [])
+        ).toEqual(
+          loadPagesProfiles().quantumRouterTrust[name].pricingPublicKeys.map(
+            ({ keyId, publicKey }) => [keyId, publicKey]
+          )
+        )
+      }
     }
   })
 
@@ -423,18 +509,31 @@ describe("managed router public trust configuration", () => {
     )
   })
 
-  it("evaluates actual compiled core getters for inactive defaults", async () => {
-    const profile = resolveDeploymentProfile({
-      CONDUIT_DEPLOYMENT_PROFILE: "production",
-    })
-    const compiled = await compiledCore(profile)
-    expect(compiled.config.checkoutSparkReceiverContracts === null).toBe(true)
-    expect(compiled.getCheckoutSparkPricingConfiguration() === null).toBe(true)
-    expect(compiled.getCheckoutSparkPricingAuthorityTrust() === null).toBe(true)
-    expect(
-      JSON.stringify(compiled.readCompiledCheckoutSparkPublicTrust()) ===
-        JSON.stringify(profile.quantumRouterTrust)
-    ).toBe(true)
+  it("evaluates actual compiled core getters for explicitly inactive production trust", async () => {
+    const file = loadPagesProfiles()
+    disableTrustProfile(file, "production")
+    const profile = resolveDeploymentProfile(
+      {
+        CONDUIT_DEPLOYMENT_PROFILE: "production",
+      },
+      file
+    )
+    for (const app of ["market", "merchant"] as const) {
+      const compiled = await compiledCore(profile, app)
+      expect(compiled.config.quantumRouterEnabled).toBe(false)
+      expect(compiled.config.quantumRouterExecutionEnabled).toBe(false)
+      expect(compiled.config.checkoutSparkReceiverContracts === null).toBe(true)
+      expect(compiled.getCheckoutSparkPricingConfiguration() === null).toBe(
+        true
+      )
+      expect(compiled.getCheckoutSparkPricingAuthorityTrust() === null).toBe(
+        true
+      )
+      expect(
+        JSON.stringify(compiled.readCompiledCheckoutSparkPublicTrust()) ===
+          JSON.stringify(profile.quantumRouterTrust)
+      ).toBe(true)
+    }
   })
 
   it("evaluates real compiled receiver and recovery-key getters without activating a service", async () => {
@@ -569,8 +668,48 @@ describe("managed router public trust configuration", () => {
     }
   })
 
+  it("isolates changes to production trust from preview and staging", () => {
+    const file = structuredClone(loadPagesProfiles())
+    file.quantumRouterTrust.production.pricingUrl =
+      "https://pricing.router-fixture.com/api/checkout-spark-pricing"
+    file.quantumRouterTrust.production.pricingPublicKeys = [
+      { keyId: "fixture-production", publicKey: CURRENT },
+    ]
+    for (const name of ["preview", "production", "staging"] as const) {
+      const baseline = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: name,
+      })
+      const changed = resolveDeploymentProfile(
+        { CONDUIT_DEPLOYMENT_PROFILE: name },
+        file
+      )
+      if (name === "production") {
+        expect(changed.quantumRouterTrust.pricingUrl).toBe(
+          file.quantumRouterTrust.production.pricingUrl!
+        )
+        expect(changed.quantumRouterTrust.pricingPublicKeys).toBe(
+          `fixture-production:${CURRENT}`
+        )
+        expect(changed.configDigest).not.toBe(baseline.configDigest)
+        expect(changed.quantumRouterTrustDigest).not.toBe(
+          baseline.quantumRouterTrustDigest
+        )
+      } else {
+        expect(changed.quantumRouterTrust).toEqual(baseline.quantumRouterTrust)
+        expect(changed.configDigest).toBe(baseline.configDigest)
+        expect(changed.quantumRouterTrustDigest).toBe(
+          baseline.quantumRouterTrustDigest
+        )
+      }
+      expect(changed.quantumRouterTreasury).toEqual(
+        baseline.quantumRouterTreasury
+      )
+    }
+  })
+
   it("retains production historical keys independently from preview quote issuance", () => {
     const file = retainedTrustProfile()
+    disableTrustProfile(file, "production")
     file.quantumRouterTrust.preview.pricingUrl =
       "https://pricing.router-fixture.com/api/checkout-spark-pricing"
     file.quantumRouterTrust.production.pricingPublicKeys = [
@@ -624,6 +763,7 @@ describe("managed router public trust configuration", () => {
 
   it("compiles independent selected trust through both apps actual core getters", async () => {
     const file = retainedTrustProfile()
+    disableTrustProfile(file, "production")
     file.quantumRouterTrust.preview.pricingUrl =
       "https://pricing.router-fixture.com/api/checkout-spark-pricing"
     file.quantumRouterTrust.production.pricingPublicKeys = [
