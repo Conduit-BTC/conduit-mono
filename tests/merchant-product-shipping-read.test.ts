@@ -637,6 +637,90 @@ describe("Merchant storefront shipping preparation", () => {
     ).toMatchObject({ price: "29", shippingCost: "7" })
   })
 
+  for (const evidence of ["withdrawn", "conflicting"] as const) {
+    for (const edit of ["digital", "fixed", "untouched"] as const) {
+      it(`keeps ${edit} child fulfillment truthful when resolved evidence becomes ${evidence}`, async () => {
+        const resolved = await readFamily()
+        const previous = editorForm(resolved)
+        const current = {
+          ...previous,
+          title: "Unsaved shoes",
+          variations:
+            edit === "untouched"
+              ? previous.variations
+              : updateProductVariationOverride(
+                  previous.variations,
+                  previous.variations.rows[0]!.identity,
+                  edit === "digital" ? "format" : "shippingCost",
+                  edit === "digital" ? "digital" : "11"
+                ),
+        }
+        if (evidence === "withdrawn") {
+          deletionEvents = [
+            finalizeEvent(
+              {
+                kind: 5,
+                created_at: createdAt + 2,
+                content: "Synthetic withdrawal",
+                tags: [
+                  ["a", `30406:${merchant}:shoes-small-shipping-standard`],
+                  ["k", "30406"],
+                ],
+              },
+              secret
+            ),
+          ]
+        } else {
+          shippingEvents = [
+            ...shipping,
+            finalizeEvent(
+              {
+                kind: 30406,
+                created_at: createdAt,
+                content: "Synthetic conflicting terms",
+                tags: shipping[1]!.tags.map((tag) =>
+                  tag[0] === "price" ? ["price", "9", "USD"] : tag
+                ),
+              },
+              secret
+            ),
+          ]
+        }
+        const refreshed = await readFamily()
+        const prepared = editorForm(refreshed)
+        expect(prepared.variations.rows[0]?.shippingResolution).toBe(
+          "unresolved"
+        )
+        const reconciled = reconcileProductFormFulfillmentResolution(
+          current,
+          previous,
+          prepared
+        )
+        expect(reconciled.title).toBe("Unsaved shoes")
+        if (edit === "untouched") {
+          expect(
+            getProductVariationFormError(reconciled.variations, "USD")
+          ).toBe(warning)
+        } else {
+          expect(reconciled.variations.rows[0]).toMatchObject({
+            format:
+              edit === "digital"
+                ? "digital"
+                : previous.variations.rows[0]!.format,
+            shippingCost:
+              edit === "fixed"
+                ? "11"
+                : previous.variations.rows[0]!.shippingCost,
+            shippingResolution: "replacement",
+          })
+          expect(
+            getProductVariationFormError(reconciled.variations, "USD")
+          ).toBeNull()
+        }
+      })
+    }
+  }
+
   for (const cancel of ["account", "signal"] as const) {
     it(`discards preparation when the ${cancel} changes during the shipping read`, async () => {
       let active = true

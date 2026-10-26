@@ -911,7 +911,8 @@ export function setProductVariationCombinationIncluded(
 function markVariationShippingEdit(
   row: ProductVariationRow
 ): ProductVariationRow {
-  if (!row.shippingResolution) return row
+  // Track deliberate replacements even when the original terms were resolved,
+  // so later evidence loss cannot turn authored fulfillment into uncertainty.
   const hasExplicitReplacement =
     row.format === "digital" ||
     row.inheritShipping ||
@@ -919,6 +920,7 @@ function markVariationShippingEdit(
   if (hasExplicitReplacement) {
     return { ...row, shippingResolution: "replacement" }
   }
+  if (!row.shippingResolution) return row
   return {
     ...row,
     shippingResolution: "unresolved",
