@@ -210,6 +210,7 @@ export function AddressNameRequestForm({
   ownerPubkey,
   submit,
   onActivated,
+  hideCompleted = false,
   siteKey = import.meta.env?.VITE_ADDRESS_REQUEST_TURNSTILE_SITE_KEY ?? "",
 }: {
   walletId: string
@@ -217,6 +218,7 @@ export function AddressNameRequestForm({
   submit: NonNullable<UseWalletsReturn["requestAddressName"]>
   onActivated(state: Extract<BreezAddressState, { status: "registered" }>): void
   siteKey?: string
+  hideCompleted?: boolean
 }) {
   const [name, setName] = useState("")
   const [view, setView] = useState<AddressRequestView>()
@@ -361,6 +363,13 @@ export function AddressNameRequestForm({
     loaded,
     !!siteKey && writesEnabled
   )
+  // The wallet/profile evidence owns the finished state; setup no longer renders.
+  if (hideCompleted && loaded && phase === "complete")
+    return error ? (
+      <p role="alert" className="text-sm">
+        {error}
+      </p>
+    ) : null
   return (
     <form
       className="grid min-w-0 gap-2"
@@ -370,32 +379,37 @@ export function AddressNameRequestForm({
         void run("submit")
       }}
     >
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <AddressRequestFields
-          walletId={walletId}
-          name={name}
-          disabled={pending || !loaded || !!view}
-          onName={setName}
-        />
-        {(!view || retry) && (
-          <Button
-            size="sm"
-            type="submit"
-            disabled={
-              pending || !loaded || !writesEnabled || !token || !name.trim()
-            }
-          >
-            {view ? "Retry same request" : "Request name"}
-          </Button>
-        )}
-      </div>
-      {writesEnabled && (!view || retry) && siteKey && (
-        <AddressChallenge
-          key={challengeRevision}
-          siteKey={siteKey}
-          onToken={onToken}
-        />
+      {(!hideCompleted || loaded) && (
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <AddressRequestFields
+            walletId={walletId}
+            name={name}
+            disabled={pending || !loaded || !!view}
+            onName={setName}
+          />
+          {(!view || retry) && (
+            <Button
+              size="sm"
+              type="submit"
+              disabled={
+                pending || !loaded || !writesEnabled || !token || !name.trim()
+              }
+            >
+              {view ? "Retry same request" : "Request name"}
+            </Button>
+          )}
+        </div>
       )}
+      {(!hideCompleted || loaded) &&
+        writesEnabled &&
+        (!view || retry) &&
+        siteKey && (
+          <AddressChallenge
+            key={challengeRevision}
+            siteKey={siteKey}
+            onToken={onToken}
+          />
+        )}
       <p
         role="status"
         aria-live="polite"

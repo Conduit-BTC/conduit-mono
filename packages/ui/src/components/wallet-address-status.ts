@@ -1,7 +1,19 @@
-import type { BreezAddressState } from "@conduit/core"
+import type { WalletLightningAddressState } from "@conduit/core/wallets/resolve-spark-lightning-address"
 
-export function walletAddressStatus(value: BreezAddressState | null): string {
+export function walletAddressStatus(
+  value: WalletLightningAddressState | null
+): string {
   if (!value) return "Checking for your Lightning address…"
+  if (value.status === "saved") {
+    if (value.availability === "checking") return "Checking availability…"
+    if (value.reason === "rate_limited")
+      return "Address checks are temporarily limited. Your saved address is unchanged. Try again later."
+    if (value.availability === "conflicting")
+      return "The service returned a different address. Your saved address is unchanged."
+    if (value.availability === "not_found")
+      return "The service did not find your saved address. Check again before requesting payment."
+    return "Availability could not be checked. Your saved address is unchanged."
+  }
   if (value.status === "registered")
     return value.publicLookup === "verified"
       ? value.address

@@ -1,3 +1,4 @@
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import path from "node:path"
 import { expect, test } from "@playwright/test"
 import { measureTextContrast } from "./helpers/rendered-contrast"
@@ -51,9 +52,12 @@ for (const app of ["market", "merchant"] as const) {
       await saveWalletRecovery(page, false)
       const defaults = () =>
         page.evaluate(() => {
-          const wallets = (window as any).__controlledWalletController
+          const wallets = Reflect.get(
+            window,
+            "__controlledWalletController"
+          ) as UseWalletsReturn
           return [...wallets.portableWallets, ...wallets.connectedWallets].map(
-            (wallet: any) => ({
+            (wallet) => ({
               id: wallet.id,
               defaults: wallet.defaultIntents,
             })
@@ -73,7 +77,7 @@ for (const app of ["market", "merchant"] as const) {
         cards.nth(0).getByRole("button", { name: "Request name", exact: true })
       ).toBeVisible()
       await expect(page.getByRole("dialog")).toHaveCount(0)
-      await expect(page.locator("[data-wallet-profile-row]")).toHaveCount(2)
+      await expect(page.locator("[data-wallet-profile-status]")).toHaveCount(2)
       await expect(
         page.getByRole("button", { name: /^Refresh .* balance$/ })
       ).toHaveCount(2)

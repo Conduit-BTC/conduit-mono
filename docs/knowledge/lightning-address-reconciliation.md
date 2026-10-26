@@ -44,9 +44,10 @@ No activation resumes merely because a component mounts.
 Session-only progress distinguishes approval checking, registration confirmation,
 public lookup, wallet persistence, and profile confirmation, including throttling,
 invalid responses, and exhausted retries. These fields are not written to wallet records. The wallet
-does not promote an unverified recovered address to its persisted receiving address
-or offer it as ready to share or as a wallet-generated public-profile suggestion.
-These suggestions use the same public-verification gate as display/copy controls.
+does not promote an unverified provider response to its persisted receiving address
+or offer it as a wallet-generated public-profile suggestion. Suggestions still
+require current public verification. An already saved selection is displayed and
+may be copied with its separate availability status, even during provider failure.
 A later unavailable lookup does not erase an independently published profile
 address. A verified address can remain visible while the form explains that
 wallet persistence or profile publication is still pending. The workflow exposes
@@ -68,6 +69,41 @@ wallet sync coordinator. Failed saves preserve prior pending intent; observation
 received during the save remain queued. This does not automatically retry a refused
 activation write or repeat registration.
 
+## Saved selection and provider availability
+
+The complete encrypted wallet event is the source of the selected receiving
+address. Read and validate it before provider discovery, including before the
+provider session opens. A saved `registered` or `complete` custom-name request
+retains that selection even if historical `lightningAddress` metadata contains a
+default-domain observation. This is selection evidence, not current registration
+authority, public lookup verification, profile freshness, or payment settlement.
+
+Ordinary reads of a saved address check only its selected domain without
+registration. Missing, unavailable, throttled, unverified, and conflicting provider
+responses retain the selection and display an availability notice. Failure to read
+the saved record is unknown state, not permission to discover and persist a fallback.
+No new plaintext address cache or event schema is introduced. Wallet/account
+retirement cancels acceptance of pending reads, and a second saved-record read
+prevents a result started before a new selection from queuing old metadata.
+
+Provider observations may fill an empty wallet address, but cannot replace a saved
+selection in the sync writer. This applies to an observation queued during an
+explicit save as well as one queued before it; explicit workflow updates remain
+the path for changing selection. Relays can still supply a newer valid complete
+record according to the existing event reconciliation rules.
+
+The finished card shows the selected address once, with Copy/Share and a separate
+current-profile comparison. Completed name-request controls disappear. A differing
+profile remains visible and a deliberate profile update still requires verified
+receiving evidence; Manage address exposes the existing public-profile editor.
+Unfinished activation and failed saved-request reads retain their recovery controls.
+
+Controlled UI evidence (synthetic account, no live wallet or signer data):
+[desktop](images/wallet-address/finished-desktop.png) and
+[mobile](images/wallet-address/finished-mobile.png). The saved-address browser
+regression exercises the actual controller, encrypted storage and reload path
+separately, with a cryptographic test signer and a controlled provider.
+
 The persisted request schema and phase meanings are unchanged. Legacy `activating`,
 `registered`, and `complete` records remain readable; no wallet-event version or
 migration is introduced. New transient progress cannot make an older strict wallet
@@ -81,6 +117,7 @@ tests do not establish installed-signer behavior, production rate-limit incidenc
 relay retention, or live receiving/settlement. A reproduced 429 mechanism does not
 identify an earlier production failure whose response was not captured.
 
-Sources: [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md),
+Sources: [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md),
+[NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md),
 [NIP-01](https://github.com/nostr-protocol/nips/blob/master/01.md), and
 [LUD-06](https://github.com/lnurl/luds/blob/luds/06.md).

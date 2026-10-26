@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { QRCodeSVG } from "qrcode.react"
-import { encodeLnurl, type BreezAddressState } from "@conduit/core"
+import { encodeLnurl } from "@conduit/core"
+import type {
+  WalletLightningAddressState,
+  SavedLightningAddressState,
+} from "@conduit/core/wallets/resolve-spark-lightning-address"
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { Button } from "../index"
 
 import { walletAddressStatus } from "./wallet-address-status"
@@ -14,47 +19,74 @@ export function SparkLightningAddress({
   walletId: string | null
   disabled?: boolean
   onPendingChange?(pending: boolean): void
-  resolve(walletId: string, register?: boolean): Promise<BreezAddressState>
+  resolve: UseWalletsReturn["getSparkLightningAddress"]
 }) {
   const [state, setState] = useState<{
     walletId: string
-    value: BreezAddressState
+    value: WalletLightningAddressState
   } | null>(null)
   const [pending, setPending] = useState(false)
+  const observation = useRef<AbortController | null>(null)
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
     "idle"
   )
   useEffect(() => {
     if (!walletId) return
     let active = true
-    const lookup = async () => {
-      let value: BreezAddressState
-      try {
-        value = await resolve(walletId)
-      } catch {
-        value = { status: "unavailable", reason: "provider_unavailable" }
-      }
-      if (active) setState({ walletId, value })
+    const controller = new AbortController()
+    observation.current = controller
+    const preview: { saved?: SavedLightningAddressState } = {}
+    const accept = (value: WalletLightningAddressState) => {
+      if (active && !controller.signal.aborted) setState({ walletId, value })
     }
-    void lookup()
+    void resolve(walletId, false, undefined, undefined, {
+      signal: controller.signal,
+      onSavedAddress: (saved) => {
+        preview.saved = saved
+        accept(saved)
+      },
+    }).then(accept, () =>
+      accept(
+        preview.saved
+          ? { ...preview.saved, availability: "unavailable" }
+          : { status: "unavailable", reason: "provider_unavailable" }
+      )
+    )
     return () => {
       active = false
+      observation.current?.abort()
     }
   }, [walletId, resolve])
   const value = state?.walletId === walletId ? state.value : null
   const setup = async () => {
     if (!walletId || pending || disabled) return
     const selected = walletId
+    observation.current?.abort()
+    const controller = new AbortController()
+    observation.current = controller
     setPending(true)
     onPendingChange?.(true)
     setCopyStatus("idle")
     try {
-      setState({ walletId: selected, value: await resolve(selected, true) })
-    } catch {
-      setState({
-        walletId: selected,
-        value: { status: "unavailable", reason: "provider_unavailable" },
+      const result = await resolve(selected, true, undefined, undefined, {
+        priority: "foreground",
+        signal: controller.signal,
+        onSavedAddress: (saved) => {
+          if (!controller.signal.aborted)
+            setState({ walletId: selected, value: saved })
+        },
       })
+      if (!controller.signal.aborted)
+        setState({ walletId: selected, value: result })
+    } catch {
+      if (!controller.signal.aborted)
+        setState((previous) => ({
+          walletId: selected,
+          value:
+            previous?.walletId === selected && previous.value.status === "saved"
+              ? { ...previous.value, availability: "unavailable" }
+              : { status: "unavailable", reason: "provider_unavailable" },
+        }))
     } finally {
       setPending(false)
       onPendingChange?.(false)
@@ -64,6 +96,7 @@ export function SparkLightningAddress({
   const verified =
     value?.status === "registered" && value.publicLookup === "verified"
   const canRetry =
+    (value?.status === "saved" && value.availability !== "checking") ||
     value?.status === "absent" ||
     (value?.status === "registered" && !verified) ||
     (value?.status === "unavailable" &&
@@ -90,6 +123,9 @@ export function SparkLightningAddress({
         </div>
       )}
       <div>
+        {value?.status === "saved" && (
+          <p className="break-all text-base">{value.address}</p>
+        )}
         {!verified && (
           <p className="text-sm text-[var(--text-secondary)]">
             Lightning address
@@ -109,7 +145,7 @@ export function SparkLightningAddress({
           Scan with a Lightning wallet to send sats.
         </p>
       )}
-      {verified && (
+      {(verified || value?.status === "saved") && (
         <Button
           variant="outline"
           onClick={async () => {
@@ -134,11 +170,15 @@ export function SparkLightningAddress({
           aria-busy={pending}
           onClick={() => void setup()}
         >
-          {pending
-            ? "Setting up address…"
-            : value?.status === "absent"
-              ? "Set up Lightning address"
-              : "Retry address setup"}
+          {value?.status === "saved"
+            ? pending
+              ? "Checking…"
+              : "Retry receiving address"
+            : pending
+              ? "Setting up address…"
+              : value?.status === "absent"
+                ? "Set up Lightning address"
+                : "Retry address setup"}
         </Button>
       )}
     </div>

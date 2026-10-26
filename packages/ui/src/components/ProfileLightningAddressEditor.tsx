@@ -17,35 +17,42 @@ export function ProfileLightningAddressEditor({
   returnFocusRef,
   reviewOpen = false,
   onReviewOpenChange,
+  dialogOnly = false,
 }: {
   controller: WalletAddressController
   returnFocusRef?: RefObject<HTMLElement | null>
   reviewOpen?: boolean
   onReviewOpenChange?(open: boolean): void
+  dialogOnly?: boolean
 }) {
-  const { owner, existing, saved, scopedSuggestion, setSaved, onDismiss } =
-    controller
+  const { owner, existing, saved, setSaved, onDismiss } = controller
   const [editing, setEditing] = useState(false)
-  const open = (reviewOpen && !!scopedSuggestion) || editing
+  const open = reviewOpen || editing
   return (
     <section
       aria-label="Nostr profile receiving address"
-      className="flex min-w-0 flex-wrap items-center justify-between gap-4 border-t border-[var(--border)] py-5"
+      className={
+        dialogOnly
+          ? undefined
+          : "flex min-w-0 flex-wrap items-center justify-between gap-4 border-t border-[var(--border)] py-5"
+      }
     >
-      <div className="min-w-0">
-        <h2 className="text-base font-semibold">Nostr receiving address</h2>
-        <p
-          data-wallet-address
-          className="mt-1 break-all text-sm text-[var(--text-secondary)]"
-        >
-          {existing || "No address set"}
-        </p>
-        {saved && (
-          <p role="status" className="mt-1 text-sm">
-            Public address saved.
+      {!dialogOnly && (
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold">Nostr receiving address</h2>
+          <p
+            data-wallet-address
+            className="mt-1 break-all text-sm text-[var(--text-secondary)]"
+          >
+            {existing || "No address set"}
           </p>
-        )}
-      </div>
+          {saved && (
+            <p role="status" className="mt-1 text-sm">
+              Public address saved.
+            </p>
+          )}
+        </div>
+      )}
       <Dialog
         open={open}
         onOpenChange={(next) => {
@@ -57,17 +64,19 @@ export function ProfileLightningAddressEditor({
           }
         }}
       >
-        <DialogTrigger asChild>
-          <Button
-            variant="outline"
-            disabled={!owner}
-            onClick={(event) => {
-              if (returnFocusRef) returnFocusRef.current = event.currentTarget
-            }}
-          >
-            Edit
-          </Button>
-        </DialogTrigger>
+        {!dialogOnly && (
+          <DialogTrigger asChild>
+            <Button
+              variant="outline"
+              disabled={!owner}
+              onClick={(event) => {
+                if (returnFocusRef) returnFocusRef.current = event.currentTarget
+              }}
+            >
+              Edit
+            </Button>
+          </DialogTrigger>
+        )}
         <DialogContent
           onCloseAutoFocus={(event) => {
             if (returnFocusRef?.current?.isConnected) {
@@ -79,8 +88,8 @@ export function ProfileLightningAddressEditor({
           <DialogHeader>
             <DialogTitle>Public Lightning address</DialogTitle>
             <DialogDescription>
-              Receive sats through your Nostr profile. Spending defaults stay
-              separate.
+              Choose where your Nostr profile receives sats. Changing this does
+              not change your wallet’s own address.
             </DialogDescription>
           </DialogHeader>
           <ProfileLightningAddressForm

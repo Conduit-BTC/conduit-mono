@@ -1,4 +1,9 @@
 import { resolveSparkLightningAddress } from "../wallets/resolve-spark-lightning-address"
+import type {
+  SavedLightningAddressState,
+  WalletLightningAddressState,
+} from "../wallets/resolve-spark-lightning-address"
+import { savedWalletAddress } from "../wallets/saved-wallet-address"
 import { getAccountStorageRelays } from "../protocol/account-storage-relay-policy"
 import {
   lockedWalletRuntime as lockedRuntime,
@@ -188,8 +193,12 @@ export interface UseWalletsReturn {
     register?: boolean,
     username?: string,
     domain?: "breez.tips" | "conduit.cash",
-    options?: AccountSignerOperationOptions & { signal?: AbortSignal }
-  ): Promise<import("@conduit/core").BreezAddressState>
+    options?: AccountSignerOperationOptions & {
+      signal?: AbortSignal
+      lookupAvailable?: boolean
+      onSavedAddress?(state: SavedLightningAddressState): void
+    }
+  ): Promise<WalletLightningAddressState>
   requestAddressName?: AddressRequestWorkflow
   receiveSparkLightning(
     walletId: string,
@@ -1150,18 +1159,38 @@ export function useWallets(
       register = false,
       username?: string,
       domain?: "breez.tips" | "conduit.cash",
-      options: AccountSignerOperationOptions & { signal?: AbortSignal } = {
+      options: AccountSignerOperationOptions & {
+        signal?: AbortSignal
+        lookupAvailable?: boolean
+        onSavedAddress?(state: SavedLightningAddressState): void
+      } = {
         priority: "background",
       }
     ) => {
       const signer = getAccountSigner()
+      const service = signer ? getPortableWalletSync(signer) : null
       return resolveSparkLightningAddress({
-        manager: requireSparkManager(),
+        manager: {
+          getLightningAddress: (...args) =>
+            requireSparkManager().getLightningAddress(...args),
+        },
         walletId,
         register,
         username,
         domain,
         signal: options.signal,
+        lookupAvailable: options.lookupAvailable,
+        onSavedAddress: options.onSavedAddress,
+        loadSavedAddress: service
+          ? async () => {
+              const record = await service.get(walletId, {
+                priority: options.priority,
+              })
+              if (record.lifecycle !== "active")
+                throw new Error("This wallet was removed.")
+              return savedWalletAddress(record)
+            }
+          : undefined,
         assertCurrent: () => {
           if (getAccountSigner() !== signer)
             throw new Error("Your Nostr sign-in changed.")

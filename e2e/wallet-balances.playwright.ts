@@ -1,3 +1,4 @@
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, test } from "@playwright/test"
 import path from "node:path"
 
@@ -15,6 +16,17 @@ import {
   prepareControlledWallet,
   saveWalletRecovery,
 } from "./helpers/wallet-fixture"
+
+type BalanceFixtureWindow = Window & {
+  __controlledWalletController: UseWalletsReturn
+  __walletProbe: {
+    balanceSats: number
+    balanceReads: number
+    delayBalance: boolean
+    releaseBalance(): void
+  }
+  __balanceReads: Promise<void[]>
+}
 
 test.use({ trace: "off", screenshot: "off", video: "off" })
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
@@ -112,12 +124,12 @@ for (const app of ["market", "merchant"] as const) {
       await expect(page.getByRole("dialog")).toHaveCount(0)
       const defaults = () =>
         page.evaluate(() =>
-          (window as any).__controlledWalletController.wallets.map(
-            (wallet: any) => ({
-              id: wallet.id,
-              defaults: wallet.defaultIntents,
-            })
-          )
+          (
+            window as unknown as BalanceFixtureWindow
+          ).__controlledWalletController.wallets.map((wallet) => ({
+            id: wallet.id,
+            defaults: wallet.defaultIntents,
+          }))
         )
       const beforeProfileChange = await defaults()
       await nwcCard
@@ -128,10 +140,8 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Use this wallet’s address", exact: true })
         .click()
       await expect(
-        page
-          .getByRole("region", { name: "Nostr profile receiving address" })
-          .locator("[data-wallet-address]")
-      ).toHaveText("external@wallet.example")
+        sparkCard.locator("[data-wallet-profile-status]")
+      ).toContainText("external@wallet.example")
       await expect(
         nwcCard
           .locator("..")
@@ -186,7 +196,8 @@ for (const app of ["market", "merchant"] as const) {
       }
       balanceMsats = 9_500_000
       await page.evaluate(() => {
-        ;(window as any).__walletProbe.balanceSats = 24_800
+        ;(window as unknown as BalanceFixtureWindow).__walletProbe.balanceSats =
+          24_800
       })
       await page.clock.fastForward(30_001)
       await expect(nwcCard.locator("[data-wallet-balance]")).toContainText(
@@ -204,19 +215,25 @@ for (const app of ["market", "merchant"] as const) {
       })
       const nwcReads = nwc.snapshot().balanceReads
       const sparkReads = await page.evaluate(
-        () => (window as any).__walletProbe.balanceReads
+        () =>
+          (window as unknown as BalanceFixtureWindow).__walletProbe.balanceReads
       )
       balanceMsats = 12_000_000
       await page.evaluate(() => {
-        ;(window as any).__walletProbe.balanceSats = 30_000
+        ;(window as unknown as BalanceFixtureWindow).__walletProbe.balanceSats =
+          30_000
       })
       await page.clock.fastForward(60_001)
       expect(nwc.snapshot().balanceReads).toBe(nwcReads)
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.balanceReads)
+        await page.evaluate(
+          () =>
+            (window as unknown as BalanceFixtureWindow).__walletProbe
+              .balanceReads
+        )
       ).toBe(sparkReads)
       await page.evaluate(() => {
-        delete (document as any).visibilityState
+        Reflect.deleteProperty(document, "visibilityState")
         document.dispatchEvent(new Event("visibilitychange"))
         window.dispatchEvent(new Event("focus"))
       })
@@ -229,7 +246,7 @@ for (const app of ["market", "merchant"] as const) {
       expect(nwc.snapshot().balanceReads).toBe(nwcReads + 1)
       // Manual clicks and a foreground event share an in-flight Spark read.
       await page.evaluate(() => {
-        const fixture = window as any
+        const fixture = window as unknown as BalanceFixtureWindow
         fixture.__walletProbe.delayBalance = true
         const wallets = fixture.__controlledWalletController
         const id = wallets.portableWallets[0].id
@@ -241,15 +258,21 @@ for (const app of ["market", "merchant"] as const) {
       await expect
         .poll(() =>
           page.evaluate(
-            () => typeof (window as any).__walletProbe.releaseBalance
+            () =>
+              typeof (window as unknown as BalanceFixtureWindow).__walletProbe
+                .releaseBalance
           )
         )
         .toBe("function")
       expect(
-        await page.evaluate(() => (window as any).__walletProbe.balanceReads)
+        await page.evaluate(
+          () =>
+            (window as unknown as BalanceFixtureWindow).__walletProbe
+              .balanceReads
+        )
       ).toBe(sparkReads + 2)
       await page.evaluate(async () => {
-        const fixture = window as any
+        const fixture = window as unknown as BalanceFixtureWindow
         fixture.__walletProbe.delayBalance = false
         fixture.__walletProbe.releaseBalance()
         await fixture.__balanceReads

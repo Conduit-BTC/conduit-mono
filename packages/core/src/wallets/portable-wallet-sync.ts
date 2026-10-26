@@ -34,6 +34,7 @@ import {
 } from "./portable-wallet-record"
 import type { SparkRecoveryBundle } from "./spark-recovery-bundle"
 import type { WalletNetwork } from "./index"
+import { savedWalletAddress } from "./saved-wallet-address"
 
 export interface SavedPortableWallet {
   event: SignedNostrEvent
@@ -514,6 +515,16 @@ export class PortableWalletSync {
             continue
           }
           const name = account.pendingNames?.[id] ?? record.name
+          const selectedAddress = savedWalletAddress(record)
+          const observation = this.pendingAddresses.get(id)
+          // Observing another valid alias is not an instruction to change selection.
+          // Explicit activation/update owns replacement; guard again after relay merge.
+          if (
+            selectedAddress &&
+            observation &&
+            observation.address !== selectedAddress
+          )
+            this.pendingAddresses.delete(id)
           const lightningAddress =
             this.pendingAddresses.get(id)?.address ?? record.lightningAddress
           if (
