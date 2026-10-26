@@ -48,7 +48,18 @@ export type CheckoutSparkNativeTreasurySdkPreflight =
   | "recipient_unverified"
 export type CheckoutSparkNativeTreasurySdkSendResult = {
   readonly status: "submitted" | "ambiguous" | "not_sent"
+  readonly providerTransferId?: string
+  /** Content-free observation only; never permission to retry an admitted send. */
+  readonly reason?: CheckoutSparkNativeTreasurySdkSendReason
 }
+export type CheckoutSparkNativeTreasurySdkSendReason =
+  | "invoice_rejected"
+  | "provider_validation"
+  | "provider_request"
+  | "provider_authentication"
+  | "provider_error"
+  | "provider_unavailable"
+  | "unrecognized_result"
 export interface CheckoutSparkNativeTreasurySdkTransfer {
   readonly id: string
   readonly status: string
@@ -368,6 +379,116 @@ function exactCheckoutTreasuryTransfer(
     : { invoiceId, status: "conflicting_evidence" }
 }
 
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Names are an allowlisted diagnostic, not provider or retry authority. Never
+ * inspect SDK error messages/context: those may embed invoices and identities.
+ */
+function fulfillmentErrorReason(
+  error: unknown,
+  fallback: "provider_error" | "provider_unavailable"
+): CheckoutSparkNativeTreasurySdkSendReason {
+  try {
+    if (!record(error)) return fallback
+    switch (error.name) {
+      case "SparkValidationError":
+        return "provider_validation"
+      case "SparkRequestError":
+        return "provider_request"
+      case "SparkAuthenticationError":
+        return "provider_authentication"
+    }
+  } catch {
+    // An opaque rejection must not turn classification into another rejection.
+  }
+  return fallback
+}
+
+/** SDK 0.13.0 fulfills batches with structured successes/errors, not a success
+ * boolean or a thrown error for every refusal. Even its sats error branch can
+ * follow provider admission. All non-success results therefore remain ambiguous.
+ */
+function normalizeTreasuryFulfillment(
+  module: CheckoutSparkNativeTreasurySdkCodec,
+  request: CheckoutSparkNativeTreasurySdkInput,
+  response: unknown
+): CheckoutSparkNativeTreasurySdkSendResult {
+  const unrecognized = {
+    status: "ambiguous",
+    reason: "unrecognized_result",
+  } as const
+  if (!record(response)) return unrecognized
+  const {
+    satsTransactionSuccess: successes,
+    satsTransactionErrors: errors,
+    tokenTransactionSuccess: tokenSuccesses,
+    tokenTransactionErrors: tokenErrors,
+    invalidInvoices: invalid,
+  } = response
+  if (
+    !Array.isArray(successes) ||
+    !Array.isArray(errors) ||
+    !Array.isArray(tokenSuccesses) ||
+    !Array.isArray(tokenErrors) ||
+    !Array.isArray(invalid) ||
+    tokenSuccesses.length !== 0 ||
+    tokenErrors.length !== 0
+  )
+    return unrecognized
+  const invoice = request.nativeTreasury.invoiceRequest
+  if (invalid.length === 1 && successes.length === 0 && errors.length === 0) {
+    return record(invalid[0]) &&
+      invalid[0].invoice === invoice &&
+      record(invalid[0].error)
+      ? { status: "ambiguous", reason: "invoice_rejected" }
+      : unrecognized
+  }
+  if (errors.length === 1 && successes.length === 0 && invalid.length === 0) {
+    return record(errors[0]) &&
+      errors[0].invoice === invoice &&
+      record(errors[0].error)
+      ? {
+          status: "ambiguous",
+          reason: fulfillmentErrorReason(errors[0].error, "provider_error"),
+        }
+      : unrecognized
+  }
+  if (successes.length !== 1 || errors.length !== 0 || invalid.length !== 0)
+    return unrecognized
+  const success: unknown = successes[0]
+  if (
+    !record(success) ||
+    success.invoice !== invoice ||
+    !record(success.transferResponse) ||
+    typeof success.transferResponse.id !== "string" ||
+    !Array.isArray(success.transferResponse.senders) ||
+    !Array.isArray(success.transferResponse.receivers)
+  )
+    return unrecognized
+  const transfer = success.transferResponse
+  let providerTransferId: string
+  try {
+    providerTransferId = module
+      .parseTransferId(transfer.id as string)
+      .toString()
+    if (providerTransferId !== transfer.id) return unrecognized
+  } catch {
+    return unrecognized
+  }
+  const observed = exactCheckoutTreasuryTransfer(
+    request,
+    providerTransferId,
+    transfer as unknown as CheckoutSparkNativeTreasurySdkTransfer
+  )
+  // Immediate response binding can retain the actual ID, but only independent
+  // exact invoice/transfer reads may establish payment or completion.
+  return observed.status === "paid" || observed.status === "pending"
+    ? { status: "submitted", providerTransferId }
+    : unrecognized
+}
+
 /** Pure injected provider boundary shared by shopper and Merchant recovery.
  * No keys, initialization, SDK imports, live fee quote or rail fallback.
  * Source duplicate guards are not universal deployment proof; after admission
@@ -573,17 +694,20 @@ export function createCheckoutSparkNativeTreasurySdkAdapter(input: {
     // after any SDK admission (including timeout/errors), recovery is read-only.
     admittedTreasuryInvoices.add(invoiceId)
     try {
-      await treasuryRead(() =>
-        input.wallet.fulfillSparkInvoice!([
-          {
-            invoice: exact.nativeTreasury.invoiceRequest,
-            amount: BigInt(exact.amountSats),
-          },
-        ])
-      )
-      return { status: "submitted" }
-    } catch {
-      return { status: "ambiguous" }
+      // A read deadline must not detach this admitted financial operation:
+      // callers retain the SDK wallet until fulfillment actually settles.
+      const response = await input.wallet.fulfillSparkInvoice!([
+        {
+          invoice: exact.nativeTreasury.invoiceRequest,
+          amount: BigInt(exact.amountSats),
+        },
+      ])
+      return normalizeTreasuryFulfillment(input.codec, exact, response)
+    } catch (error) {
+      return {
+        status: "ambiguous",
+        reason: fulfillmentErrorReason(error, "provider_unavailable"),
+      }
     }
   }
 

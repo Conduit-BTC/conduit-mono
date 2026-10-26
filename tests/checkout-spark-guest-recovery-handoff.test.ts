@@ -145,7 +145,7 @@ function fixture() {
     publishFn: async (_event, options) => {
       calls.publishes += 1
       calls.persistedBeforePublish =
-        listCheckoutSparkRecoveryDeliveries(storage).length > 0
+        (await listCheckoutSparkRecoveryDeliveries(storage)).length > 0
       const attempted = options.exclusiveRelayUrls ?? []
       return {
         attemptedRelayUrls: attempted,
@@ -202,7 +202,10 @@ describe("guest settled Spark recovery handoff", () => {
       publishes: 1,
       persistedBeforePublish: true,
     })
-    const saved = getCheckoutSparkRecoveryDelivery(result.handoffId, f.storage)!
+    const saved = (await getCheckoutSparkRecoveryDelivery(
+      result.handoffId,
+      f.storage
+    ))!
     const opened = await openCheckoutSparkRecoveryDelivery({
       record: saved.record,
       signer: f.merchant,
@@ -278,7 +281,7 @@ describe("guest settled Spark recovery handoff", () => {
     await expect(
       publishCheckoutSparkSettledRecoveryHandoff(f.input)
     ).rejects.toThrow("relay ACK")
-    const original = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+    const original = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
     f.clock.now = f.identity.expiresAt
     let sameWrap = false
     const retry = await retryStoredCheckoutSparkRecoveryHandoff({
@@ -299,7 +302,7 @@ describe("guest settled Spark recovery handoff", () => {
     expect(retry.canExposeFundingInvoice).toBe(true)
     expect(sameWrap).toBe(true)
     expect(f.calls.wraps).toBe(1)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(1)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(1)
   })
 
   it.each(["signer", "route", "wrapped", "persisted"] as const)(
@@ -347,9 +350,9 @@ describe("guest settled Spark recovery handoff", () => {
       release.resolve()
       await expect(publishing).rejects.toThrow()
       expect(f.calls.publishes).toBe(0)
-      expect(listCheckoutSparkRecoveryDeliveries(f.storage).length).toBe(
-        stage === "persisted" ? 1 : 0
-      )
+      expect(
+        (await listCheckoutSparkRecoveryDeliveries(f.storage)).length
+      ).toBe(stage === "persisted" ? 1 : 0)
     }
   )
 
@@ -373,8 +376,8 @@ describe("guest settled Spark recovery handoff", () => {
     release.resolve()
     await expect(publishing).rejects.toThrow()
     expect(
-      listCheckoutSparkRecoveryDeliveries(f.storage)[0]!.deliveryProgress
-        .acknowledgedRelayRefs
+      (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
+        .deliveryProgress.acknowledgedRelayRefs
     ).toHaveLength(1)
   })
 
@@ -394,15 +397,15 @@ describe("guest settled Spark recovery handoff", () => {
         publishCheckoutSparkSettledRecoveryHandoff({
           ...f.input,
           transport: { ...f.input.transport, shouldContinue: () => active },
-          onPersisted: (handoffId) => {
+          onPersisted: async (handoffId) => {
             expect(
-              getCheckoutSparkRecoveryDelivery(handoffId, f.storage)
+              await getCheckoutSparkRecoveryDelivery(handoffId, f.storage)
             ).not.toBeNull()
             linked.push(handoffId)
           },
         })
       ).rejects.toThrow()
-      const saved = listCheckoutSparkRecoveryDeliveries(f.storage)
+      const saved = await listCheckoutSparkRecoveryDeliveries(f.storage)
       expect(saved).toHaveLength(1)
       expect(linked).toEqual([saved[0]!.record.handoffId])
       expect(saved[0]!.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
@@ -423,7 +426,10 @@ describe("guest settled Spark recovery handoff", () => {
     const originalSetItem = f.storage.setItem.bind(f.storage)
     f.storage.setItem = (key, value) => {
       originalSetItem(key, value)
-      if (listCheckoutSparkRecoveryDeliveries(f.storage).length === 2)
+      if (
+        key === "conduit:checkout-spark-recovery-outbox:v1" &&
+        JSON.parse(value).length === 2
+      )
         active = false
     }
     const input = {
@@ -438,7 +444,7 @@ describe("guest settled Spark recovery handoff", () => {
     await expect(
       acknowledgeOrRetryCheckoutSparkSettledSnapshot(input)
     ).rejects.toThrow()
-    const saved = listCheckoutSparkRecoveryDeliveries(f.storage)
+    const saved = await listCheckoutSparkRecoveryDeliveries(f.storage)
     expect(saved).toHaveLength(2)
     expect(f.calls.publishes).toBe(1)
     const progress = saved.find(
@@ -451,11 +457,11 @@ describe("guest settled Spark recovery handoff", () => {
     expect(retried.mode).toBe("retried")
     expect(retried.handoffId).toBe(progress.record.handoffId)
     expect(f.calls.wraps).toBe(2)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
     expect(
       JSON.stringify(
-        getCheckoutSparkRecoveryDelivery(retried.handoffId, f.storage)!.record
-          .signedRecipientWrap
+        (await getCheckoutSparkRecoveryDelivery(retried.handoffId, f.storage))!
+          .record.signedRecipientWrap
       )
     ).toBe(originalWrap)
   })
@@ -539,10 +545,10 @@ describe("guest settled Spark recovery handoff", () => {
       transport: f.input.transport,
       now: f.input.now,
     })
-    const saved = getCheckoutSparkRecoveryDelivery(
+    const saved = (await getCheckoutSparkRecoveryDelivery(
       progress.handoffId,
       f.storage
-    )!
+    ))!
     const opened = await openCheckoutSparkRecoveryDelivery({
       record: saved.record,
       signer: f.merchant,
@@ -565,7 +571,7 @@ describe("guest settled Spark recovery handoff", () => {
       } else {
         await publishCheckoutSparkSettledRecoveryHandoff(f.input)
       }
-      const initial = listCheckoutSparkRecoveryDeliveries(f.storage)[0]!
+      const initial = (await listCheckoutSparkRecoveryDeliveries(f.storage))[0]!
       const state = f.credited()
       if (change === "expired") f.clock.now = f.identity.expiresAt
       await expect(
@@ -607,6 +613,6 @@ describe("guest settled Spark recovery handoff", () => {
     const result = await acknowledgeOrRetryCheckoutSparkSettledSnapshot(input)
     expect(result.mode).toBe("retried")
     expect(f.calls.wraps).toBe(2)
-    expect(listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
+    expect(await listCheckoutSparkRecoveryDeliveries(f.storage)).toHaveLength(2)
   })
 })

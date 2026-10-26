@@ -4,6 +4,7 @@ import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import {
   calculateCheckoutSparkInboundNetworkAllowanceSats,
   calculateConduitCheckoutFeeSats,
+  calculateCheckoutSparkSettledGrossFundingSats,
   checkoutSparkConduitFeeRecipient,
   createCheckoutSparkMerchantSettlementRecord,
   createCheckoutSparkSettledReconciliation,
@@ -14,6 +15,7 @@ import {
   type CheckoutSparkReceiverContract,
   type CheckoutSparkPerformanceObservation,
   type CheckoutSparkSettledRepositorySnapshot,
+  type CheckoutSparkConduitFeePolicy,
 } from "@conduit/core"
 import {
   finalizeEvent,
@@ -244,6 +246,138 @@ function dependencies(acknowledged: boolean) {
     },
   }
 }
+
+function feePolicyRequest(
+  storage: MemoryStorage,
+  commerceSats: number,
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
+) {
+  const input = request(storage)
+  const quoteAuthority = checkoutSparkQuoteFixture(
+    MERCHANT_SECRET,
+    commerceSats
+  )
+  return {
+    ...input,
+    conduitFeePolicy,
+    quoteAuthority,
+    sourceEvents: [
+      quoteAuthority.products[0]!.supplierAllocation!.revisionEvent!,
+      MERCHANT_PROFILE,
+    ],
+    grossFundingSats: calculateCheckoutSparkSettledGrossFundingSats(
+      commerceSats,
+      conduitFeePolicy
+    ),
+    recipients: input.recipients.map((recipient) => ({
+      ...recipient,
+      weightSats:
+        recipient.kind === "conduit"
+          ? calculateConduitCheckoutFeeSats(commerceSats, conduitFeePolicy)
+          : commerceSats,
+    })),
+  }
+}
+
+function feePolicyDependencies(grossFundingSats: number) {
+  const result = dependencies(true)
+  const createFundingReceive = result.options.createFundingReceive
+  return {
+    ...result,
+    options: {
+      ...result.options,
+      treasuryConfiguration: {},
+      createFundingReceive: async () => ({
+        ...(await createFundingReceive()),
+        requiredNetSats: grossFundingSats,
+        grossFundingSats,
+        paymentRequest: makeSignedBolt11Fixture({
+          hrp: `lnbc${grossFundingSats * 10}n`,
+          createdAt: NOW / 1_000,
+          fields: [
+            bolt11PaymentHashField(new Uint8Array(32).fill(0x44)),
+            bolt11PaymentSecretField(),
+            bolt11PlainDescriptionField(),
+            { tag: "x", words: [9, 12] },
+          ],
+        }),
+      }),
+    },
+  }
+}
+
+describe("new percentage-only funding admission", () => {
+  it.each([2, 10, 47])(
+    "rejects a %i-sat Lightning-only checkout before creating funding",
+    async (commerceSats) => {
+      const storage = new MemoryStorage()
+      const input = feePolicyRequest(
+        storage,
+        commerceSats,
+        "percentage-only-v1"
+      )
+      const { calls, options } = feePolicyDependencies(input.grossFundingSats)
+      await expect(
+        prepareCheckoutSparkSettledFunding(input, options)
+      ).rejects.toThrow(
+        "This small checkout requires a native Conduit fee route"
+      )
+      expect(calls).toEqual({ open: 0, close: 0, publish: 0, invoice: 0 })
+      expect(
+        getCheckoutSparkSettledPreparation(input.checkoutId, storage)
+      ).toBeNull()
+    }
+  )
+
+  it.each([
+    { commerceSats: 48, policy: "percentage-only-v1" as const, feeSats: 2 },
+    { commerceSats: 10, policy: undefined, feeSats: 111 },
+  ])(
+    "preserves payable or legacy Lightning funding admission",
+    async ({ commerceSats, policy, feeSats }) => {
+      const input = feePolicyRequest(new MemoryStorage(), commerceSats, policy)
+      const { calls, options } = feePolicyDependencies(input.grossFundingSats)
+      const prepared = await prepareCheckoutSparkSettledFunding(input, options)
+      expect(prepared.plan.schemaVersion).toBe(3)
+      expect(prepared.plan.recipients.at(-1)!.weightSats).toBe(feeSats)
+      expect(prepared.plan.conduitFeePolicy).toBe(policy)
+      expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
+    }
+  )
+
+  it("preserves a one-sat native Conduit allocation without adding a floor", async () => {
+    const input = feePolicyRequest(
+      new MemoryStorage(),
+      10,
+      "percentage-only-v1"
+    )
+    const { calls, options } = feePolicyDependencies(input.grossFundingSats)
+    const sparkAddress = "static-treasury-fixture"
+    const receiverIdentityPublicKey = `03${"b".repeat(64)}`
+    const prepared = await prepareCheckoutSparkSettledFunding(input, {
+      ...options,
+      treasuryConfiguration: { mainnetAddress: sparkAddress },
+      validateTreasuryDestination: async () => ({
+        sparkAddress,
+        receiverIdentityPublicKey,
+      }),
+      prepareTreasuryRequest: async (request) => ({
+        schemaVersion: 1,
+        sparkAddress,
+        receiverIdentityPublicKey,
+        senderIdentityPublicKey: request.senderIdentityPublicKey,
+        invoiceId: request.invoiceId,
+        invoiceRequest: "canonical-native-fixture",
+        feePolicy: "zero_required",
+        residualPolicy: "unused_commerce_reserves",
+      }),
+    })
+    expect(prepared.plan.schemaVersion).toBe(4)
+    expect(prepared.plan.recipients.at(-1)!.weightSats).toBe(1)
+    expect(prepared.plan.funding.grossFundingSats).toBe(12)
+    expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
+  })
+})
 
 describe("native treasury preparation", () => {
   it("rejects a malformed configured destination before wallet or invoice creation", async () => {
@@ -486,8 +620,12 @@ describe("settled Spark pre-funding metadata", () => {
           .filter((event) => event.kind === 0)
           .map((event) => [event.pubkey, event])
       )
+      const currentGross = calculateCheckoutSparkSettledGrossFundingSats(
+        1_000,
+        "percentage-only-v1"
+      )
       const fundingInvoice = makeSignedBolt11Fixture({
-        hrp: `lnbc${GROSS * 10}n`,
+        hrp: `lnbc${currentGross * 10}n`,
         createdAt: NOW / 1_000,
         fields: [
           bolt11PaymentHashField(new Uint8Array(32).fill(0x44)),
@@ -567,6 +705,8 @@ describe("settled Spark pre-funding metadata", () => {
                   }
                 },
                 prepareFunding: (terms) => {
+                  expect(terms.grossFundingSats).toBe(currentGross)
+                  expect(terms.conduitFeePolicy).toBe("percentage-only-v1")
                   stageMs.profiles = virtualTime
                   metadataStarted = virtualTime
                   return measure("fundingPreparation", () =>
@@ -592,6 +732,8 @@ describe("settled Spark pre-funding metadata", () => {
                             await delay()
                             return {
                               ...(await options.createFundingReceive()),
+                              requiredNetSats: currentGross,
+                              grossFundingSats: currentGross,
                               paymentRequest: fundingInvoice,
                               expirySecs: 900,
                               expiresAt: NOW + 900_000,

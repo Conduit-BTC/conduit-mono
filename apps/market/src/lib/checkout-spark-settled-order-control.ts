@@ -6,6 +6,7 @@ import {
   hasCheckoutSparkNativePreProviderCancellation,
   hasCheckoutSparkOutgoingPreProviderCancellation,
   restoreCheckoutSparkSettledReconciliation,
+  isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkSettledRepositorySnapshot,
   type CheckoutSparkBuyerPrice,
   type CheckoutSparkSettledReconciliation,
@@ -18,14 +19,22 @@ import {
   type GuestOrderSigningIdentity,
 } from "./guest-order-identity"
 
+type CheckoutSparkOrderPriceSummary = CheckoutSparkBuyerPrice & {
+  readonly organizerFeeSats?: number
+}
+
 /** Review of the validated v3 intent and its frozen public destination. */
 export interface CheckoutSparkSettledPayoutReview {
   readonly recipientKind: "merchant" | "supplier" | "organizer" | "conduit"
-  readonly sourceLabel: "Signed recipient profile" | "Conduit allowlist"
+  readonly sourceLabel:
+    | "Signed recipient profile"
+    | "Conduit allowlist"
+    | "Signed organizer fee terms"
   readonly destinationLabel:
     | "Frozen Lightning destination"
     | "Frozen Conduit destination (local test)"
     | "Frozen Conduit destination (production)"
+    | "Frozen organizer destination"
   readonly lightningDestination: string
   readonly invoiceAmountSats: number
   readonly maxFeeSats: number
@@ -52,7 +61,7 @@ export type CheckoutSparkSettledOrderControlState =
       status: "complete"
       paidLegs: number
       totalLegs: number
-      priceSummary: CheckoutSparkBuyerPrice
+      priceSummary: CheckoutSparkOrderPriceSummary
       nativeTreasury: CheckoutSparkSettledNativeTreasuryReview | null
     }
   | {
@@ -68,7 +77,7 @@ export type CheckoutSparkSettledOrderControlState =
       walletId: string
       network: "mainnet" | "regtest"
       grossFundingSats: number
-      priceSummary: CheckoutSparkBuyerPrice
+      priceSummary: CheckoutSparkOrderPriceSummary
       creditedSats: number | null
       paidLegs: number
       totalLegs: number
@@ -101,7 +110,7 @@ export function canInspectCheckoutSparkSettledSubmittedAttempt(
   )
     return false
   const native =
-    state.plan.schemaVersion === 4 &&
+    isCheckoutSparkNativeTreasuryPlan(state.plan) &&
     state.plan.recipients.find((recipient) => recipient.legId === legId)
       ?.kind === "conduit"
   return native
@@ -212,7 +221,9 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   }
   const { plan } = state
   if (
-    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
+    (plan.schemaVersion !== 3 &&
+      plan.schemaVersion !== 4 &&
+      plan.schemaVersion !== 5) ||
     plan.checkoutId !== binding.checkoutId ||
     plan.planDigest !== binding.planDigest ||
     plan.walletId !== binding.walletId ||
@@ -243,7 +254,9 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   )!.weightSats
   // Use validated frozen economics, not a new quote. Historical pre-allowance
   // plans keep their exact saved total and are never repriced on reopen.
-  const priceSummary: CheckoutSparkBuyerPrice = Object.freeze({
+  const organizerFeeSats =
+    plan.schemaVersion === 5 ? plan.eventMarket!.organizerFeeSats : 0
+  const priceSummary: CheckoutSparkOrderPriceSummary = Object.freeze({
     itemSubtotalSats: plan.commerceQuote.lines.reduce(
       (sum, line) => sum + line.quantity * line.unitMerchandiseSats,
       0
@@ -256,19 +269,25 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     conduitFeeSats,
     totalSats: plan.funding.grossFundingSats,
     coordinationFeeSats:
-      plan.funding.grossFundingSats - plan.commerceQuote.commerceTotalSats,
+      plan.funding.grossFundingSats -
+      plan.commerceQuote.commerceTotalSats -
+      organizerFeeSats,
     networkAllowanceSats:
       plan.funding.grossFundingSats -
       plan.commerceQuote.commerceTotalSats -
-      conduitFeeSats,
-    minimumApplies: conduitFeeSats === calculateConduitCheckoutFeeSats(1),
+      conduitFeeSats -
+      organizerFeeSats,
+    ...(plan.schemaVersion === 5 ? { organizerFeeSats } : {}),
+    minimumApplies:
+      plan.conduitFeePolicy === undefined &&
+      conduitFeeSats === calculateConduitCheckoutFeeSats(1),
   })
   const treasuryFinalization = state.treasuryFinalization ?? null
-  if (plan.schemaVersion === 4 && !treasuryFinalization) {
+  if (isCheckoutSparkNativeTreasuryPlan(plan) && !treasuryFinalization) {
     return blocked("The saved native treasury state is unavailable.")
   }
   const nativeTreasury: CheckoutSparkSettledNativeTreasuryReview | null =
-    plan.schemaVersion === 4
+    isCheckoutSparkNativeTreasuryPlan(plan)
       ? {
           estimatedBaseConduitAllocationSats: conduitFeeSats,
           fixedCheckoutTotalSats: priceSummary.totalSats,
@@ -294,7 +313,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     }
   }
   const nativeTreasuryPending =
-    plan.schemaVersion === 4 &&
+    isCheckoutSparkNativeTreasuryPlan(plan) &&
     state.legs.every((leg, index) =>
       plan.recipients[index]!.kind === "conduit"
         ? leg.status !== "paid"
@@ -375,7 +394,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
     return blocked("The next payout is not in the saved plan.")
   }
   const nativeTreasuryLeg =
-    plan.schemaVersion === 4 && recipient.kind === "conduit"
+    isCheckoutSparkNativeTreasuryPlan(plan) && recipient.kind === "conduit"
   const locallyCancelled =
     snapshot.status === "active" &&
     (nativeTreasuryLeg
@@ -428,13 +447,17 @@ export function assessCheckoutSparkSettledOrderControl(input: {
           sourceLabel:
             recipient.destination.source.type === "signed_profile"
               ? "Signed recipient profile"
-              : "Conduit allowlist",
+              : recipient.destination.source.type === "signed_event_market"
+                ? "Signed organizer fee terms"
+                : "Conduit allowlist",
           destinationLabel:
             recipient.destination.source.type === "signed_profile"
               ? "Frozen Lightning destination"
-              : recipient.destination.source.policy === "local_router_canary"
-                ? "Frozen Conduit destination (local test)"
-                : "Frozen Conduit destination (production)",
+              : recipient.destination.source.type === "signed_event_market"
+                ? "Frozen organizer destination"
+                : recipient.destination.source.policy === "local_router_canary"
+                  ? "Frozen Conduit destination (local test)"
+                  : "Frozen Conduit destination (production)",
           lightningDestination: recipient.destination.value,
           invoiceAmountSats: leg.intent.invoiceAmountSats,
           maxFeeSats: leg.intent.maxFeeSats,

@@ -1,4 +1,8 @@
 import type { PreparedProductFulfillment } from "@conduit/core"
+import {
+  assertCurrentEventMarketOrganizerFeeTerms,
+  parseEventMarketOrganizerFeeTerms,
+} from "@conduit/core"
 import type { CartItem } from "./cart-model"
 import { isCheckoutSparkSettledCart } from "./checkout-spark-settled-cart"
 
@@ -12,9 +16,51 @@ export function assessCheckoutSparkCheckoutAdmission(input: {
   freeOrderVerified: boolean
   items: readonly CartItem[]
   fulfillment: ReadonlyMap<string, PreparedProductFulfillment>
+  nowMs?: number
 }): CheckoutSparkCheckoutAdmission {
-  if (!input.enabled || input.items.length === 0) return { mode: "disabled" }
-  if (input.freeOrderVerified) return { mode: "free" }
+  if (input.items.length === 0) return { mode: "disabled" }
+  let eventFeeMinimumSats = 0
+  let hasActiveOrganizerFee = false
+  const eventItems = input.items.filter(
+    (item) => item.fulfillment?.type === "event_market_pickup"
+  )
+  if (
+    input.enabled &&
+    eventItems.length &&
+    !isCheckoutSparkSettledCart(input.items)
+  )
+    return { mode: "router", ready: false }
+  if (eventItems.length) {
+    try {
+      for (const item of eventItems) {
+        const event = item.fulfillment
+        if (event?.type !== "event_market_pickup")
+          throw new Error("Invalid event.")
+        const fee = assertCurrentEventMarketOrganizerFeeTerms(
+          parseEventMarketOrganizerFeeTerms({
+            event: event.market.signedEvent,
+            marketCoordinate: event.market.coordinate,
+          }),
+          input.nowMs ?? Date.now()
+        )
+        if (fee.state === "active") {
+          hasActiveOrganizerFee = true
+          eventFeeMinimumSats = Math.max(eventFeeMinimumSats, fee.minimumSats)
+        }
+      }
+    } catch {
+      return { mode: "router", ready: false }
+    }
+  }
+  // Turning off execution cannot waive signed fees. Only positively verified
+  // free commerce with no minimum establishes that active terms owe no fee.
+  if (!input.enabled)
+    return hasActiveOrganizerFee &&
+      (!input.freeOrderVerified || eventFeeMinimumSats > 0)
+      ? { mode: "router", ready: false }
+      : { mode: "disabled" }
+  if (input.freeOrderVerified && eventFeeMinimumSats === 0)
+    return { mode: "free" }
   // A missing/unsupported quote is not permission to bypass routing. Only a
   // positively resolved negotiated shipment has no upfront amount to route.
   const requiresNegotiation = input.items.some((item) => {

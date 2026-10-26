@@ -70,6 +70,39 @@ that the native fee was committed; earlier sender phases do not. A completed
 parent transfer must still agree with its completed receiver state. Merely
 submitted transfers, unknown states and zero sender balance are not receipts.
 
+An unrecognized immediate SDK result does not end Buyer's bounded automatic
+observation of that saved attempt. The runner may recheck its exact request
+under the existing session, authority, deadline and step limits; it cannot
+fulfill the invoice again or promote unknown evidence to a receipt. Strong
+conflicts and terminal failures still require attention.
+
+The pinned SDK returns separate sats success, sats error, token and invalid-invoice
+arrays. A fulfilled JavaScript promise is not itself a successful submission.
+The adapter accepts only one success bound to the exact invoice, sender,
+receiver, amount, debit and canonical actual transfer ID. Mixed, malformed,
+foreign and error results remain ambiguous. Only finite error categories may
+reach the UI; SDK messages and context never do. A validated submission reference
+is retained before the next history read, but does not establish a receipt.
+
+Read-only provider queries retain their bounded deadlines. Admitted fulfillment
+is awaited separately, so an expiring read timer cannot detach it and let normal
+wallet cleanup close its connections mid-send. Pausing or crossing the actor
+handoff boundary still prevents new dispatch; it cannot cancel an invocation
+already admitted. An eventual error remains query-only, not permission to replay.
+
+If an admitted send returns its validated actual transfer reference after normal
+Pause, a narrow journal can retain that reference against the exact submitted
+predecessor and repository revision. It changes only the reference and monotonic
+observation time, never a receipt, amount, debit or payment status. Account
+replacement, logout and expired guest/recovery authority still revoke the write.
+No later query, recovery acknowledgment or new dispatch is permitted by this
+journal; normal execution checks remain required for further work.
+
+Explicit Merchant details can show the last preparation stage and finite proof
+comparisons from existing work, including waiting for an earlier check to drain.
+A passed remaining-funds proof is not a payment receipt. These local display
+observations add no provider reads and cannot authorize payment or retry.
+
 The receiving wallet may be offline. In the inspected Spark operator flow,
 sender commitment cannot be cancelled and is excluded from the early-sender
 expiry sweep. Claiming later has no post-commit timeout in that flow, but this

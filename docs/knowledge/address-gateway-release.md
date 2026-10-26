@@ -42,33 +42,31 @@ authorizes changing the saved name or request ID.
 
 ## Encrypted wallet progress
 
-Request progress uses a separate encrypted kind-30078 record at
-`conduit:address-requests:v1:mainnet`, keyed within its ciphertext by the
-existing wallet ID. It does not add fields to the wallet-membership registry.
-Each entry retains exact canonical request bytes, the original account proof,
-the wallet proof inside those bytes, and a monotonic phase. The account journal
-retains the signed event before relay publication, and the workflow requires
-readback at every planned target before submitting the request or registering
-an address. Local retention is shown separately from confirmed publication;
-another device cannot restore a local-only checkpoint.
+Request progress is a field of the complete encrypted Portable Wallet record,
+`conduit:portable-wallet:v1:<walletId>`. It travels with the original recovery
+tuple, name, receiving address and preferences. The clean-start wallet runtime
+ignores previous separate request records and registry extensions.
 
-Normal wallet loading reads this optional record independently of membership.
-Automatic checks are bounded to three
-requests per signer session, once per request; signer refusal pauses automatic
-checks. Explicit checks use foreground consent. Receipt/uncertainty continue to
-show the existing receiving address. Once approval or decline is recorded,
-pending checks stop. Activation is an explicit action and independently checks
-current gateway approval and authenticated provider registration. A saved phase
-is a resume hint, never approval or proof of current registration.
+The record retains canonical request bytes, the original account proof, the
+wallet proof and progress. Exact signed wallet bytes are saved locally before
+HTTP submission or activation. Current signer ownership, active lifecycle and
+matching native identity authorize the selected wallet. Unrelated discovery
+or relay-delivery uncertainty does not grant or veto that authority.
 
-`Activate and use address` first retains activation intent, registers only after
-an authenticated absence, verifies the exact name and public lookup, saves
-registration progress, then uses the existing field-preserving kind-0 address
+The shared wallet coordinator handles relay delivery automatically. A saved
+request phase is a resume hint, never gateway approval or current registration
+proof. Status checks and activation use fresh foreground authority. Before
+resubmitting retained intent, query authenticated status: only explicit
+`not_received` permits retrying the same immutable request. Unknown responses
+and failed receipt writes cannot create a replacement request.
+
+`Activate and use address` verifies current gateway approval, checks provider
+state, retains activation intent before registering an absent address, verifies
+the exact name and public lookup, then uses the field-preserving kind-0 address
 publisher. A profile failure leaves `registered` progress with `Finish profile
-update`; the retry verifies the existing registration without registering again.
-Completion includes the profile event ID and requires fresh profile observation.
-A failure to sync completion offers a separate sync retry. A generic routing
-error or unavailable relay never erases request evidence.
+update`; retry verifies registration before resuming publication. Completion
+includes the freshly observed profile event ID. Wallet synchronization resumes
+automatically and has no separate address-sync action.
 
 Durable HTTP submissions retain the original body and send its original NIP-98
 proof in `X-Address-Request-Proof`, together with a fresh NIP-98 Authorization
@@ -78,28 +76,19 @@ layers and the Spark signature. D1 stores durable original account proofs as
 plain-event records and legacy clients remain readable. Existing rows are never
 rewritten by retries. No database migration is needed for the wrapper.
 
-Conflicting immutable evidence fails closed. Confirmed membership removal
-always wins; retained stronger phases survive stale optional heads. Optional
-read failure never changes wallet membership or grants approval. Display names
-use their own `conduit:wallet-names:v1:<network>` record.
+Conflicting immutable request evidence fails closed. Saved names and address
+progress use the same newest-valid-wallet rule as recovery; partial reads do
+not erase stronger retained records. See [the complete wallet lifecycle](wallet-registry-lifecycle.md).
 
-### Reader compatibility and limits
+### Cutover and limits
 
-New ordinary membership successors contain only the deployed strict v1 fields.
-An older client can continue to read and write wallet membership while a newer
-client writes the separate request record. Older clients do not show that
-optional progress. The workflow is enabled by default; setting
-`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED=false` is an emergency disable,
-not a staged-reader requirement.
-
-Some earlier preview clients wrote `addressNameRequests` inside the registry.
-New readers still accept that legacy extension. Before an ordinary successor
-drops it, the writer must publish and read back the exact legacy progress in
-the separate record. If migration cannot be confirmed, the membership change
-stops rather than erasing the only relay copy. Rollback must preserve encrypted
-request history and D1 evidence; a fresh old client cannot display optional
-progress. The 16 KiB plaintext bound still applies. Controlled encrypted tests
-prove bounded reconciliation, not arbitrary relay retention or physical-device
+The wallet event format deliberately has no old-format compatibility reader,
+fallback, dual writes or automatic migration. Initial seed import establishes
+fresh wallet metadata; existing gateway/D1 evidence is not deleted or rewritten.
+The workflow is enabled by default. Setting
+`VITE_ADDRESS_REQUEST_RECORD_WRITES_ENABLED=false` disables new request writes
+in an emergency. The complete wallet plaintext has a 16 KiB bound. Controlled
+encrypted tests do not establish public-relay retention or physical-device
 recovery.
 
 ## Qualification boundary
@@ -193,3 +182,77 @@ qualification.
 - [Breez signed lifecycle messages](https://github.com/breez/spark-sdk/blob/5ea587cd84f0757a40998d58b46342abde79ce54/crates/breez-sdk/lnurl-models/src/signed_message.rs)
 - [NIP-98 HTTP authentication](https://github.com/nostr-protocol/nips/blob/master/98.md)
 - [Turnstile hostname rules](https://developers.cloudflare.com/turnstile/additional-configuration/hostname-management/)
+
+## Selected-wallet authorization
+
+Authorization checks the current complete record and native identity before
+request signing. A final fence after signing rejects changed signer or wallet
+authority. Decrypted records are session-scoped and cleared when authority is
+retired. Synchronization uses the shared wallet coordinator and exact-event
+readback; there is no separate request journal, membership gate or repair flow.
+
+## Deployments after approved merges
+
+The address gateway is a Worker, independent of the Market and Merchant Pages
+builds. A name approval becomes effective only after the gateway receives the
+updated manifest; merging an approval does not activate or register the name.
+
+`Address Gateway Deployment` runs after successful **push-to-main** `CI`. Its
+credential-free authorization job verifies the actual CI run, exact current
+main revision, repository, and associated PR merged into main by a human
+maintainer. PR/fork runs, direct pushes, failed CI, bot-only merges and stale
+revisions cannot release. The maintainer's merge is release approval for this
+workflow, subject to any production environment protection rules.
+
+The deployment job uses the `address-gateway-production` environment. It installs
+locked application dependencies and a pinned Wrangler CLI, runs gateway and
+release-policy tests, and compiles before any production credential is provided.
+The release step rechecks merge/CI authority, reads current Worker **metadata**,
+and builds a temporary no-bundle configuration from the live variables. It
+preserves qualification, trusted-preview admission, secret bindings, D1,
+rate limits and runtime. Unknown binding types, changed database/limits/runtime,
+missing required secret bindings and mixed-version traffic stop the release.
+No provider credentials are read; secret names are presence checks only.
+
+Upload and activation use Worker **versions**, leaving routes and DNS alone.
+The uploaded version must retain the exact live binding/runtime metadata before
+traffic changes. Main and the live baseline are rechecked immediately before
+activation. Successful releases identify their exact source with a `main-<SHA>`
+version tag. Subsequent runs compare gateway/shared-core/dependency changes
+against that last actual release, so an unrelated newer merge can carry forward
+an approval whose earlier CI run became stale. Unchanged gateway inputs skip
+upload. Production readiness and untrusted private preflight are checked after
+deployment. Failures report a stopped release; they do not automatically roll
+back approvals, mutate D1 or register an address.
+
+### One-time operator setup
+
+Before enabling unattended releases, an authorized operator configures the
+production environment to permit only main and provides:
+
+- Secret `ADDRESS_GATEWAY_CLOUDFLARE_API_TOKEN`: a dedicated token with
+  `Individual Workers Editor` permission scoped only to
+  `conduit-address-gateway` in the owning account. It needs no account-wide
+  Worker access, D1 query, Pages administration, DNS or provider-secret read
+  authority.
+- Variable `ADDRESS_GATEWAY_CLOUDFLARE_ACCOUNT_ID`: the owning account ID.
+- Variable `ADDRESS_GATEWAY_BOOTSTRAP_VERSION`: the exact reviewed active Worker
+  version ID for the first automated release. This explicit bootstrap accepts
+  the existing manual release once; tagged automated releases supersede it.
+
+Creating or expanding credentials, changing environment access and enabling the
+first production run remain operator-owned. No credential or environment
+setting is created by this PR. A later manual dashboard change produces an
+unrecognized baseline and requires fresh review/bootstrap before automation can
+resume. Never use bootstrap to bypass an unresolved code or configuration drift.
+
+The live trusted-preview admission implementation is included in the gateway
+source. Checked-in qualification and preview variables remain disabled staging
+defaults; the release controller preserves the reviewed effective live values.
+A raw deployment of those defaults is not the automated release path. Name
+activation, public profile publication and funded receiving tests remain
+separate owner actions.
+
+Sources: [GitHub workflow_run security](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
+[Worker versions and deployments](https://developers.cloudflare.com/workers/configuration/versions-and-deployments/),
+and [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/).

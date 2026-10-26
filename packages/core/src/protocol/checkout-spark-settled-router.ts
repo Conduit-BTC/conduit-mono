@@ -2,6 +2,11 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { checkoutSparkCommerceQuoteDigestValue } from "./checkout-spark-commerce-pricing"
 import {
+  freezeCheckoutSparkEventMarketBinding,
+  checkoutSparkEventMarketBindingDigestValue,
+  type CheckoutSparkEventMarketBinding,
+} from "./checkout-spark-event-market"
+import {
   freezeCheckoutSparkReceiverBinding,
   normalizeCheckoutSparkReceiverAddress,
   type CheckoutSparkReceiverBinding,
@@ -42,10 +47,14 @@ import {
   allocateCheckoutSparkSettledSats,
   calculateCheckoutSparkAllocationWeights,
   calculateCheckoutSparkSettledGrossFundingSats,
+  allocateCheckoutSparkEventSettledSats,
+  calculateCheckoutSparkEventAllocationWeights,
+  calculateCheckoutSparkEventSettledGrossFundingSats,
 } from "./checkout-spark-settled-allocation"
 import {
   checkoutSparkConduitFeeRecipient,
   type CheckoutSparkConduitDestinationPolicy,
+  type CheckoutSparkConduitFeePolicy,
 } from "./checkout-spark-router-obligations"
 import {
   decodeLightningInvoiceMetadata,
@@ -69,6 +78,12 @@ export type CheckoutSparkSettledDestinationSource =
       readonly type: "signed_profile"
       readonly profileEventId: string
       readonly profileEventCreatedAt: number
+    }
+  | {
+      readonly type: "signed_event_market"
+      readonly marketCoordinate: string
+      readonly eventId: string
+      readonly eventCreatedAt: number
     }
   | {
       readonly type: "conduit_allowlist"
@@ -115,12 +130,15 @@ export interface FreezeCheckoutSparkSettledPlanInput {
   readonly funding: CheckoutSparkSettledFundingPlan
   readonly recipients: readonly CheckoutSparkSettledRecipientInput[]
   readonly merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
+  /** Absent on historical plans; when present, committed by the plan digest. */
+  readonly conduitFeePolicy?: CheckoutSparkConduitFeePolicy
 }
 
 /** V3 freezes identities, endpoints and weights, but no outgoing invoice. */
 export interface CheckoutSparkSettledPlan extends FreezeCheckoutSparkSettledPlanInput {
-  readonly schemaVersion: 3 | 4
+  readonly schemaVersion: 3 | 4 | 5
   readonly nativeTreasury?: CheckoutSparkNativeTreasuryPlan
+  readonly eventMarket?: CheckoutSparkEventMarketBinding
   readonly planDigest: string
   readonly recipients: readonly CheckoutSparkSettledRecipient[]
 }
@@ -181,7 +199,7 @@ export interface CheckoutSparkSettledClosedGeneration {
 }
 
 export interface CheckoutSparkSettledReconciliation {
-  readonly schemaVersion: 3 | 4 | 5
+  readonly schemaVersion: 3 | 4 | 5 | 6
   readonly treasuryFinalization?: CheckoutSparkNativeTreasuryFinalization
   readonly plan: CheckoutSparkSettledPlan
   /** Exact invoice-attributed credit; never a wallet-balance inference. */
@@ -311,9 +329,11 @@ function canonicalPlanValue(
   plan: Omit<CheckoutSparkSettledPlan, "planDigest">
 ): unknown {
   return [
-    plan.schemaVersion === 4
-      ? "conduit:checkout-spark-settled-plan:v4"
-      : PLAN_DOMAIN,
+    plan.schemaVersion === 5
+      ? "conduit:checkout-spark-settled-plan:v5"
+      : plan.schemaVersion === 4
+        ? "conduit:checkout-spark-settled-plan:v4"
+        : PLAN_DOMAIN,
     plan.schemaVersion,
     plan.checkoutId,
     plan.orderId,
@@ -339,16 +359,10 @@ function canonicalPlanValue(
       recipient.recipientId,
       recipient.destination.type,
       recipient.destination.value,
-      recipient.destination.source.type === "signed_profile"
-        ? [
-            "signed_profile",
-            recipient.destination.source.profileEventId,
-            recipient.destination.source.profileEventCreatedAt,
-          ]
-        : ["conduit_allowlist", recipient.destination.source.policy],
+      destinationSourceDigestValue(recipient.destination.source),
       recipient.weightSats,
     ]),
-    ...(plan.schemaVersion === 4
+    ...(isCheckoutSparkNativeTreasuryPlan(plan)
       ? [
           [
             plan.nativeTreasury!.schemaVersion,
@@ -362,6 +376,9 @@ function canonicalPlanValue(
           ],
         ]
       : []),
+    ...(plan.schemaVersion === 5
+      ? [checkoutSparkEventMarketBindingDigestValue(plan.eventMarket!)]
+      : []),
     ...(plan.merchantPublicZapPolicy
       ? [
           checkoutSparkMerchantPublicZapPolicyDigestValue(
@@ -369,13 +386,39 @@ function canonicalPlanValue(
           ),
         ]
       : []),
+    ...(plan.conduitFeePolicy !== undefined
+      ? [["conduit-fee-policy", plan.conduitFeePolicy]]
+      : []),
   ]
+}
+
+/** Native final collection is shared by ordinary v4 and event v5 plans. */
+export function isCheckoutSparkNativeTreasuryPlan(
+  plan: Pick<CheckoutSparkSettledPlan, "schemaVersion">
+): boolean {
+  return plan.schemaVersion === 4 || plan.schemaVersion === 5
+}
+
+function destinationSourceDigestValue(
+  source: CheckoutSparkSettledDestinationSource
+): unknown[] {
+  if (source.type === "signed_profile")
+    return [source.type, source.profileEventId, source.profileEventCreatedAt]
+  if (source.type === "signed_event_market")
+    return [
+      source.type,
+      source.marketCoordinate,
+      source.eventId,
+      source.eventCreatedAt,
+    ]
+  return [source.type, source.policy]
 }
 
 function freezeCheckoutSparkSettledPlanInternal(
   input: FreezeCheckoutSparkSettledPlanInput,
   allowPreAllowanceV3: boolean,
-  nativeTreasury?: CheckoutSparkNativeTreasuryPlan
+  nativeTreasury?: CheckoutSparkNativeTreasuryPlan,
+  eventMarketInput?: CheckoutSparkEventMarketBinding
 ): CheckoutSparkSettledPlan {
   const checkoutId = text(input.checkoutId, "Checkout id")
   const orderId = text(input.orderId, "Order id")
@@ -391,20 +434,49 @@ function freezeCheckoutSparkSettledPlanInternal(
   }
   const commerceQuote = freezeCheckoutSparkCommerceQuote(
     input.commerceQuote,
-    merchantPubkey
+    merchantPubkey,
+    { allowZeroTotal: eventMarketInput !== undefined }
   )
-  const weights = calculateCheckoutSparkAllocationWeights(
-    commerceQuote.commerceTotalSats
-  )
+  const eventMarket =
+    eventMarketInput === undefined
+      ? undefined
+      : freezeCheckoutSparkEventMarketBinding(eventMarketInput, {
+          merchantPubkey,
+          commerceQuote,
+          acceptedAtMs: createdAt,
+        })
+  if (eventMarket && !nativeTreasury)
+    throw new Error(
+      "Checkout Spark event plans require native final collection."
+    )
+  const weights = eventMarket
+    ? calculateCheckoutSparkEventAllocationWeights(
+        commerceQuote.commerceTotalSats,
+        eventMarket.organizerFeeSats,
+        input.conduitFeePolicy
+      )
+    : calculateCheckoutSparkAllocationWeights(
+        commerceQuote.commerceTotalSats,
+        input.conduitFeePolicy
+      )
   const grossFundingSats = sats(input.funding.grossFundingSats, "Gross funding")
   const preAllowanceGrossSats =
     weights.commerceWeightSats + weights.conduitWeightSats
   if (
     grossFundingSats !==
-      calculateCheckoutSparkSettledGrossFundingSats(
-        commerceQuote.commerceTotalSats
-      ) &&
-    (!allowPreAllowanceV3 || grossFundingSats !== preAllowanceGrossSats)
+      (eventMarket
+        ? calculateCheckoutSparkEventSettledGrossFundingSats(
+            commerceQuote.commerceTotalSats,
+            eventMarket.organizerFeeSats,
+            input.conduitFeePolicy
+          )
+        : calculateCheckoutSparkSettledGrossFundingSats(
+            commerceQuote.commerceTotalSats,
+            input.conduitFeePolicy
+          )) &&
+    (!allowPreAllowanceV3 ||
+      input.conduitFeePolicy !== undefined ||
+      grossFundingSats !== preAllowanceGrossSats)
   ) {
     throw new Error("Checkout Spark gross funding differs from frozen terms.")
   }
@@ -437,104 +509,147 @@ function freezeCheckoutSparkSettledPlanInternal(
   if (!Array.isArray(input.recipients) || input.recipients.length < 2) {
     throw new Error("Checkout Spark recipients are missing.")
   }
-  const recipients = input.recipients.map((candidate, position) => {
-    if (
-      candidate.kind !== "merchant" &&
-      candidate.kind !== "supplier" &&
-      candidate.kind !== "organizer" &&
-      candidate.kind !== "conduit"
-    ) {
-      throw new Error("Checkout Spark recipient kind is invalid.")
-    }
-    if (candidate.destination.type !== "lightning_address") {
-      throw new Error("Checkout Spark destination type is invalid.")
-    }
-    const recipientId = text(candidate.recipientId, "Recipient id")
-    const source = candidate.destination.source
-    let normalizedSource: CheckoutSparkSettledDestinationSource
-    if (candidate.kind === "conduit") {
+  const recipients: CheckoutSparkSettledRecipient[] = input.recipients.map(
+    (candidate: CheckoutSparkSettledRecipientInput, position) => {
       if (
-        source.type !== "conduit_allowlist" ||
-        recipientId !== candidate.destination.value ||
-        candidate.destination.value !==
-          checkoutSparkConduitFeeRecipient(source.policy)
+        candidate.kind !== "merchant" &&
+        candidate.kind !== "supplier" &&
+        candidate.kind !== "organizer" &&
+        candidate.kind !== "conduit"
       ) {
-        throw new Error("Checkout Spark Conduit destination is invalid.")
+        throw new Error("Checkout Spark recipient kind is invalid.")
       }
-      normalizedSource = Object.freeze({
-        type: "conduit_allowlist",
-        policy: source.policy,
-      })
-    } else {
-      if (source.type !== "signed_profile" || !HEX_64.test(recipientId)) {
-        throw new Error(
-          "Checkout Spark recipient lacks signed profile evidence."
+      if (candidate.destination.type !== "lightning_address") {
+        throw new Error("Checkout Spark destination type is invalid.")
+      }
+      const recipientId = text(candidate.recipientId, "Recipient id")
+      const source = candidate.destination.source
+      let normalizedSource: CheckoutSparkSettledDestinationSource
+      if (candidate.kind === "conduit") {
+        if (
+          source.type !== "conduit_allowlist" ||
+          recipientId !== candidate.destination.value ||
+          candidate.destination.value !==
+            checkoutSparkConduitFeeRecipient(source.policy)
+        ) {
+          throw new Error("Checkout Spark Conduit destination is invalid.")
+        }
+        normalizedSource = Object.freeze({
+          type: "conduit_allowlist",
+          policy: source.policy,
+        })
+      } else if (eventMarket && candidate.kind === "organizer") {
+        const fee = eventMarket.organizerFee
+        if (
+          source.type !== "signed_event_market" ||
+          recipientId !== eventMarket.organizerPubkey ||
+          source.marketCoordinate !== eventMarket.marketCoordinate ||
+          source.eventId !== eventMarket.marketEventId ||
+          source.eventCreatedAt * 1_000 > createdAt ||
+          source.eventCreatedAt !== fee.createdAt ||
+          fee.state !== "active" ||
+          candidate.destination.value !== fee.lightningAddress ||
+          candidate.weightSats !== eventMarket.organizerFeeSats
         )
+          throw new Error(
+            "Checkout Spark organizer lacks exact signed event fee evidence."
+          )
+        normalizedSource = Object.freeze({
+          type: "signed_event_market",
+          marketCoordinate: source.marketCoordinate,
+          eventId: hex(source.eventId, "Organizer fee event"),
+          eventCreatedAt: time(source.eventCreatedAt, "Organizer fee time"),
+        })
+      } else {
+        if (source.type !== "signed_profile" || !HEX_64.test(recipientId)) {
+          throw new Error(
+            "Checkout Spark recipient lacks signed profile evidence."
+          )
+        }
+        const profileEventCreatedAt = time(
+          source.profileEventCreatedAt,
+          "Recipient profile time"
+        )
+        if (profileEventCreatedAt * 1_000 > createdAt) {
+          throw new Error("Checkout Spark recipient profile postdates plan.")
+        }
+        normalizedSource = Object.freeze({
+          type: "signed_profile",
+          profileEventId: hex(source.profileEventId, "Recipient profile event"),
+          profileEventCreatedAt,
+        })
       }
-      const profileEventCreatedAt = time(
-        source.profileEventCreatedAt,
-        "Recipient profile time"
-      )
-      if (profileEventCreatedAt * 1_000 > createdAt) {
-        throw new Error("Checkout Spark recipient profile postdates plan.")
-      }
-      normalizedSource = Object.freeze({
-        type: "signed_profile",
-        profileEventId: hex(source.profileEventId, "Recipient profile event"),
-        profileEventCreatedAt,
+      const destination = Object.freeze({
+        type: candidate.destination.type,
+        value: text(candidate.destination.value, "Recipient destination"),
+        source: normalizedSource,
+      })
+      const weightSats = sats(candidate.weightSats, "Recipient weight")
+      const legId = digest([
+        LEG_DOMAIN,
+        checkoutId,
+        orderId,
+        position,
+        candidate.kind,
+        recipientId,
+        destination.type,
+        destination.value,
+        destinationSourceDigestValue(normalizedSource),
+        weightSats,
+      ])
+      return Object.freeze({
+        position,
+        legId,
+        kind: candidate.kind,
+        recipientId,
+        destination,
+        weightSats,
       })
     }
-    const destination = Object.freeze({
-      type: candidate.destination.type,
-      value: text(candidate.destination.value, "Recipient destination"),
-      source: normalizedSource,
-    })
-    const weightSats = sats(candidate.weightSats, "Recipient weight")
-    const legId = digest([
-      LEG_DOMAIN,
-      checkoutId,
-      orderId,
-      position,
-      candidate.kind,
-      recipientId,
-      destination.type,
-      destination.value,
-      normalizedSource.type === "signed_profile"
-        ? [
-            normalizedSource.type,
-            normalizedSource.profileEventId,
-            normalizedSource.profileEventCreatedAt,
-          ]
-        : [normalizedSource.type, normalizedSource.policy],
-      weightSats,
-    ])
-    return Object.freeze({
-      position,
-      legId,
-      kind: candidate.kind,
-      recipientId,
-      destination,
-      weightSats,
-    })
-  })
+  )
   const conduit = recipients.filter((recipient) => recipient.kind === "conduit")
   if (
     conduit.length !== 1 ||
     recipients.at(-1)?.kind !== "conduit" ||
     conduit[0]!.weightSats !== weights.conduitWeightSats ||
-    recipients.filter((recipient) => recipient.kind === "merchant").length !== 1
+    recipients.filter((recipient) => recipient.kind === "merchant").length !==
+      (eventMarket && commerceQuote.commerceTotalSats === 0 ? 0 : 1)
   ) {
     throw new Error("Checkout Spark recipient authority is invalid.")
   }
-  assertCheckoutSparkMerchantPayoutRecipient(merchantPubkey, recipients)
+  if (!eventMarket || commerceQuote.commerceTotalSats > 0)
+    assertCheckoutSparkMerchantPayoutRecipient(merchantPubkey, recipients)
   const commerceWeight = recipients
-    .filter((recipient) => recipient.kind !== "conduit")
+    .filter((recipient) =>
+      eventMarket
+        ? recipient.kind === "merchant" || recipient.kind === "supplier"
+        : recipient.kind !== "conduit"
+    )
     .reduce((sum, recipient) => sum + BigInt(recipient.weightSats), 0n)
   if (commerceWeight !== BigInt(weights.commerceWeightSats)) {
     throw new Error("Checkout Spark recipients differ from commerce quote.")
   }
+  if (eventMarket) {
+    const organizers = recipients.filter(
+      (recipient) => recipient.kind === "organizer"
+    )
+    const ranks = { merchant: 0, supplier: 1, organizer: 2, conduit: 3 }
+    if (
+      organizers.length !== (eventMarket.organizerFeeSats > 0 ? 1 : 0) ||
+      recipients.some(
+        (recipient, index) =>
+          index > 0 &&
+          ranks[recipient.kind] < ranks[recipients[index - 1]!.kind]
+      )
+    )
+      throw new Error("Checkout Spark event payout ordering is invalid.")
+  }
   const unsigned = {
-    schemaVersion: nativeTreasury ? (4 as const) : (3 as const),
+    schemaVersion: eventMarket
+      ? (5 as const)
+      : nativeTreasury
+        ? (4 as const)
+        : (3 as const),
     checkoutId,
     orderId,
     merchantPubkey,
@@ -545,6 +660,10 @@ function freezeCheckoutSparkSettledPlanInternal(
     commerceQuote,
     funding,
     recipients: Object.freeze(recipients),
+    ...(input.conduitFeePolicy !== undefined
+      ? { conduitFeePolicy: input.conduitFeePolicy }
+      : {}),
+    ...(eventMarket ? { eventMarket } : {}),
     ...(input.merchantPublicZapPolicy
       ? {
           merchantPublicZapPolicy: freezeCheckoutSparkMerchantPublicZapPolicy(
@@ -579,6 +698,7 @@ export function freezeCheckoutSparkSettledPlan(
   input: FreezeCheckoutSparkSettledPlanInput
 ): CheckoutSparkSettledPlan {
   assertPrivateCheckoutSparkSettledPlanInput(input)
+  assertOrdinaryCheckoutSparkSettledPlanInput(input)
   return freezeCheckoutSparkSettledPlanInternal(input, false)
 }
 
@@ -589,10 +709,27 @@ export function freezeCheckoutSparkSettledTreasuryPlan(
   }
 ): CheckoutSparkSettledPlan {
   assertPrivateCheckoutSparkSettledPlanInput(input)
+  assertOrdinaryCheckoutSparkSettledPlanInput(input)
   return freezeCheckoutSparkSettledPlanInternal(
     input,
     false,
     input.nativeTreasury
+  )
+}
+
+/** Event fees require a new digest and never reinterpret ordinary funded plans. */
+export function freezeCheckoutSparkSettledEventPlan(
+  input: FreezeCheckoutSparkSettledPlanInput & {
+    readonly nativeTreasury: CheckoutSparkNativeTreasuryPlan
+    readonly eventMarket: CheckoutSparkEventMarketBinding
+  }
+): CheckoutSparkSettledPlan {
+  assertPrivateCheckoutSparkSettledPlanInput(input)
+  return freezeCheckoutSparkSettledPlanInternal(
+    input,
+    false,
+    input.nativeTreasury,
+    input.eventMarket
   )
 }
 
@@ -607,13 +744,29 @@ function assertPrivateCheckoutSparkSettledPlanInput(
   }
 }
 
+function assertOrdinaryCheckoutSparkSettledPlanInput(
+  input: FreezeCheckoutSparkSettledPlanInput
+): void {
+  if (
+    Object.hasOwn(input, "eventMarket") ||
+    input.recipients.some((recipient) => recipient.kind === "organizer")
+  )
+    throw new Error("Checkout Spark event obligations require an event plan.")
+}
+
 export function restoreCheckoutSparkSettledPlan(
   plan: CheckoutSparkSettledPlan
 ): CheckoutSparkSettledPlan {
   if (
-    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
+    (plan.schemaVersion !== 3 &&
+      plan.schemaVersion !== 4 &&
+      plan.schemaVersion !== 5) ||
     (plan.schemaVersion === 3 && Object.hasOwn(plan, "nativeTreasury")) ||
-    (plan.schemaVersion === 4 && !plan.nativeTreasury)
+    (isCheckoutSparkNativeTreasuryPlan(plan) && !plan.nativeTreasury) ||
+    (plan.schemaVersion === 5
+      ? !plan.eventMarket
+      : Object.hasOwn(plan, "eventMarket")) ||
+    (plan.schemaVersion === 5 && plan.merchantPublicZapPolicy !== undefined)
   ) {
     throw new Error("Checkout Spark settled plan version is invalid.")
   }
@@ -631,12 +784,16 @@ export function restoreCheckoutSparkSettledPlan(
       commerceQuote: plan.commerceQuote,
       funding: plan.funding,
       recipients: plan.recipients,
+      ...(plan.conduitFeePolicy !== undefined
+        ? { conduitFeePolicy: plan.conduitFeePolicy }
+        : {}),
       ...(plan.merchantPublicZapPolicy
         ? { merchantPublicZapPolicy: plan.merchantPublicZapPolicy }
         : {}),
     },
     plan.schemaVersion === 3,
-    plan.nativeTreasury
+    plan.nativeTreasury,
+    plan.eventMarket
   )
   if (
     canonical.planDigest !== plan.planDigest ||
@@ -658,7 +815,7 @@ export function deriveCheckoutSparkSettledTransferId(
 ): string {
   const canonical = restoreCheckoutSparkSettledPlan(plan)
   if (
-    canonical.schemaVersion === 4 &&
+    isCheckoutSparkNativeTreasuryPlan(canonical) &&
     canonical.recipients.find((leg) => leg.legId === legId)?.kind === "conduit"
   ) {
     throw new Error(
@@ -722,18 +879,41 @@ function allocatedLegs(
   plan: CheckoutSparkSettledPlan,
   creditedSats: number
 ): readonly CheckoutSparkSettledLegProgress[] {
-  const weights = calculateCheckoutSparkAllocationWeights(
-    plan.commerceQuote.commerceTotalSats
-  )
-  const divided = allocateCheckoutSparkSettledSats({
+  const eventMarket = plan.schemaVersion === 5 ? plan.eventMarket! : undefined
+  const weights = eventMarket
+    ? calculateCheckoutSparkEventAllocationWeights(
+        plan.commerceQuote.commerceTotalSats,
+        eventMarket.organizerFeeSats,
+        plan.conduitFeePolicy
+      )
+    : calculateCheckoutSparkAllocationWeights(
+        plan.commerceQuote.commerceTotalSats,
+        plan.conduitFeePolicy
+      )
+  const allocationInput = {
     settledSats: creditedSats,
     fundingInvoiceGrossSats: plan.funding.grossFundingSats,
     weights,
-  })
+    conduitFeePolicy: plan.conduitFeePolicy,
+  }
+  const divided = eventMarket
+    ? allocateCheckoutSparkEventSettledSats({
+        ...allocationInput,
+        weights: calculateCheckoutSparkEventAllocationWeights(
+          plan.commerceQuote.commerceTotalSats,
+          eventMarket.organizerFeeSats,
+          plan.conduitFeePolicy
+        ),
+      })
+    : allocateCheckoutSparkSettledSats(allocationInput)
   const otherCommerceAllocations = new Map<string, number>()
   let assignedOtherCommerce = 0
   for (const recipient of plan.recipients) {
-    if (recipient.kind === "merchant" || recipient.kind === "conduit") {
+    if (
+      recipient.kind === "merchant" ||
+      recipient.kind === "conduit" ||
+      (eventMarket && recipient.kind === "organizer")
+    ) {
       continue
     }
     const share = Number(
@@ -748,6 +928,8 @@ function allocatedLegs(
       let allocationSats: number
       if (recipient.kind === "conduit") {
         allocationSats = divided.conduitAllocationSats
+      } else if (eventMarket && recipient.kind === "organizer") {
+        allocationSats = eventMarket.organizerFeeSats
       } else if (recipient.kind === "merchant") {
         // Match the signed supplier-allocation rule: merchant gets whole-sat residue.
         allocationSats = divided.commerceAllocationSats - assignedOtherCommerce
@@ -762,7 +944,7 @@ function allocatedLegs(
         observedAt: null,
         finalFeeSats: null,
         finalDebitSats: null,
-        ...(plan.schemaVersion === 4
+        ...(isCheckoutSparkNativeTreasuryPlan(plan)
           ? { generation: 0 as const, closedGenerations: [] }
           : {}),
       })
@@ -815,7 +997,8 @@ export function createCheckoutSparkSettledReconciliation(
 ): CheckoutSparkSettledReconciliation {
   const canonical = restoreCheckoutSparkSettledPlan(plan)
   return freezeState({
-    schemaVersion: canonical.schemaVersion === 4 ? 5 : 3,
+    schemaVersion:
+      canonical.schemaVersion === 5 ? 6 : canonical.schemaVersion === 4 ? 5 : 3,
     plan: canonical,
     credit: null,
     legs: canonical.recipients.map((recipient) => ({
@@ -826,11 +1009,11 @@ export function createCheckoutSparkSettledReconciliation(
       observedAt: null,
       finalFeeSats: null,
       finalDebitSats: null,
-      ...(canonical.schemaVersion === 4
+      ...(isCheckoutSparkNativeTreasuryPlan(canonical)
         ? { generation: 0 as const, closedGenerations: [] }
         : {}),
     })),
-    ...(canonical.schemaVersion === 4
+    ...(isCheckoutSparkNativeTreasuryPlan(canonical)
       ? {
           treasuryFinalization: createCheckoutSparkNativeTreasuryFinalization(),
         }
@@ -845,14 +1028,18 @@ export function restoreCheckoutSparkSettledReconciliation(
   if (
     state.schemaVersion !== 3 &&
     state.schemaVersion !== 4 &&
-    state.schemaVersion !== 5
+    state.schemaVersion !== 5 &&
+    state.schemaVersion !== 6
   ) {
     throw new Error("Checkout Spark settled state version is invalid.")
   }
   const plan = restoreCheckoutSparkSettledPlan(state.plan)
   if (
     (plan.schemaVersion === 4) !== (state.schemaVersion === 5) ||
-    (state.schemaVersion !== 5 && Object.hasOwn(state, "treasuryFinalization"))
+    (plan.schemaVersion === 5) !== (state.schemaVersion === 6) ||
+    (state.schemaVersion !== 5 &&
+      state.schemaVersion !== 6 &&
+      Object.hasOwn(state, "treasuryFinalization"))
   ) {
     throw new Error("Checkout Spark treasury state version is invalid.")
   }
@@ -891,7 +1078,7 @@ export function restoreCheckoutSparkSettledReconciliation(
       throw new Error("Checkout Spark settled allocation is invalid.")
     }
     if (
-      plan.schemaVersion === 4 &&
+      isCheckoutSparkNativeTreasuryPlan(plan) &&
       plan.recipients[position]!.kind === "conduit"
     ) {
       if (
@@ -1021,7 +1208,7 @@ export function restoreCheckoutSparkSettledReconciliation(
     )
     const debit = historical + (leg.finalDebitSats ?? 0)
     const native =
-      plan.schemaVersion === 4 &&
+      isCheckoutSparkNativeTreasuryPlan(plan) &&
       plan.recipients.find((recipient) => recipient.legId === leg.legId)
         ?.kind === "conduit"
     if (
@@ -1045,7 +1232,7 @@ export function restoreCheckoutSparkSettledReconciliation(
     throw new Error("Checkout Spark settled state timestamp is stale.")
   }
   const treasuryFinalization =
-    state.schemaVersion === 5
+    state.schemaVersion === 5 || state.schemaVersion === 6
       ? restoreCheckoutSparkNativeTreasuryFinalization(
           state.treasuryFinalization!,
           { ...state, plan, credit, legs }
@@ -1149,13 +1336,25 @@ export function assertCheckoutSparkSettledFundingCoverage(
   plan: CheckoutSparkSettledPlan,
   creditedSats: number
 ): void {
-  const weights = calculateCheckoutSparkAllocationWeights(
-    plan.commerceQuote.commerceTotalSats
-  )
+  const weights =
+    plan.schemaVersion === 5
+      ? calculateCheckoutSparkEventAllocationWeights(
+          plan.commerceQuote.commerceTotalSats,
+          plan.eventMarket!.organizerFeeSats,
+          plan.conduitFeePolicy
+        )
+      : calculateCheckoutSparkAllocationWeights(
+          plan.commerceQuote.commerceTotalSats,
+          plan.conduitFeePolicy
+        )
   if (
     !Number.isSafeInteger(creditedSats) ||
     BigInt(creditedSats) <
-      BigInt(weights.commerceWeightSats) + BigInt(weights.conduitWeightSats)
+      BigInt(weights.commerceWeightSats) +
+        BigInt(weights.conduitWeightSats) +
+        BigInt(
+          plan.schemaVersion === 5 ? plan.eventMarket!.organizerFeeSats : 0
+        )
   ) {
     throw new Error("Checkout Spark funding shortfall requires reconciliation.")
   }
@@ -1251,7 +1450,7 @@ export function prepareCheckoutSparkSettledLeg(
     )
   }
   if (
-    current.plan.schemaVersion === 4 &&
+    isCheckoutSparkNativeTreasuryPlan(current.plan) &&
     current.plan.recipients.find((leg) => leg.legId === input.legId)?.kind ===
       "conduit"
   ) {
@@ -1363,7 +1562,12 @@ export function renewCheckoutSparkSettledLeg(
   }
   return restoreCheckoutSparkSettledReconciliation({
     ...current,
-    schemaVersion: current.plan.schemaVersion === 4 ? 5 : 4,
+    schemaVersion:
+      current.plan.schemaVersion === 5
+        ? 6
+        : current.plan.schemaVersion === 4
+          ? 5
+          : 4,
     legs: current.legs.map((item) =>
       item.legId === input.legId
         ? {

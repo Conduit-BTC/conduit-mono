@@ -59,7 +59,8 @@ test logs or PR evidence.
 
 ## Funding a Portable Wallet
 
-The shared Wallets receive dialog includes Cash App on mainnet. This uses the
+The shared Wallets card offers a compact Cash App Add funds action on mainnet.
+Receive remains a separate Lightning-address flow. Funding uses the
 selected open wallet's existing native Spark receive operation, with a required
 positive whole-sat amount. No Cash App Pay account, new wallet provider, custody,
 backend, or wallet-name registration is introduced. The first-party Spark adapter
@@ -75,8 +76,10 @@ separately from Cash App's own fees.
 `InvoicePayment` in shared UI owns the existing native links, copy, and QR controls;
 Market's checkout keeps its existing preparation and order-admission callbacks.
 Wallet funding prepares first, then uses an explicit native link click, rechecking
-invoice amount, mainnet, validity, expiry, and current wallet scope. Switching
-receive tabs retains the prepared Cash App invoice. Closing the dialog does not
+invoice amount, mainnet, validity, expiry, and current wallet scope. Desktop
+funding shows a bounded QR containing the Cash App universal link, labeled for the
+phone camera; mobile shows Open Cash App. The separate Lightning fallback keeps
+the same BOLT11 invoice across its link, copy, and QR. Closing the dialog does not
 cancel it; the wallet's provider history remains the recovery surface after reload.
 
 The native receive request ID and fee survive through the wallet hook. Receipt
@@ -93,3 +96,11 @@ cancellation, absent-app fallback, eligible Cash funding, and a separately autho
 small deposit to the selected wallet. Local browser fixtures use real test signer
 cryptography with a controlled, unfunded wallet provider; they are not funded-device
 or production evidence.
+
+The ordinary Receive dialog shows only a publicly verified wallet Lightning
+address QR, encoded as LNURL. Its 224px square includes a white quiet margin and
+is bounded locally so global SVG styles cannot expand it. Requesting an amount
+replaces the reusable-address view with an invoice; Spark addresses are under
+Other ways to receive. Address setup status is shown only from actual provider
+state. Wallet-associated addresses, name requests, activation, and public-profile
+address choices remain in their existing wallet-card flows.

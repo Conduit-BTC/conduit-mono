@@ -128,6 +128,7 @@ export function EventTimelineLoading({ count = 3 }: { count?: number }) {
 
 export interface EventTimelineViewportProps {
   busy?: boolean
+  scrollMode?: "contained" | "page"
   currentAndFutureEvents: ReactNode
   hiddenEarlierCount: number
   hiddenLaterCount: number
@@ -151,6 +152,7 @@ function paginationControlLabel(
 
 export function EventTimelineViewport({
   busy = false,
+  scrollMode = "contained",
   currentAndFutureEvents,
   hiddenEarlierCount,
   hiddenLaterCount,
@@ -171,8 +173,12 @@ export function EventTimelineViewport({
       id={`${timelineId}-results`}
       role="region"
       aria-label="Chronological events"
-      tabIndex={0}
-      className="max-h-[70dvh] overflow-y-auto overscroll-contain rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] px-3 py-5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:px-5"
+      tabIndex={scrollMode === "contained" ? 0 : undefined}
+      className={cn(
+        "min-w-0 py-5",
+        scrollMode === "contained" &&
+          "max-h-[70dvh] overflow-y-auto overscroll-contain rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--background)] px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] sm:px-5"
+      )}
       aria-busy={busy}
     >
       {hiddenEarlierCount > 0 ? (
@@ -204,7 +210,10 @@ export function EventTimelineViewport({
         id={`${timelineId}-now`}
         role="separator"
         aria-label="Now"
-        className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 py-2 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4"
+        className={cn(
+          "grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 py-2 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4",
+          scrollMode === "page" && "scroll-mt-28 lg:scroll-mt-24"
+        )}
       >
         <span className="self-center text-right text-sm font-semibold text-[var(--link-text)]">
           Now

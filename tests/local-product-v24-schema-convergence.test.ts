@@ -100,7 +100,7 @@ describe("already-v24 database lineage convergence", () => {
       const current = new ConduitDB(name, options)
       try {
         await current.open()
-        expect(current.verno).toBe(27)
+        expect(current.verno).toBe(31)
         for (const [table, row] of rows)
           expect(await current.table(table).toArray()).toEqual([row])
         for (const table of Object.keys(localStores)) {

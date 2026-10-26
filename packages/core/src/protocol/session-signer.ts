@@ -2,6 +2,7 @@ import type { ProtectedReadSessionLifecycle } from "./protected-read-session-lif
 import type { AuthMethod } from "./auth-session"
 import {
   classifyNostrSignerError,
+  isInvalidNip44CiphertextError,
   NostrSignerError,
   type AccountSigner,
   type AccountSignerCapabilities,
@@ -322,12 +323,24 @@ export class SessionSigner implements AccountSigner {
     const peer = normalizePubkey(peerPubkey)
     const result = await this.runOperation(
       scheme === "nip04" ? "nip04Decrypt" : "nip44",
-      () =>
-        operation === "encrypt"
-          ? this.signer.encryptNip44(peer, value)
-          : scheme === "nip44"
-            ? this.signer.decryptNip44(peer, value)
-            : this.signer.decryptLegacy(peer, value),
+      async () => {
+        try {
+          return await (operation === "encrypt"
+            ? this.signer.encryptNip44(peer, value)
+            : scheme === "nip44"
+              ? this.signer.decryptNip44(peer, value)
+              : this.signer.decryptLegacy(peer, value))
+        } catch (error) {
+          this.assertAuthority()
+          if (
+            operation === "decrypt" &&
+            scheme === "nip44" &&
+            isInvalidNip44CiphertextError(error)
+          )
+            throw new NostrSignerError("invalid_ciphertext")
+          throw error
+        }
+      },
       priority
     )
     if (

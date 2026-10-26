@@ -28,12 +28,17 @@ import {
   observeCheckoutSparkReceiverCapability,
   type CheckoutSparkReceiverContract,
   assertCheckoutSparkSignedCommerceAllocations,
+  calculateConduitCheckoutFeeSats,
   calculateCheckoutSparkSettledGrossFundingSats,
+  calculateCheckoutSparkEventSettledGrossFundingSats,
+  getCheckoutSparkEventMarketSourceReferences,
+  assertCheckoutSparkSignedEventMarketSources,
   canonicalizeCheckoutSparkPlanSourceEvents,
   createCheckoutSparkSettledReconciliation,
   freezeCheckoutSparkCommerceQuote,
   freezeCheckoutSparkSettledPlan,
   freezeCheckoutSparkSettledTreasuryPlan,
+  freezeCheckoutSparkSettledEventPlan,
   deriveCheckoutSparkNativeTreasuryInvoiceId,
   selectCheckoutSparkTreasuryAddress,
   restoreCheckoutSparkSettledReconciliation,
@@ -42,6 +47,7 @@ import {
   resolveCheckoutSparkSignedPickup,
   DexieCheckoutSparkSettledRepository,
   type CheckoutSparkNetwork,
+  type CheckoutSparkConduitFeePolicy,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledRecipientInput,
   type CheckoutSparkSettledReconciliation,
@@ -49,6 +55,11 @@ import {
   type CheckoutSparkTreasuryConfiguration,
   fetchLnurlPayMetadata,
   type CheckoutSparkMerchantPublicZapPolicy,
+  type CheckoutSparkEventMarketBinding,
+  type OrderSchema,
+  orderSchema,
+  matchesCheckoutSparkCommerceOrderLine,
+  matchesCheckoutSparkOrderEventMarketSnapshot,
 } from "@conduit/core"
 
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
@@ -64,6 +75,7 @@ import {
   listCheckoutSparkRecoveryDeliveries,
   retryStoredCheckoutSparkRecoveryHandoff,
   publishCheckoutSparkSettledRecoveryHandoff,
+  publishCheckoutSparkEventRecoveryHandoff,
   archiveCompletedCheckoutSparkRecovery,
   retryPendingCompletedCheckoutSparkRecovery,
   type CheckoutSparkCompletedRecoveryTransport,
@@ -100,6 +112,7 @@ export interface PrepareCheckoutSparkSettledFundingInput {
   network: CheckoutSparkNetwork
   takeoverAt: number
   grossFundingSats: number
+  conduitFeePolicy?: CheckoutSparkConduitFeePolicy
   fundingExpirySecs: number
   identity: CheckoutSparkRecoverySigningIdentity
   shouldContinue?: () => boolean
@@ -107,6 +120,9 @@ export interface PrepareCheckoutSparkSettledFundingInput {
   sourceEvents: readonly SignedPublicNostrEvent[]
   recipients: readonly CheckoutSparkSettledRecipientInput[]
   merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
+  eventMarket?: CheckoutSparkEventMarketBinding
+  /** Kept only in RAM/the existing Merchant continuation; organizer receives hashes. */
+  organizerOrder?: OrderSchema
   storage?: CheckoutSparkSettledPreparationStorage | null
   recoveryStorage?: CheckoutSparkSettledPreparationStorage | null
   /** Save the original private order draft before any recovery publication. */
@@ -131,6 +147,16 @@ export class CheckoutSparkSettledFundingMetadataPreflightError extends Error {
       "Checkout Spark recipient payment endpoint is not ready. No checkout wallet was created."
     )
     this.name = "CheckoutSparkSettledFundingMetadataPreflightError"
+  }
+}
+
+/** The selected fee cannot use this rail; no wallet or invoice has been created. */
+export class CheckoutSparkSettledFeeRoutePreflightError extends Error {
+  constructor() {
+    super(
+      "This small checkout requires a native Conduit fee route. The current setup cannot route it; no payment was created."
+    )
+    this.name = "CheckoutSparkSettledFeeRoutePreflightError"
   }
 }
 
@@ -184,6 +210,7 @@ export class CheckoutSparkSettledFundingExpiredError extends Error {
 }
 
 export interface PrepareCheckoutSparkSettledFundingDependencies {
+  publishEventRecoveryHandoff?: typeof publishCheckoutSparkEventRecoveryHandoff
   observePerformance?: CheckoutSparkPerformanceObserver
   now?: () => number
   treasuryConfiguration?: CheckoutSparkTreasuryConfiguration
@@ -212,7 +239,7 @@ export interface PrepareCheckoutSparkSettledFundingDependencies {
     handoffId: string,
     plan: CheckoutSparkSettledPlan,
     storage: CheckoutSparkSettledPreparationStorage | null
-  ) => boolean
+  ) => boolean | Promise<boolean>
 }
 
 /** Terminal cleanup is independent of wallet closing and grants no execution authority. */
@@ -419,12 +446,12 @@ function requireSparkManager() {
   return manager
 }
 
-function recoveryAcked(
+async function recoveryAcked(
   handoffId: string,
   plan: CheckoutSparkSettledPlan,
   storage: CheckoutSparkSettledPreparationStorage | null
-): boolean {
-  const delivery = getCheckoutSparkRecoveryDelivery(handoffId, storage)
+): Promise<boolean> {
+  const delivery = await getCheckoutSparkRecoveryDelivery(handoffId, storage)
   return Boolean(
     delivery &&
     delivery.record.checkoutId === plan.checkoutId &&
@@ -432,7 +459,12 @@ function recoveryAcked(
     delivery.record.planDigest === plan.planDigest &&
     delivery.record.walletId === plan.walletId &&
     delivery.record.merchantPubkey === plan.merchantPubkey &&
-    delivery.deliveryProgress.acknowledgedRelayRefs.length > 0
+    delivery.deliveryProgress.acknowledgedRelayRefs.length > 0 &&
+    (plan.schemaVersion !== 5 ||
+      plan.eventMarket?.mode !== "organizer_handoff" ||
+      (delivery.organizerDelivery?.organizerPubkey ===
+        plan.eventMarket.organizerPubkey &&
+        delivery.organizerDelivery.acknowledgedRelayRefs.length > 0))
   )
 }
 
@@ -452,6 +484,7 @@ export async function prepareCheckoutSparkSettledFunding(
     network,
     takeoverAt,
     grossFundingSats,
+    conduitFeePolicy,
     fundingExpirySecs,
     shouldContinue: callerShouldContinue,
   } = input
@@ -479,6 +512,22 @@ export async function prepareCheckoutSparkSettledFunding(
   // It is never rebuilt from display/cache fields or fetched a second time.
   const sourceEvents = snapshotCheckoutSparkPlanSourceEvents(input.sourceEvents)
   const quoteAuthority = structuredClone(input.quoteAuthority)
+  const eventMarket = quoteAuthority.eventMarket
+  if (eventMarket && eventMarket.organizerFeeSats === 1) {
+    throw new Error(
+      "The organizer fee is too small to cover its payment reserve. Ask the organizer to increase the fee before paying."
+    )
+  }
+  const organizerOrder =
+    eventMarket?.mode === "organizer_handoff"
+      ? orderSchema.parse(structuredClone(input.organizerOrder))
+      : undefined
+  if (
+    input.eventMarket !== undefined &&
+    JSON.stringify(input.eventMarket) !== JSON.stringify(eventMarket)
+  ) {
+    throw new Error("Event checkout authority changed before preparation.")
+  }
   const recipients = structuredClone(input.recipients)
   const storage = input.storage === undefined ? browserStorage() : input.storage
   const recoveryStorage =
@@ -551,6 +600,11 @@ export async function prepareCheckoutSparkSettledFunding(
   ) {
     throw new Error("Checkout Spark treasury configuration is invalid.")
   }
+  if (eventMarket && !treasuryDestination) {
+    throw new Error(
+      "Event checkout requires the configured native Conduit destination."
+    )
+  }
 
   const preparedAt = now()
   if (
@@ -578,17 +632,73 @@ export async function prepareCheckoutSparkSettledFunding(
   assertUnprepared()
   const commerceQuote = freezeCheckoutSparkCommerceQuote(
     buildCheckoutSparkCommerceEvidence(quoteAuthority),
-    merchantPubkey
+    merchantPubkey,
+    { allowZeroTotal: eventMarket !== undefined }
   )
   if (
-    grossFundingSats !==
-    calculateCheckoutSparkSettledGrossFundingSats(
-      commerceQuote.commerceTotalSats
+    organizerOrder &&
+    (organizerOrder.id !== orderId ||
+      organizerOrder.merchantPubkey !== merchantPubkey ||
+      organizerOrder.buyerPubkey !== identity.pubkey ||
+      organizerOrder.subtotal !== commerceQuote.commerceTotalSats ||
+      organizerOrder.currency !== "SATS" ||
+      JSON.stringify(organizerOrder.checkoutSparkPricing) !==
+        JSON.stringify(commerceQuote.pricing) ||
+      JSON.stringify(organizerOrder.checkoutSparkPricingAuthority) !==
+        JSON.stringify(commerceQuote.pricingAuthority) ||
+      organizerOrder.items.length !== commerceQuote.lines.length ||
+      new Set(organizerOrder.items.map((item) => item.productId)).size !==
+        organizerOrder.items.length ||
+      organizerOrder.items.some((item) => {
+        const line = commerceQuote.lines.find(
+          (candidate) => candidate.productCoordinate === item.productId
+        )
+        return (
+          !line ||
+          !matchesCheckoutSparkCommerceOrderLine(item, line) ||
+          !matchesCheckoutSparkOrderEventMarketSnapshot(
+            item.fulfillment,
+            eventMarket!,
+            item.productId
+          )
+        )
+      }))
+  )
+    throw new Error(
+      "Organizer checkout draft differs from its approved event terms."
     )
+  if (
+    grossFundingSats !==
+    (eventMarket
+      ? calculateCheckoutSparkEventSettledGrossFundingSats(
+          commerceQuote.commerceTotalSats,
+          eventMarket.organizerFeeSats,
+          conduitFeePolicy
+        )
+      : calculateCheckoutSparkSettledGrossFundingSats(
+          commerceQuote.commerceTotalSats,
+          conduitFeePolicy
+        ))
   ) {
     throw new Error("Settled checkout gross funding differs from frozen terms.")
   }
-  if (recipients.some((recipient) => recipient.kind === "organizer")) {
+  // The retained Lightning fee rail needs a positive invoice plus its reserve.
+  // Do not expose funding for a new one-sat fee that that rail cannot dispatch;
+  // native Spark has zero transfer fees and keeps the approved no-floor amount.
+  if (
+    conduitFeePolicy !== undefined &&
+    !treasuryDestination &&
+    calculateConduitCheckoutFeeSats(
+      commerceQuote.commerceTotalSats,
+      conduitFeePolicy
+    ) <= 1
+  ) {
+    throw new CheckoutSparkSettledFeeRoutePreflightError()
+  }
+  if (
+    !eventMarket &&
+    recipients.some((recipient) => recipient.kind === "organizer")
+  ) {
     throw new Error(
       "Settled checkout organizer allocation is not yet supported."
     )
@@ -600,6 +710,7 @@ export async function prepareCheckoutSparkSettledFunding(
     pickupSourceEvents: sourceEvents,
     acceptedAtMs: preparedAt,
     merchantPubkey,
+    ...(eventMarket ? { eventMarket, eventSourceEvents: sourceEvents } : {}),
     commerce: recipients
       .filter(
         (
@@ -664,9 +775,40 @@ export async function prepareCheckoutSparkSettledFunding(
       expectedSourceIds.add(line.pickup.collection.eventId)
     }
   }
+  if (eventMarket) {
+    for (const reference of getCheckoutSparkEventMarketSourceReferences(
+      eventMarket,
+      merchantPubkey
+    )) {
+      const event = sourcesById.get(reference.eventId)
+      if (
+        !event ||
+        event.kind !== reference.kind ||
+        event.pubkey !== reference.pubkey ||
+        event.created_at * 1000 > preparedAt
+      )
+        unavailableSources()
+      expectedSourceIds.add(reference.eventId)
+    }
+  }
   for (const recipient of recipients) {
     if (recipient.kind === "conduit") continue
     const source = recipient.destination.source
+    if (recipient.kind === "organizer" && eventMarket) {
+      const fee = eventMarket.organizerFee
+      if (
+        source.type !== "signed_event_market" ||
+        fee.state !== "active" ||
+        recipient.recipientId !== eventMarket.organizerPubkey ||
+        recipient.weightSats !== eventMarket.organizerFeeSats ||
+        recipient.destination.value !== fee.lightningAddress ||
+        source.marketCoordinate !== eventMarket.marketCoordinate ||
+        source.eventId !== eventMarket.marketEventId ||
+        source.eventCreatedAt !== fee.createdAt
+      )
+        unavailableSources()
+      continue
+    }
     if (source.type !== "signed_profile") unavailableSources()
     const event = sourcesById.get(source.profileEventId)
     if (
@@ -689,7 +831,9 @@ export async function prepareCheckoutSparkSettledFunding(
     recipients
       .filter(
         (recipient) =>
-          recipient.kind === "merchant" || recipient.kind === "supplier"
+          recipient.kind === "merchant" ||
+          recipient.kind === "supplier" ||
+          recipient.kind === "organizer"
       )
       .map((recipient) => recipient.destination.value)
   )
@@ -711,7 +855,19 @@ export async function prepareCheckoutSparkSettledFunding(
         }))
       try {
         await assertCheckoutSparkLnurlPayoutMetadata(
-          { lud16, maximumAllocationSats: grossFundingSats, shouldContinue },
+          {
+            lud16,
+            maximumAllocationSats:
+              eventMarket &&
+              recipients.some(
+                (recipient) =>
+                  recipient.kind === "organizer" &&
+                  recipient.destination.value === lud16
+              )
+                ? eventMarket.organizerFeeSats
+                : grossFundingSats,
+            shouldContinue,
+          },
           { fetchMetadata }
         )
         const capability = await observeCheckoutSparkReceiverCapability(
@@ -785,6 +941,7 @@ export async function prepareCheckoutSparkSettledFunding(
       createdAt: receive.createdAt,
       takeoverAt,
       commerceQuote,
+      ...(conduitFeePolicy ? { conduitFeePolicy } : {}),
       funding: {
         requestId: receive.id,
         paymentRequest: receive.paymentRequest,
@@ -824,9 +981,19 @@ export async function prepareCheckoutSparkSettledFunding(
       : null
     assertCurrent()
     preparationStep = "plan_validation"
-    const plan = nativeTreasury
-      ? freezeCheckoutSparkSettledTreasuryPlan({ ...planInput, nativeTreasury })
-      : freezeCheckoutSparkSettledPlan(planInput)
+    const plan =
+      eventMarket && nativeTreasury
+        ? freezeCheckoutSparkSettledEventPlan({
+            ...planInput,
+            nativeTreasury,
+            eventMarket,
+          })
+        : nativeTreasury
+          ? freezeCheckoutSparkSettledTreasuryPlan({
+              ...planInput,
+              nativeTreasury,
+            })
+          : freezeCheckoutSparkSettledPlan(planInput)
     preparedPlan = plan
     const canonicalSources = canonicalizeCheckoutSparkPlanSourceEvents(
       plan,
@@ -863,7 +1030,7 @@ export async function prepareCheckoutSparkSettledFunding(
     assertCurrent()
     preparationStep = "recovery_handoff"
     recoveryStarted = true
-    const handoff = await publishRecovery({
+    const recoveryInput = {
       state: createCheckoutSparkSettledReconciliation(plan),
       recovery: wallet,
       identity,
@@ -871,7 +1038,7 @@ export async function prepareCheckoutSparkSettledFunding(
       preparedAt: now(),
       storage: recoveryStorage,
       transport: { shouldContinue },
-      onPersisted: (handoffId) => {
+      onPersisted: (handoffId: string) => {
         handoffPersisted = true
         saveCheckoutSparkSettledPreparation(
           {
@@ -882,7 +1049,26 @@ export async function prepareCheckoutSparkSettledFunding(
           storage
         )
       },
-    })
+    }
+    const handoff =
+      eventMarket?.mode === "organizer_handoff"
+        ? await (
+            dependencies.publishEventRecoveryHandoff ??
+            publishCheckoutSparkEventRecoveryHandoff
+          )({
+            ...recoveryInput,
+            order: orderSchema.parse({
+              ...organizerOrder,
+              createdAt: plan.createdAt,
+            }),
+          })
+        : await publishRecovery(recoveryInput)
+    assertCurrent()
+    const acknowledged = await verifyAck(
+      handoff.handoffId,
+      plan,
+      recoveryStorage
+    )
     assertCurrent()
     const persisted = getCheckoutSparkSettledPreparation(
       plan.checkoutId,
@@ -893,7 +1079,7 @@ export async function prepareCheckoutSparkSettledFunding(
       !handoff.canExposeFundingInvoice ||
       !persisted ||
       persisted.recoveryHandoffId !== handoff.handoffId ||
-      !verifyAck(handoff.handoffId, plan, recoveryStorage) ||
+      !acknowledged ||
       !Number.isSafeInteger(exposedAt) ||
       exposedAt < plan.createdAt ||
       exposedAt >= plan.funding.expiresAt
@@ -904,6 +1090,14 @@ export async function prepareCheckoutSparkSettledFunding(
     }
     // Recovery publication can outlive a scheduled event. Historical plan
     // validity must not authorize first invoice exposure after ordering ends.
+    if (plan.schemaVersion === 5)
+      assertCheckoutSparkSignedEventMarketSources({
+        eventMarket: plan.eventMarket!,
+        commerceQuote: plan.commerceQuote,
+        merchantPubkey: plan.merchantPubkey,
+        sourceEvents: canonicalSources,
+        acceptedAtMs: exposedAt,
+      })
     for (const line of plan.commerceQuote.lines) {
       if (!line.pickup) continue
       resolveCheckoutSparkSignedPickup({
@@ -932,15 +1126,18 @@ export async function prepareCheckoutSparkSettledFunding(
     const noWrap =
       preTransport &&
       !handoffPersisted &&
-      listCheckoutSparkRecoveryDeliveries(recoveryStorage).every(
+      (await listCheckoutSparkRecoveryDeliveries(recoveryStorage)).every(
         (delivery) => delivery.record.checkoutId !== checkoutId
       )
     if (wallet && noWrap) {
       const closingWalletId = wallet.walletId
-      const assertUnexposed = () => {
+      const assertUnexposed = async () => {
+        assertCurrent()
+        const deliveries =
+          await listCheckoutSparkRecoveryDeliveries(recoveryStorage)
         assertCurrent()
         if (
-          listCheckoutSparkRecoveryDeliveries(recoveryStorage).some(
+          deliveries.some(
             (delivery) => delivery.record.checkoutId === checkoutId
           )
         )
@@ -957,7 +1154,7 @@ export async function prepareCheckoutSparkSettledFunding(
           throw error
       }
       const closeUnexposed = async () => {
-        assertUnexposed()
+        await assertUnexposed()
         try {
           await closeWallet(closingWalletId)
         } catch (closeError) {
@@ -973,7 +1170,7 @@ export async function prepareCheckoutSparkSettledFunding(
         await withCheckoutSparkStorageLock(
           "conduit:checkout-spark-recovery-outbox:v1",
           async () => {
-            assertUnexposed()
+            await assertUnexposed()
             await repository.abandonPristine!(
               planToAbandon,
               1,
@@ -1045,13 +1242,18 @@ export async function loadAuthorizedCheckoutSparkSettledFunding(
   }
   const plan = snapshot.state.plan
   assertMarketCheckoutSparkDispatchPlan(plan)
-  const currentTime = (options.now ?? Date.now)()
-  const delivery = getCheckoutSparkRecoveryDelivery(
+  const delivery = await getCheckoutSparkRecoveryDelivery(
     stored.recoveryHandoffId,
     recoveryStorage
   )
+  const acknowledged = await recoveryAcked(
+    stored.recoveryHandoffId,
+    plan,
+    recoveryStorage
+  )
+  const currentTime = (options.now ?? Date.now)()
   if (
-    !recoveryAcked(stored.recoveryHandoffId, plan, recoveryStorage) ||
+    !acknowledged ||
     (options.expectedBuyerPubkey !== undefined &&
       delivery?.record.senderPubkey !==
         options.expectedBuyerPubkey.toLowerCase()) ||
@@ -1151,8 +1353,8 @@ export async function resumeCheckoutSparkSettledFunding(
   }
   assertMarketCheckoutSparkDispatchPlan(plan)
   assertUnexpired(plan)
-  const deliveries = listCheckoutSparkRecoveryDeliveries(
-    recoveryStorage
+  const deliveries = (
+    await listCheckoutSparkRecoveryDeliveries(recoveryStorage)
   ).filter(
     ({ record }) =>
       record.checkoutId === plan.checkoutId &&
@@ -1165,6 +1367,8 @@ export async function resumeCheckoutSparkSettledFunding(
       (metadata.recoveryHandoffId === null ||
         record.handoffId === metadata.recoveryHandoffId)
   )
+  assertCurrent()
+  assertUnexpired(plan)
   if (deliveries.length !== 1)
     throw new Error(
       "The exact original recovery wrap is unavailable or ambiguous."
@@ -1180,7 +1384,14 @@ export async function resumeCheckoutSparkSettledFunding(
       storage
     )
   }
-  if (delivery.deliveryProgress.acknowledgedRelayRefs.length === 0) {
+  const acknowledged = await recoveryAcked(
+    delivery.record.handoffId,
+    plan,
+    recoveryStorage
+  )
+  assertCurrent()
+  assertUnexpired(plan)
+  if (!acknowledged) {
     await (
       dependencies.retryRecovery ?? retryStoredCheckoutSparkRecoveryHandoff
     )({
@@ -1190,6 +1401,13 @@ export async function resumeCheckoutSparkSettledFunding(
       now,
     })
   }
+  assertCurrent()
+  assertUnexpired(plan)
+  const currentAcknowledged = await recoveryAcked(
+    delivery.record.handoffId,
+    plan,
+    recoveryStorage
+  )
   assertCurrent()
   assertUnexpired(plan)
   const latest = await repository.load(input.checkoutId, input.planDigest)
@@ -1210,7 +1428,7 @@ export async function resumeCheckoutSparkSettledFunding(
     current.planDigest !== plan.planDigest ||
     current.recoveryHandoffId !== delivery.record.handoffId ||
     current.fundingSubmissionState !== "not_started" ||
-    !recoveryAcked(delivery.record.handoffId, plan, recoveryStorage)
+    !currentAcknowledged
   ) {
     throw new Error("The exact recovery acknowledgement was not durably saved.")
   }

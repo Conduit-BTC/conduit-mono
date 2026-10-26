@@ -19,7 +19,7 @@ import {
 test.use({ trace: "off", screenshot: "off", video: "off" })
 process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"
 
-async function begin(page: Page, app: "market" | "merchant") {
+async function begin(page: Page, app: "market" | "merchant", funding = true) {
   const identity = createRuntimeSignerIdentity()
   await prepareControlledWallet(page)
   await observeWalletController(page, undefined, undefined, true)
@@ -36,8 +36,14 @@ async function begin(page: Page, app: "market" | "merchant") {
   await installControlledWallet(page)
   await openWalletSetup(page, "Create wallet")
   await saveWalletRecovery(page)
-  await page.getByRole("button", { name: "Receive", exact: true }).click()
-  await page.getByRole("tab", { name: "Cash App", exact: true }).click()
+  await page
+    .getByRole(
+      "button",
+      funding
+        ? { name: /^Add funds with Cash App to / }
+        : { name: "Receive", exact: true }
+    )
+    .click()
   return identity
 }
 async function setInvoice(page: Page, secondsAgo = 0) {
@@ -96,10 +102,21 @@ for (const app of ["market", "merchant"] as const) {
       await expect(next).toBeDisabled()
       await page.getByLabel("Amount in sats", { exact: true }).fill("40000")
       await next.click()
-      const cash = page.getByRole("link", {
-        name: "Open Cash App",
+      const cash = page.locator('a[href^="https://cash.app/launch/lightning/"]')
+      const desktop = (page.viewportSize()?.width ?? 0) >= 640
+      const cashQr = page.getByRole("img", {
+        name: "Open Cash App on your phone QR code",
         exact: true,
       })
+      if (desktop) {
+        await expect(cashQr).toBeVisible()
+        const box = await cashQr.boundingBox()
+        expect(box?.width).toBe(224)
+        await expect(cash).toBeHidden()
+      } else {
+        await expect(cash).toBeVisible()
+        await expect(cashQr).toBeHidden()
+      }
       // Compare privately: no invoice values in assertion failure output.
       expect(
         (await cash.getAttribute("href")) ===
@@ -108,11 +125,14 @@ for (const app of ["market", "merchant"] as const) {
       await expect(
         page.getByText("Wallet receive fee: 3 sats.", { exact: false })
       ).toBeVisible()
-      await cash.click()
+      if (!desktop) await cash.click()
       await page.evaluate(() => window.dispatchEvent(new Event("focus")))
       await expect(
         page.getByText("Money received in this wallet.", { exact: true })
       ).toHaveCount(0)
+      await page
+        .getByText("Use another Lightning wallet", { exact: true })
+        .click()
       await page
         .getByRole("button", { name: "Copy invoice", exact: true })
         .click()
@@ -128,10 +148,12 @@ for (const app of ["market", "merchant"] as const) {
       await expect(
         page.locator('svg:has(> title:text-is("Lightning invoice"))')
       ).toHaveCount(1)
-      await page.getByRole("tab", { name: "Lightning", exact: true }).click()
-      await expect(page.getByLabel("Amount in sats (optional)")).toBeVisible()
-      await page.getByRole("tab", { name: "Cash App", exact: true }).click()
-      await expect(cash).toBeVisible()
+      await page
+        .getByText("Use another Lightning wallet", { exact: true })
+        .click()
+      await page
+        .getByText("Use another Lightning wallet", { exact: true })
+        .click()
       expect(
         await page.evaluate(() => (window as any).__walletProbe.receiveCalls)
       ).toBe(1)
@@ -227,8 +249,8 @@ test("Cash App expiry and account replacement cannot reuse stale funding control
     await page.getByLabel("Amount in sats", { exact: true }).fill("40000")
     await page.getByRole("button", { name: "Continue", exact: true }).click()
     await expect(
-      page.getByRole("link", { name: "Open Cash App", exact: true })
-    ).toBeVisible()
+      page.locator('a[href^="https://cash.app/launch/lightning/"]')
+    ).toBeAttached()
     // Cross the boundary and dispatch in one task, before React can remove the
     // expired link. Native handoff gestures are covered by the funding journey.
     expect(
@@ -274,7 +296,7 @@ test("Cash App expiry and account replacement cannot reuse stale funding control
       await (window as any).__controlledWalletAuth.connect({ method: "nip07" })
     })
     await expect(
-      page.getByRole("dialog", { name: /^Receive to / })
+      page.getByRole("dialog", { name: "Add funds with Cash App" })
     ).toHaveCount(0)
     await expect(
       page.getByText("Money received in this wallet.", { exact: true })
@@ -284,3 +306,119 @@ test("Cash App expiry and account replacement cannot reuse stale funding control
     disposeRuntimeSignerIdentity(replacement)
   }
 })
+
+for (const app of ["market", "merchant"] as const) {
+  test(`${app} Receive stays compact and keeps wallet address and name controls @market @merchant`, async ({
+    page,
+  }) => {
+    const identity = await begin(page, app, false)
+    try {
+      const dialog = page.getByRole("dialog", {
+        name: "Receive bitcoin",
+        exact: true,
+      })
+      const qr = dialog.getByRole("img", {
+        name: "Reusable Lightning address QR code",
+        exact: true,
+      })
+      await expect(qr).toBeVisible()
+      await expect(
+        dialog.getByText(/address setup is unavailable/)
+      ).toHaveCount(0)
+      await expect(dialog.getByLabel("Amount in sats (optional)")).toHaveCount(
+        0
+      )
+      const geometry = await dialog.evaluate((node) => {
+        const svg = node.querySelector('svg:not([aria-hidden="true"])')!
+        return {
+          width: node.getBoundingClientRect().width,
+          height: node.getBoundingClientRect().height,
+          qrWidth: svg.getBoundingClientRect().width,
+          qrHeight: svg.getBoundingClientRect().height,
+          overflow: node.scrollWidth > node.clientWidth,
+        }
+      })
+      expect(geometry.width).toBeLessThanOrEqual(400)
+      expect(geometry.height).toBeLessThan(650)
+      expect(geometry.qrWidth).toBe(224)
+      expect(geometry.qrHeight).toBe(224)
+      expect(geometry.overflow).toBe(false)
+      await dialog
+        .getByRole("button", { name: "Request a specific amount", exact: true })
+        .click()
+      await expect(qr).toHaveCount(0)
+      await setInvoice(page)
+      await dialog.getByLabel("Amount in sats (optional)").fill("40000")
+      await dialog
+        .getByRole("button", { name: "Create Lightning invoice", exact: true })
+        .click()
+      await expect(
+        dialog.getByRole("img", {
+          name: "Lightning invoice QR code",
+          exact: true,
+        })
+      ).toBeVisible()
+      await dialog.getByLabel("Amount in sats (optional)").fill("50000")
+      await expect(
+        dialog.getByRole("img", {
+          name: "Lightning invoice QR code",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      await dialog
+        .getByRole("button", { name: "Back to Lightning address", exact: true })
+        .click()
+      await expect(qr).toBeVisible()
+      if (process.env.WALLET_FUNDING_SCREENSHOTS)
+        await dialog.screenshot({
+          path: `/private/tmp/wallet-receive-${app}-${test.info().project.name}.png`,
+          mask: [qr, dialog.locator('[role="status"]')],
+          animations: "disabled",
+        })
+      await dialog.getByRole("button", { name: "Done", exact: true }).click()
+      const card = page.getByRole("article", { name: / wallet$/ }).first()
+      await expect(
+        card.getByLabel("Desired name", { exact: true })
+      ).toBeEnabled()
+      await expect(
+        card.getByRole("button", { name: "Request name", exact: true })
+      ).toBeVisible()
+      await expect(
+        card.getByRole("button", { name: "Copy address", exact: true })
+      ).toBeVisible()
+      await expect(
+        page.getByText("Nostr receiving address", { exact: true })
+      ).toBeVisible()
+      const header = card.locator("[data-wallet-header]")
+      const positions = await header.evaluate((node) => {
+        const bounds = (selector: string) =>
+          node.querySelector(selector)!.getBoundingClientRect()
+        const title = bounds("h3"),
+          refresh = bounds('button[aria-label^="Refresh "]'),
+          menu = bounds('button[aria-label^="Manage "]'),
+          funds = bounds('button[aria-label^="Add funds "]'),
+          description = bounds("p")
+        return {
+          titleY: title.y,
+          refreshY: refresh.y,
+          menuY: menu.y,
+          fundsY: funds.y,
+          descriptionY: description.y,
+          fundsBottom: funds.bottom,
+          height: node.getBoundingClientRect().height,
+          width: innerWidth,
+        }
+      })
+      expect(Math.abs(positions.refreshY - positions.menuY)).toBeLessThan(2)
+      expect(Math.abs(positions.titleY - positions.menuY)).toBeLessThan(8)
+      if (positions.width < 640) {
+        expect(positions.fundsY).toBeGreaterThan(positions.titleY)
+        expect(positions.descriptionY).toBeLessThan(positions.fundsBottom)
+        expect(positions.height).toBeLessThanOrEqual(96)
+      } else
+        expect(Math.abs(positions.fundsY - positions.menuY)).toBeLessThan(8)
+    } finally {
+      disposeRuntimeSignerIdentity(identity)
+    }
+  })
+}

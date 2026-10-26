@@ -20,6 +20,14 @@ import {
 } from "./event-market-roster"
 import { readEventMarketRoster } from "./event-market-roster-read"
 import {
+  isEventMarketAuthorizationWriteReady,
+  isEventMarketRosterWriteReady,
+} from "./event-market-write-readiness"
+import {
+  EVENT_MARKET_ORGANIZER_FEE_TAG,
+  type EventMarketOrganizerFeeAuthoring,
+} from "./event-market-organizer-fee"
+import {
   buildEventMarketSeriesDraft,
   parseEventMarketSeriesEvent,
 } from "./event-market-schedule"
@@ -165,6 +173,28 @@ export function summarizeEventMarketPublishDelivery(
   }
 }
 
+function rosterWriteReviewReason(
+  current: Awaited<ReturnType<typeof readEventMarketRoster>>
+): string {
+  if (!current.retained)
+    return "This browser could not read or save the signed event records. No new change was signed. Check browser storage, then refresh event records before trying again."
+  if (current.resolution.state === "conflicting")
+    return "Conflicting signed event revisions need review. No new change was signed. Refresh event records and review those revisions before trying again."
+  if (current.resolution.state === "malformed")
+    return "The current signed event record has invalid details. No new change was signed. Refresh event records and review the organizer's event before trying again."
+  if (current.resolution.state === "deleted")
+    return "The current event has a signed deletion. No new change was signed. Refresh event records and review that deletion before making another change."
+  if (current.writeObservation?.limited)
+    return "The event check reached its history or source limit. No new change was signed. Refresh event records and review the latest signed event before trying again."
+  if (
+    current.coverage !== "unavailable" &&
+    (current.coverage === "stale" ||
+      current.writeObservation?.selectedLive === false)
+  )
+    return "The latest signed event revision was not observed in the current check. No new change was signed. Refresh event records; if offered, retry signed market delivery before trying again."
+  return "A required signed-event check could not complete. No new change was signed. Refresh event records before trying again."
+}
+
 /** Compare the strongest known signed head before requesting an organizer signature. */
 export async function publishEventMarketRoster(
   input: {
@@ -174,6 +204,8 @@ export async function publishEventMarketRoster(
     calendarCoordinate: string
     state: EventMarketCommerceState
     merchants: readonly EventMarketMerchantRow[]
+    /** Omission preserves exact existing fee tags; disabling must be explicit. */
+    organizerFee?: EventMarketOrganizerFeeAuthoring
     expectedPreviousEventId?: string
     shouldContinue?: () => boolean
     /** Durable exact-retry save. Must finish before any relay publish begins. */
@@ -200,14 +232,18 @@ export async function publishEventMarketRoster(
     authenticatedPubkey: organizerPubkey,
     shouldContinue: input.shouldContinue,
   })
+  if (input.shouldContinue?.() === false)
+    throw new Error("Organizer session changed.")
   if (
     !current.retained ||
+    (current.resolution.state === "current" &&
+      !isEventMarketRosterWriteReady(current)) ||
     current.resolution.state === "conflicting" ||
     current.resolution.state === "malformed" ||
     current.resolution.state === "deleted"
   ) {
     throw new Error(
-      "Current signed Event Market authority needs organizer review."
+      `Current signed Event Market authority needs organizer review. ${rosterWriteReviewReason(current)}`
     )
   }
   const previous =
@@ -250,12 +286,33 @@ export async function publishEventMarketRoster(
     calendarCoordinate: input.calendarCoordinate,
     state: input.state,
     merchants: input.merchants,
+    ...(input.organizerFee !== undefined
+      ? { organizerFee: input.organizerFee }
+      : {}),
     ...(previous ? { previousEventId: previous.eventId } : {}),
   })
+  if (input.organizerFee === undefined && previous) {
+    // An unrelated roster edit cannot silently remove or rewrite fee policy,
+    // including a newer/unsupported extension this client cannot interpret.
+    draft.tags.push(
+      ...previous.signedEvent.tags
+        .filter((tag) => tag[0] === EVENT_MARKET_ORGANIZER_FEE_TAG)
+        .map((tag) => [...tag])
+    )
+  }
   const createdAt = Math.max(
     Math.floor(Date.now() / 1_000),
     (previous?.signedEvent.created_at ?? 0) + (previous ? 1 : 0)
   )
+  if (
+    input.organizerFee?.state === "active" &&
+    (input.organizerFee.basisPoints > 0 ||
+      input.organizerFee.minimumSats > 0) &&
+    input.organizerFee.expiresAt !== undefined &&
+    input.organizerFee.expiresAt <= createdAt
+  ) {
+    throw new Error("Event Market organizer fee terms are expired.")
+  }
   const expectedDraft = JSON.stringify([draft.kind, draft.content, draft.tags])
   const signedEvent = await dependencies.sign({
     draft,
@@ -930,15 +987,15 @@ export async function publishEventMarketMerchantDecision(
       shouldContinue: input.shouldContinue,
     }),
   ])
+  if (input.shouldContinue?.() === false)
+    throw new Error("Organizer session changed.")
   if (
-    !marketRead.retained ||
-    marketRead.coverage !== "complete" ||
+    !isEventMarketRosterWriteReady(marketRead) ||
     marketRead.resolution.state !== "current" ||
     marketRead.resolution.market.eventId !== input.expectedPreviousEventId ||
     marketRead.resolution.market.calendarCoordinate !==
       input.calendarCoordinate ||
-    !authorizationRead.retained ||
-    authorizationRead.coverage !== "complete"
+    !isEventMarketAuthorizationWriteReady(authorizationRead)
   ) {
     throw new Error(
       "Current signed Event Market authority needs organizer review."
@@ -999,6 +1056,12 @@ export async function publishEventMarketMerchantDecision(
     merchants: nextRows,
     previousEventId: market.eventId,
   })
+  // Membership changes preserve fee terms independently of admission grants.
+  rosterDraft.tags.push(
+    ...market.signedEvent.tags
+      .filter((tag) => tag[0] === EVENT_MARKET_ORGANIZER_FEE_TAG)
+      .map((tag) => [...tag])
+  )
   const authorizationDraft = buildEventMarketAuthorizationDraft({
     marketCoordinate: coordinate,
     merchantPubkey: input.merchantPubkey,

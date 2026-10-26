@@ -209,6 +209,21 @@ describe("exact merchant order settlement overlay", () => {
     ).toBe(false)
   })
 
+  it("does not let an unrelated same-ID witness hide the exact settlement", () => {
+    const correct = binding([merchantLeg, supplierLeg])
+    const unrelated = {
+      ...binding(),
+      witness: { ...witness, buyerPubkey: "c".repeat(64) },
+    }
+    expect(
+      getCheckoutSparkOrderSettlement(conversation, [unrelated, correct])
+        ?.commerceVerified
+    ).toBe(true)
+    expect(
+      getCheckoutSparkOrderSettlementRecord(conversation, [unrelated, correct])
+    ).toEqual(correct.settlement)
+  })
+
   it("rejects an altered order, a mixed-buyer bucket, and conflicting witnesses", () => {
     const altered = {
       ...orderMessage,

@@ -777,8 +777,12 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   )
   await freshDialog.getByLabel("Title").fill("Fallback image listing")
   await freshDialog.getByLabel("Price").fill("7")
-  await freshDialog.locator("#product-fulfillment").click()
+  const fulfillment = freshDialog.locator("#product-fulfillment")
+  await fulfillment.click()
   await page.getByRole("option", { name: "Digital" }).click()
+  // Finish the Select's focus restoration before entering tags.
+  await expect(fulfillment).toBeFocused()
+  await expect(fulfillment).toHaveText("Digital")
   const tags = freshDialog.getByRole("combobox", { name: "Tags" })
   for (const [index, tag] of ["fallback", "storage", "guardrail"].entries()) {
     recordSmokeDiagnostic(info, "fallback-upload", {
@@ -824,8 +828,21 @@ test("fallback upload is disclosed, intercepted, and mobile responsive @merchant
   await expect(
     page.getByText("Fallback image listing", { exact: true }).first()
   ).toBeVisible({ timeout: 15_000 })
+  const publishedCard = page.locator("[data-availability]").filter({
+    has: page.getByRole("heading", {
+      name: "Fallback image listing",
+      exact: true,
+    }),
+  })
+  await expect(publishedCard).toHaveCount(1)
   phase("listing_edit")
-  await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+  const edit = publishedCard.getByRole("button", { name: "Edit", exact: true })
+  await expect(edit).toHaveCount(1)
+  await edit.evaluate((element) =>
+    element.scrollIntoView({ behavior: "instant", block: "center" })
+  )
+  if (info.project.use.hasTouch) await edit.tap()
+  else await edit.click()
   const editDialog = page.getByRole("dialog", { name: "Edit listing" })
   await expect(editDialog).toBeVisible()
   await expect(

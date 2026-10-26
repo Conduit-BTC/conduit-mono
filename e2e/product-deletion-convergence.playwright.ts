@@ -566,12 +566,19 @@ async function readDatabaseMigrationState(page: Page): Promise<{
   tombstoneIndexes: string[]
   ownerEvidenceIndexes: string[]
   rosterEvidenceIndexes: string[]
+  organizerStockPoolIndexes: string[]
+  organizerStockEntryIndexes: string[]
+  organizerStockWriterIndexes: string[]
+  organizerStockWriterMarketUnique: boolean
   product: Record<string, unknown> | undefined
   tombstone: Record<string, unknown> | undefined
   eventMarketEvidence: Record<string, unknown> | undefined
   merchantPendingInvoice: Record<string, unknown> | undefined
   outboxCount: number
   ownerEvidenceCount: number
+  organizerStockPoolCount: number
+  organizerStockEntryCount: number
+  organizerStockWriterCount: number
 }> {
   return await page.evaluate(
     ({ addressId, merchantPubkey, eventId }) =>
@@ -584,7 +591,10 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           if (
             !stores.includes("productDeletionOutbox") ||
             !stores.includes("ownerRelayListEvidence") ||
-            !stores.includes("eventMarketRosterEvidence")
+            !stores.includes("eventMarketRosterEvidence") ||
+            !stores.includes("eventMarketOrganizerStockPools") ||
+            !stores.includes("eventMarketOrganizerStockEntries") ||
+            !stores.includes("eventMarketOrganizerStockWriters")
           ) {
             database.close()
             resolve({
@@ -595,12 +605,19 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               tombstoneIndexes: [],
               ownerEvidenceIndexes: [],
               rosterEvidenceIndexes: [],
+              organizerStockPoolIndexes: [],
+              organizerStockEntryIndexes: [],
+              organizerStockWriterIndexes: [],
+              organizerStockWriterMarketUnique: false,
               product: undefined,
               tombstone: undefined,
               eventMarketEvidence: undefined,
               merchantPendingInvoice: undefined,
               outboxCount: -1,
               ownerEvidenceCount: -1,
+              organizerStockPoolCount: -1,
+              organizerStockEntryCount: -1,
+              organizerStockWriterCount: -1,
             })
             return
           }
@@ -613,6 +630,9 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               "eventMarketEvidence",
               "eventMarketRosterEvidence",
               "merchantPendingInvoices",
+              "eventMarketOrganizerStockPools",
+              "eventMarketOrganizerStockEntries",
+              "eventMarketOrganizerStockWriters",
             ],
             "readonly"
           )
@@ -629,12 +649,27 @@ async function readDatabaseMigrationState(page: Page): Promise<{
           const pendingInvoices = transaction.objectStore(
             "merchantPendingInvoices"
           )
+          const organizerStockPools = transaction.objectStore(
+            "eventMarketOrganizerStockPools"
+          )
+          const organizerStockEntries = transaction.objectStore(
+            "eventMarketOrganizerStockEntries"
+          )
+          const organizerStockWriters = transaction.objectStore(
+            "eventMarketOrganizerStockWriters"
+          )
+          const organizerStockWriterMarketUnique = organizerStockWriters.index(
+            "[accountPubkey+marketCoordinate]"
+          ).unique
           const productRequest = products.get(addressId)
           const tombstoneRequest = tombstones.get(
             `e:${merchantPubkey}:${eventId}`
           )
           const outboxCountRequest = outbox.count()
           const ownerEvidenceCountRequest = ownerEvidence.count()
+          const organizerStockPoolCountRequest = organizerStockPools.count()
+          const organizerStockEntryCountRequest = organizerStockEntries.count()
+          const organizerStockWriterCountRequest = organizerStockWriters.count()
           const eventMarketRequest = eventMarkets.get(
             `31990:${merchantPubkey}:migration-market`
           )
@@ -652,12 +687,26 @@ async function readDatabaseMigrationState(page: Page): Promise<{
               rosterEvidenceIndexes: Array.from(
                 rosterEvidence.indexNames
               ).sort(),
+              organizerStockPoolIndexes: Array.from(
+                organizerStockPools.indexNames
+              ).sort(),
+              organizerStockEntryIndexes: Array.from(
+                organizerStockEntries.indexNames
+              ).sort(),
+              organizerStockWriterIndexes: Array.from(
+                organizerStockWriters.indexNames
+              ).sort(),
+              organizerStockWriterMarketUnique,
               product: productRequest.result,
               tombstone: tombstoneRequest.result,
               eventMarketEvidence: eventMarketRequest.result,
               merchantPendingInvoice: pendingInvoiceRequest.result,
               outboxCount: outboxCountRequest.result,
               ownerEvidenceCount: ownerEvidenceCountRequest.result,
+              organizerStockPoolCount: organizerStockPoolCountRequest.result,
+              organizerStockEntryCount: organizerStockEntryCountRequest.result,
+              organizerStockWriterCount:
+                organizerStockWriterCountRequest.result,
             }
             database.close()
             resolve(state)
@@ -713,6 +762,15 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
           hasEventMarketMerchantDecisionJobs: state.stores.includes(
             "eventMarketMerchantDecisionJobs"
           ),
+          hasOrganizerStockPools: state.stores.includes(
+            "eventMarketOrganizerStockPools"
+          ),
+          hasOrganizerStockEntries: state.stores.includes(
+            "eventMarketOrganizerStockEntries"
+          ),
+          hasOrganizerStockWriters: state.stores.includes(
+            "eventMarketOrganizerStockWriters"
+          ),
           hasWallets: state.stores.includes("wallets"),
           hasWalletCredentials: state.stores.includes("walletCredentials"),
           hasShippingOptionFrontiers: state.stores.includes(
@@ -760,12 +818,15 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
             "commerceInboxRanges",
             "commerceInboxDeliveries",
           ].every((name) => state.stores.includes(name)),
+          hasCheckoutRecoveryStorage: state.stores.includes(
+            "checkoutRecoveryStorage"
+          ),
         }
       },
       { timeout: 20_000 }
     )
     .toEqual({
-      nativeVersion: 270,
+      nativeVersion: 310,
       hasDiscoverySizeIndex: true,
       hasOutbox: true,
       hasShopperTrust: true,
@@ -774,6 +835,9 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasEventMarketEvidence: true,
       hasEventMarketRosterEvidence: true,
       hasEventMarketMerchantDecisionJobs: true,
+      hasOrganizerStockPools: true,
+      hasOrganizerStockEntries: true,
+      hasOrganizerStockWriters: true,
       hasWallets: true,
       hasWalletCredentials: true,
       hasShippingOptionFrontiers: true,
@@ -790,6 +854,7 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
       hasLocalProductShippingOutbox: true,
       hasLocalProductStockCheckpoints: true,
       hasCommerceInboxStores: true,
+      hasCheckoutRecoveryStorage: true,
     })
 
   const migrated = await readDatabaseMigrationState(page)
@@ -811,6 +876,29 @@ test("Merchant upgrades v16 data to the latest owner-evidence and Spark recovery
   ).toBe(true)
   expect(migrated.outboxCount).toBe(0)
   expect(migrated.ownerEvidenceCount).toBe(0)
+  expect(migrated.organizerStockPoolCount).toBe(0)
+  expect(migrated.organizerStockEntryCount).toBe(0)
+  expect(migrated.organizerStockWriterCount).toBe(0)
+  expect(migrated.organizerStockWriterIndexes).toEqual(
+    ["accountPubkey", "[accountPubkey+marketCoordinate]"].sort()
+  )
+  expect(migrated.organizerStockWriterMarketUnique).toBe(true)
+  expect(migrated.organizerStockPoolIndexes).toEqual(
+    [
+      "accountPubkey",
+      "[accountPubkey+poolId]",
+      "[accountPubkey+assignmentCoordinate]",
+    ].sort()
+  )
+  expect(migrated.organizerStockEntryIndexes).toEqual(
+    [
+      "accountPubkey",
+      "[accountPubkey+poolId]",
+      "[accountPubkey+poolId+sequence]",
+      "[accountPubkey+poolId+orderId]",
+      "[accountPubkey+poolId+claimRef]",
+    ].sort()
+  )
   expect(migrated.ownerEvidenceIndexes).toEqual(["cachedAt"])
   expect(migrated.outboxIndexes).toEqual([
     "createdAt",

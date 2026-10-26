@@ -17,6 +17,10 @@ import {
 } from "./relay-reader"
 import { type SignedPublicNostrEvent } from "./signed-event"
 import { isVerifiedNostrEvent } from "./verified-public-event"
+import {
+  observeEventMarketWriteScope,
+  type EventMarketWriteObservation,
+} from "./event-market-write-readiness"
 
 async function admitRows(
   rows: readonly SignedPublicNostrEvent[],
@@ -34,6 +38,7 @@ export interface EventMarketAuthorizationReadResult {
   actionable: boolean
   /** Exact retained observations used in this reduction, for order evidence custody. */
   observedEvidence: SignedPublicNostrEvent[]
+  writeObservation?: EventMarketWriteObservation
 }
 
 type Fanout = {
@@ -338,6 +343,18 @@ export async function readEventMarketAuthorization(
       : incomplete
         ? "partial"
         : "complete"
+  const writeObservation = observeEventMarketWriteScope({
+    selectedLive: requiredIds.length > 0 && !stale,
+    limited:
+      !!plan.relayHintTruncated ||
+      attempted.size >= 256 ||
+      unresolvedParent ||
+      ids.size > 256 ||
+      transitions.events.length >= 128 ||
+      scopedDeletions.events.length >= 128 ||
+      exactDeletionReads.some((read) => read.events.length >= 128),
+    reads,
+  })
   return {
     marketCoordinate: coordinate,
     merchantPubkey: input.merchantPubkey,
@@ -353,5 +370,6 @@ export async function readEventMarketAuthorization(
       !stale &&
       coverage !== "unavailable",
     observedEvidence: all,
+    writeObservation,
   }
 }

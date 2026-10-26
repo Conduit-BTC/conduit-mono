@@ -42,6 +42,20 @@ const pauseMessages: Record<CheckoutSparkSettledShopperPauseReason, string> = {
     "The saved payout was checked without sending. Keep the existing payout; do not pay separately.",
   prior_possible_send:
     "A previous payment may have been submitted. Resume checks the existing attempt before continuing; no second payment is sent while its status is uncertain.",
+  native_invoice_rejected:
+    "Spark rejected the final payment request. Its existing attempt stays saved for reconciliation; do not pay again.",
+  native_provider_validation:
+    "Spark could not validate the final payment. Its existing attempt stays saved for reconciliation; do not pay again.",
+  native_provider_request:
+    "Spark could not finish the final payment request. Its existing attempt stays saved for reconciliation; do not pay again.",
+  native_provider_authentication:
+    "Spark could not authenticate the final payment. Its existing attempt stays saved for reconciliation; do not pay again.",
+  native_provider_error:
+    "Spark reported a problem with the final payment. Funds may have moved; check the saved attempt and do not pay again.",
+  native_provider_unavailable:
+    "Spark did not return a conclusive final-payment result. Funds may have moved; check the saved attempt and do not pay again.",
+  native_unrecognized_result:
+    "Spark returned an unrecognized final-payment result. Keep the saved attempt for reconciliation; do not pay again.",
   provider_evidence_unavailable:
     "The saved payment’s provider evidence could not be checked. Resume checks the existing attempt first; do not pay again.",
   provider_evidence_conflicting:

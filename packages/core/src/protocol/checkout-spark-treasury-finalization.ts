@@ -2,6 +2,7 @@ import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
   assertCheckoutSparkSettledFundingCoverage,
+  isCheckoutSparkNativeTreasuryPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
@@ -18,6 +19,7 @@ import type {
 } from "./checkout-spark-settled-outgoing"
 import type { CheckoutSparkSettledRepositorySnapshot } from "./checkout-spark-settled-router-repository"
 import { createCheckoutSparkPreProviderCancellationRegistry } from "./checkout-spark-pre-provider-cancellation"
+import type { CheckoutSparkNativeTreasurySdkSendResult } from "./checkout-spark-treasury-sdk"
 
 export interface CheckoutSparkNativeTreasuryPlan {
   readonly schemaVersion: 1
@@ -269,7 +271,7 @@ function budgetFromExactState(
   state: CheckoutSparkSettledReconciliation
 ): CheckoutSparkNativeTreasuryBudget {
   if (
-    state.plan.schemaVersion !== 4 ||
+    !isCheckoutSparkNativeTreasuryPlan(state.plan) ||
     !state.plan.nativeTreasury ||
     !state.credit
   )
@@ -347,7 +349,13 @@ export function deriveCheckoutSparkNativeTreasuryBudget(
     record.credit.creditedSats !== state.credit!.creditedSats
   )
     invalid()
-  for (const legId of record.requiredCommerceLegIds) {
+  const requiredPayoutIds =
+    state.plan.schemaVersion === 5
+      ? state.plan.recipients
+          .filter((recipient) => recipient.kind !== "conduit")
+          .map((recipient) => recipient.legId)
+      : record.requiredCommerceLegIds
+  for (const legId of requiredPayoutIds) {
     const leg = state.legs.find((candidate) => candidate.legId === legId)!
     const paid = record.paidLegs.find((candidate) => candidate.legId === legId)
     if (
@@ -547,6 +555,31 @@ export function recordCheckoutSparkNativeTreasuryStatus(
   return mirror(state, next)
 }
 
+/** An admitted SDK response adds a reference, never a payment receipt. */
+export function recordCheckoutSparkNativeTreasurySubmittedReference(
+  input: CheckoutSparkSettledReconciliation,
+  providerTransferId: string,
+  observedAt: number
+): CheckoutSparkSettledReconciliation {
+  const state = restoreCheckoutSparkSettledReconciliation(input)
+  const previous = state.treasuryFinalization
+  if (
+    previous?.status !== "submitted" ||
+    !previous.intent ||
+    previous.providerTransferId !== null ||
+    previous.finalFeeSats !== null ||
+    previous.finalDebitSats !== null ||
+    !id(providerTransferId)
+  )
+    invalid()
+  return recordCheckoutSparkNativeTreasuryStatus(state, {
+    invoiceId: previous.intent.invoiceId,
+    status: "submitted",
+    providerTransferId,
+    observedAt,
+  })
+}
+
 export interface CheckoutSparkNativeTreasuryTarget {
   readonly walletId: string
   readonly network: CheckoutSparkNetwork
@@ -602,12 +635,23 @@ export interface CheckoutSparkNativeTreasuryProvider {
   /** A response is not proof of payment; the engine queries history afterward. */
   send(
     target: CheckoutSparkNativeTreasuryTarget
-  ): Promise<{ readonly status: "submitted" | "not_sent" }>
+  ): Promise<CheckoutSparkNativeTreasurySdkSendResult>
 }
 
 export interface CheckoutSparkNativeTreasuryStateStore extends CheckoutSparkSettledOutgoingStateStore {
   /** Stable for this repository process only; never serialized or imported. */
   readonly nativeAdmissionScope?: object
+  /**
+   * Exact submitted predecessor + CAS; only the returned reference and time may
+   * change. Captured account/recovery authority, not dispatch permission, guards
+   * this facts-only write after an admitted provider promise drains.
+   */
+  saveSubmittedReference?(
+    expectedSubmittedState: CheckoutSparkSettledReconciliation,
+    expectedRevision: number,
+    providerTransferId: string,
+    observedAt: number
+  ): Promise<CheckoutSparkSettledRepositorySnapshot>
   savePreProviderRetry?(
     state: CheckoutSparkSettledReconciliation,
     expectedRevision: number,
@@ -647,7 +691,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
   let state = restoreCheckoutSparkSettledReconciliation(loaded.state)
   let revision = loaded.revision
   if (
-    state.plan.schemaVersion !== 4 ||
+    !isCheckoutSparkNativeTreasuryPlan(state.plan) ||
     state.plan.checkoutId !== input.checkoutId ||
     state.plan.planDigest !== input.planDigest ||
     state.plan.recipients.find((recipient) => recipient.legId === input.legId)
@@ -681,6 +725,19 @@ export async function runCheckoutSparkNativeTreasuryStep(
       return false
     }
   }
+  function acceptSaved(
+    saved: CheckoutSparkSettledRepositorySnapshot,
+    next: CheckoutSparkSettledReconciliation
+  ) {
+    if (
+      saved.status !== "active" ||
+      saved.revision !== revision + 1 ||
+      JSON.stringify(saved.state) !== JSON.stringify(next)
+    )
+      invalid()
+    revision = saved.revision
+    state = restoreCheckoutSparkSettledReconciliation(saved.state)
+  }
   async function persist(
     next: CheckoutSparkSettledReconciliation,
     settlement?: CheckoutSparkMerchantSettlementRecord,
@@ -691,17 +748,7 @@ export async function runCheckoutSparkNativeTreasuryStep(
       : settlement
         ? await input.store.savePrepared(next, revision, settlement)
         : await input.store.save(next, revision)
-    if (
-      saved.status !== "active" ||
-      saved.revision !== revision + 1 ||
-      saved.state.plan.planDigest !== state.plan.planDigest ||
-      JSON.stringify(saved.state.treasuryFinalization) !==
-        JSON.stringify(next.treasuryFinalization) ||
-      saved.state.updatedAt !== next.updatedAt
-    )
-      invalid()
-    revision = saved.revision
-    state = restoreCheckoutSparkSettledReconciliation(saved.state)
+    acceptSaved(saved, next)
   }
   async function cancelPreProviderAdmission(): Promise<void> {
     // Called only while Core has positively not called send, or when the pinned
@@ -941,10 +988,51 @@ export async function runCheckoutSparkNativeTreasuryStep(
     await cancelPreProviderAdmission()
     return result("wait", "provider_evidence_unavailable")
   }
+  if (sent.status === "submitted" && sent.providerTransferId) {
+    // The adapter validated this reference against the exact request. Retain
+    // it across a later query outage, but only fresh history can prove paid.
+    const observedAt = now()
+    const next = recordCheckoutSparkNativeTreasurySubmittedReference(
+      state,
+      sent.providerTransferId,
+      observedAt
+    )
+    if (input.store.saveSubmittedReference) {
+      acceptSaved(
+        await input.store.saveSubmittedReference(
+          state,
+          revision,
+          sent.providerTransferId,
+          observedAt
+        ),
+        next
+      )
+    } else await persist(next)
+  }
+  // A provider rejection is not pre-provider cancellation proof. Keep its
+  // possible-send marker; expose only an allowlisted explanation, never an
+  // SDK error object, message or caller-supplied string.
+  const failureReasons = {
+    invoice_rejected: "native_invoice_rejected",
+    provider_validation: "native_provider_validation",
+    provider_request: "native_provider_request",
+    provider_authentication: "native_provider_authentication",
+    provider_error: "native_provider_error",
+    provider_unavailable: "native_provider_unavailable",
+    unrecognized_result: "native_unrecognized_result",
+  } as const
+  const failureReason =
+    sent.reason && Object.hasOwn(failureReasons, sent.reason)
+      ? failureReasons[sent.reason]
+      : undefined
   try {
     observation = await input.provider.reconcile(target)
   } catch {
-    return result("send_ambiguous", "provider_evidence_unavailable", true)
+    return result(
+      "send_ambiguous",
+      failureReason ?? "provider_evidence_unavailable",
+      true
+    )
   }
   const final = await observe(observation, true)
   if (final?.outcome === "paid") {
@@ -954,5 +1042,10 @@ export async function runCheckoutSparkNativeTreasuryStep(
       /* Exact submitted snapshot already ACKed. */
     }
   }
-  return final ?? result("send_ambiguous", "prior_possible_send", true)
+  if (failureReason && final?.reason === "provider_evidence_unavailable")
+    return result("send_ambiguous", failureReason, true)
+  return (
+    final ??
+    result("send_ambiguous", failureReason ?? "prior_possible_send", true)
+  )
 }

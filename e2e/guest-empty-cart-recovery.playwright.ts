@@ -123,7 +123,9 @@ test("accepted guest order reopens after an empty-cart reload @market", async ({
   }, path.resolve(process.cwd()))
 
   await page.reload()
-  await expect(page).toHaveURL(new RegExp(`/orders\\?order=${orderId}$`))
+  await expect(page).toHaveURL(
+    `${marketUrl}/orders?order=${orderId}&counterparty=${"a".repeat(64)}`
+  )
   await expect(
     page.getByRole("heading", { name: "Orders", exact: true })
   ).toBeVisible()

@@ -32,7 +32,9 @@ export function InvoicePayment({
   actionResult,
   cashAppLabel = "Pay with Cash App",
   amountLabel,
+  presentation = "checkout",
 }: {
+  presentation?: "checkout" | "cash-app-funding"
   cashAppLabel?: string
   amountLabel?: string
   invoice: string | null
@@ -46,6 +48,7 @@ export function InvoicePayment({
   cashAppPreparationAvailable?: boolean
   actionResult?: ExternalInvoicePaymentActionResult
 }) {
+  const funding = presentation === "cash-app-funding"
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
   const actionFeedback =
     actionResult === "copied"
@@ -105,8 +108,83 @@ export function InvoicePayment({
     }
   }
 
+  const walletControls = (
+    <>
+      {invoice ? (
+        <Button asChild variant="outline" className="h-12 w-full">
+          <a
+            href={`lightning:${bolt11}`}
+            onClick={(event) => {
+              if (!onBeforeInvoiceUse()) event.preventDefault()
+            }}
+          >
+            <ExternalLink className="h-4 w-4" />
+            Open Lightning wallet
+          </a>
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          className="h-12 w-full"
+          disabled={preparationDisabled || !canPrepare}
+          onClick={() => onPrepareInvoice?.("lightning")}
+        >
+          <ExternalLink className="h-4 w-4" />
+          Open Lightning wallet
+        </Button>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <Button
+          variant="outline"
+          className="h-11 min-w-0 px-3"
+          disabled={!invoice && (preparationDisabled || !canPrepare)}
+          onClick={() => void copyInvoice()}
+        >
+          <Copy className="h-4 w-4" />
+          Copy invoice
+        </Button>
+        <Button
+          variant="outline"
+          className="h-11 min-w-0 px-3"
+          aria-expanded={showQr}
+          aria-controls={qrId}
+          disabled={!invoice && (preparationDisabled || !canPrepare)}
+          onClick={() => {
+            if (canPrepare) onPrepareInvoice?.("qr")
+            else if (showQr || onBeforeInvoiceUse()) setQrChoice(!showQr)
+          }}
+        >
+          <QrCode className="h-4 w-4" />
+          {showQr ? "Hide QR code" : "Show QR code"}
+        </Button>
+      </div>
+      {displayedStatus && (
+        <p
+          role="status"
+          className="text-pretty text-sm text-[var(--text-secondary)]"
+        >
+          {displayedStatus}
+        </p>
+      )}
+      {invoice && showQr && (
+        <div
+          id={qrId}
+          className="mx-auto w-fit rounded-[var(--radius-md)] bg-white p-3"
+        >
+          <QRCodeSVG
+            value={bolt11}
+            size={156}
+            className="!size-[156px]"
+            level="M"
+            title="Lightning invoice"
+          />
+        </div>
+      )}
+    </>
+  )
+
   return (
-    <div className="mt-5 min-w-0 space-y-4">
+    <div className={funding ? "min-w-0 space-y-3" : "mt-5 min-w-0 space-y-4"}>
       {primaryAmount && (
         <div>
           <p className="text-sm text-[var(--text-secondary)]">
@@ -120,10 +198,30 @@ export function InvoicePayment({
       <div className="min-w-0 space-y-3">
         {(cashAppUrl || (canPrepare && cashAppPreparationAvailable)) && (
           <>
+            {funding && cashAppUrl && (
+              <div className="hidden space-y-2 sm:block">
+                <div
+                  role="img"
+                  aria-label="Open Cash App on your phone QR code"
+                  className="mx-auto size-56 max-w-full"
+                >
+                  <QRCodeSVG
+                    value={cashAppUrl}
+                    size={224}
+                    marginSize={4}
+                    className="!size-full"
+                    title="Cash App funding link"
+                  />
+                </div>
+                <p className="text-center text-sm text-[var(--text-secondary)]">
+                  Scan with your phone camera to open Cash App.
+                </p>
+              </div>
+            )}
             {cashAppUrl ? (
               <Button
                 asChild
-                className="h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90"
+                className={`${funding ? "sm:hidden " : ""}h-12 w-full bg-[var(--cash-app-green)] text-[var(--neutral-950)] hover:bg-[var(--cash-app-green)] hover:opacity-90`}
               >
                 <a
                   href={cashAppUrl}
@@ -155,7 +253,7 @@ export function InvoicePayment({
                 <ExternalLink className="h-4 w-4" />
               </Button>
             )}
-            {invoice && (
+            {invoice && !funding && (
               <details className="text-xs leading-5 text-[var(--text-secondary)]">
                 <summary className="cursor-pointer py-1">
                   Cash App didn’t open?
@@ -169,77 +267,21 @@ export function InvoicePayment({
             )}
           </>
         )}
-        {invoice ? (
-          <Button asChild variant="outline" className="h-12 w-full">
-            <a
-              href={`lightning:${bolt11}`}
-              onClick={(event) => {
-                if (!onBeforeInvoiceUse()) event.preventDefault()
-              }}
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open Lightning wallet
-            </a>
-          </Button>
+        {funding ? (
+          <details className="space-y-3 text-sm text-[var(--text-secondary)]">
+            <summary className="cursor-pointer py-2">
+              Use another Lightning wallet
+            </summary>
+            {walletControls}
+            {invoice && (
+              <p className="select-all break-all font-mono text-sm">{bolt11}</p>
+            )}
+          </details>
         ) : (
-          <Button
-            variant="outline"
-            className="h-12 w-full"
-            disabled={preparationDisabled || !canPrepare}
-            onClick={() => onPrepareInvoice?.("lightning")}
-          >
-            <ExternalLink className="h-4 w-4" />
-            Open Lightning wallet
-          </Button>
-        )}
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            variant="outline"
-            className="h-11 min-w-0 px-3"
-            disabled={!invoice && (preparationDisabled || !canPrepare)}
-            onClick={() => void copyInvoice()}
-          >
-            <Copy className="h-4 w-4" />
-            Copy invoice
-          </Button>
-          <Button
-            variant="outline"
-            className="h-11 min-w-0 px-3"
-            aria-expanded={showQr}
-            aria-controls={qrId}
-            disabled={!invoice && (preparationDisabled || !canPrepare)}
-            onClick={() => {
-              if (canPrepare) onPrepareInvoice?.("qr")
-              else if (showQr || onBeforeInvoiceUse()) setQrChoice(!showQr)
-            }}
-          >
-            <QrCode className="h-4 w-4" />
-            {showQr ? "Hide QR code" : "Show QR code"}
-          </Button>
-        </div>
-        {displayedStatus && (
-          <p
-            role="status"
-            className="text-pretty text-sm text-[var(--text-secondary)]"
-          >
-            {displayedStatus}
-          </p>
-        )}
-        {invoice && showQr && (
-          <div
-            id={qrId}
-            className="mx-auto w-fit rounded-[var(--radius-md)] bg-white p-3"
-          >
-            <QRCodeSVG
-              value={bolt11}
-              size={156}
-              level="M"
-              title="Lightning invoice"
-            />
-          </div>
+          walletControls
         )}
       </div>
-      {invoice && (
+      {invoice && !funding && (
         <details className="border-t border-[var(--border)] pt-2 text-sm text-[var(--text-secondary)]">
           <summary className="cursor-pointer py-2">Payment details</summary>
           {exactAmount && <p className="py-2">Invoice amount: {exactAmount}</p>}

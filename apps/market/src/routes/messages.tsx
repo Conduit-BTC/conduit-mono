@@ -89,6 +89,7 @@ type OptimisticDirectMessageSend = {
 type BuyerOrderReplySend = {
   accountPubkey: string
   authGeneration: number
+  conversationId: string
   content: string
   merchantPubkey: string
   orderId: string
@@ -474,7 +475,7 @@ function MessagesWorkspace() {
   useEffect(() => {
     if (!search.thread) return
     const element = document.querySelector<HTMLElement>(
-      `[data-thread-id="${search.thread}"]`
+      `[data-thread-id="${CSS.escape(search.thread)}"]`
     )
     element?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [search.thread])
@@ -595,7 +596,7 @@ function MessagesWorkspace() {
       const current = orderReplyContextRef.current
       if (
         current.accountPubkey !== input.accountPubkey ||
-        current.conversationId !== input.orderId ||
+        current.conversationId !== input.conversationId ||
         current.merchantPubkey !== input.merchantPubkey
       )
         return
@@ -1629,7 +1630,10 @@ function MessagesWorkspace() {
                         </div>
                         <Link
                           to="/orders"
-                          search={{ order: selectedConversation.orderId }}
+                          search={{
+                            order: selectedConversation.orderId,
+                            counterparty: selectedConversation.merchantPubkey,
+                          }}
                           className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-elevated)]"
                         >
                           View order
@@ -1670,6 +1674,7 @@ function MessagesWorkspace() {
                             replyMutation.mutate({
                               accountPubkey,
                               authGeneration,
+                              conversationId: selectedConversation.id,
                               content: replyText.trim(),
                               merchantPubkey:
                                 selectedConversation.merchantPubkey,
@@ -1692,8 +1697,8 @@ function MessagesWorkspace() {
                       {replyMutation.data &&
                         replyMutation.variables?.accountPubkey ===
                           accountPubkey &&
-                        replyMutation.variables.orderId ===
-                          selectedConversation.orderId &&
+                        replyMutation.variables.conversationId ===
+                          selectedConversation.id &&
                         replyMutation.variables.merchantPubkey ===
                           selectedConversation.merchantPubkey && (
                           <PrivateSendNotice

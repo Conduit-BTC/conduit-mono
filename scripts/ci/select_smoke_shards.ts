@@ -249,14 +249,18 @@ export function expandSmokeMatrix(
   return shards.flatMap<SmokeMatrixJob>((area) =>
     area === "market"
       ? [
-          { id: "market-1", area, shard: "1/3" },
-          { id: "market-2", area, shard: "2/3" },
-          { id: "market-3", area, shard: "3/3" },
+          { id: "market-1", area, shard: "1/5" },
+          { id: "market-2", area, shard: "2/5" },
+          { id: "market-3", area, shard: "3/5" },
+          { id: "market-4", area, shard: "4/5" },
+          { id: "market-5", area, shard: "5/5" },
         ]
       : area === "merchant"
         ? [
-            { id: "merchant-1", area, shard: "1/2" },
-            { id: "merchant-2", area, shard: "2/2" },
+            { id: "merchant-1", area, shard: "1/4" },
+            { id: "merchant-2", area, shard: "2/4" },
+            { id: "merchant-3", area, shard: "3/4" },
+            { id: "merchant-4", area, shard: "4/4" },
           ]
         : [{ id: area, area, shard: "" }]
   )

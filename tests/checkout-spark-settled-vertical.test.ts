@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import {
+  CHECKOUT_SPARK_CURRENT_CONDUIT_FEE_POLICY,
   calculateCheckoutSparkInboundNetworkAllowanceSats,
   calculateConduitCheckoutFeeSats,
   createCheckoutSparkMerchantSettlementRecord,
@@ -80,7 +81,10 @@ const WALLET_ID = "vertical-wallet"
 const RECEIVER_IDENTITY = `02${"a".repeat(64)}`
 const GROSS =
   1_000 +
-  calculateConduitCheckoutFeeSats(1_000) +
+  calculateConduitCheckoutFeeSats(
+    1_000,
+    CHECKOUT_SPARK_CURRENT_CONDUIT_FEE_POLICY
+  ) +
   calculateCheckoutSparkInboundNetworkAllowanceSats(1_000)
 const MNEMONIC = createRuntimeMnemonic()
 
@@ -399,7 +403,7 @@ function harness(options: {
         expect(preparation?.fundingInvoiceExposedAt).toBeNull()
       }
       expect(preparation?.recoveryHandoffId).not.toBeNull()
-      const saved = listCheckoutSparkRecoveryDeliveries(storage).find(
+      const saved = (await listCheckoutSparkRecoveryDeliveries(storage)).find(
         (delivery) => delivery.record.signedRecipientWrap.id === event.id
       )
       expect(saved?.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
@@ -620,7 +624,7 @@ describe("settled Spark no-funds vertical flow", () => {
     expect(
       getCheckoutSparkSettledPreparation(checkoutId, run.storage)
     ).toBeNull()
-    expect(listCheckoutSparkRecoveryDeliveries(run.storage)).toEqual([])
+    expect(await listCheckoutSparkRecoveryDeliveries(run.storage)).toEqual([])
 
     available = true
     const prepared = await run.prepare()
@@ -746,7 +750,7 @@ describe("settled Spark no-funds vertical flow", () => {
       plan.checkoutId,
       run.storage
     )
-    const initialDelivery = getCheckoutSparkRecoveryDelivery(
+    const initialDelivery = await getCheckoutSparkRecoveryDelivery(
       prepared.prepared.recoveryHandoffId,
       run.storage
     )
@@ -839,7 +843,7 @@ describe("settled Spark no-funds vertical flow", () => {
         .commerceVerified
     ).toBe(false)
     expect(credited.state.legs.map((leg) => leg.allocationSats)).toEqual([
-      1_002, 111,
+      1_002, 21,
     ])
 
     const acknowledgeRecoverySnapshot = async (

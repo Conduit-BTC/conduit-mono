@@ -80,29 +80,30 @@ anchors so navigation re-enters that boot boundary.
 
 ### Nostr Event Kinds
 
-| Kind    | Purpose                      | Notes                             |
-| ------- | ---------------------------- | --------------------------------- |
-| `0`     | Profile metadata             | NIP-01                            |
-| `3`     | Contact list / follow graph  | NIP-02                            |
-| `5`     | Event deletion               | NIP-09                            |
-| `13`    | Seal                         | NIP-59 / NIP-17 message wrapping  |
-| `14`    | Private direct message       | NIP-17                            |
-| `16`    | Order message payload        | Conduit payload wrapped in NIP-17 |
-| `1059`  | Gift wrap                    | NIP-17                            |
-| `3841`  | Event merchant authorization | Experimental Open Markets profile |
-| `9734`  | Zap request                  | NIP-57                            |
-| `9735`  | Zap receipt                  | NIP-57                            |
-| `10002` | Relay list                   | NIP-65                            |
-| `10050` | Private message relays       | NIP-17 recipient relay hints      |
-| `30402` | Product listing              | NIP-99 + GammaMarkets market-spec |
-| `30405` | Product collection           | Open Markets / Gamma market-spec  |
-| `30406` | Shipping or pickup option    | Open Markets / Gamma market-spec  |
-| `30409` | Event Market                 | Experimental Open Markets profile |
-| `31922` | Date-based calendar event    | NIP-52                            |
-| `31923` | Time-based calendar event    | NIP-52                            |
-| `31924` | Calendar                     | NIP-52; finite market schedule    |
-| `31989` | Application recommendation   | NIP-89                            |
-| `31990` | Application handler metadata | NIP-89                            |
+| Kind    | Purpose                       | Notes                             |
+| ------- | ----------------------------- | --------------------------------- |
+| `0`     | Profile metadata              | NIP-01                            |
+| `3`     | Contact list / follow graph   | NIP-02                            |
+| `5`     | Event deletion                | NIP-09                            |
+| `13`    | Seal                          | NIP-59 / NIP-17 message wrapping  |
+| `14`    | Private direct message        | NIP-17                            |
+| `16`    | Order message payload         | Conduit payload wrapped in NIP-17 |
+| `1059`  | Gift wrap                     | NIP-17                            |
+| `3841`  | Event merchant authorization  | Experimental Open Markets profile |
+| `9734`  | Zap request                   | NIP-57                            |
+| `9735`  | Zap receipt                   | NIP-57                            |
+| `10002` | Relay list                    | NIP-65                            |
+| `10050` | Private message relays        | NIP-17 recipient relay hints      |
+| `30402` | Product listing               | NIP-99 + GammaMarkets market-spec |
+| `30405` | Product collection            | Open Markets / Gamma market-spec  |
+| `30406` | Shipping or pickup option     | Open Markets / Gamma market-spec  |
+| `30409` | Event Market                  | Experimental Open Markets profile |
+| `30410` | Occurrence product assignment | Experimental Open Markets profile |
+| `31922` | Date-based calendar event     | NIP-52                            |
+| `31923` | Time-based calendar event     | NIP-52                            |
+| `31924` | Calendar                      | NIP-52; finite market schedule    |
+| `31989` | Application recommendation    | NIP-89                            |
+| `31990` | Application handler metadata  | NIP-89                            |
 
 Market and Merchant currently use external NIP-07 and NIP-46 account signers.
 An optional installed-PWA local signer has an approved bounded policy exception:
@@ -164,7 +165,8 @@ eligibility, checkout, and order persistence. See
 
 Current Event Markets use an experimental Open Markets profile: organizer-signed
 kind `30409` markets and kind `3841` merchant authorization, with merchant-owned
-kind `30402` products. Shared parsing, publishing, evidence resolution,
+kind `30402` products and merchant-signed kind `30410` occurrence assignments.
+Product discovery tags do not establish assignment authority. Shared parsing, publishing, evidence resolution,
 coordinate/`naddr` handling, and deletion semantics belong in `@conduit/core`;
 Market and Merchant routes compose those prepared states. See
 [Open Markets implementation guidance](OPEN_MARKETS.md#experimental-event-markets)
@@ -172,11 +174,36 @@ and the [Event Market contract](specs/event-markets.md) for schedule membership,
 authorization ancestry, checkout evidence, and retirement of collection-based
 event commerce.
 
-The buyer's encrypted order remains buyer-to-merchant. Organizer handoff uses a
-separate minimal merchant-to-organizer NIP-17 fulfillment receipt and a narrowly
-scoped organizer-to-merchant handoff acknowledgement. Core owns their strict
-schemas, authority checks, kind-10050 routing, and immutable delivery retry;
-routes never fan out or redact full orders themselves.
+Product, Assignment and Accepted order remain separate durable records. The
+existing `commitLocalProductWrite` transaction and listing outbox own product
+edits and stock projections. Merchant acceptance atomically records inventory
+and the order-ID decision before signing or network delivery; exact retries do
+not consume units again. Dexie v27 retains the complete main/preview union,
+including populated installed-v25 assignment stores. This is local writer
+serialization, not cross-device atomicity.
+
+The buyer's full encrypted order remains buyer-to-merchant. Historical organizer
+handoff retains its separate minimal NIP-17 fulfillment receipt and narrowly
+scoped acknowledgement. Current organizer handout uses finite entrusted stock,
+one exclusive writer, bound claims and once-only Merchant reconciliation;
+unused units return only after the complete accepted frontier is reconciled.
+Cooperative replacement-device handover transfers the complete encrypted journal
+and retires the source writer, rather than resetting consumption from incomplete
+history. Event organizer fees and offline checkout recovery reuse the shared
+router, frozen signed terms and separately protected Merchant/organizer recovery
+packages for the same checkout wallet. This does not share account keys or
+standing wallets. Exact required commerce settlement and the unique claim gate
+handout independently of non-blocking fees. Core owns schemas, authority,
+kind-10050 routing and immutable delivery retry; routes compose these workflows.
+See the [Event Market contract](specs/event-markets.md) and
+[router contract](specs/universal-checkout-router.md). Same-event calendar edits
+update unused allocation deadlines while existing orders retain their original
+terms. Calendar edits do not transfer release authority or release entrusted
+stock; those retain their explicit transfer and complete-frontier reconciliation
+requirements. Genuinely free organizer pickup stores its Merchant order wrap and
+organizer packet in one buyer order transaction before either send, then resumes
+those exact envelopes after interruption without creating a wallet or invoice.
+Atomic rollover remains a separate, unfinished capability.
 
 ### Orders And Messages
 

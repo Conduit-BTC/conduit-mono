@@ -83,16 +83,18 @@ const GROSS =
   1_000 +
   calculateConduitCheckoutFeeSats(1_000) +
   calculateCheckoutSparkInboundNetworkAllowanceSats(1_000)
-const INVOICE = makeSignedBolt11Fixture({
-  hrp: `lnbc${GROSS * 10}n`,
-  createdAt: NOW / 1_000,
-  fields: [
-    bolt11PaymentHashField(new Uint8Array(32).fill(0x44)),
-    bolt11PaymentSecretField(),
-    bolt11PlainDescriptionField(),
-    { tag: "x", words: [28, 4] },
-  ],
-})
+const fundingInvoice = (grossSats: number) =>
+  makeSignedBolt11Fixture({
+    hrp: `lnbc${grossSats * 10}n`,
+    createdAt: NOW / 1_000,
+    fields: [
+      bolt11PaymentHashField(new Uint8Array(32).fill(0x44)),
+      bolt11PaymentSecretField(),
+      bolt11PlainDescriptionField(),
+      { tag: "x", words: [28, 4] },
+    ],
+  })
+const INVOICE = fundingInvoice(GROSS)
 
 class MemoryStorage {
   readonly values = new Map<string, string>()
@@ -207,17 +209,24 @@ function fixture(storage: MemoryStorage) {
       closeWallet: async () => {
         calls.close += 1
       },
-      createFundingReceive: async () => {
+      createFundingReceive: async (
+        _wallet?: unknown,
+        request?: { grossFundingSats: number }
+      ) => {
         calls.invoice += 1
+        const grossFundingSats = request?.grossFundingSats ?? GROSS
         return {
           walletId: "preparation-recovery-wallet",
           network: "mainnet" as const,
           id: "preparation-recovery-receive",
-          paymentRequest: INVOICE,
+          paymentRequest:
+            grossFundingSats === GROSS
+              ? INVOICE
+              : fundingInvoice(grossFundingSats),
           paymentHash: "44".repeat(32),
           providerStatus: "INVOICE_CREATED",
-          requiredNetSats: GROSS,
-          grossFundingSats: GROSS,
+          requiredNetSats: grossFundingSats,
+          grossFundingSats,
           expirySecs: 900,
           createdAt: NOW,
           expiresAt: NOW + 900_000,
@@ -318,6 +327,84 @@ function entryRequest(input: PrepareCheckoutSparkSettledFundingInput) {
 }
 
 describe("settled preparation phase recovery", () => {
+  it.each([
+    {
+      policy: "percentage-only-v1" as const,
+      conduitSats: 21,
+      grossSats: 1_023,
+    },
+    { policy: undefined, conduitSats: 111, grossSats: 1_113 },
+  ])(
+    "freezes the requested Conduit fee policy through preparation: $policy",
+    async ({ policy, conduitSats, grossSats }) => {
+      const database = new ConduitDB(
+        `preparation-policy-${crypto.randomUUID()}`,
+        {
+          indexedDB,
+          IDBKeyRange,
+        }
+      )
+      try {
+        const repository = new DexieCheckoutSparkSettledRepository(database)
+        const f = fixture(new MemoryStorage())
+        const prepared = await prepareCheckoutSparkSettledFunding(
+          {
+            ...f.input,
+            ...(policy === undefined ? {} : { conduitFeePolicy: policy }),
+            grossFundingSats: grossSats,
+            recipients: f.input.recipients.map((recipient) =>
+              recipient.kind === "conduit"
+                ? { ...recipient, weightSats: conduitSats }
+                : recipient
+            ),
+          },
+          {
+            ...f.options,
+            repository,
+            createFundingReceive: async () => ({
+              ...(await f.options.createFundingReceive()),
+              requiredNetSats: grossSats,
+              grossFundingSats: grossSats,
+              paymentRequest: makeSignedBolt11Fixture({
+                hrp: `lnbc${grossSats * 10}n`,
+                createdAt: NOW / 1_000,
+                fields: [
+                  bolt11PaymentHashField(new Uint8Array(32).fill(0x44)),
+                  bolt11PaymentSecretField(),
+                  bolt11PlainDescriptionField(),
+                  { tag: "x", words: [28, 4] },
+                ],
+              }),
+            }),
+          }
+        )
+        expect(prepared.plan.conduitFeePolicy).toBe(policy)
+        expect(prepared.plan.funding.grossFundingSats).toBe(grossSats)
+        expect(
+          prepared.plan.recipients.find(
+            (recipient) => recipient.kind === "conduit"
+          )?.weightSats
+        ).toBe(conduitSats)
+        const stored = await repository.load(
+          prepared.plan.checkoutId,
+          prepared.plan.planDigest
+        )
+        expect(stored.status).toBe("active")
+        if (stored.status !== "active")
+          throw new Error("Prepared plan was not persisted.")
+        expect(stored.state.plan.conduitFeePolicy).toBe(policy)
+        expect(JSON.parse(JSON.stringify(stored.state.plan))).toEqual(
+          JSON.parse(JSON.stringify(prepared.plan))
+        )
+        expect(Object.hasOwn(stored.state.plan, "conduitFeePolicy")).toBe(
+          policy !== undefined
+        )
+      } finally {
+        await database.delete()
+      }
+    }
+  )
+
   it.each(["wallet_setup", "funding_invoice", "recovery_handoff"] as const)(
     "retains the exact stopped setup step after positive unfunded cleanup: %s",
     async (step) => {
@@ -448,7 +535,9 @@ describe("settled preparation phase recovery", () => {
         expect(await database.checkoutSparkReconciliations.count()).toBe(
           pristine ? 0 : 1
         )
-        expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
+        expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(
+          0
+        )
       } finally {
         database.close()
         await database.delete()
@@ -712,7 +801,7 @@ describe("settled preparation phase recovery", () => {
                         paymentHash: plan.funding.paymentHash,
                         amount: {
                           originalUnit: "SATOSHI",
-                          originalValue: GROSS,
+                          originalValue: plan.funding.grossFundingSats,
                         },
                       },
                       transfer: {
@@ -720,14 +809,14 @@ describe("settled preparation phase recovery", () => {
                         userRequestId: plan.funding.requestId,
                         totalAmount: {
                           originalUnit: "SATOSHI",
-                          originalValue: GROSS,
+                          originalValue: plan.funding.grossFundingSats,
                         },
                       },
                     },
                     transfer: {
                       id: "0197f9a0-0000-7000-8000-000000000001",
                       status: "TRANSFER_STATUS_COMPLETED",
-                      totalValue: GROSS,
+                      totalValue: plan.funding.grossFundingSats,
                       transferDirection: "INCOMING",
                       receiverIdentityPublicKey:
                         plan.funding.receiverIdentityPublicKey,
@@ -838,7 +927,9 @@ describe("settled preparation phase recovery", () => {
           plan.checkoutId,
           plan.planDigest
         )
-        expect(merchant?.credit?.creditedSats).toBe(GROSS)
+        expect(merchant?.credit?.creditedSats).toBe(
+          plan.funding.grossFundingSats
+        )
         const snapshot = await repository.load(plan.checkoutId, plan.planDigest)
         const control = assessCheckoutSparkSettledOrderControl({
           lifecycle: await orders.get(plan.orderId),
@@ -1126,7 +1217,9 @@ describe("settled preparation phase recovery", () => {
         expect(await database.checkoutSparkPlanBindings.count()).toBe(
           mode === "close_failure" ? 1 : 0
         )
-        expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
+        expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(
+          0
+        )
       } finally {
         database.close()
         await database.delete()
@@ -1172,7 +1265,9 @@ describe("settled preparation phase recovery", () => {
         expect(calls.close).toBe(0)
         expect(calls.open).toBe(1)
         expect(calls.transport).toBe(0)
-        expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
+        expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(
+          0
+        )
         expect(digest !== null).toBe(true)
         expect((await repository.load(input.checkoutId, digest!)).status).toBe(
           "active"
@@ -1265,7 +1360,7 @@ describe("settled preparation phase recovery", () => {
         draftStorage
       )[0]!
       expect(saved.order.note === "Original synthetic draft").toBe(true)
-      const original = listCheckoutSparkRecoveryDeliveries(storage)[0]!
+      const original = (await listCheckoutSparkRecoveryDeliveries(storage))[0]!
       controls.ack = true
       // A new render/cart is deliberately different; no new cart enters the
       // continuation interface. The saved payload remains the only source.
@@ -1373,7 +1468,7 @@ describe("settled preparation phase recovery", () => {
       ).rejects.toThrow("Synthetic outbox readback failure")
       expect(calls.close).toBe(0)
       expect(calls.transport).toBe(0)
-      const original = listCheckoutSparkRecoveryDeliveries(storage)[0]!
+      const original = (await listCheckoutSparkRecoveryDeliveries(storage))[0]!
       expect(original !== undefined).toBe(true)
       expect(original.deliveryProgress.acknowledgedRelayRefs).toHaveLength(0)
       const originalSet = storage.setItem.bind(storage)
@@ -1420,7 +1515,7 @@ describe("settled preparation phase recovery", () => {
       expect(resumed.plan.planDigest === original.record.planDigest).toBe(true)
       expect(resumed.fundingInvoice === INVOICE).toBe(true)
       expect(calls).toEqual({ open: 1, close: 0, invoice: 1, transport: 1 })
-      expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
+      expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
       expect(
         findBlockingCheckoutSparkPreparation(
           listCheckoutSparkSettledPreparations(storage),
@@ -1464,7 +1559,7 @@ describe("settled preparation phase recovery", () => {
         })
       ).rejects.toBeInstanceOf(CheckoutSparkSettledPreparationAbandonedError)
       expect(calls.transport).toBe(0)
-      expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
+      expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(0)
       expect(calls.close).toBe(1)
       expect(
         findBlockingCheckoutSparkPreparation(

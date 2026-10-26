@@ -72,6 +72,9 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/event-market-router-acceptance.md`: event router evidence
+  boundaries, organizer stock/recovery and final funded/device acceptance
+
 - `docs/knowledge/checkout-spark-native-treasury.md`: one final native Spark
   collection, exact residual accounting, recovery and funded-validation boundary
 - `docs/knowledge/quantum-router-deployment.md`: public activation and treasury
@@ -102,9 +105,8 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/checkout-spark-recipient-verification-compat.md`: provider-neutral
   ordinary receiver qualification, exact invoice association, independent
   settlement evidence, historical compatibility and live acceptance gates
-- `docs/knowledge/wallet-registry-lifecycle.md`: bounded, identity-verified legacy
-  wallet-registry bootstrap, removal-history preservation and per-account exit
-  gates
+- `docs/knowledge/wallet-registry-lifecycle.md`: complete encrypted Portable Wallet
+  records, explicit seed-import cutover and automatic account restoration.
 - `docs/knowledge/commerce-inbox-recovery.md`: bounded authenticated client-seal
   metadata read compatibility, accounting and maintainer activation/removal gates
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order

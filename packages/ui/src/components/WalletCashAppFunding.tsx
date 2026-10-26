@@ -4,7 +4,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type ReactNode,
 } from "react"
 import {
   decodeLightningInvoiceMetadata,
@@ -13,11 +12,9 @@ import {
   getShopperSatsDisplay,
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
   type BtcUsdRateQuote,
-  type WalletDescriptor,
 } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import type { SparkReceiveRequest } from "@conduit/core/wallets/spark-wallet"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "./Tabs"
 import { Button } from "./Button"
 import { Input } from "./Input"
 import { Label } from "./Label"
@@ -188,10 +185,6 @@ export function WalletCashAppFunding({
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-[var(--text-secondary)]">
-        Add bitcoin to this wallet. Choose Cash in Cash App, if available. Cash
-        App shows your final debit and any fees.
-      </p>
       {!request ? (
         <>
           <div className="grid gap-2">
@@ -209,11 +202,11 @@ export function WalletCashAppFunding({
             />
             <p
               id="cash-app-amount-help"
-              className="text-xs text-[var(--text-secondary)]"
+              className="text-sm text-[var(--text-secondary)]"
             >
               {display?.state === "ready" && display.approximate
                 ? `${display.primary} estimated. Cash App sets the final conversion rate.`
-                : "Enter a whole-number amount. A fixed amount enables eligible Cash App funding options."}
+                : "Cash App shows your funding options and any fees."}
             </p>
           </div>
           <Button
@@ -235,10 +228,14 @@ export function WalletCashAppFunding({
             canUseInvoice={canUseInvoice}
             onCheck={() => setCheckRevision((value) => value + 1)}
           />
-          <p className="text-xs text-[var(--text-secondary)]">
-            You can close this dialog and check wallet history later. Closing it
-            does not cancel a payment.
-          </p>
+          <details className="text-sm text-[var(--text-secondary)]">
+            <summary className="cursor-pointer py-2">Payment details</summary>
+            <p>
+              Choose Cash in Cash App, if available. Cash App shows your final
+              debit and any fees. Closing this dialog does not cancel a payment;
+              check wallet history before trying again.
+            </p>
+          </details>
         </>
       )}
       {!ready && <p role="status">Open this wallet again to continue.</p>}
@@ -248,57 +245,6 @@ export function WalletCashAppFunding({
         </p>
       )}
     </div>
-  )
-}
-
-/** Keep both prepared receive requests while switching the presentation method. */
-export function WalletReceiveMethods({
-  wallet,
-  wallets,
-  current,
-  pending,
-  rateQuote,
-  onPendingChange,
-  children,
-}: {
-  wallet: WalletDescriptor | null
-  wallets: UseWalletsReturn
-  current: () => boolean
-  pending: boolean
-  rateQuote: BtcUsdRateQuote | null
-  onPendingChange: (pending: boolean) => void
-  children: ReactNode
-}) {
-  return (
-    <Tabs defaultValue="lightning">
-      <TabsList aria-label="Receive method">
-        <TabsTrigger value="lightning" disabled={pending}>
-          Lightning
-        </TabsTrigger>
-        {wallet?.network === "mainnet" && (
-          <TabsTrigger value="cash-app" disabled={pending}>
-            Cash App
-          </TabsTrigger>
-        )}
-      </TabsList>
-      <TabsContent
-        value="cash-app"
-        forceMount
-        className="data-[state=inactive]:hidden"
-      >
-        {wallet && (
-          <WalletCashAppFunding
-            walletId={wallet.id}
-            wallets={wallets}
-            current={current}
-            ready={wallets.runtime[wallet.id]?.status === "ready"}
-            quote={rateQuote}
-            onPendingChange={onPendingChange}
-          />
-        )}
-      </TabsContent>
-      <TabsContent value="lightning">{children}</TabsContent>
-    </Tabs>
   )
 }
 
@@ -332,7 +278,7 @@ function FundingReceipt({
                 ? "This request expired. Check its status before starting another deposit."
                 : status === "unavailable"
                   ? "Receipt status is unavailable. Check again or view wallet history before paying again."
-                  : "Waiting for payment. Returning from Cash App does not confirm receipt."}
+                  : "Waiting for payment…"}
           </p>
           {!expired && ready && status !== "failed" && (
             <InvoicePayment
@@ -342,11 +288,12 @@ function FundingReceipt({
               quote={quote}
               guestSession={false}
               cashAppLabel="Open Cash App"
+              presentation="cash-app-funding"
               amountLabel="Amount to add"
               onBeforeInvoiceUse={canUseInvoice}
             />
           )}
-          <p className="text-xs text-[var(--text-secondary)]">
+          <p className="text-sm text-[var(--text-secondary)]">
             Wallet receive fee:{" "}
             {formatBitcoinBaseUnits(request.feeSats, "sats")}. Cash App may
             apply its own fees.

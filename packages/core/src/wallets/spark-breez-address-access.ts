@@ -114,6 +114,13 @@ export function createSparkBreezAddressAccess(input: {
       : client.lookup()
   }
   return {
+    async getAddressIdentity(): Promise<string> {
+      if (!input.signer) throw new Error("Wallet identity is unavailable.")
+      input.signer.assertActive()
+      const identity = await input.signer.getIdentityPublicKey()
+      input.signer.assertActive()
+      return identity
+    },
     lookupBreezAddress: (domain?: string) => run(false, undefined, domain),
     ensureBreezAddress: (username?: string, domain?: string) =>
       run(true, username, domain),

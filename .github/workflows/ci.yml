@@ -184,7 +184,8 @@ jobs:
     defaults:
       run:
         shell: bash
-    # Commerce runs ordinary, native-router, and receiver lanes serially.
+    # Commerce runs ordinary, ordinary-native-router, and receiver lanes serially.
+    # Event native coverage runs independently in e2e-event-router.
     # Individual test deadlines remain unchanged.
     timeout-minutes: ${{ matrix.job.area == 'commerce' && 25 || 20 }}
     env:
@@ -305,6 +306,7 @@ jobs:
         id: router_selection
         if: ${{ !cancelled() && matrix.job.area == 'commerce' && steps.smoke_dependencies.outcome == 'success' }}
         env:
+          PLAYWRIGHT_ROUTER_NATIVE_PROFILE: ordinary
           PLAYWRIGHT_SMOKE_AREA: commerce
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -327,6 +329,7 @@ jobs:
       - name: Run isolated router Playwright smoke tests
         if: ${{ !cancelled() && matrix.job.area == 'commerce' && steps.router_selection.outcome == 'success' }}
         env:
+          PLAYWRIGHT_ROUTER_NATIVE_PROFILE: ordinary
           PLAYWRIGHT_SMOKE_AREA: commerce
           PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -345,6 +348,7 @@ jobs:
       - name: Verify executed isolated router smoke evidence
         if: always() && matrix.job.area == 'commerce'
         env:
+          PLAYWRIGHT_ROUTER_NATIVE_PROFILE: ordinary
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           TESTED_SHA: ${{ github.sha }}
@@ -476,10 +480,122 @@ jobs:
           rm -f -- "$PLAYWRIGHT_ROUTER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_MANIFEST"
           rm -f -- "$PLAYWRIGHT_ROUTER_RECEIVER_RESULT_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_PROGRESS_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_EVIDENCE_FILE" "$PLAYWRIGHT_ROUTER_RECEIVER_MANIFEST"
           rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
+  e2e-event-router:
+    name: e2e-smoke / event-router
+    needs: [smoke-changes]
+    if: ${{ needs.smoke-changes.result == 'success' && contains(fromJSON(needs.smoke-changes.outputs.shards || '[]').*.area, 'commerce') }}
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.0-noble@sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f
+      options: --init --shm-size=1g
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 25
+    env:
+      PLAYWRIGHT_SMOKE_AREA: commerce
+      PLAYWRIGHT_ROUTER_NATIVE_PROFILE: event
+      PLAYWRIGHT_SMOKE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PLAYWRIGHT_SMOKE_TESTED_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Bun and checkout ownership
+        run: |
+          set -euo pipefail
+          [[ "$(uname -m)" == "x86_64" ]]
+          timeout 90s apt-get update -qq
+          timeout 90s apt-get install -y -qq --no-install-recommends unzip
+          bun_archive_dir="$(mktemp -d)"
+          trap 'rm -rf -- "$bun_archive_dir"' EXIT
+          curl --fail --location --silent --show-error \
+            --connect-timeout 10 --max-time 90 --retry 0 \
+            https://github.com/oven-sh/bun/releases/download/bun-v1.3.5/bun-linux-x64.zip \
+            -o "$bun_archive_dir/bun-linux-x64.zip"
+          printf '%s  %s\n' \
+            '7051d86a924aefea3e0b96213b5fd8f79c0793f9cae6534233e627e5c3db4669' \
+            "$bun_archive_dir/bun-linux-x64.zip" | sha256sum --check --status
+          unzip -q "$bun_archive_dir/bun-linux-x64.zip" -d "$bun_archive_dir"
+          install -m 0755 "$bun_archive_dir/bun-linux-x64/bun" /usr/local/bin/bun
+          ln -s /usr/local/bin/bun /usr/local/bin/bunx
+          bun --version
+          bunx --version
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - id: event_dependencies
+        run: bun install --frozen-lockfile
+      - name: Validate complete native router partition and Event selection
+        id: event_selection
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ "$checkout_sha" != "$PLAYWRIGHT_SMOKE_TESTED_SHA" ]]; then
+            echo "The checked-out SHA does not match the workflow-tested SHA." >&2
+            exit 1
+          fi
+          bun scripts/ci/router_smoke_partition.ts
+          bun run test:e2e:areas \
+            --config playwright.router.config.ts --area commerce \
+            --manifest-output playwright-event-router-smoke-manifest.json \
+            --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" \
+            --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
+            --tested-sha "$checkout_sha"
+      - name: Run isolated Event router Playwright smoke tests
+        if: ${{ !cancelled() && steps.event_selection.outcome == 'success' }}
+        env:
+          DEBUG: pw:browser
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-event-router-smoke-results.json
+          PLAYWRIGHT_SMOKE_PROGRESS_FILE: ${{ runner.temp }}/playwright-event-router-smoke-progress.log
+          PLAYWRIGHT_SMOKE_EVIDENCE_FILE: ${{ runner.temp }}/playwright-event-router-smoke-evidence.json
+        run: |
+          set -euo pipefail
+          umask 077
+          : > "$PLAYWRIGHT_SMOKE_PROGRESS_FILE"
+          tail -n +1 -f "$PLAYWRIGHT_SMOKE_PROGRESS_FILE" &
+          progress_pid=$!
+          trap 'sleep 1; kill "$progress_pid" 2>/dev/null || true' EXIT
+          bunx playwright test --config playwright.router.config.ts >/dev/null 2>&1
+      - name: Verify executed isolated Event router smoke evidence
+        if: always()
+        env:
+          PLAYWRIGHT_SMOKE_RESULT_FILE: ${{ runner.temp }}/playwright-event-router-smoke-results.json
+        run: |
+          set -euo pipefail
+          checkout_sha="$(git rev-parse HEAD)"
+          if [[ "$checkout_sha" != "$PLAYWRIGHT_SMOKE_TESTED_SHA" ]]; then
+            echo "The checked-out SHA changed during Playwright execution." >&2
+            exit 1
+          fi
+          bun run test:e2e:areas \
+            --config playwright.router.config.ts --area commerce \
+            --expected-manifest playwright-event-router-smoke-manifest.json \
+            --execution-report "$PLAYWRIGHT_SMOKE_RESULT_FILE" \
+            --source-head-sha "$PLAYWRIGHT_SMOKE_SOURCE_HEAD_SHA" \
+            --base-sha "$PLAYWRIGHT_SMOKE_BASE_SHA" \
+            --tested-sha "$checkout_sha"
+      - name: Retain sanitized isolated Event router evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-evidence-event-router-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/playwright-event-router-smoke-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove raw Event router output
+        if: always()
+        env:
+          EVENT_RESULT_FILE: ${{ runner.temp }}/playwright-event-router-smoke-results.json
+          EVENT_PROGRESS_FILE: ${{ runner.temp }}/playwright-event-router-smoke-progress.log
+          EVENT_EVIDENCE_FILE: ${{ runner.temp }}/playwright-event-router-smoke-evidence.json
+        run: |
+          rm -f -- "$EVENT_RESULT_FILE" "$EVENT_PROGRESS_FILE" "$EVENT_EVIDENCE_FILE" "$GITHUB_WORKSPACE/playwright-event-router-smoke-manifest.json"
+          rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"
+
   e2e-smoke:
     name: e2e-smoke
     if: always()
-    needs: [smoke-changes, e2e-smoke-shard]
+    needs: [smoke-changes, e2e-smoke-shard, e2e-event-router]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -487,6 +603,8 @@ jobs:
         env:
           SELECT_RESULT: ${{ needs.smoke-changes.result }}
           SHARD_RESULT: ${{ needs.e2e-smoke-shard.result }}
+          EVENT_REQUIRED: ${{ contains(fromJSON(needs.smoke-changes.outputs.shards || '[]').*.area, 'commerce') }}
+          EVENT_RESULT: ${{ needs.e2e-event-router.result }}
           SHARDS: ${{ needs.smoke-changes.outputs.shards }}
         run: |
           set -euo pipefail
@@ -497,6 +615,15 @@ jobs:
           fi
           if [[ "$SHARD_RESULT" != "success" ]]; then
             echo "Smoke shards did not complete successfully: $SHARD_RESULT"
+            exit 1
+          fi
+          if [[ "$EVENT_REQUIRED" == "true" ]]; then
+            if [[ "$EVENT_RESULT" != "success" ]]; then
+              echo "Required Event router smoke did not succeed: $EVENT_RESULT"
+              exit 1
+            fi
+          elif [[ "$EVENT_REQUIRED" != "false" || "$EVENT_RESULT" != "skipped" ]]; then
+            echo "Unexpected Event router smoke selection or result."
             exit 1
           fi
 
@@ -592,7 +719,7 @@ jobs:
           EXPECTED_PUBLIC_CONFIG_DIGEST: ${{ needs.build-mainnet.outputs.public-config-digest }}
         with:
           script: |
-            const { waitForProjectRows } = await import(
+            const { listPublicCloudflareCheckRuns, waitForProjectRows } = await import(
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/preview_links.mjs`
             );
             const headSha = context.payload.pull_request.head.sha;
@@ -628,10 +755,12 @@ jobs:
               market: {
                 label: "Market",
                 project: "conduit-market",
+                previewHostname: "conduit-market-coo.pages.dev",
               },
               merchant: {
                 label: "Merchant",
                 project: "conduit-merchant",
+                previewHostname: "conduit-merchant-33n.pages.dev",
               },
             };
 
@@ -646,6 +775,7 @@ jobs:
 
             const { rows } = await waitForProjectRows({
               listComments: listIssueComments,
+              listChecks: () => listPublicCloudflareCheckRuns({ headSha }),
               projects: PROJECTS,
               headSha,
             });

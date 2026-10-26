@@ -42,6 +42,7 @@ export function validateGatewayDeployment(
       "TURNSTILE_SECRET_KEY",
       "BREEZ_PROXY_SHARED_SECRET",
       "BREEZ_DOMAIN_API_KEY",
+      "PAGES_READ_API_TOKEN",
     ].some((key) => key in vars || key in (root.vars ?? {}))
   )
     throw new Error("Server credentials belong only in the secret store.")
@@ -59,6 +60,28 @@ export function validateGatewayDeployment(
     throw new Error(
       "Explicit qualification, privacy and abuse controls are required."
     )
+  if (
+    vars.TRUSTED_PREVIEWS_ENABLED !== undefined &&
+    !["false", "true"].includes(vars.TRUSTED_PREVIEWS_ENABLED)
+  )
+    throw new Error("Explicit preview authorization setting required.")
+  if (
+    vars.TRUSTED_PREVIEWS_ENABLED === "true" &&
+    !/^[a-f0-9]{32}$/.test(vars.PAGES_ACCOUNT_ID ?? "")
+  )
+    throw new Error(
+      "Preview authorization requires the reviewed Pages account."
+    )
+  if (
+    vars.TRUSTED_PREVIEWS_ENABLED === "true" &&
+    !selected?.ratelimits?.some(
+      (limit) =>
+        limit.name === "PREVIEW_DISCOVERY_RATE_LIMITER" &&
+        limit.simple?.limit === 60 &&
+        limit.simple?.period === 60
+    )
+  )
+    throw new Error("Preview discovery requires a bounded API budget.")
   if (environment === "production") {
     if (
       root.workers_dev !== false ||
@@ -68,9 +91,8 @@ export function validateGatewayDeployment(
           { pattern: "conduit.cash/*", zone_name: "conduit.cash" },
         ]) ||
       vars.ALLOWED_ORIGINS !==
-        "https://shop.conduit.market,https://sell.conduit.market,https://feat-conduit-cash-release.conduit-market-coo.pages.dev,https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev" ||
-      vars.TURNSTILE_HOSTNAMES !==
-        "shop.conduit.market,sell.conduit.market,feat-conduit-cash-release.conduit-market-coo.pages.dev,feat-conduit-cash-release.conduit-merchant-33n.pages.dev"
+        "https://shop.conduit.market,https://sell.conduit.market" ||
+      vars.TURNSTILE_HOSTNAMES !== "shop.conduit.market,sell.conduit.market"
     )
       throw new Error(
         "Production requires the reviewed domain route and exact app origins."
