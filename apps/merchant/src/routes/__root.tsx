@@ -454,6 +454,7 @@ function ConnectGate() {
     method,
     connect,
     localKeyEnabled,
+    pasteLocalKey,
     cancelConnect,
     disconnect,
     error,
@@ -467,7 +468,7 @@ function ConnectGate() {
   const isProbablyMobileBrowser = useMemo(isMobileSignerEnvironment, [])
   const extensionNotice =
     !extensionAvailable && !isProbablyMobileBrowser
-      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
+      ? "Open or unlock your browser extension, then try again."
       : null
 
   useEffect(() => {
@@ -488,7 +489,7 @@ function ConnectGate() {
         <SignerConnectPanel
           logoSrc="/images/logo/merchant-logo-full.svg"
           title="Sign in to Conduit"
-          description="Use your Nostr account to open your merchant workspace."
+          description="Open your merchant workspace."
           helperText={
             isProbablyMobileBrowser
               ? "Approve sign-in in your app, then return here."
@@ -496,11 +497,11 @@ function ConnectGate() {
                 ? "Sign in with your nsec, a browser extension, or a remote signer."
                 : "Choose a browser extension or remote signer."
           }
-          unlockLabel="UNLOCK YOUR COMMAND CENTER"
+          unlockLabel="Your merchant workspace"
           unlockItems={[
             "Create your store and start publishing products.",
-            "Handle orders, customer messages, and product comments from one workspace.",
-            "Sell through Conduit, your own storefront, and the wider Nostr network.",
+            "Handle orders, customer messages, and product comments in one place.",
+            "Sell through Conduit, your own storefront, and beyond.",
           ]}
           error={error}
           authUrl={authUrl}
@@ -510,6 +511,7 @@ function ConnectGate() {
           extensionNotice={extensionNotice}
           mobile={isProbablyMobileBrowser}
           localKeyEnabled={localKeyEnabled}
+          onPasteLocalKey={pasteLocalKey}
           onImportLocalKey={(localKeyInput) =>
             connect({ method: "local", localKeyInput })
           }

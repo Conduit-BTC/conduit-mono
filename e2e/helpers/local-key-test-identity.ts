@@ -10,3 +10,13 @@ export function populateImportInput(input: HTMLInputElement): void {
     secret.fill(0)
   }
 }
+
+/** Real browser clipboard, isolated Linux test equipment only. */
+export async function writeTestIdentityToClipboard(): Promise<void> {
+  const secret = generateSecretKey()
+  try {
+    await navigator.clipboard.writeText(nsecEncode(secret))
+  } finally {
+    secret.fill(0)
+  }
+}

@@ -42,6 +42,30 @@ export interface LocalKeyImport {
   dispose(): void
 }
 
+/** Clipboard contents travel only from the browser into the uncontrolled input. */
+export async function pasteLocalKeyFromClipboard(
+  input: HTMLInputElement,
+  signal: AbortSignal
+): Promise<boolean> {
+  if (signal.aborted || !input.isConnected || input.disabled) return false
+  let text = ""
+  try {
+    const clipboard = input.ownerDocument.defaultView?.navigator.clipboard
+    if (!clipboard?.readText) throw new Error()
+    text = await clipboard.readText()
+    if (signal.aborted || !input.isConnected || input.disabled) return false
+    if (!text.trim()) throw new Error()
+    input.value = text
+    return true
+  } catch {
+    if (signal.aborted) return false
+    // Never propagate a browser exception that could contain clipboard data.
+    throw new Error("Clipboard paste unavailable")
+  } finally {
+    text = ""
+  }
+}
+
 /** Consume import text here, before any await; never put it in React state. */
 export function prepareLocalKeyImport(
   input: HTMLInputElement,

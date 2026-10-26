@@ -18,6 +18,7 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
     nostrConnectUri,
     connect,
     localKeyEnabled,
+    pasteLocalKey,
     cancelConnect,
     disconnect,
   } = useAuth()
@@ -36,16 +37,18 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       signerMethod={method}
       rememberedMethod={rememberedMethod}
       localKeyEnabled={localKeyEnabled}
+      onPasteLocalKey={pasteLocalKey}
       onImportLocalKey={(localKeyInput) =>
         connect({ method: "local", localKeyInput })
       }
       extensionAvailable={extensionAvailable}
       connectedDescription="Your merchant workspace is ready."
-      connectDescription="Use your Nostr account to open your merchant workspace."
+      connectDescription="Open your merchant workspace."
       connectedUseDescription="This signer will be used for listings, orders, and merchant messages."
       unlockItems={[
-        "Publish listings tied to your pubkey.",
-        "Manage orders and buyer messages in one place.",
+        "Create your store and start publishing products.",
+        "Handle orders, customer messages, and product comments in one place.",
+        "Sell through Conduit, your own storefront, and beyond.",
       ]}
       onConnectExtension={() => connect({ method: "nip07" })}
       onConnectNostrConnect={() =>

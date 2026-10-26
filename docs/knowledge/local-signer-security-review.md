@@ -31,6 +31,15 @@ bytes. Already pinned `nostr-tools` supplies NIP-19, signatures, NIP-44 and lega
 NIP-04 decrypt. Current history consumers still require legacy decrypt; no new
 legacy send capability. No custom crypto or new runtime dependency.
 
+Clipboard reads also remain inside this boundary. The UI passes only an input
+element and an abort signal following an explicit Paste click. The helper returns
+only success, writes directly to the uncontrolled field, and discards delayed
+results after cancellation, detachment or disabling. Editing, submission and
+unmount cancel the UI's pending read. Empty or denied reads preserve the field;
+errors are generic and contain no clipboard contents. Paste does not sign in or
+persist the account until the user submits. Browser permission prompts and
+manual-paste fallback remain platform-dependent.
+
 ## Threat model and lifecycle
 
 Contain accidental key propagation, logging/telemetry, ad hoc signing,

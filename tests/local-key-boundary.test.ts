@@ -8,6 +8,7 @@ describe("local account secret containment", () => {
   test("the entry API has no raw-key constructor, getter or serialization operation", async () => {
     expect(Object.keys(local).sort()).toEqual([
       "LOCAL_KEY_CAPABILITIES",
+      "pasteLocalKeyFromClipboard",
       "prepareLocalKeyImport",
       "reconcileLocalKeyRecord",
       "removeLocalKeyRecord",

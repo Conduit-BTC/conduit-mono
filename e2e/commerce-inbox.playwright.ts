@@ -62,7 +62,7 @@ async function reconnectBuyer(page: Page, testInfo: TestInfo) {
     testInfo
   )
   const connect = page
-    .getByRole("button", { name: "Connect", exact: true })
+    .getByRole("button", { name: "Sign In", exact: true })
     .first()
   await expect(connect).toBeVisible()
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveCount(0)
@@ -70,7 +70,7 @@ async function reconnectBuyer(page: Page, testInfo: TestInfo) {
   await activateInboxControl(
     page
       .getByRole("button", {
-        name: /Reconnect your account|Connect Extension \(NIP-07\)|Continue with browser signer/i,
+        name: /Reconnect your account|Sign in with Extension|Sign in with Extension/i,
       })
       .first(),
     testInfo

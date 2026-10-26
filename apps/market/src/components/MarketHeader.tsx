@@ -251,14 +251,13 @@ function AccountControl({
 
   if (!connected) {
     return (
-      // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
-      <button
+      <Button
         type="button"
         className={cn(
           accountControlClassName,
           "size-11 px-0 sm:w-auto sm:min-w-[5.25rem] sm:px-3"
         )}
-        aria-label="Connect"
+        aria-label="Sign In"
         aria-busy={authPending}
         onClick={onConnect}
       >
@@ -270,8 +269,8 @@ function AccountControl({
         ) : (
           <CircleUser className="size-5 sm:hidden" aria-hidden="true" />
         )}
-        <span className="hidden sm:inline">Connect</span>
-      </button>
+        <span className="hidden sm:inline">Sign In</span>
+      </Button>
     )
   }
 

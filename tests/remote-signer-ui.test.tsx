@@ -6,6 +6,8 @@ import {
   SignerConnectPanel,
   isMobileSignerEnvironment,
 } from "../packages/ui/src/components/SignerSwitch"
+import { ManualSignerConnection } from "../packages/ui/src/components/ManualSignerConnection"
+import { SignerAppChoices } from "../packages/ui/src/components/SignerAppChoices"
 import { ClaveConnectButton } from "../packages/ui/src/components/ClaveConnectButton"
 import { claveConnectUrl } from "../packages/ui/src/components/signer-platform"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
@@ -54,9 +56,9 @@ describe("remote signer UI", () => {
           onImportLocalKey={() => undefined}
         />
       )
-      expect(markup.includes("Sign in with nsec")).toBe(true)
+      expect(markup.includes("Sign in with Secret Key")).toBe(true)
       expect(markup.includes('type="password"')).toBe(true)
-      expect(markup.includes("Existing Nostr secret key")).toBe(true)
+      expect(markup.includes("Secret Key")).toBe(true)
     }
   })
 
@@ -85,22 +87,22 @@ describe("remote signer UI", () => {
     ).toBe(false)
   })
 
-  it("offers extension and manual remote connections on desktop", () => {
+  it("keeps desktop remote options collapsed behind an explicit choice", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel {...commonProps} platform="desktop" />
     )
-
-    expect(markup.includes("Connect Extension (NIP-07)")).toBe(true)
-    expect(markup.includes("Scan QR")).toBe(true)
-    expect(markup.includes("Copy link")).toBe(true)
-    expect(markup.includes("Paste bunker")).toBe(true)
-    expect(markup.includes("Start new connection")).toBe(true)
-    expect(markup.includes("Other ways to connect")).toBe(false)
-    expect(markup.includes("Keep your account backup safe.")).toBe(true)
-    expect(markup.includes("Conduit cannot recover your keys.")).toBe(true)
-    expect(
-      markup.includes("This device remembers an encrypted connection")
-    ).toBe(false)
+    expect(markup.includes("Sign in with Extension")).toBe(true)
+    expect(markup.includes("Remote Sign In")).toBe(true)
+    expect(markup.includes('aria-expanded="false"')).toBe(true)
+    for (const hidden of [
+      "Scan QR",
+      "Copy link",
+      "Paste bunker",
+      "Start new connection",
+      "Keep your account backup safe.",
+      "Conduit cannot recover your keys.",
+    ])
+      expect(markup.includes(hidden)).toBe(false)
   })
 
   it("keeps browser signer and Clave visible while preparing on iOS", () => {
@@ -115,18 +117,18 @@ describe("remote signer UI", () => {
 
     expect(hasDisabledButton(markup, "Preparing Clave…")).toBe(false)
     expect(markup.includes("Preparing Clave…")).toBe(true)
-    expect(markup.includes('src="data:image/png;base64,')).toBe(true)
+    expect(markup.includes("lucide-smartphone")).toBe(true)
     expect(markup.includes("Cancel pairing")).toBe(false)
     expect(markup.includes("clave.casa/connect")).toBe(false)
-    expect(markup.includes("Continue with browser signer")).toBe(true)
-    expect(markup.indexOf("Continue with browser signer")).toBeLessThan(
+    expect(markup.includes("Sign in with Extension")).toBe(true)
+    expect(markup.indexOf("Sign in with Extension")).toBeLessThan(
       markup.indexOf("Preparing Clave…")
     )
     expect(markup.includes("Sign in with Clave. Your account keys")).toBe(false)
     expect(markup.includes("Start new connection")).toBe(false)
     expect(markup.includes("Amber")).toBe(false)
-    expect(markup.includes('aria-expanded="false"')).toBe(true)
-    expect(markup.includes("Other ways to connect")).toBe(true)
+    expect(markup.includes('aria-expanded="false"')).toBe(false)
+    expect(markup.includes("Other ways to connect")).toBe(false)
     expect(markup.includes('role="tablist"')).toBe(false)
     expect(markup.includes("Nostr Connect connection QR code")).toBe(false)
   })
@@ -143,10 +145,9 @@ describe("remote signer UI", () => {
       />
     )
 
-    expect(markup.includes("Use a Safari extension")).toBe(true)
-    expect(hasDisabledButton(markup, "Use a Safari extension")).toBe(false)
-    expect(markup.includes("Continue with browser signer")).toBe(false)
-    expect(markup.includes("Other ways to connect")).toBe(true)
+    expect(markup.includes("Sign in with Extension")).toBe(true)
+    expect(hasDisabledButton(markup, "Sign in with Extension")).toBe(false)
+    expect(markup.includes("Other ways to connect")).toBe(false)
     expect(markup.includes('role="tablist"')).toBe(false)
   })
 
@@ -161,10 +162,10 @@ describe("remote signer UI", () => {
     )
 
     expect(markup.includes("Reconnect your account")).toBe(true)
-    expect(markup.includes("Continue with browser signer")).toBe(false)
-    expect(markup.includes("Connect with Clave")).toBe(true)
+    expect(markup.includes("Sign in with Extension")).toBe(false)
+    expect(markup.includes("Sign in with Clave")).toBe(true)
     expect(markup.indexOf("Reconnect your account")).toBeLessThan(
-      markup.indexOf("Connect with Clave")
+      markup.indexOf("Sign in with Clave")
     )
   })
 
@@ -209,7 +210,7 @@ describe("remote signer UI", () => {
       markup.indexOf("Reconnect your account")
     )
     expect(markup.indexOf("Unlock your browser signer")).toBeLessThan(
-      markup.indexOf("Connect with Clave")
+      markup.indexOf("Sign in with Clave")
     )
   })
 
@@ -223,13 +224,13 @@ describe("remote signer UI", () => {
         connectingMethod="nip46"
       />
     )
-    const handoff = linkAttributes(markup, "Connect with Clave")
+    const handoff = linkAttributes(markup, "Sign in with Clave")
 
     expect(handoff.includes(`href="${claveConnectUrl(nostrConnectUri)}"`)).toBe(
       true
     )
     expect(handoff.includes('target="_self"')).toBe(true)
-    expect(hasDisabledButton(markup, "Connect with Clave")).toBe(false)
+    expect(hasDisabledButton(markup, "Sign in with Clave")).toBe(false)
     expect(markup.includes("Get Clave on the App Store")).toBe(false)
     expect(markup.includes("apps.apple.com")).toBe(false)
     expect(markup.includes("Ready. Open your app to approve sign-in.")).toBe(
@@ -248,16 +249,16 @@ describe("remote signer UI", () => {
       <SignerConnectPanel {...commonProps} platform="android" />
     )
 
-    expect(hasDisabledButton(markup, "Use Amber")).toBe(false)
+    expect(hasDisabledButton(markup, "Sign in with Amber")).toBe(false)
     expect(markup.includes('href="intent:')).toBe(false)
-    expect(markup.includes("Connect with Clave")).toBe(false)
-    expect(markup.includes("Continue with browser signer")).toBe(true)
-    expect(markup.indexOf("Continue with browser signer")).toBeLessThan(
-      markup.indexOf("Use Amber")
+    expect(markup.includes("Sign in with Clave")).toBe(false)
+    expect(markup.includes("Sign in with Extension")).toBe(true)
+    expect(markup.indexOf("Sign in with Extension")).toBeLessThan(
+      markup.indexOf("Sign in with Amber")
     )
     expect(markup.includes("Sign in with Amber. Your account keys")).toBe(false)
     expect(markup.includes("Start new connection")).toBe(false)
-    expect(markup.includes("Other ways to connect")).toBe(true)
+    expect(markup.includes("Other ways to connect")).toBe(false)
     expect(markup.includes('role="tablist"')).toBe(false)
   })
 
@@ -269,7 +270,9 @@ describe("remote signer UI", () => {
         nostrConnectUri={nostrConnectUri}
       />
     )
-    const choices = [["Use Amber", "com.greenart7c3.nostrsigner"]] as const
+    const choices = [
+      ["Sign in with Amber", "com.greenart7c3.nostrsigner"],
+    ] as const
 
     for (const [label, packageName] of choices) {
       const attributes = linkAttributes(markup, label)
@@ -287,7 +290,7 @@ describe("remote signer UI", () => {
       expect(href.includes("browser_fallback_url")).toBe(false)
     }
     expect(markup.match(/href="intent:/g)?.length).toBe(1)
-    expect(markup.includes("Connect with Clave")).toBe(false)
+    expect(markup.includes("Sign in with Clave")).toBe(false)
     expect(markup.includes('href="nostrconnect:')).toBe(false)
     expect(markup.includes("github.com")).toBe(false)
     expect(markup.includes('role="tablist"')).toBe(false)
@@ -295,7 +298,14 @@ describe("remote signer UI", () => {
 
   it("links Android installation to Amber's official listing", () => {
     const markup = renderToStaticMarkup(
-      <SignerConnectPanel {...commonProps} platform="android" />
+      <SignerAppChoices
+        platform="android"
+        selectedApp="amber"
+        onSelectApp={() => undefined}
+        onStart={() => undefined}
+        connectPending={false}
+        connectDisabled={false}
+      />
     )
     const amber = linkAttributes(markup, "Get Amber on F-Droid")
 
@@ -308,28 +318,33 @@ describe("remote signer UI", () => {
     expect(amber.includes('rel="noopener noreferrer"')).toBe(true)
   })
 
-  it("keeps manual connections available on an unknown mobile platform", () => {
+  it("offers collapsed remote sign-in on an unknown mobile platform", () => {
     const markup = renderToStaticMarkup(
       <SignerConnectPanel {...commonProps} platform="unknown-mobile" />
     )
-
-    expect(
-      markup.includes('aria-label="Remote signer connection method"')
-    ).toBe(true)
-    expect(markup.includes("Scan QR")).toBe(true)
-    expect(markup.includes("Copy link")).toBe(true)
-    expect(markup.includes("Paste bunker")).toBe(true)
-    expect(markup.includes("Continue with browser signer")).toBe(true)
-    expect(markup.includes("Connect with Clave")).toBe(false)
-    expect(markup.includes("Use Amber")).toBe(false)
+    expect(markup.includes("Remote Sign In")).toBe(true)
+    expect(markup.includes("Sign in with Extension")).toBe(true)
+    expect(markup.includes('role="tablist"')).toBe(false)
+    expect(markup.includes("Sign in with Clave")).toBe(false)
+    expect(markup.includes("Sign in with Amber")).toBe(false)
   })
 
   it("renders the supplied ephemeral connection as an accessible QR code", () => {
     const markup = renderToStaticMarkup(
-      <SignerConnectPanel
-        {...commonProps}
-        platform="desktop"
+      <ManualSignerConnection
+        id="remote"
+        activeTab="qr"
+        onTabChange={() => undefined}
         nostrConnectUri={nostrConnectUri}
+        connectionUrlRef={null}
+        startButton={null}
+        copyButton={null}
+        bunkerUri=""
+        onBunkerChange={() => undefined}
+        onSubmitBunker={async () => undefined}
+        connectDisabled={false}
+        connectPending={false}
+        errorId="remote-error"
       />
     )
 
@@ -445,7 +460,20 @@ describe("remote signer UI", () => {
 
   it("uses visible remote pairing labels with decorative icons", () => {
     const markup = renderToStaticMarkup(
-      <SignerConnectPanel {...commonProps} platform="desktop" />
+      <ManualSignerConnection
+        id="remote"
+        activeTab="qr"
+        onTabChange={() => undefined}
+        connectionUrlRef={null}
+        startButton={null}
+        copyButton={null}
+        bunkerUri=""
+        onBunkerChange={() => undefined}
+        onSubmitBunker={async () => undefined}
+        connectDisabled={false}
+        connectPending={false}
+        errorId="remote-error"
+      />
     )
 
     expect(markup.includes("Scan QR")).toBe(true)
@@ -484,7 +512,7 @@ describe("remote signer UI", () => {
     expect(markup.includes("Start new connection")).toBe(false)
     expect(markup.includes("Scan QR")).toBe(false)
     expect(markup.includes("Paste bunker")).toBe(false)
-    expect(markup.includes("Connect Extension (NIP-07)")).toBe(false)
+    expect(markup.includes("Sign in with Extension")).toBe(false)
   })
 
   it("retains the bunker draft when the pairing promise resolves or rejects", async () => {

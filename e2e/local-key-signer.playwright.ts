@@ -19,7 +19,7 @@ async function installed(page: Page) {
 }
 
 async function importAccount(page: Page) {
-  const input = page.getByLabel("Existing Nostr secret key", { exact: true })
+  const input = page.getByLabel("Secret Key", { exact: true })
   await expect(input).toBeVisible()
   await input.evaluate(async (element, fixturePath) => {
     const helper = await import(fixturePath)
@@ -47,13 +47,138 @@ for (const app of ["market", "merchant"] as const) {
     app === "market" ? "Open account menu" : "Open merchant account menu"
   const home = `http://127.0.0.1:${port}/${app === "market" ? "products" : ""}`
 
+  test(`${app} one-click clipboard paste signs in with a real disposable identity @${app}`, async ({
+    page,
+    context,
+    browserName,
+  }) => {
+    test.skip(
+      browserName !== "chromium",
+      "WebKit does not expose automated clipboard permission grants; fallback is covered separately."
+    )
+    await context.grantPermissions(["clipboard-read", "clipboard-write"])
+    await page.goto(home)
+    if (app === "market")
+      await page
+        .getByRole("button", { name: "Sign In", exact: true })
+        .first()
+        .click()
+    await page.evaluate(async (path) => {
+      const helper = await import(path)
+      await helper.writeTestIdentityToClipboard()
+    }, fixture)
+    await page
+      .getByRole("button", { name: "Paste secret key from clipboard" })
+      .click()
+    await expect(
+      page.getByRole("status").filter({ hasText: "Secret key pasted." })
+    ).toBeVisible()
+    expect(await hasOwner(page)).toBe(false)
+    await page
+      .locator("form")
+      .filter({ has: page.getByLabel("Secret Key", { exact: true }) })
+      .getByRole("button", { name: "Sign In", exact: true })
+      .click()
+    await expect.poll(() => hasOwner(page)).toBe(true)
+    await page.evaluate(() => navigator.clipboard.writeText(""))
+  })
+
+  test(`${app} denied clipboard access keeps direct paste usable @${app}`, async ({
+    page,
+  }) => {
+    await page.goto(home)
+    if (app === "market")
+      await page
+        .getByRole("button", { name: "Sign In", exact: true })
+        .first()
+        .click()
+    await page.evaluate(() =>
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {
+          readText: async () => {
+            throw new Error("Denied")
+          },
+        },
+      })
+    )
+    await page
+      .getByRole("button", { name: "Paste secret key from clipboard" })
+      .click()
+    await expect(
+      page
+        .getByRole("alert")
+        .filter({ hasText: "Paste directly into the field instead." })
+    ).toBeVisible()
+    expect(await hasOwner(page)).toBe(false)
+    await importAccount(page)
+    await expect.poll(() => hasOwner(page)).toBe(true)
+  })
+
+  for (const interruption of ["dismiss", "edit"] as const) {
+    test(`${app} ${interruption} discards an outstanding clipboard paste @${app}`, async ({
+      page,
+    }) => {
+      await page.goto(
+        `http://127.0.0.1:${port}/${app === "market" ? "products" : "wallet"}`
+      )
+      await page
+        .getByRole("button", { name: "Sign In", exact: true })
+        .first()
+        .click()
+      await page.evaluate(() => {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            readText: () =>
+              new Promise<string>((resolve) => {
+                Object.assign(window, {
+                  releaseClipboard: () => resolve("late clipboard test text"),
+                })
+              }),
+          },
+        })
+      })
+      await page
+        .getByRole("button", { name: "Paste secret key from clipboard" })
+        .click()
+      if (interruption === "dismiss") {
+        await page
+          .getByRole("dialog")
+          .getByRole("button", { name: "Close", exact: true })
+          .click()
+        await expect(page.getByRole("dialog")).toBeHidden()
+      } else {
+        await page
+          .getByLabel("Secret Key", { exact: true })
+          .fill("edited input")
+      }
+      await page.evaluate(async () => {
+        ;(
+          window as unknown as { releaseClipboard: () => void }
+        ).releaseClipboard()
+        // Drain the clipboard promise and the component continuation.
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      if (interruption === "dismiss")
+        await page
+          .getByRole("button", { name: "Sign In", exact: true })
+          .first()
+          .click()
+      await expect(page.getByLabel("Secret Key", { exact: true })).toHaveValue(
+        interruption === "edit" ? "edited input" : ""
+      )
+      expect(await hasOwner(page)).toBe(false)
+    })
+  }
+
   test(`${app} browser tab local account uses shared authority, envelopes, restore and durable removal @${app}`, async ({
     page,
   }) => {
     await page.goto(home)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
     await importAccount(page)
@@ -183,7 +308,7 @@ for (const app of ["market", "merchant"] as const) {
     await expect.poll(() => hasOwner(page)).toBe(false)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
     await importAccount(page)
@@ -202,7 +327,7 @@ for (const app of ["market", "merchant"] as const) {
         }
       )
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
       await page.evaluate(
@@ -317,11 +442,11 @@ for (const app of ["market", "merchant"] as const) {
       expect(result).toEqual({ empty: true, noSession: true, noOwner: true })
       await page.reload()
       await expect(
-        page.getByRole("button", { name: "Connect", exact: true }).first()
+        page.getByRole("button", { name: "Sign In", exact: true }).first()
       ).toBeVisible()
       expect(await hasOwner(page)).toBe(false)
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
       await importAccount(page)
@@ -335,20 +460,14 @@ for (const app of ["market", "merchant"] as const) {
     await page.goto(home)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
-    await page
-      .getByLabel("Existing Nostr secret key", { exact: true })
-      .fill("invalid input")
-    await page
-      .getByRole("button", { name: "Sign in with nsec", exact: true })
-      .click()
+    await page.getByLabel("Secret Key", { exact: true }).fill("invalid input")
+    await page.getByRole("button", { name: "Sign In", exact: true }).click()
     await expect(page.getByRole("alert").first()).toBeVisible()
     expect(await hasOwner(page)).toBe(false)
-    await expect(
-      page.getByLabel("Existing Nostr secret key", { exact: true })
-    ).toHaveValue("")
+    await expect(page.getByLabel("Secret Key", { exact: true })).toHaveValue("")
     await importAccount(page)
     await expect.poll(() => hasOwner(page)).toBe(true)
   })
@@ -360,7 +479,7 @@ for (const app of ["market", "merchant"] as const) {
     await page.goto(home)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
     await importAccount(page)
@@ -385,7 +504,7 @@ for (const app of ["market", "merchant"] as const) {
     expect(lost).toBe(true)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
     await expect(
@@ -405,7 +524,7 @@ for (const app of ["market", "merchant"] as const) {
       await page.goto(home)
       if (app === "market")
         await page
-          .getByRole("button", { name: "Connect", exact: true })
+          .getByRole("button", { name: "Sign In", exact: true })
           .first()
           .click()
       await importAccount(page)
@@ -439,7 +558,7 @@ for (const app of ["market", "merchant"] as const) {
       await expect.poll(() => hasOwner(page)).toBe(false)
       if (app === "market")
         await page
-          .getByRole("button", { name: "Connect", exact: true })
+          .getByRole("button", { name: "Sign In", exact: true })
           .first()
           .click()
       await expect(
@@ -453,7 +572,7 @@ for (const app of ["market", "merchant"] as const) {
       await expect.poll(() => hasOwner(page)).toBe(false)
       if (app === "market")
         await page
-          .getByRole("button", { name: "Connect", exact: true })
+          .getByRole("button", { name: "Sign In", exact: true })
           .first()
           .click()
       await expect(
@@ -487,7 +606,7 @@ for (const app of ["market", "merchant"] as const) {
     await page.goto(home)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
     await importAccount(page)
@@ -527,7 +646,7 @@ for (const app of ["market", "merchant"] as const) {
     await expect.poll(() => hasOwner(page)).toBe(false)
     if (app === "market")
       await page
-        .getByRole("button", { name: "Connect", exact: true })
+        .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
     await expect(

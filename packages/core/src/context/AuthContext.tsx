@@ -11,6 +11,7 @@ import type { ClientMetadata } from "nostr-tools/nip46"
 import { CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS, CLAVE_PUSH_RELAY } from "../config"
 import {
   prepareLocalKeyImport,
+  pasteLocalKeyFromClipboard,
   restoreLocalKeySigner,
   reconcileLocalKeyRecord,
   LOCAL_KEY_CAPABILITIES,
@@ -114,6 +115,7 @@ export interface AuthContextValue {
   cancelConnect: () => void
   capabilities: AuthSignerCapabilities
   localKeyEnabled: boolean
+  pasteLocalKey: (input: HTMLInputElement, signal: AbortSignal) => Promise<boolean>
   connect: (options?: AuthConnectOptions) => Promise<void>
   disconnect: () => Promise<void>
 }
@@ -2080,6 +2082,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         cancelConnect,
         capabilities,
         localKeyEnabled,
+        pasteLocalKey: pasteLocalKeyFromClipboard,
         connect,
         disconnect,
       }}
