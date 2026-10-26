@@ -140,7 +140,22 @@ export async function saveWalletRecovery(page: Page, makeMain = true) {
   await dialog.getByRole("button", { name: "Done", exact: true }).click()
   await expect(dialog).toHaveCount(0)
 }
-export async function prepareControlledWallet(page: Page) {
+export async function prepareControlledWallet(
+  page: Page,
+  onFetchError?: (diagnostic: WalletRouteFetchDetail) => void
+) {
+  let navigations = 0
+  let navigationRequests = 0
+  let routeStarts = 0
+  let routeCompletes = 0
+  if (onFetchError) {
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigations++
+    })
+    page.on("request", (request) => {
+      if (request.isNavigationRequest()) navigationRequests++
+    })
+  }
   // Replace network initialization at the existing single manager's factory.
   // Production modules and UI/hooks/storage/signers otherwise run unchanged.
   await page.addInitScript(
@@ -292,7 +307,36 @@ export async function prepareControlledWallet(page: Page) {
       (url.protocol === "http:" || url.protocol === "https:") &&
       url.pathname.endsWith("/packages/core/src/wallets/spark-sdk.ts"),
     async (route) => {
-      const response = await route.fetch()
+      routeStarts++
+      const startedNavigations = navigations
+      const startedNavigationRequests = navigationRequests
+      const navigationRequest = route.request().isNavigationRequest()
+      let response
+      try {
+        response = await route.fetch()
+        routeCompletes++
+      } catch (error) {
+        try {
+          onFetchError?.({
+            routeFetchBoundary: "spark_factory",
+            routeFetchCategory: walletRouteFetchCategory(error),
+            routeFetchPageClosed: page.isClosed(),
+            routeFetchNavigationRequest: navigationRequest,
+            routeFetchNavigations: navigations,
+            routeFetchStarts: routeStarts,
+            routeFetchCompletes: routeCompletes,
+            routeFetchStartNavigations: startedNavigations,
+            routeFetchStartNavRequests: startedNavigationRequests,
+            routeFetchFailureNavRequests: navigationRequests,
+            routeFetchNewNavRequested:
+              navigationRequests > startedNavigationRequests ||
+              navigations > startedNavigations,
+          })
+        } catch {
+          // Diagnostic recording must not replace the original fetch failure.
+        }
+        throw error
+      }
       const body = await response.text()
       const marker = "new FirstPartySparkSdkFactory("
       if (body.split(marker).length !== 2)
@@ -371,12 +415,26 @@ export async function openWalletSetup(
 
 /** Observe the real route controller without adding a production test API. */
 type WalletRouteFetchDiagnostic = {
+  routeFetchBoundary: "wallet_controller" | "spark_factory"
   routeFetchCategory: "closed" | "aborted" | "timeout" | "network" | "other"
   routeFetchPageClosed: boolean
   routeFetchNavigationRequest: boolean
   routeFetchNavigations: number
   routeFetchStarts: number
   routeFetchCompletes: number
+}
+
+function walletRouteFetchCategory(error: unknown) {
+  const message = error instanceof Error ? error.message : ""
+  return /closed|disposed|destroyed/i.test(message)
+    ? "closed"
+    : /abort|cancel/i.test(message)
+      ? "aborted"
+      : /timeout/i.test(message)
+        ? "timeout"
+        : /net::|network/i.test(message)
+          ? "network"
+          : "other"
 }
 
 export type WalletRouteFetchDetail = WalletRouteFetchDiagnostic & {
@@ -402,65 +460,61 @@ export async function observeWalletController(
   page.on("request", (request) => {
     if (request.isNavigationRequest()) navigationRequests++
   })
-  await page.route("**/src/routes/wallet.tsx*", async (route) => {
-    routeStarts++
-    const startedNavigations = navigations
-    const startedNavigationRequests = navigationRequests
-    const navigationRequest = route.request().isNavigationRequest()
-    let response
-    try {
-      response = await route.fetch()
-      routeCompletes++
-    } catch (error) {
-      const message = error instanceof Error ? error.message : ""
-      const category = /closed|disposed|destroyed/i.test(message)
-        ? "closed"
-        : /abort|cancel/i.test(message)
-          ? "aborted"
-          : /timeout/i.test(message)
-            ? "timeout"
-            : /net::|network/i.test(message)
-              ? "network"
-              : "other"
-      const diagnostic: WalletRouteFetchDiagnostic = {
-        routeFetchCategory: category,
-        routeFetchPageClosed: page.isClosed(),
-        routeFetchNavigationRequest: navigationRequest,
-        routeFetchNavigations: navigations,
-        routeFetchStarts: routeStarts,
-        routeFetchCompletes: routeCompletes,
+  await page.route(
+    (url) =>
+      url.pathname.endsWith("/src/routes/wallet.tsx") &&
+      url.searchParams.get("tsr-split") === "component",
+    async (route) => {
+      routeStarts++
+      const startedNavigations = navigations
+      const startedNavigationRequests = navigationRequests
+      const navigationRequest = route.request().isNavigationRequest()
+      let response
+      try {
+        response = await route.fetch()
+        routeCompletes++
+      } catch (error) {
+        const diagnostic: WalletRouteFetchDiagnostic = {
+          routeFetchBoundary: "wallet_controller",
+          routeFetchCategory: walletRouteFetchCategory(error),
+          routeFetchPageClosed: page.isClosed(),
+          routeFetchNavigationRequest: navigationRequest,
+          routeFetchNavigations: navigations,
+          routeFetchStarts: routeStarts,
+          routeFetchCompletes: routeCompletes,
+        }
+        onFetchErrorDetail?.({
+          ...diagnostic,
+          routeFetchStartNavigations: startedNavigations,
+          routeFetchStartNavRequests: startedNavigationRequests,
+          routeFetchFailureNavRequests: navigationRequests,
+          routeFetchNewNavRequested:
+            navigationRequests > startedNavigationRequests ||
+            navigations > startedNavigations,
+        })
+        onFetchError?.(diagnostic)
+        throw error
       }
-      onFetchErrorDetail?.({
-        ...diagnostic,
-        routeFetchStartNavigations: startedNavigations,
-        routeFetchStartNavRequests: startedNavigationRequests,
-        routeFetchFailureNavRequests: navigationRequests,
-        routeFetchNewNavRequested:
-          navigationRequests > startedNavigationRequests ||
-          navigations > startedNavigations,
+      const body = await response.text()
+      const marker = [
+        "const wallets = useWallets();",
+        "const wallets = automation.wallets;",
+      ].find((candidate) => body.includes(candidate))
+      if (!marker || body.split(marker).length !== 2)
+        throw new Error("Wallet controller observation seam changed")
+      if (observeAccount && !body.includes("const auth = useAuth();"))
+        throw new Error("Wallet account observation seam changed")
+      await route.fulfill({
+        response,
+        body: body.replace(
+          marker,
+          marker +
+            "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
+            (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
+        ),
       })
-      onFetchError?.(diagnostic)
-      throw error
     }
-    const body = await response.text()
-    const marker = [
-      "const wallets = useWallets();",
-      "const wallets = automation.wallets;",
-    ].find((candidate) => body.includes(candidate))
-    if (!marker || body.split(marker).length !== 2)
-      throw new Error("Wallet controller observation seam changed")
-    if (observeAccount && !body.includes("const auth = useAuth();"))
-      throw new Error("Wallet account observation seam changed")
-    await route.fulfill({
-      response,
-      body: body.replace(
-        marker,
-        marker +
-          "window.__controlledWalletController = wallets;window.__observeControlledWalletController?.(wallets);" +
-          (observeAccount ? "window.__controlledWalletAuth = auth;" : "")
-      ),
-    })
-  })
+  )
 }
 
 /** Retain deliberate-lock semantics after removal of the user-facing Lock control. */

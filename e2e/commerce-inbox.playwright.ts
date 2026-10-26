@@ -1085,7 +1085,14 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
       timeout: 15_000,
     })
     const evidence = await page.evaluate(
-      async ({ root, principal, recipient, relay }) => {
+      async ({
+        root,
+        principal,
+        recipient,
+        relay,
+        senderDeclaration,
+        recipientDeclaration,
+      }) => {
         const { getCommerceInbox } = await import(`${root}/commerce-inbox.ts`)
         const { getAccountSigner } = await import(`${root}/session-signer.ts`)
         const { createParticipantMessageRumor, publishPrivateMessage } =
@@ -1098,10 +1105,36 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
         const { resolveInboxDeclaration } = await import(
           `${root}/private-message-routing.ts`
         )
+        const { admitPublicEvent } = await import(
+          `${root}/verified-public-event.ts`
+        )
         const owner = getCommerceInbox(principal)
         await owner.initialize()
         const inboxDeclarationEvidenceRepository =
           createInMemoryInboxDeclarationEvidenceRepository()
+        // Discovery may return from the process cache without populating this
+        // isolated repository. Give the domain boundary its own verified fixture
+        // evidence so relay admission does not depend on app bootstrap timing.
+        const observedAt = Date.now()
+        for (const signedEvent of [senderDeclaration, recipientDeclaration]) {
+          const admitted = await admitPublicEvent(signedEvent)
+          if (admitted.status !== "verified") {
+            throw new Error("Signed inbox fixture failed admission")
+          }
+          await inboxDeclarationEvidenceRepository.merge({
+            pubkey: admitted.event.pubkey,
+            signedEvent: admitted.event,
+            sourceRelayUrls: [relay],
+            observedAt,
+            completeObservedAt: observedAt,
+            lookup: {
+              observedAt,
+              coverage: "complete",
+              hadEvent: true,
+              eventId: signedEvent.id,
+            },
+          })
+        }
         const resolveDeclaration = async (pubkey: string) => {
           const declaration = await resolveInboxDeclaration(pubkey, {
             relayUrls: [relay],

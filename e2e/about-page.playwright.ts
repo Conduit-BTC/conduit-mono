@@ -53,6 +53,45 @@ async function expectSameRow(first: Locator, second: Locator): Promise<void> {
 }
 
 for (const { app, appName, url } of appCases) {
+  test(`${app} recovers a failed lazy route by reloading its existing error page @${app}`, async ({
+    page,
+  }) => {
+    let blockedComponents = 0
+    const failAbout = async (route: import("@playwright/test").Route) => {
+      const request = new URL(route.request().url())
+      if (
+        request.pathname.endsWith("/routes/about.tsx") &&
+        request.searchParams.get("tsr-split")?.includes("component")
+      ) {
+        blockedComponents++
+        await route.abort("failed")
+      } else await route.continue()
+    }
+    await page.route("**/*tsr-split*", failAbout)
+    await page.goto(`${url}/about`)
+    await expect(
+      page.getByRole("heading", { name: "Something went wrong", exact: true })
+    ).toBeVisible()
+    expect(blockedComponents).toBeGreaterThan(0)
+    await page.unroute("**/*tsr-split*", failAbout)
+    await page.getByRole("button", { name: /reload/i }).click()
+    await expect(
+      page.getByRole("heading", {
+        name: `About ${appName}`,
+        level: 1,
+        exact: true,
+      })
+    ).toBeVisible()
+    await page.reload()
+    await expect(
+      page.getByRole("heading", {
+        name: `About ${appName}`,
+        level: 1,
+        exact: true,
+      })
+    ).toBeVisible()
+  })
+
   test(`${app} signed-out About renders visitor content in the public app shell @${app}`, async ({
     page,
   }) => {

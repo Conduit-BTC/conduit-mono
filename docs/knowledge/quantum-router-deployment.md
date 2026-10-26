@@ -1,10 +1,12 @@
 # Quantum Router deployment capability
 
-The code-owned mainnet Pages preview profile enables Quantum Router for
-maintainer-approved funded acceptance using the qualified ordinary-private
-Breez and Conduit custom-domain receiver descriptors. Production remains inactive
-with empty receiving and pricing trust; preview qualification does not authorize
-production.
+The code-owned mainnet Pages preview and production profiles enable Quantum
+Router using independently approved ordinary-private Breez and Conduit
+custom-domain receiver descriptors. Each profile selects its own pricing
+service and public verification key ring; preview trust does not authorize
+production. These are build inputs, not evidence of the currently deployed
+version or completed release acceptance. A production build/deployment applies
+the production settings; release approval remains a separate maintainer decision.
 New preparation uses the shared
 `isQuantumRouterEnabled()` admission capability and requires execution to be
 enabled as well. Existing bound-plan actions use the separate compiled
@@ -12,9 +14,9 @@ enabled as well. Existing bound-plan actions use the separate compiled
 not stop recovery of an already approved plan; explicitly disabling execution
 pauses funding disclosure/payment, wallet claims, payout preparation/sending
 for that plan. Neither capability replaces its exact evidence,
-approval, current-session or frozen timing requirements. Preview enables both
-settings; production and Signet staging keep both false. The capabilities do
-not themselves establish successful funded or device acceptance.
+approval, current-session or frozen timing requirements. Both mainnet profiles
+enable both settings; Signet staging keeps both false. The
+capabilities do not themselves establish successful funded or device acceptance.
 
 Authenticated existing-order settlement projections and pinned query-only
 observation remain available independently of both settings. They retain paid
@@ -46,6 +48,8 @@ for historical orders, but cannot authorize a new purchase or shipping quote.
 Historical event-pickup plans remain recoverable, but retired pickup snapshots
 are not admitted as new checkouts after the Event Market model cutover.
 Current Event Market pickup requires a separate signed admission extension.
+The shared admission and execution switches cover both ordinary checkout and
+supported Event Market checkout; they are not independent rollout controls.
 Unsupported or unresolved upfront evidence blocks payment rather than selecting
 a direct-payment fallback. Positively resolved coordinate-after-order shipping
 retains its negotiated order-first flow, and verified free orders remain free.
@@ -113,9 +117,10 @@ behavior to be independently qualified; a `pending` descriptor or LUD-21 adverti
 insufficient. Every required Merchant/supplier address is checked before
 funding. See [receiver qualification](checkout-spark-recipient-verification-compat.md).
 
-Preview contains the separately provisioned public pricing URL and verification
-key ring; production pricing remains inactive. Pricing trust alone does not
-activate routing or qualify a receiver. The standalone
+Preview and production contain distinct, separately provisioned public pricing
+URLs and verification key rings. Production uses its dedicated pricing service
+and signing authority, not the preview endpoint or key. Pricing trust alone does
+not activate routing or qualify a receiver. The standalone
 `apps/anon-zap-signer/wrangler.checkout-pricing.jsonc` uses a distinct rate-only
 runtime-secret key, approved HTTPS origin list and mandatory native limiter.
 Its source configuration does not create an active route or deployment. Provisioning
@@ -128,9 +133,13 @@ Use a distinct preview Worker and pricing secret during qualification. Provision
 the private key directly into that environment's runtime secret storage; it must
 not enter a client bundle, command-line argument, local file or diagnostic. Only
 the public verification key belongs in reviewed profile policy. Production
-activation requires its own explicit service, origin and trust configuration;
-neither a preview deployment nor a source merge performs that step. Retaining a
-historical public key is deliberate policy, not an automatic cross-profile copy.
+activation requires its own explicit service, origin and trust configuration.
+An app source merge does not provision a Worker or signing secret, but a resulting
+production app build/deployment does apply the checked-in activation settings.
+Retaining a historical public key is deliberate policy, not an automatic
+cross-profile copy. Production starts with its approved production key; the
+preview key remains in the independent preview ring. Later key rotation must
+retain the public keys needed by existing frozen quotes in that release boundary.
 
 The mandatory native limiter uses one shared service key without tracking users.
 Its counters are approximate and local to each Cloudflare location, not a strict
@@ -172,8 +181,12 @@ Local builds use the comma-separated
 `VITE_CONDUIT_SPARK_RETIRED_TREASURY_ADDRESSES` for explicit prior approvals.
 Recovery checks the saved address against that explicit set; it does not
 redirect existing plans. Native final collection requires fresh exact history,
-zero provider fee and claimed-transfer evidence. Uncertain transfers remain
-query-only and cannot be retried by removing a pause flag.
+zero provider fee, a finalized exact invoice and non-cancellable sender
+commitment to the frozen recipient and amount, with a recognized non-cancelled
+receiver claim state. An offline receiver need not claim before routing
+completes. Submission or a zero sender balance alone is not proof; receiver
+claim and safe retirement remain separate evidence gates. Uncertain transfers
+remain query-only and cannot be retried by removing a pause flag.
 
 The fixed funding total remains the buyer's authorized maximum.
 The Conduit fee estimate is best-effort, while recorded payment data retains
@@ -214,12 +227,16 @@ current-session guards and public dispatch policy checks.
 Automated capability and synthetic payment fixtures do not establish live
 provider settlement, signer/device behavior or recovery liveness. Those remain
 maintainer-owned funded validation before release sign-off. The approved preview
-pricing trust and ordinary-private Breez and Conduit receiver descriptors are configured,
-and both hosted preview apps expose enabled routing and execution. Exact-head
+pricing trust and ordinary-private Breez and Conduit receiver descriptors are configured.
+The production profile selects its separately approved trust for the same two
+receiving contracts. Both profiles compile enabled routing and execution. Exact-head
 readback, real recipient settlement, native collection and independent-browser
 recovery remain separate acceptance evidence. Guest checkout acceptance proves
 exact router funding and acknowledged encrypted Merchant handoff. Continued
 payout visibility is available while that guest session remains active; recovery
 after exit uses the submitted private contact or the applicable handout flow,
-without requiring an asynchronous receipt or a persistent guest identity. Production
-and Signet staging are not activated by these preview settings.
+without requiring an asynchronous receipt or a persistent guest identity.
+Production rollout requires explicit acceptance for the combined ordinary/Event
+scope, integrated recovery fixes and the remaining funded, concurrency and
+physical-device checks. Neither preview evidence nor the activation configuration
+waives those checks. Signet staging remains disabled.

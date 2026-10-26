@@ -24,14 +24,18 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
+import {
+  observePrepaidConfirmationTrigger,
+  recordSmokeDiagnostic,
+} from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
-import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import {
   classifyStockAcceptanceError,
   observeStockAcceptance,
 } from "./helpers/stock-acceptance-diagnostics"
+import { recordEventStockControlFailure } from "./helpers/smoke-diagnostics"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -1748,6 +1752,9 @@ async function createAssignedPickupOrder(
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  await expect(
+    page.getByRole("heading", { name: "Orders", exact: true })
+  ).toBeVisible()
   const orderMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -4994,6 +5001,9 @@ test("event shopping keeps pickup-only choices and merchant profile navigation @
         new URL(page.url()).pathname === `/${nip19.npubEncode(MERCHANT_PUBKEY)}`
     )
     .toBe(true)
+  await expect(
+    page.getByRole("heading", { name: "Choice merchant", exact: true })
+  ).toBeVisible()
   await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
   await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
   await expect(
@@ -5277,6 +5287,11 @@ for (const retention of ["screen", "file"] as const) {
         /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
       ).toBe(true)
       expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      // The Orders component must commit before starting a new document.
+      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
       receiptStage = "code-verification"
       await gotoAs(page, merchantUrl, "/orders", "merchant", {
         order: order.id,
@@ -5594,12 +5609,18 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         })
       ).toBeHidden()
       await page.getByText("Technical pickup details", { exact: true }).click()
-      const writerId = await page
-        .getByRole("textbox", {
-          name: "Pickup setup code",
-          exact: true,
-        })
-        .inputValue()
+      let writerId: string
+      try {
+        writerId = await page
+          .getByRole("textbox", {
+            name: "Pickup setup code",
+            exact: true,
+          })
+          .inputValue()
+      } catch (error) {
+        await recordEventStockControlFailure(page, info, "setup_code_read")
+        throw error
+      }
       await gotoAs(page, merchantUrl, eventPath, "merchant")
       const stock = page.getByRole("combobox", {
         name: "Stock for organizer pickup",
@@ -5755,12 +5776,17 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   await page
     .getByRole("button", { name: "Check for stock updates", exact: true })
     .click()
-  await page
-    .getByRole("button", {
-      name: "Reconcile accepted order stock",
-      exact: true,
-    })
-    .click()
+  try {
+    await page
+      .getByRole("button", {
+        name: "Reconcile accepted order stock",
+        exact: true,
+      })
+      .click()
+  } catch (error) {
+    await recordEventStockControlFailure(page, info, "stock_reconcile")
+    throw error
+  }
   await expect(
     page.getByText(/exact accepted order and handout are reconciled once/)
   ).toBeVisible()
@@ -7912,13 +7938,22 @@ for (const scenario of [
         : order.items[0]!.fulfillment!.calendar.end
       await page.clock.setFixedTime(expiry + 1)
     }
-    await page
-      .getByRole("button", { name: "Confirm payment", exact: true })
-      .click()
     const dialog = page.getByRole("alertdialog", {
       name: "Confirm payment received?",
     })
-    await expect(dialog).toBeVisible()
+    const confirmationObservation =
+      await observePrepaidConfirmationTrigger(page)
+    try {
+      await page
+        .getByRole("button", { name: "Confirm payment", exact: true })
+        .click()
+      await expect(dialog).toBeVisible()
+    } catch (error) {
+      await confirmationObservation.recordFailure(info)
+      throw error
+    } finally {
+      await confirmationObservation.dispose()
+    }
     const from = relay.publications.length
     const confirmationAck = relay.holdNextPublicationAck(
       (event) =>
@@ -8347,10 +8382,108 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   )
   const pendingRetry = retry.and(page.locator(":disabled"))
-  await retry.click()
-  await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
-  await pendingRetry.waitFor({ state: "hidden" })
-  await expect(publishedNotice).toBeVisible()
+  const retryObservation = await page.evaluateHandle((unavailableKey) => {
+    const seen = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      pendingObserved: false,
+      publishedObserved: false,
+      publicationErrorObserved: false,
+    }
+    const trigger = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) =>
+          button.textContent?.trim() === "Retry acceptance publication"
+      )
+    const observe = () => {
+      seen.pendingObserved ||= trigger()?.disabled === true
+      seen.publishedObserved ||= [
+        ...document.querySelectorAll('[role="status"]'),
+      ].some(
+        (status) =>
+          status.textContent?.trim() === "Accepted inventory updates published."
+      )
+      seen.publicationErrorObserved ||= [
+        ...document.querySelectorAll('[role="alert"]'),
+      ].some((alert) =>
+        alert.textContent?.includes(
+          "Acceptance remains saved. Publication could not finish;"
+        )
+      )
+    }
+    const isTrigger = (event: Event) =>
+      event.target instanceof Node && trigger()?.contains(event.target) === true
+    const down = (event: Event) => {
+      if (isTrigger(event)) seen.pointerDownOnTrigger = true
+    }
+    const up = (event: Event) => {
+      if (isTrigger(event)) seen.pointerUpOnTrigger = true
+    }
+    const click = (event: Event) => {
+      if (isTrigger(event)) seen.clickOnTrigger = true
+    }
+    document.addEventListener("pointerdown", down, true)
+    document.addEventListener("pointerup", up, true)
+    document.addEventListener("click", click, true)
+    const observer = new MutationObserver(observe)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    })
+    observe()
+    return {
+      read() {
+        observe()
+        return {
+          observationAvailable: true,
+          ...seen,
+          signerDenied: localStorage.getItem(unavailableKey) === "1",
+          signerAttempts:
+            (
+              window as typeof window & {
+                __conduitSyntheticSignAttempts?: number
+              }
+            ).__conduitSyntheticSignAttempts ?? 0,
+          retryPresent: !!trigger(),
+          retryEnabled: !!trigger() && !trigger()!.disabled,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", down, true)
+        document.removeEventListener("pointerup", up, true)
+        document.removeEventListener("click", click, true)
+      },
+    }
+  }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
+  try {
+    await expect(retry).toBeVisible()
+    await expect(retry).toBeEnabled()
+    // Exercise the native button without the pointer-delivery gap seen in WebKit.
+    await retry.press("Enter")
+    await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
+    await pendingRetry.waitFor({ state: "hidden" })
+    await expect(publishedNotice).toBeVisible()
+  } catch (error) {
+    let safe: Record<string, unknown> = { observationAvailable: false }
+    try {
+      safe = await retryObservation.evaluate((observation) =>
+        observation.read()
+      )
+    } catch {
+      /* Retain the original failure if the page is unavailable. */
+    }
+    recordSmokeDiagnostic(test.info(), "inventory-publication-retry", safe)
+    throw error
+  } finally {
+    await retryObservation
+      .evaluate((observation) => observation.dispose())
+      .catch(() => {})
+    await retryObservation.dispose()
+  }
   const state = await page.evaluate(
     async ({ root, coordinate, orderId }) => {
       const { db } = await import(`${root}/db/index.ts`)
