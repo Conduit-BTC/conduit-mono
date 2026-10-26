@@ -26,3 +26,5 @@ packages/ui/src/components/ProductPrivacyPolicy.tsx @dylangolow @ericfj2140
 packages/ui/src/components/ProductTermsOfService.tsx @dylangolow @ericfj2140
 packages/ui/src/legal/** @dylangolow @ericfj2140
 LICENSE @dylangolow @ericfj2140
+
+tests/workflow-supply-chain.test.ts @dylangolow @ericfj2140

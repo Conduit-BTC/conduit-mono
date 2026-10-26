@@ -107,5 +107,9 @@
   },
   "engines": {
     "node": ">=20.19.0"
-  }
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "workerd"
+  ]
 }

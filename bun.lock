@@ -235,6 +235,10 @@
       },
     },
   },
+  "trustedDependencies": [
+    "esbuild",
+    "workerd",
+  ],
   "overrides": {
     "browserslist": "4.28.7",
     "dompurify": "3.4.17",
