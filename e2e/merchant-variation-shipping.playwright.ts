@@ -15,9 +15,14 @@ import {
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
 
-for (const delayed of [false, true]) {
+for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
+  const delayed = scenario === "late"
+  const restoring = scenario === "restored" || scenario === "replacement"
+  const replacement = scenario === "replacement"
   test(
-    delayed
+    restoring
+      ? `fixed family restores ${replacement ? "explicit fulfillment edits" : "current signed parent terms"} after unavailable reads @merchant`
+      : delayed
       ? "fixed family refresh preserves an open draft and restores retained signed terms after restart @merchant"
       : "fixed family reopen loads exact signed shipping before changing and publishing terms @merchant",
     async ({ page }, testInfo) => {
@@ -73,7 +78,7 @@ for (const delayed of [false, true]) {
       )
       await seedTestRelayIdentity(secretKey)
       await publishTestRelayEvents([...products, ...(delayed ? [] : shipping)])
-      let unavailable = false
+      let unavailable = restoring
       let blockedReads = 0
       await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
         const server = socket.connectToServer()
@@ -104,6 +109,7 @@ for (const delayed of [false, true]) {
       })
       await installTestSigner(page, pubkey, { secretKey })
       await page.goto(`${merchantUrl}/products`)
+      await expect(page.getByText("1 of 1 listings", { exact: true })).toBeVisible()
       await page
         .getByRole("button", { name: "Edit", exact: true })
         .first()
@@ -125,6 +131,35 @@ for (const delayed of [false, true]) {
       if (delayed) {
         await expect(warning).toBeVisible()
         await publishTestRelayEvents(shipping)
+      }
+      if (restoring) {
+        await expect.poll(() => blockedReads).toBeGreaterThan(0)
+        await expect(warning).toBeVisible()
+        await expect(edit.locator("#product-shipping")).toHaveValue("")
+        if (replacement) {
+          await edit.locator("#product-shipping").fill("11")
+          await edit.locator("#product-variation-shipping-0").fill("13")
+        } else {
+          await edit.getByRole("button", { name: "Keep existing fulfillment", exact: true }).click()
+        }
+        await edit.locator("form").getByRole("button", { name: "Close", exact: true }).click()
+        await expect(edit).toBeHidden()
+        unavailable = false
+        await page.reload()
+        // Complete preparation first, so editing and prepared share references.
+        await expect(page.getByText("1 of 1 listings", { exact: true })).toBeVisible()
+        await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+        await expect(edit).toBeVisible()
+        if (!replacement) {
+          await edit.getByRole("button", { name: "Change fulfillment", exact: true }).click()
+        }
+        await expect(edit.getByLabel("Title", { exact: true })).toHaveValue("Edited fixed shoes")
+        await expect(edit.locator("#product-variation-price-0")).toHaveValue("29")
+        await expect(edit.locator("#product-shipping")).toHaveValue(replacement ? "11" : "5")
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(replacement ? "13" : "7")
+        await expect(warning).toBeHidden()
+        await edit.screenshot({ path: testInfo.outputPath(`fixed-shipping-${scenario}-${testInfo.project.name}.png`) })
+        return
       }
       await expect(warning).toBeHidden({ timeout: 30_000 })
       await expect(edit.locator("#product-shipping")).toHaveValue("5")
