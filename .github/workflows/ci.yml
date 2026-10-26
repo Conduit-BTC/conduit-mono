@@ -8,6 +8,7 @@ on:
       - test/smoke-route-scenarios
       - feat/wallet-name-sync
       - feat/wallet-ui-hierarchy
+      - fix/lightning-address-reconciliation
   push:
     branches: [main]
 
