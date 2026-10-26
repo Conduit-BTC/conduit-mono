@@ -27,6 +27,11 @@ import { interceptBlossom } from "./helpers/blossom"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
+import {
+  classifyStockAcceptanceError,
+  observeStockAcceptance,
+} from "./helpers/stock-acceptance-diagnostics"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
 test.use({ trace: "off", video: "off", screenshot: "off" })
@@ -5497,7 +5502,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
 
 test("reserved organizer stock carries a free purchase through pickup and once-only seller reconciliation @market @merchant @commerce @occurrence-orders", async ({
   page,
-}) => {
+}, info) => {
   test.setTimeout(240_000)
   const result = await createAssignedPickupOrder(page, {
     zeroCost: true,
@@ -5641,12 +5646,28 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
           exact: true,
         })
         .click()
-      await page
-        .getByRole("button", {
-          name: "Accept reserved stock",
-          exact: true,
+      const acceptOptions = {
+        name: "Accept reserved stock",
+        exact: true,
+      }
+      const accept = page.getByRole("button", acceptOptions)
+      recordSmokeDiagnostic(info, "event-stock-acceptance", { phase: "click" })
+      try {
+        await accept.click()
+      } catch (cause) {
+        recordSmokeDiagnostic(info, "event-stock-acceptance", {
+          phase: "failure",
+          ...classifyStockAcceptanceError(cause),
+          ...(await observeStockAcceptance(
+            page.getByRole("button", { ...acceptOptions, includeHidden: true })
+          )),
+          pageClosed: page.isClosed(),
         })
-        .click()
+        throw cause
+      }
+      recordSmokeDiagnostic(info, "event-stock-acceptance", {
+        phase: "complete",
+      })
       await expect(
         page.getByText(/Reserved stock is ready for pickup here/)
       ).toBeVisible()
