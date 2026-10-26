@@ -32,6 +32,7 @@ import {
   updateProductVariationOverride,
 } from "../apps/merchant/src/lib/productVariations"
 import {
+  getMerchantProductSupplierAllocationFormState,
   reconcileProductFormFulfillmentResolution,
   type MerchantProductFormValues,
 } from "../apps/merchant/src/lib/productForm"
@@ -115,6 +116,9 @@ function editorForm(
 ): MerchantProductFormValues {
   const product = read.family.root.product
   return {
+    ...getMerchantProductSupplierAllocationFormState(
+      product.supplierAllocation
+    ),
     title: product.title,
     summary: "",
     price: "20",
@@ -555,6 +559,21 @@ describe("Merchant storefront shipping preparation", () => {
     coverage = "complete"
     const refreshed = await readFamily()
     const prepared = editorForm(refreshed)
+    const reopened = reconcileProductFormFulfillmentResolution(
+      { ...loaded.draft!, fulfillment: "preserve" },
+      prepared,
+      prepared
+    )
+    expect(reopened.title).toBe("Unsaved shoes")
+    expect(reopened.summary).toBe("Unsaved description")
+    expect(reopened.shippingCost).toBe("5")
+    expect(
+      reopened.customShippingConfig.countries.map(({ code }) => code)
+    ).toEqual(["US"])
+    expect(reopened.variations.rows[0]).toMatchObject({
+      price: "29",
+      shippingCost: "7",
+    })
     const restored = reconcileProductFormFulfillmentResolution(
       loaded.draft!,
       previous,
@@ -571,7 +590,13 @@ describe("Merchant storefront shipping preparation", () => {
     expect(getProductVariationFormError(restored.variations, "USD")).toBeNull()
     const replacement = {
       ...draft,
+      fulfillment: "ship" as const,
       shippingCost: "11",
+      customShippingConfig: {
+        countries: [
+          { code: "CA", name: "Canada", restrictTo: [], exclude: [] },
+        ],
+      },
       variations: updateProductVariationOverride(
         draft.variations,
         draft.variations.rows[0]!.identity,
@@ -579,6 +604,23 @@ describe("Merchant storefront shipping preparation", () => {
         "13"
       ),
     }
+    expect(saveProductDraft(target, replacement, storage)).toBe(true)
+    const reopenedReplacement = reconcileProductFormFulfillmentResolution(
+      loadProductDraft(target, storage).draft!,
+      prepared,
+      prepared
+    )
+    expect(reopenedReplacement.shippingCost).toBe("11")
+    expect(reopenedReplacement.customShippingConfig).toEqual(
+      replacement.customShippingConfig
+    )
+    expect(reopenedReplacement.title).toBe("Unsaved shoes")
+    expect(reopenedReplacement.summary).toBe("Unsaved description")
+    expect(reopenedReplacement.variations.rows[0]).toMatchObject({
+      price: "29",
+      shippingCost: "13",
+      shippingResolution: "replacement",
+    })
     const kept = reconcileProductFormFulfillmentResolution(
       replacement,
       previous,

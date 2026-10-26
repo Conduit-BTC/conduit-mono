@@ -2943,14 +2943,16 @@ function ProductsPage() {
       loaded,
       editingItem.product.supplierAllocation
     )
+    const preparedForm = productToForm(item, hasPresetShippingZone)
+    // Reopening may already have the prepared product reference, so the refresh
+    // effect cannot repair a saved draft. Refresh preserved terms here; without
+    // an old baseline, explicitly changed fulfillment keeps its authored values.
     const loadedDraft = restoredDraft
-      ? {
-          ...restoredDraft,
-          variations: reconcileProductVariationDraftResolution(
-            item.variationForm,
-            restoredDraft.variations
-          ),
-        }
+      ? reconcileProductFormFulfillmentResolution(
+          restoredDraft,
+          preparedForm,
+          preparedForm
+        )
       : null
     const restoredForm = loadedDraft
       ? reconcileProductFormShippingPreset(loadedDraft, hasPresetShippingZone)

@@ -24,8 +24,8 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
     restoring
       ? `fixed family restores ${replacement ? "explicit fulfillment edits" : "current signed parent terms"} after unavailable reads @merchant`
       : delayed
-      ? "fixed family refresh preserves an open draft and restores retained signed terms after restart @merchant"
-      : "fixed family reopen loads exact signed shipping before changing and publishing terms @merchant",
+        ? "fixed family refresh preserves an open draft and restores retained signed terms after restart @merchant"
+        : "fixed family reopen loads exact signed shipping before changing and publishing terms @merchant",
     async ({ page }, testInfo) => {
       test.setTimeout(120_000)
       page.setDefaultTimeout(25_000)
@@ -109,8 +109,12 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
         server.onMessage((message) => socket.send(message))
       })
       await installTestSigner(page, pubkey, { secretKey })
-      await page.goto(`${merchantUrl}/products`)
-      await expect(page.getByText("1 of 1 listings", { exact: true })).toBeVisible()
+      await page.goto(`${merchantUrl}/products`, {
+        waitUntil: "domcontentloaded",
+      })
+      await expect(
+        page.getByText("1 of 1 listings", { exact: true })
+      ).toBeVisible()
       await page
         .getByRole("button", { name: "Edit", exact: true })
         .first()
@@ -140,26 +144,66 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
         if (replacement) {
           await edit.locator("#product-shipping").fill("11")
           await edit.locator("#product-variation-shipping-0").fill("13")
+          await edit
+            .getByRole("combobox", { name: "Search countries to add..." })
+            .fill("Canada")
+          await page.getByRole("option", { name: /CA Canada/ }).click()
         } else {
-          await edit.getByRole("button", { name: "Keep existing fulfillment", exact: true }).click()
+          await edit
+            .getByRole("button", {
+              name: "Keep existing fulfillment",
+              exact: true,
+            })
+            .click()
         }
-        await edit.locator("form").getByRole("button", { name: "Close", exact: true }).click()
+        await edit
+          .locator("form")
+          .getByRole("button", { name: "Close", exact: true })
+          .click()
         await expect(edit).toBeHidden()
         unavailable = false
-        await page.reload()
+        await page.reload({ waitUntil: "domcontentloaded" })
         // Complete preparation first, so editing and prepared share references.
-        await expect(page.getByText("1 of 1 listings", { exact: true })).toBeVisible()
-        await page.getByRole("button", { name: "Edit", exact: true }).first().click()
+        await expect(
+          page.getByText("1 of 1 listings", { exact: true })
+        ).toBeVisible()
+        await page
+          .getByRole("button", { name: "Edit", exact: true })
+          .first()
+          .click()
         await expect(edit).toBeVisible()
         if (!replacement) {
-          await edit.getByRole("button", { name: "Change fulfillment", exact: true }).click()
+          await edit
+            .getByRole("button", { name: "Change fulfillment", exact: true })
+            .click()
         }
-        await expect(edit.getByLabel("Title", { exact: true })).toHaveValue("Edited fixed shoes")
-        await expect(edit.locator("#product-variation-price-0")).toHaveValue("29")
-        await expect(edit.locator("#product-shipping")).toHaveValue(replacement ? "11" : "5")
-        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(replacement ? "13" : "7")
+        await expect(edit.getByLabel("Title", { exact: true })).toHaveValue(
+          "Edited fixed shoes"
+        )
+        await expect(edit.locator("#product-variation-price-0")).toHaveValue(
+          "29"
+        )
+        await expect(edit.locator("#product-shipping")).toHaveValue(
+          replacement ? "11" : "5"
+        )
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          replacement ? "13" : "7"
+        )
+        await expect(
+          edit.getByRole("button", {
+            name: replacement ? "Remove Canada" : "Remove United States",
+            exact: true,
+          })
+        ).toBeVisible()
+        await expect(
+          edit.getByRole("button", { name: "Save changes", exact: true })
+        ).toBeEnabled()
         await expect(warning).toBeHidden()
-        await edit.screenshot({ path: testInfo.outputPath(`fixed-shipping-${scenario}-${testInfo.project.name}.png`) })
+        await edit.screenshot({
+          path: testInfo.outputPath(
+            `fixed-shipping-${scenario}-${testInfo.project.name}.png`
+          ),
+        })
         return
       }
       await expect(warning).toBeHidden({ timeout: 30_000 })
