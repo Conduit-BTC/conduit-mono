@@ -404,6 +404,12 @@ is not evidence that an event or dialog never occurred. These observations do
 not establish payment or signer state. The original click, assertions, deadlines
 and retry policy remain unchanged.
 
+Wallet-balance fixture fetch failures distinguish the fixed Spark-factory and
+wallet-controller module boundaries using bounded error categories, request
+counts and navigation booleans. The Spark-factory observer rethrows its original
+fetch failure even if diagnostic recording fails. These observations retain no module contents,
+URLs or error text and do not establish a production-wallet root cause.
+
 ## Code Conventions
 
 ### General

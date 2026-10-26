@@ -633,6 +633,7 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
     "wallet-balances": {
       file: "e2e/wallet-balances.playwright.ts",
       fields: {
+        routeFetchBoundary: ["wallet_controller", "spark_factory"],
         routeFetchCategory: [
           "closed",
           "aborted",

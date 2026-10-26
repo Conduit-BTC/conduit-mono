@@ -2370,6 +2370,7 @@ describe("wallet balance route diagnostics", () => {
       })
       const privateValue = "private-" + crypto.randomUUID()
       const values = {
+        routeFetchBoundary: "spark_factory",
         routeFetchCategory: "closed",
         routeFetchStartNavRequests: 2,
         routeFetchFailureNavRequests: 2,
@@ -2389,6 +2390,7 @@ describe("wallet balance route diagnostics", () => {
         {
           file: "wallet-balances",
           values: {
+            routeFetchBoundary: privateValue,
             routeFetchCategory: privateValue,
             routeFetchStartNavRequests: privateValue,
             routeFetchFailureNavRequests: 32_769,
@@ -2460,6 +2462,7 @@ describe("wallet balance route diagnostics", () => {
   it("retains only bounded wallet route observations for its owning balance file", () => {
     const privateValue = "private-" + crypto.randomUUID()
     const values = {
+      routeFetchBoundary: "spark_factory",
       routeFetchCategory: "closed",
       routeFetchPageClosed: true,
       routeFetchNavigationRequest: false,
@@ -2493,6 +2496,18 @@ describe("wallet balance route diagnostics", () => {
         retained
       )
     ).toEqual([expected])
+    expect(
+      safeSmokeDiagnostics("e2e/wallet-balances.playwright.ts", [
+        {
+          type: annotation.type,
+          description: JSON.stringify({
+            routeFetchBoundary: "wallet_controller",
+          }),
+        },
+      ])
+    ).toEqual([
+      { kind: "wallet-balances", routeFetchBoundary: "wallet_controller" },
+    ])
     for (const file of [
       "e2e/wallet-cross-app.playwright.ts",
       "e2e/wallet-sign-in.playwright.ts",
@@ -2502,6 +2517,8 @@ describe("wallet balance route diagnostics", () => {
       expect(safeRetainedSmokeDiagnostics(file, retained)).toEqual([])
     }
     for (const [field, value] of [
+      ["routeFetchBoundary", privateValue],
+      ["routeFetchBoundary", true],
       ["routeFetchCategory", privateValue],
       ["routeFetchPageClosed", privateValue],
       ["routeFetchStarts", privateValue],
