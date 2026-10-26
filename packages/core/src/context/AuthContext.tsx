@@ -56,6 +56,7 @@ import {
   forgetAuthSession,
   claimAuthRevision,
   readAuthSession,
+  inspectAuthSessionStorage,
   readPendingLocalKeyRemoval,
   readAuthRevision,
   revokeAuthSessionAuthority,
@@ -1111,6 +1112,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         }
       } else if (requestedMethod === "local") {
         if (!localKeyEnabled) throw new Error("Local key sign-in is not enabled in this build.")
+        const snapshot = inspectAuthSessionStorage()
+        const selected = snapshot.status === "session" ? snapshot.session : null
+        if (!authSessionsEqual(selected, storedSession))
+          throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
         await reconcileLocalKeyRecord(storedSession?.type === "local" ? storedSession : null)
         if (!attemptIsCurrent()) throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
         if (mode !== "restore" && options.localKeyImport)
@@ -1313,15 +1318,15 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       }
       uncommittedLocal?.invalidate()
       if (mode !== "restore" && localCandidateSession) {
-        if (!rollbackAuthSession(localCandidateSession, storedSession)) {
-          retirementBlockedSession.current = localCandidateSession
-          const message = "The previous signer session could not be restored. Keep this window open and retry when site storage is available."
-          setStatus("error")
-          setError(message)
-          throw new Error(message)
-        }
+        // Failed metadata rollback must never skip credential retirement.
+        // A verified restored predecessor is preserved by retirement; otherwise
+        // the selected candidate and its superseded lineage are removed.
+        rollbackAuthSession(localCandidateSession, storedSession)
         try {
-          await retireAuthSession(localCandidateSession, { withLock: async task => task() })
+          await retireAuthSession(localCandidateSession, {
+            withLock: async task => task(),
+            retireExpectedCredentialsOnMetadataFailure: true,
+          })
         } catch (cause) {
           retirementBlockedSession.current = localCandidateSession
           const message = cause instanceof AuthSessionError ? cause.message : "The imported local signer could not be removed after connection failed. Retry removal when site storage is available."

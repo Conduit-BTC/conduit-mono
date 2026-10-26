@@ -9,7 +9,10 @@ import {
   reconcileLocalKeyRecord,
   LOCAL_KEY_CAPABILITIES,
 } from "../packages/core/src/protocol/local-key"
-import { LocalKeyStorage } from "../packages/core/src/protocol/local-key/storage"
+import {
+  LocalKeyStorage,
+  clearRecord,
+} from "../packages/core/src/protocol/local-key/storage"
 import {
   AUTH_STORAGE_KEY,
   claimAuthRevision,
@@ -247,7 +250,11 @@ test("concurrent replacement cannot evict a staged key or delete a later committ
   await expect(old.getPublicKey()).rejects.toThrow("authority_changed")
   const second = await prepare(factory).persist(() => true)
   await second.commit(() => true)
-  await removeLocalKeyRecord(first.reference, { factory })
+  await removeLocalKeyRecord(first.reference, {
+    factory,
+    predecessor: "retire",
+    replacement: second.reference,
+  })
   expect((await second.getPublicKey()) === second.reference.userPubkey).toBe(
     true
   )
@@ -317,3 +324,101 @@ test("complete persistence and deletion failure explicitly reports unresolved re
     removal.mockRestore()
   }
 })
+
+for (const selection of [
+  "candidate",
+  "predecessor",
+  "unreadable",
+  "external",
+] as const) {
+  test(`retirement coordinates staged lineage with ${selection} metadata`, async () => {
+    const factory = new IDBFactory()
+    const old = await prepare(factory).persist(() => true)
+    await old.commit(() => true)
+    const candidate = await prepare(factory).persist(() => true)
+    const session: LocalKeyAuthSession = {
+      version: 1,
+      type: "local",
+      ...candidate.reference,
+    }
+    const previous: LocalKeyAuthSession = {
+      version: 1,
+      type: "local",
+      ...old.reference,
+    }
+    const values = new Map<string, string>()
+    let unreadable = false
+    const storage: AuthStorage = {
+      getItem(key) {
+        if (unreadable && key === AUTH_STORAGE_KEY)
+          throw new Error("synthetic read failure")
+        return values.get(key) ?? null
+      },
+      setItem: (key, value) => {
+        values.set(key, value)
+      },
+      removeItem: (key) => {
+        values.delete(key)
+      },
+    }
+    writeAuthSession(
+      selection === "external"
+        ? { version: 1, type: "nip07", userPubkey: previous.userPubkey }
+        : selection === "predecessor"
+          ? previous
+          : session,
+      storage
+    )
+    unreadable = selection === "unreadable"
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: factory,
+    })
+    try {
+      const retire = () =>
+        retireAuthSession(session, {
+          storage,
+          withLock: async (task) => task(),
+          retireExpectedCredentialsOnMetadataFailure: true,
+        })
+      if (unreadable) {
+        await expect(retire()).rejects.toThrow("removal is incomplete")
+        unreadable = false
+        expect(
+          readPendingLocalKeyRemoval(storage)?.localKeyRevision ===
+            session.localKeyRevision
+        ).toBe(true)
+        // The journal prevents restoration; both records remain available for
+        // exact lineage deletion once selection can be verified again.
+        const retained = await new LocalKeyStorage({ factory }).read(
+          session.localKeyRevision
+        )
+        expect(retained?.revision === session.localKeyRevision).toBe(true)
+        clearRecord(retained)
+      }
+      await retire()
+      expect(readPendingLocalKeyRemoval(storage)).toBeNull()
+      await expect(
+        restoreLocalKeySigner(session, { factory })
+      ).rejects.toThrow()
+      if (selection === "predecessor") {
+        const restored = await restoreLocalKeySigner(previous, { factory })
+        expect((await restored.getPublicKey()) === previous.userPubkey).toBe(
+          true
+        )
+        restored.invalidate()
+      } else {
+        if (selection === "external")
+          expect(readAuthSession(storage)?.type).toBe("nip07")
+        else expect(readAuthSession(storage)).toBeNull()
+        expect(await new LocalKeyStorage({ factory }).read()).toBeNull()
+      }
+    } finally {
+      old.invalidate()
+      candidate.invalidate()
+      if (descriptor) Object.defineProperty(globalThis, "indexedDB", descriptor)
+      else Reflect.deleteProperty(globalThis, "indexedDB")
+    }
+  })
+}

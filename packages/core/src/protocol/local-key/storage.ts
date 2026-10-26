@@ -255,11 +255,24 @@ export class LocalKeyStorage {
   }
 
   /** Atomic comparison/deletion: stale cleanup can never remove a later import. */
-  remove(revision: string): Promise<void> {
+  remove(
+    revision: string,
+    predecessor: "preserve" | "retire" | "unverified" = "preserve",
+    replacementRevision?: string
+  ): Promise<void> {
     return this.#transaction("readwrite", (value, store, candidate) => {
       try {
-        if (validRecord(candidate) && candidate.revision === revision)
-          store.delete(CANDIDATE)
+        const selectedCandidate =
+          validRecord(candidate) && candidate.revision === revision
+        const ownsPredecessor =
+          selectedCandidate &&
+          validRecord(value) &&
+          candidate.previousRevision === value.revision
+        // Keep the lineage intact for a durable retry when public selection
+        // cannot be read. The caller journals revocation before reaching here.
+        if (ownsPredecessor && predecessor === "unverified")
+          throw new NostrSignerError("unavailable")
+        if (selectedCandidate) store.delete(CANDIDATE)
         if (value === undefined) return
         // Preserve every identifiable later revision, including an unknown
         // schema or damaged body. A record without a revision cannot authorize
@@ -271,7 +284,10 @@ export class LocalKeyStorage {
         if (
           typeof storedRevision !== "string" ||
           !/^[a-zA-Z0-9-]{1,80}$/.test(storedRevision) ||
-          storedRevision === revision
+          storedRevision === revision ||
+          (ownsPredecessor &&
+            predecessor === "retire" &&
+            storedRevision !== replacementRevision)
         )
           store.delete(RECORD)
       } finally {

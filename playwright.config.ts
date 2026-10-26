@@ -69,6 +69,7 @@ const mobileTestFiles = [
 ]
 const responsiveCoverageFiles = [
   "**/local-key-signer.playwright.ts",
+  "**/local-key-clipboard.playwright.ts",
   "**/checkout-recovery-storage.playwright.ts",
   "**/event-market.playwright.ts",
   "**/event-market-discovery.playwright.ts",
@@ -186,6 +187,7 @@ export default defineConfig({
     },
     {
       name: "mobile-webkit",
+      testIgnore: ["**/local-key-clipboard.playwright.ts"],
       grepInvert: occurrenceOrdersMobileExclusion,
       testMatch: [...mobileTestFiles, ...responsiveCoverageFiles].filter(
         (pattern) =>

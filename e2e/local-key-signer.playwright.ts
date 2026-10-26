@@ -47,42 +47,6 @@ for (const app of ["market", "merchant"] as const) {
     app === "market" ? "Open account menu" : "Open merchant account menu"
   const home = `http://127.0.0.1:${port}/${app === "market" ? "products" : ""}`
 
-  test(`${app} one-click clipboard paste signs in with a real disposable identity @${app}`, async ({
-    page,
-    context,
-    browserName,
-  }) => {
-    test.skip(
-      browserName !== "chromium",
-      "WebKit does not expose automated clipboard permission grants; fallback is covered separately."
-    )
-    await context.grantPermissions(["clipboard-read", "clipboard-write"])
-    await page.goto(home)
-    if (app === "market")
-      await page
-        .getByRole("button", { name: "Sign In", exact: true })
-        .first()
-        .click()
-    await page.evaluate(async (path) => {
-      const helper = await import(path)
-      await helper.writeTestIdentityToClipboard()
-    }, fixture)
-    await page
-      .getByRole("button", { name: "Paste secret key from clipboard" })
-      .click()
-    await expect(
-      page.getByRole("status").filter({ hasText: "Secret key pasted." })
-    ).toBeVisible()
-    expect(await hasOwner(page)).toBe(false)
-    await page
-      .locator("form")
-      .filter({ has: page.getByLabel("Secret Key", { exact: true }) })
-      .getByRole("button", { name: "Sign In", exact: true })
-      .click()
-    await expect.poll(() => hasOwner(page)).toBe(true)
-    await page.evaluate(() => navigator.clipboard.writeText(""))
-  })
-
   test(`${app} denied clipboard access keeps direct paste usable @${app}`, async ({
     page,
   }) => {
@@ -677,6 +641,237 @@ for (const app of ["market", "merchant"] as const) {
     await page.reload()
     await expect.poll(() => hasOwner(page)).toBe(false)
   })
+
+  for (const kind of ["rollback", "unreadable", "orphan"] as const) {
+    test(`${app} coordinated local lifecycle ${kind} survives storage faults @${app}`, async ({
+      page,
+    }) => {
+      await page.goto(home)
+      const result = await page.evaluate(
+        async ({ kind, protocolRoot, fixturePath }) => {
+          const root = protocolRoot
+          const keys = await import(root + "/local-key/index.ts")
+          const { LocalKeyStorage } = await import(
+            root + "/local-key/storage.ts"
+          )
+          const metadata = await import(root + "/auth-session.ts")
+          const helper = await import(fixturePath)
+          const { mountLocalAuthFixture } = await import(
+            fixturePath.replace(
+              "local-key-test-identity.ts",
+              "local-key-auth-fixture.tsx"
+            )
+          )
+          const mounted = await mountLocalAuthFixture()
+          const input = document.createElement("input")
+          input.type = "password"
+          async function fresh(commit: boolean) {
+            helper.populateImportInput(input)
+            const local = await keys
+              .prepareLocalKeyImport(input)
+              .persist(() => true)
+            if (commit) await local.commit(() => true)
+            return local
+          }
+          function saved(local: {
+            reference: { userPubkey: string; localKeyRevision: string }
+          }) {
+            return {
+              version: 1,
+              type: "local",
+              ...local.reference,
+              authClaim: metadata.claimAuthRevision().revision,
+            }
+          }
+          async function count() {
+            return new Promise<number>((resolve, reject) => {
+              const r = indexedDB.open("conduit-local-key", 1)
+              r.onerror = () => reject(Error("DIAG_DB"))
+              r.onsuccess = () => {
+                const db = r.result
+                const tx = db.transaction("record", "readonly")
+                const q = tx.objectStore("record").count()
+                tx.oncomplete = () => {
+                  db.close()
+                  resolve(q.result)
+                }
+              }
+            })
+          }
+          if (kind === "rollback") {
+            const originalCommit = LocalKeyStorage.prototype.commit
+            const remove = Storage.prototype.removeItem
+            let entered = false
+            LocalKeyStorage.prototype.commit = async function () {
+              entered = true
+              Storage.prototype.removeItem = function (k) {
+                if (k === metadata.AUTH_STORAGE_KEY)
+                  throw Error("synthetic metadata rollback failure")
+                return remove.call(this, k)
+              }
+              mounted.auth.cancelConnect()
+              throw Error("synthetic cancelled promotion")
+            }
+            helper.populateImportInput(input)
+            try {
+              await mounted.auth.connect({
+                method: "local",
+                localKeyInput: input,
+              })
+            } catch {
+              // The injected storage fault must reject this connection.
+            } finally {
+              LocalKeyStorage.prototype.commit = originalCommit
+              Storage.prototype.removeItem = remove
+              mounted.dispose()
+            }
+            const retained = metadata.readAuthSession()
+            let restorable = false
+            if (retained?.type === "local") {
+              try {
+                const signer = await keys.restoreLocalKeySigner(retained)
+                restorable = !!(await signer.getPublicKey())
+                signer.invalidate()
+              } catch {}
+            }
+            return {
+              entered,
+              metadataRetained: retained?.type === "local",
+              records: await count(),
+              cancelledCandidateRestorable: restorable,
+              pendingRemoval: metadata.readPendingLocalKeyRemoval() !== null,
+            }
+          }
+          if (kind === "unreadable") {
+            const a = await fresh(true)
+            const b = await fresh(false)
+            const session = saved(b)
+            metadata.writeAuthSession(session)
+            a.invalidate()
+            b.invalidate()
+            const before = await count()
+            const get = Storage.prototype.getItem
+            const set = Storage.prototype.setItem
+            Storage.prototype.setItem = function (k, v) {
+              if (k === metadata.AUTH_REVISION_STORAGE_KEY)
+                throw Error("synthetic unavailable authority claim")
+              return set.call(this, k, v)
+            }
+            Storage.prototype.getItem = function (k) {
+              if (k === metadata.AUTH_STORAGE_KEY)
+                throw Error("synthetic unavailable metadata")
+              return get.call(this, k)
+            }
+            helper.populateImportInput(input)
+            try {
+              await mounted.auth.connect({
+                method: "local",
+                localKeyInput: input,
+              })
+            } catch {
+              // The injected storage fault must reject this connection.
+            } finally {
+              Storage.prototype.getItem = get
+              Storage.prototype.setItem = set
+              mounted.dispose()
+            }
+            let restorable = false
+            try {
+              const signer = await keys.restoreLocalKeySigner(session)
+              restorable = !!(await signer.getPublicKey())
+              signer.invalidate()
+            } catch {}
+            return {
+              before,
+              metadataStillSelectsCandidate:
+                metadata.readAuthSession()?.localKeyRevision ===
+                session.localKeyRevision,
+              candidateRestorableAfterReadRecovery: restorable,
+              after: await count(),
+            }
+          }
+          if (kind === "orphan") {
+            const a = await fresh(true)
+            const b = await fresh(false)
+            const session = saved(b)
+            metadata.writeAuthSession(session)
+            a.invalidate()
+            b.invalidate()
+            const commit = LocalKeyStorage.prototype.commit
+            LocalKeyStorage.prototype.commit = async () => {
+              throw Error("synthetic restore promotion failure")
+            }
+            let restoreFailed = false
+            try {
+              await mounted.auth.connect({ method: "local", mode: "restore" })
+            } catch {
+              restoreFailed = true
+            } finally {
+              LocalKeyStorage.prototype.commit = commit
+            }
+            await mounted.auth.disconnect()
+            mounted.dispose()
+            return {
+              restoreFailed,
+              metadataCleared: metadata.readAuthSession() === null,
+              removalJournalCleared:
+                metadata.readPendingLocalKeyRemoval() === null,
+              remainingRecords: await count(),
+            }
+          }
+        },
+        { kind, protocolRoot: protocol, fixturePath: fixture }
+      )
+      if (kind === "rollback") {
+        expect(result).toEqual({
+          entered: true,
+          metadataRetained: false,
+          records: 0,
+          cancelledCandidateRestorable: false,
+          pendingRemoval: true,
+        })
+        await page.reload()
+        await expect.poll(() => hasOwner(page)).toBe(false)
+        if (app === "market")
+          await page
+            .getByRole("button", { name: "Sign In", exact: true })
+            .first()
+            .click()
+        await page
+          .getByRole("button", {
+            name: "Remove saved local signer",
+            exact: true,
+          })
+          .click()
+        await expect
+          .poll(() =>
+            page.evaluate(async (root) => {
+              const metadata = await import(`${root}/auth-session.ts`)
+              return metadata.readPendingLocalKeyRemoval() === null
+            }, protocol)
+          )
+          .toBe(true)
+      } else if (kind === "unreadable") {
+        expect(result).toEqual({
+          before: 2,
+          metadataStillSelectsCandidate: true,
+          candidateRestorableAfterReadRecovery: true,
+          after: 2,
+        })
+        await page.reload()
+        await expect.poll(() => hasOwner(page)).toBe(true)
+      } else {
+        expect(result).toEqual({
+          restoreFailed: true,
+          metadataCleared: true,
+          removalJournalCleared: true,
+          remainingRecords: 0,
+        })
+        await page.reload()
+        await expect.poll(() => hasOwner(page)).toBe(false)
+      }
+    })
+  }
 
   for (const failure of ["cancel", "metadata", "installation"] as const) {
     test(`${app} replacement ${failure} rolls back through the real auth owner and reloads the prior account @${app}`, async ({

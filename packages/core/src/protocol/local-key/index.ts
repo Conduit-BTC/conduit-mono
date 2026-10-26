@@ -4,6 +4,7 @@ import { v2 } from "nostr-tools/nip44"
 import { decrypt } from "nostr-tools/nip04"
 import {
   NostrSignerError,
+  isInvalidNip44CiphertextError,
   type NostrKeySigner,
   type SignedNostrEvent,
   type UnsignedNostrEvent,
@@ -198,7 +199,15 @@ class ContainedLocalKeySigner implements LocalKeySigner {
   }
 
   decryptNip44(peer: string, ciphertext: string): Promise<string> {
-    return this.#nip44(peer, (key) => v2.decrypt(ciphertext, key))
+    return this.#nip44(peer, (key) => {
+      try {
+        return v2.decrypt(ciphertext, key)
+      } catch (error) {
+        if (isInvalidNip44CiphertextError(error))
+          throw new NostrSignerError("invalid_ciphertext")
+        throw error
+      }
+    })
   }
 
   decryptLegacy(peer: string, ciphertext: string): Promise<string> {
@@ -296,9 +305,16 @@ export async function restoreLocalKeySigner(
 
 export function removeLocalKeyRecord(
   reference: LocalKeyReference,
-  options: LocalKeyStorageOptions = {}
+  options: LocalKeyStorageOptions & {
+    predecessor?: "preserve" | "retire" | "unverified"
+    replacement?: LocalKeyReference
+  } = {}
 ): Promise<void> {
-  return new LocalKeyStorage(options).remove(reference.localKeyRevision)
+  return new LocalKeyStorage(options).remove(
+    reference.localKeyRevision,
+    options.predecessor,
+    options.replacement?.localKeyRevision
+  )
 }
 
 export function reconcileLocalKeyRecord(

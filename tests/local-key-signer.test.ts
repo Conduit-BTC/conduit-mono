@@ -700,3 +700,93 @@ test("local account composes with shared authority, protected reads, revision ch
     else Reflect.deleteProperty(globalThis, "indexedDB")
   }
 })
+
+test("local SessionSigner skips authenticated payload failures while restoring valid wallet heads", async () => {
+  const { PortableWalletSync } =
+    await import("../packages/core/src/wallets/portable-wallet-sync")
+  const { generateSparkMnemonic } =
+    await import("../packages/core/src/wallets/spark-recovery")
+  const s = await setup()
+  const signer = new SessionSigner(s.signer, {
+    expectedPubkey: s.pubkey,
+    revision: "local-wallet-regression",
+    authMethod: "local",
+    getCapabilities: () => LOCAL_KEY_CAPABILITIES,
+    hasAuthority: () => true,
+  })
+  disposals.push(() => signer.invalidateLocal())
+  type Account =
+    import("../packages/core/src/wallets/portable-wallet-sync").PortableWalletAccount
+  type Event =
+    import("../packages/core/src/protocol/nostr-event-signer").SignedNostrEvent
+  let events: Event[] = []
+  const make = () => {
+    let account: Account = { ownerPubkey: s.pubkey, wallets: {} }
+    const service = new PortableWalletSync({
+      signer,
+      store: {
+        load: async () => structuredClone(account),
+        save: async (next) => {
+          account = structuredClone(next)
+        },
+      },
+      transport: {
+        read: async () => ({ status: "complete", events }),
+        publish: async () => "acked",
+      },
+      relays: ["wss://synthetic.example"],
+      deriveIdentity: async (bundle) =>
+        (bundle.accountNumber === 0 ? "02" : "03") + s.pubkey,
+      now: () => 1000,
+      assertCurrent: () => {},
+      project: async (_records, _options, retain) => {
+        await retain()
+      },
+    })
+    return { service, account: () => account }
+  }
+  const a = make()
+  const valid = await a.service.import(
+    { mnemonic: generateSparkMnemonic(), network: "mainnet", accountNumber: 0 },
+    "Valid"
+  )
+  const older = await a.service.import(
+    { mnemonic: generateSparkMnemonic(), network: "mainnet", accountNumber: 1 },
+    "Older valid"
+  )
+  const oldEvent = a.account().wallets[older.walletId].event
+  const payload = Uint8Array.from(Buffer.from(oldEvent.content, "base64"))
+  payload[payload.length - 1] ^= 1
+  const bad = await signer.signEvent({
+    pubkey: s.pubkey,
+    kind: oldEvent.kind,
+    created_at: oldEvent.created_at + 1,
+    tags: oldEvent.tags,
+    content: Buffer.from(payload).toString("base64"),
+  })
+  payload.fill(0)
+  events = [
+    bad,
+    ...Object.values(a.account().wallets).map((saved) => saved.event),
+  ]
+  const b = make()
+  await b.service.sync()
+  expect((await b.service.get(valid.walletId)).name === "Valid").toBe(true)
+  expect((await b.service.get(older.walletId)).name === "Older valid").toBe(
+    true
+  )
+  expect(b.service.snapshot.invalidCount).toBe(1)
+  expect(b.service.snapshot.status).not.toBe("blocked")
+  const unavailable = spyOn(
+    LocalKeyStorage.prototype,
+    "read"
+  ).mockRejectedValue(new Error("synthetic storage outage"))
+  try {
+    const c = make()
+    await expect(c.service.sync()).rejects.toThrow()
+    expect(c.service.snapshot.status).toBe("blocked")
+    expect(c.service.snapshot.invalidCount).toBe(0)
+  } finally {
+    unavailable.mockRestore()
+  }
+})

@@ -54,8 +54,12 @@ candidate slot stages a replacement without overwriting the active record.
 The shared auth lock serializes staging, metadata installation and promotion;
 the storage transaction additionally checks the candidate and predecessor
 revisions. Only successful session installation permits promotion. Failed
-installation rolls back only its own public metadata and removes only its own
-candidate. A later session is never overwritten by stale rollback. On restart,
+installation attempts rollback of its own public metadata, then always attempts retirement of
+the failed candidate even when rollback fails. A verified restored predecessor
+is preserved. Removing a selected staged session with no replacement atomically
+removes its exact superseded predecessor too. Unreadable metadata cannot authorize
+reconciliation or lineage deletion; removal retains its journal and lineage for
+retry when selection can be verified. A later session is never overwritten by stale rollback. On restart,
 the saved public session selects the retained record; abandoned staging is
 discarded under the auth lock before another import, and a saved candidate is
 promoted after successful restoration.
@@ -72,7 +76,8 @@ preserve a newer import. Malformed unusable records can be explicitly removed.
 The shared auth owner verifies a public-only removal journal. If a new journal
 entry cannot persist, it attempts a verified removal marker in the exact existing
 auth record, preserving public retry identity without overwriting another
-account. Both paths block automatic restoration after restart. If neither
+account. The journal stays until both key and metadata cleanup finish under the
+shared auth lock. Both paths block automatic restoration after restart. If neither
 durable revocation nor key deletion can be secured, the UI explicitly reports
 unresolved restart safety and asks the user to keep the window open and retry.
 No client can promise durable revocation while all persistent mutations fail.
@@ -83,6 +88,14 @@ JavaScript strings, engine/library copies, browser backups and device storage
 prevent forensic-erasure guarantees. Logout affects this storage partition,
 not independent Safari/PWA or Market/Merchant partitions. No shared-storage or
 cloud-recovery promise.
+
+NIP-44 decryption translates only known payload authentication/padding failures
+into the shared invalid-ciphertext category before sanitization. Wallet sync can
+then skip an invalid signed record and retain other valid wallet heads; storage,
+authority and ambiguous signer failures remain blocking. Real automated clipboard
+permission tests are selected only for Chromium projects at discovery. WebKit
+retains direct-entry and denied/delayed clipboard recovery coverage with no
+selected-test skips.
 
 ## Focused review requirements
 

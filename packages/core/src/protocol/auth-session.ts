@@ -269,9 +269,9 @@ type AuthSessionStorageSnapshot =
   | { status: "invalid" }
   | { status: "session"; session: AuthSession }
 
-function inspectAuthSessionStorage(
-  storage: AuthStorage | undefined,
-  operation: string
+export function inspectAuthSessionStorage(
+  storage: AuthStorage | undefined = getDefaultAuthStorage(),
+  operation = "verify saved signer session"
 ): AuthSessionStorageSnapshot {
   if (!storage) {
     throw new AuthSessionError(
@@ -372,10 +372,11 @@ export interface InvalidatedAuthSessionCleanupOptions {
   storage?: AuthStorage
   retireCredentials: (
     expected: AuthSession,
-    replacement: AuthSession | null
+    replacement: AuthSession | null,
+    metadataVerified: boolean
   ) => Promise<void>
   withLock?: <T>(task: () => Promise<T>) => Promise<T>
-  /** Explicit logout only, when the caller owns the exact expected session. */
+  /** Logout or failed installation, when the caller owns the exact session. */
   retireExpectedCredentialsOnMetadataFailure?: boolean
   /** Local keys retain revoked public removal metadata until deletion commits. */
   retireCredentialsBeforeMetadata?: boolean
@@ -397,8 +398,10 @@ export async function cleanupInvalidatedAuthSession(
     const operation = "retire invalidated signer session"
     if (options.retireCredentialsBeforeMetadata) {
       let replacement: AuthSession | null = null
+      let metadataVerified = false
       try {
         const snapshot = inspectAuthSessionStorage(storage, operation)
+        metadataVerified = true
         if (
           snapshot.status === "session" &&
           !authSessionsEqual(snapshot.session, expected)
@@ -407,7 +410,7 @@ export async function cleanupInvalidatedAuthSession(
       } catch (error) {
         if (!options.retireExpectedCredentialsOnMetadataFailure) throw error
       }
-      await options.retireCredentials(expected, replacement)
+      await options.retireCredentials(expected, replacement, metadataVerified)
     }
     let status: InvalidatedAuthSessionCleanupStatus = "absent"
     let metadataError: unknown = null
@@ -459,7 +462,7 @@ export async function cleanupInvalidatedAuthSession(
     }
 
     if (!options.retireCredentialsBeforeMetadata)
-      await options.retireCredentials(expected, replacement)
+      await options.retireCredentials(expected, replacement, !metadataError)
 
     if (metadataError) throw metadataError
     return status
