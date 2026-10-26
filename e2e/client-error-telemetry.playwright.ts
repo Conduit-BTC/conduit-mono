@@ -62,6 +62,10 @@ async function readClientErrorEvents(
 }
 
 async function waitForClientEffects(page: Page): Promise<void> {
+  // Animation frames can run before React mounts the route and its listeners.
+  await expect(
+    page.getByRole("heading", { level: 1, name: /^About / })
+  ).toBeVisible()
   await page.evaluate(
     () =>
       new Promise<void>((resolve) => {
