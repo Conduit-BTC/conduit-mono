@@ -837,7 +837,8 @@ function WalletRow({
   }, [isSpark, ready, addressResolver, wallet.id, runtime])
   const receivingAddress = isSpark
     ? ready
-      ? addressState?.status === "registered"
+      ? addressState?.status === "registered" &&
+        addressState.publicLookup === "verified"
         ? addressState.address
         : null
       : null

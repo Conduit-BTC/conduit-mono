@@ -6,9 +6,10 @@ Activation checks current gateway approval and the selected account/wallet befor
 making changes. Profile publication still requires exact recovered ownership and
 validated public LNURL metadata; neither proves payment settlement.
 
-The client owns registration under the wallet/domain lock. A fresh activation
-uses three recovery requests: initial ownership, the pre-registration race check,
-and confirmation. The form consumes that result without a fourth display refresh.
+The client serializes registration under a wallet/domain lock within one browser
+origin. A fresh activation uses three recovery requests: initial ownership, the
+pre-registration race check, and confirmation. The form consumes that result
+without a fourth display refresh.
 Two ordinary lookups plus activation therefore fit the existing five-per-minute
 source and identity budgets. The limit and gateway authorization rules are
 unchanged. Gateway 429 replies advertise a browser-readable `Retry-After`; clients
@@ -16,9 +17,9 @@ also use a conservative minute when an older gateway omits the header.
 
 The existing encrypted `activating` phase is retained immediately before mutation.
 On restart it permits read-only reconciliation unless the client, under the same
-wallet/domain lock, finds an exact `selected` checkpoint proving known
-non-submission or definite rejection. Only a deliberate activation action can
-retry that registration, after fresh approval and account/wallet authorization.
+wallet/domain lock, finds an exact `selected` checkpoint retaining this origin's
+known non-submission or definite rejection. Only a deliberate activation action
+can retry that registration, after fresh approval and account/wallet authorization.
 An absent or unavailable lookup never grants retry permission. A missing,
 different-name, or `registering` checkpoint leaves the retained intent read-only.
 A pending custom-name provider checkpoint is pinned across clients.
@@ -26,6 +27,12 @@ Indefinite ambiguity requires later positive ownership
 evidence; availability is not proof that a previous mutation cannot still commit.
 Preflight failures before mutation intent remain retryable through a deliberate
 activation action. There is no automatic registration loop.
+
+Browser locks and checkpoints do not coordinate separate origins or devices.
+An older local `selected` checkpoint cannot disprove another origin's uncertain
+submission, even when both origins have the same saved `activating` request.
+This change does not add cross-device registration arbitration or a provider
+idempotency guarantee; cross-device consistency still needs provider validation.
 
 An activation action performs at most three automatic rechecks. Delays increase
 from 20 to 40 to 60 seconds, or respect the provider's retry deadline. A deadline
@@ -38,9 +45,12 @@ Session-only progress distinguishes approval checking, registration confirmation
 public lookup, and profile confirmation, including throttling, invalid responses,
 and exhausted retries. These fields are not written to wallet records. The wallet
 does not promote an unverified recovered address to its persisted receiving address
-or offer it as ready to share. A verified address can remain visible while the form
-explains that profile publication is still pending. A fresh profile read recognizes
-an already published address before constructing another update.
+or offer it as ready to share or as a wallet-generated public-profile suggestion.
+These suggestions use the same public-verification gate as display/copy controls.
+A later unavailable lookup does not erase an independently published profile
+address. A verified address can remain visible while the form explains that
+profile publication is still pending. A fresh profile read recognizes an already
+published address before constructing another update.
 
 The persisted request schema and phase meanings are unchanged. Legacy `activating`,
 `registered`, and `complete` records remain readable; no wallet-event version or
