@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { sameSignedPublicEvent } from "@conduit/core/protocol/verified-public-event"
 import { nip19, nip44 } from "nostr-tools"
 import {
@@ -43,6 +43,33 @@ const marketUrl = `http://127.0.0.1:${
 const merchantUrl = `http://127.0.0.1:${
   process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"
 }`
+
+async function discoverAcceptedStock(scope: Page | Locator) {
+  const reconcile = scope.getByRole("button", {
+    name: "Reconcile accepted order stock",
+    exact: true,
+  })
+  const check = scope.getByRole("button", {
+    name: /^Check (?:for stock updates|more stock history)$/,
+  })
+  const more = scope.getByRole("button", {
+    name: "Check more stock history",
+    exact: true,
+  })
+  // This fixture has one relay and fewer than 50 retained wrappers. The first
+  // page can contain only retained history; follow the offered bounded pages.
+  for (let page = 0; page < 4; page++) {
+    await check.click()
+    await expect(check).toBeEnabled()
+    if (await reconcile.isVisible()) {
+      await expect(reconcile).toBeEnabled()
+      return reconcile
+    }
+    if (!(await more.isVisible())) break
+  }
+  await expect(reconcile).toBeVisible()
+  return reconcile
+}
 
 const ORGANIZER_SECRET = generateSecretKey()
 const ORGANIZER_PUBKEY = getPublicKey(ORGANIZER_SECRET)
@@ -5798,15 +5825,7 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     page.getByText(/New sales are stopped for this pool/)
   ).toBeVisible()
   await gotoAs(page, merchantUrl, eventPath, "merchant")
-  await page
-    .getByRole("button", { name: "Check for stock updates", exact: true })
-    .click()
-  await page
-    .getByRole("button", {
-      name: "Reconcile accepted order stock",
-      exact: true,
-    })
-    .click()
+  await (await discoverAcceptedStock(page)).click()
   await expect(
     page.getByText(/exact accepted order and handout are reconciled once/)
   ).toBeVisible()
@@ -5905,15 +5924,7 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   await history
     .getByText("Recover prior organizer stock history", { exact: true })
     .click()
-  await history
-    .getByRole("button", { name: "Check for stock updates", exact: true })
-    .click()
-  await history
-    .getByRole("button", {
-      name: "Reconcile accepted order stock",
-      exact: true,
-    })
-    .click()
+  await (await discoverAcceptedStock(history)).click()
   await expect(history.getByText(/already reconciled/)).toBeVisible()
   expect(
     await occurrenceInventory(

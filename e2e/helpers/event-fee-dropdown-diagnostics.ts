@@ -7,9 +7,7 @@ export function observeEventFeeDropdown(page: Page) {
       const label = [...document.querySelectorAll("label")].find(
         (node) => node.textContent?.trim() === "Fee setting"
       )
-      return label instanceof HTMLLabelElement
-        ? document.getElementById(label.htmlFor)
-        : null
+      return label?.control ?? null
     }
     let original = currentTrigger()
     let content: HTMLElement | null = null
