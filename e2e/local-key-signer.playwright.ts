@@ -439,6 +439,121 @@ for (const app of ["market", "merchant"] as const) {
     })
   }
 
+  test(`${app} cancelled import exposes failed removal and retries without reload @${app}`, async ({
+    page,
+  }) => {
+    await page.goto(
+      `http://127.0.0.1:${port}/${app === "market" ? "products" : "wallet"}`
+    )
+    await page
+      .getByRole("button", { name: "Sign In", exact: true })
+      .first()
+      .click()
+    await page.evaluate(async (root) => {
+      const { LocalKeyStorage } = await import(`${root}/local-key/storage.ts`)
+      const commit = LocalKeyStorage.prototype.commit
+      const deletion = IDBObjectStore.prototype.delete
+      const state = { waiting: false, release: () => {}, restore: () => {} }
+      const barrier = new Promise<void>((resolve) => {
+        state.release = resolve
+      })
+      LocalKeyStorage.prototype.commit = async function (...args) {
+        state.waiting = true
+        await barrier
+        return commit.apply(this, args)
+      }
+      IDBObjectStore.prototype.delete = function (key) {
+        if (this.name === "record" && (key === "candidate" || key === "active"))
+          throw new DOMException("synthetic deletion failure", "UnknownError")
+        return deletion.call(this, key)
+      }
+      state.restore = () => {
+        LocalKeyStorage.prototype.commit = commit
+        IDBObjectStore.prototype.delete = deletion
+      }
+      Object.assign(window, { cancelledImportRemoval: state })
+    }, protocol)
+    await importAccount(page)
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window as unknown as {
+                cancelledImportRemoval: { waiting: boolean }
+              }
+            ).cancelledImportRemoval.waiting
+        )
+      )
+      .toBe(true)
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close", exact: true })
+      .click()
+    await expect(page.getByRole("dialog")).toBeHidden()
+    await page.evaluate(() =>
+      (
+        window as unknown as {
+          cancelledImportRemoval: { release: () => void }
+        }
+      ).cancelledImportRemoval.release()
+    )
+    await page.evaluate(() =>
+      navigator.locks.request("conduit-auth-operation", () => undefined)
+    )
+    expect(
+      await page.evaluate(async (root) => {
+        const auth = await import(`${root}/auth-session.ts`)
+        const owner = await import(`${root}/session-signer.ts`)
+        return (
+          auth.readPendingLocalKeyRemoval() !== null &&
+          !owner.getAccountSigner()
+        )
+      }, protocol)
+    ).toBe(true)
+    await page
+      .getByRole("button", { name: "Sign In", exact: true })
+      .first()
+      .click()
+    await expect(
+      page
+        .getByRole("dialog")
+        .getByText("Local signer removal is incomplete.", { exact: false })
+    ).toBeVisible()
+    const retry = page.getByRole("button", {
+      name: "Remove saved local signer",
+      exact: true,
+    })
+    await expect(retry).toBeVisible()
+    await page.evaluate(() =>
+      (
+        window as unknown as {
+          cancelledImportRemoval: { restore: () => void }
+        }
+      ).cancelledImportRemoval.restore()
+    )
+    await retry.click()
+    await expect
+      .poll(() =>
+        page.evaluate(async (root) => {
+          const auth = await import(`${root}/auth-session.ts`)
+          return (
+            auth.readAuthSession() === null &&
+            auth.readPendingLocalKeyRemoval() === null
+          )
+        }, protocol)
+      )
+      .toBe(true)
+    expect(await hasOwner(page)).toBe(false)
+    // Reopen and import through the real UI without reloading the application.
+    await page
+      .getByRole("button", { name: "Sign In", exact: true })
+      .first()
+      .click()
+    await importAccount(page)
+    await expect.poll(() => hasOwner(page)).toBe(true)
+  })
+
   test(`${app} invalid nsec stays signed out and allows correction in a browser tab @${app}`, async ({
     page,
   }) => {

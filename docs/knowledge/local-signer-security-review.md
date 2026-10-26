@@ -71,7 +71,9 @@ Replacement, cancellation and logout fence pending results; the shared owner
 also fences queued work. Missing/unavailable storage stops signing and offers
 retry/removal/reimport. Logout stops live authority immediately, then commits
 exact-revision deletion and public-session retirement. Failed deletion stays a
-visible error and blocks connection until removal succeeds. Stale cleanup must
+visible error and blocks connection until removal succeeds. Cancellation must
+not hide that failure: when no newer connection owns the UI, the warning and
+removal retry remain available without reloading. Stale cleanup must
 preserve a newer import. Exact-revision removal identifies both slots
 independently of signing-schema validity, so damaged records cannot silently retain the selected credential.
 Predecessor lineage is checked separately; unknown candidate ownership or

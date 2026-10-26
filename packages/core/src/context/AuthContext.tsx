@@ -1330,7 +1330,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         } catch (cause) {
           retirementBlockedSession.current = localCandidateSession
           const message = cause instanceof AuthSessionError ? cause.message : "The imported local signer could not be removed after connection failed. Retry removal when site storage is available."
-          if (attemptOwnsEpoch()) {
+          // Cancellation relinquishes connection authority, not cleanup
+          // recovery. Preserve a newer connection's UI when one owns it.
+          if (attemptOwnsEpoch() ||
+            (!connecting.current && !connected.current && activePairing.current === null)) {
             setRememberedMethod("local")
             setStatus("error")
             setError(message)
