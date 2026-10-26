@@ -68,6 +68,7 @@ type CommerceNavRoute =
   | "/orders"
   | "/wallet"
   | "/shipping"
+  | "/preferences"
   | "/messages"
 
 type MerchantInternalNavRoute = CommerceNavRoute | "/about"
@@ -86,6 +87,12 @@ const commerceNavItems: CommerceNavItem[] = [
   { to: "/orders", label: "Orders", icon: ShoppingBag },
   { to: "/wallet", label: "Wallets", icon: CreditCard, hasReadiness: true },
   { to: "/shipping", label: "Shipping", icon: Truck, hasReadiness: true },
+  {
+    to: "/preferences",
+    label: "Preferences",
+    icon: Truck,
+    hasReadiness: false,
+  },
   { to: "/messages", label: "Messages", icon: MessageCircle },
 ]
 

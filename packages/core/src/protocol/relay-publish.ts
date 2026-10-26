@@ -1,3 +1,7 @@
+import {
+  PRIVATE_SETTINGS_KIND,
+  PRIVATE_SETTINGS_ID,
+} from "../settings/identifiers"
 /** Plain signed-event publication with explicit relay policy and exact wire writes. */
 import { getRelayLists } from "./relay-list"
 import { recordRelayFailure, recordRelaySuccess } from "./relay-health"
@@ -118,8 +122,8 @@ export interface PublishWithPlannerInput {
   shouldContinue?: () => boolean
   signal?: AbortSignal
   /**
-   * Foreground-only NIP-42 capability for an exact NIP-17 recipient write.
-   * This never enables fallback relays or ambient/background authentication.
+   * NIP-42 capability for an exact recipient, complete-wallet, or private-settings write.
+   * This never enables fallback relays. Automatic callers must retain signer refusal with background-priority account operations.
    */
   relayAuthentication?: {
     expectedPubkey: string
@@ -298,6 +302,13 @@ function assertRelayAuthenticationConfiguration(
     !(
       (event.kind === EVENT_KINDS.GIFT_WRAP &&
         input.intent === "recipient_event") ||
+      (event.kind === PRIVATE_SETTINGS_KIND &&
+        input.intent === "author_event" &&
+        event.pubkey === expectedPubkey &&
+        event.tags.length === 1 &&
+        event.tags[0]?.length === 2 &&
+        event.tags[0][0] === "d" &&
+        event.tags[0][1] === PRIVATE_SETTINGS_ID) ||
       (event.kind === 30078 &&
         input.intent === "author_event" &&
         event.pubkey === expectedPubkey &&

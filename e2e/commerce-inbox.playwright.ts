@@ -662,7 +662,16 @@ async function exerciseInboxScenario(
         },
         { root, principal: sender.pubkey, text }
       )
-    await page.getByRole("textbox", { name: "Message" }).fill(text)
+    const composer = page.getByRole("textbox", { name: "Message" })
+    await expect(composer).toHaveValue("")
+    // WebKit can restore the old controlled value after bulk insertText on
+    // reconnect. Exercise keyboard input and verify the complete draft before
+    // tapping Send; never retry a send or silently refill a lost draft.
+    await composer.pressSequentially(text)
+    await expect(composer).toHaveValue(text)
+    await expect(
+      page.getByRole("button", { name: "Send message", exact: true })
+    ).toBeEnabled()
     selfCopyCheckpoint("before_send", principal, true)
     // Observe the current controls and local owner without delaying Send.
     // Only the fixed booleans below may enter the smoke annotation.

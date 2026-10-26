@@ -19,16 +19,11 @@ import {
 } from "@conduit/core"
 import {
   getNwcUriStorageKey,
-  getShippingStorageKey,
   getMerchantSetupReadiness,
   hasNwcConfigured,
-  isStoredShippingConfigAuthoritative,
   MERCHANT_READINESS_STORAGE_EVENT,
-  parseShippingConfig,
-  saveShippingConfig,
   selectConduitShippingOption,
   shippingOptionToConfig,
-  shouldHydrateShippingConfig,
   isPaymentsComplete,
   isNetworkComplete,
   isProfileComplete,
@@ -39,14 +34,13 @@ const PROFILE_READINESS_POLL_MS = 2_500
 const PROFILE_READINESS_GRACE_MS = 10_000
 
 function getMerchantReadinessStorageSnapshot(
-  nwcStorageKey: string | null,
-  shippingStorageKey: string
+  nwcStorageKey: string | null
 ): string {
   if (typeof window === "undefined") return EMPTY_STORAGE_SNAPSHOT
 
   try {
     return JSON.stringify([
-      window.localStorage.getItem(shippingStorageKey),
+      null,
       nwcStorageKey ? window.localStorage.getItem(nwcStorageKey) : null,
     ])
   } catch {
@@ -73,17 +67,12 @@ function parseMerchantReadinessStorageSnapshot(
 
 function subscribeToMerchantReadinessStorage(
   onStoreChange: () => void,
-  nwcStorageKey: string | null,
-  shippingStorageKey: string
+  nwcStorageKey: string | null
 ) {
   if (typeof window === "undefined") return () => {}
 
   function handleStorageChange(event: StorageEvent): void {
-    if (
-      event.key &&
-      event.key !== shippingStorageKey &&
-      event.key !== nwcStorageKey
-    ) {
+    if (event.key && event.key !== nwcStorageKey) {
       return
     }
 
@@ -129,44 +118,27 @@ export function useMerchantReadiness() {
   })
   const [profileCheckExpired, setProfileCheckExpired] = useState(false)
   const nwcStorageKey = useMemo(() => getNwcUriStorageKey(pubkey), [pubkey])
-  const shippingStorageKey = useMemo(
-    () => getShippingStorageKey(pubkey),
-    [pubkey]
-  )
   const subscribeToStorage = useCallback(
     (onStoreChange: () => void) =>
-      subscribeToMerchantReadinessStorage(
-        onStoreChange,
-        nwcStorageKey,
-        shippingStorageKey
-      ),
-    [nwcStorageKey, shippingStorageKey]
+      subscribeToMerchantReadinessStorage(onStoreChange, nwcStorageKey),
+    [nwcStorageKey]
   )
   const getStorageSnapshot = useCallback(
-    () =>
-      getMerchantReadinessStorageSnapshot(nwcStorageKey, shippingStorageKey),
-    [nwcStorageKey, shippingStorageKey]
+    () => getMerchantReadinessStorageSnapshot(nwcStorageKey),
+    [nwcStorageKey]
   )
   const storageSnapshot = useSyncExternalStore(
     subscribeToStorage,
     getStorageSnapshot,
     () => EMPTY_STORAGE_SNAPSHOT
   )
-  const [rawShippingConfig, rawNwcUri] = useMemo(
+  const [, rawNwcUri] = useMemo(
     () => parseMerchantReadinessStorageSnapshot(storageSnapshot),
     [storageSnapshot]
   )
-  const shippingConfig = useMemo(
-    () => parseShippingConfig(rawShippingConfig),
-    [rawShippingConfig]
-  )
-  const hasAuthoritativeStoredShipping =
-    isStoredShippingConfigAuthoritative(rawShippingConfig)
   const remoteShippingQuery = useQuery({
     queryKey: ["merchant-shipping-options", pubkey ?? "none", authStatus],
-    enabled:
-      !!pubkey &&
-      (authStatus === "connected" || !hasAuthoritativeStoredShipping),
+    enabled: !!pubkey && authStatus === "connected",
     queryFn: ({ signal }) =>
       getShippingOptionsByCoordinates(
         [
@@ -194,13 +166,7 @@ export function useMerchantReadiness() {
     const latest = selectConduitShippingOption(remoteShippingQuery.data)
     return latest ? shippingOptionToConfig(latest) : null
   }, [remoteShippingQuery.data])
-  const shouldHydrateRemoteShipping = shouldHydrateShippingConfig(
-    rawShippingConfig,
-    remoteShippingConfig
-  )
-  const effectiveShippingConfig = shouldHydrateRemoteShipping
-    ? remoteShippingConfig
-    : shippingConfig
+  const effectiveShippingConfig = remoteShippingConfig ?? { countries: [] }
   const hasNwc = useMemo(() => hasNwcConfigured(rawNwcUri), [rawNwcUri])
   const profileComplete = isProfileComplete(profile)
   const paymentsComplete = isPaymentsComplete(
@@ -211,12 +177,6 @@ export function useMerchantReadiness() {
   const networkComplete = isNetworkComplete(
     session.accountNetworkPreferences.reconciliation?.projection.rows ?? []
   )
-
-  useEffect(() => {
-    if (!pubkey || !shouldHydrateRemoteShipping) return
-
-    saveShippingConfig(remoteShippingConfig, pubkey)
-  }, [pubkey, remoteShippingConfig, shouldHydrateRemoteShipping])
 
   useEffect(() => {
     setProfileCheckExpired(false)

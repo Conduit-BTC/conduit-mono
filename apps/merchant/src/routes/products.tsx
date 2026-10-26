@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Plus, Search } from "lucide-react"
 import {
   EVENT_KINDS,
-  fetchMerchantShippingSettings,
+  useOrdinarySettings,
   fetchMerchantShippingPolicy,
   getMerchantShippingPolicyCoordinate,
   SHIPPING_COUNTRIES,
@@ -151,12 +151,7 @@ import {
   type ProductDeliveryNotice,
   type ProductWriteAction,
 } from "../lib/product-delivery"
-import {
-  isShippingComplete,
-  loadShippingConfig,
-  saveShippingConfig,
-  type ShippingConfig,
-} from "../lib/readiness"
+import { isShippingComplete, type ShippingConfig } from "../lib/readiness"
 import { needsProductInboxPublishGuidance } from "../lib/productInboxReadiness"
 import {
   deliverQueuedProductDeletion,
@@ -1207,8 +1202,6 @@ function ProductsPage() {
   const [editing, setEditing] = useState<MerchantProductFamily | null>(null)
   const [productDialogOpen, setProductDialogOpen] = useState(false)
   const [showListingAreaPicker, setShowListingAreaPicker] = useState(false)
-  const [shippingCacheUnavailable, setShippingCacheUnavailable] =
-    useState(false)
   useEffect(() => {
     if (!productDialogOpen) setShowListingAreaPicker(false)
   }, [productDialogOpen])
@@ -1445,7 +1438,7 @@ function ProductsPage() {
   )
   merchantProductFamilyEvidenceCompleteRef.current =
     merchantProductFamilyEvidenceComplete
-  const shippingConfig = loadShippingConfig(accountPubkey)
+  const ordinarySettings = useOrdinarySettings()
   const signedPolicyQuery = useQuery({
     queryKey: ["merchant-shipping-policy", accountPubkey ?? "none"],
     enabled: !!accountPubkey && authStatus === "connected",
@@ -1457,12 +1450,6 @@ function ProductsPage() {
         shouldContinue: () =>
           !signal.aborted && authGenerationRef.current === authGeneration,
       }),
-    staleTime: 30_000,
-  })
-  const signedShippingQuery = useQuery({
-    queryKey: ["merchant-shipping-settings", accountPubkey ?? "none"],
-    enabled: !!accountPubkey && authStatus === "connected",
-    queryFn: () => fetchMerchantShippingSettings(accountPubkey!),
     staleTime: 30_000,
   })
   const selectedAreaQuery = useQuery({
@@ -1482,21 +1469,17 @@ function ProductsPage() {
       ),
     staleTime: Infinity,
   })
-  const effectiveShippingConfig: ShippingConfig =
-    signedShippingQuery.data?.state === "found"
-      ? signedShippingQuery.data.settings
-      : shippingConfig
-  useEffect(() => setShippingCacheUnavailable(false), [accountPubkey])
-  useEffect(() => {
-    if (accountPubkey && signedShippingQuery.data?.state === "found") {
-      try {
-        saveShippingConfig(signedShippingQuery.data.settings, accountPubkey)
-        setShippingCacheUnavailable(false)
-      } catch {
-        setShippingCacheUnavailable(true)
-      }
-    }
-  }, [accountPubkey, signedShippingQuery.data])
+  const area =
+    ordinarySettings.publicDocument.settings.merchant?.generalLocation
+  const effectiveShippingConfig = useMemo<ShippingConfig>(
+    () => ({
+      countries: [],
+      shipsFrom: area?.geohash
+        ? { location: area.location, geohash: area.geohash }
+        : null,
+    }),
+    [area]
+  )
   const hasPresetShippingZone = isShippingComplete(effectiveShippingConfig)
 
   useEffect(() => {
@@ -2798,7 +2781,7 @@ function ProductsPage() {
   function openCreateDialog(): void {
     if (
       authStatus !== "connected" ||
-      signedShippingQuery.isLoading ||
+      ordinarySettings.publicQuery.isLoading ||
       signedPolicyQuery.isLoading
     )
       return
@@ -3035,7 +3018,7 @@ function ProductsPage() {
             disabled={
               !accountPubkey ||
               authStatus !== "connected" ||
-              signedShippingQuery.isLoading ||
+              ordinarySettings.publicQuery.isLoading ||
               signedPolicyQuery.isLoading
             }
           >
@@ -3307,7 +3290,7 @@ function ProductsPage() {
                 disabled={
                   !accountPubkey ||
                   authStatus !== "connected" ||
-                  signedShippingQuery.isLoading ||
+                  ordinarySettings.publicQuery.isLoading ||
                   signedPolicyQuery.isLoading
                 }
               >
@@ -4135,8 +4118,8 @@ function ProductsPage() {
                   This approximate public area is not an exact position or
                   pickup promise.
                 </p>
-                {(signedShippingQuery.isError ||
-                  signedShippingQuery.data?.state === "unavailable") && (
+                {(ordinarySettings.publicQuery.isError ||
+                  ordinarySettings.publicQuery.data?.problem) && (
                   <p
                     role="status"
                     className="text-xs text-[var(--warning-text)]"
@@ -4144,15 +4127,6 @@ function ProductsPage() {
                     Shipping defaults could not be checked on relays. Check
                     Shipping before publishing if you expect a ships from
                     default.
-                  </p>
-                )}
-                {shippingCacheUnavailable && (
-                  <p
-                    role="status"
-                    className="text-xs text-[var(--warning-text)]"
-                  >
-                    Shipping defaults loaded from relays, but this device could
-                    not cache them.
                   </p>
                 )}
               </div>

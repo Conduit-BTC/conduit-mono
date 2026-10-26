@@ -2225,6 +2225,130 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     ).toBe(false)
   })
 
+  it("constrains private settings reads separately from wallet recovery", async () => {
+    const event = finalizeEvent(
+      {
+        kind: 10421,
+        created_at: 1000,
+        tags: [["d", "openmarkets.private-settings"]],
+        content: "encrypted-fixture",
+      },
+      PRIVATE_KEY_A
+    )
+    const relay = config.appReadRelayUrls[0]!
+    const harness = new FakeRelayHarness().at(relay, {
+      onOpen: (socket) => socket.relay(["AUTH", "settings"]),
+      onSend: (socket, frame) => {
+        if (frame[0] === "AUTH") respondToAuth(socket, frame)
+        if (frame[0] === "REQ") {
+          socket.relay(["EVENT", frame[1], event])
+          socket.relay(["EOSE", frame[1]])
+        }
+      },
+    })
+    const executor = createExecutor(harness),
+      { authorization } = authorize()
+    const request = {
+      relayUrls: [relay],
+      operation: "private_settings_read" as const,
+      filters: [{ authors: [PUBKEY_A], kinds: [10421], limit: 8 }],
+    }
+    expect(
+      (await executor.query(request, { authorization })).events.map((e) => e.id)
+    ).toEqual([event.id])
+    for (const filter of [
+      { authors: [PUBKEY_B], kinds: [10421], limit: 8 },
+      { authors: [PUBKEY_A], kinds: [30078], limit: 8 },
+      { authors: [PUBKEY_A], kinds: [10421], limit: 9 },
+    ]) {
+      await expect(
+        executor.query({ ...request, filters: [filter] }, { authorization })
+      ).rejects.toThrow()
+    }
+    await expect(executor.query(request)).rejects.toThrow()
+  })
+
+  it("keeps concurrent inbox traffic outside a settings subscription's budgets", async () => {
+    const inboxEvent = giftWrap("x".repeat(400_001))
+    const settingsEvent = finalizeEvent(
+      {
+        kind: 10421,
+        created_at: 1000,
+        tags: [["d", "openmarkets.private-settings"]],
+        content: "encrypted-fixture",
+      },
+      PRIVATE_KEY_A
+    )
+    const relay = config.appReadRelayUrls[0]!
+    const requests: RelayFrame[] = []
+    const harness = new FakeRelayHarness().at(relay, {
+      onSend: (socket, frame) => {
+        if (frame[0] !== "REQ") return
+        requests.push(frame)
+        if (requests.length !== 2) return
+        const inbox = requests.find(
+          (request) => (request[2] as PlainNostrFilter).kinds?.[0] === 1059
+        )!
+        const settings = requests.find((request) => request !== inbox)!
+        socket.relay(["EVENT", inbox[1], inboxEvent])
+        // The inbox listener retires its subscription while this frame is
+        // dispatched. Other listeners must still recognize its ownership.
+        socket.relay(["EOSE", inbox[1]])
+        socket.relay(["EVENT", settings[1], settingsEvent])
+        socket.relay(["EOSE", settings[1]])
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+    const [inbox, settings] = await Promise.all([
+      executor.query(protectedRequest(PUBKEY_A, [relay]), { authorization }),
+      executor.query(
+        {
+          relayUrls: [relay],
+          operation: "private_settings_read",
+          filters: [{ authors: [PUBKEY_A], kinds: [10421], limit: 8 }],
+        },
+        { authorization, maxBytesPerRelay: 800, maxFramesPerRelay: 2 }
+      ),
+    ])
+    expect(inbox.status).toBe("success")
+    expect(inbox.events.map((event) => event.id)).toEqual([inboxEvent.id])
+    expect(settings.status).toBe("success")
+    expect(settings.events.map((event) => event.id)).toEqual([settingsEvent.id])
+    expect(harness.sockets).toHaveLength(1)
+    expect(harness.sockets[0].closed).toBe(false)
+  })
+
+  it("still rejects settings traffic that exceeds its own byte budget", async () => {
+    const event = finalizeEvent(
+      {
+        kind: 10421,
+        created_at: 1000,
+        tags: [["d", "openmarkets.private-settings"]],
+        content: "x".repeat(1200),
+      },
+      PRIVATE_KEY_A
+    )
+    const relay = config.appReadRelayUrls[0]!
+    const harness = new FakeRelayHarness().at(relay, {
+      onSend: (socket, frame) => {
+        if (frame[0] === "REQ") socket.relay(["EVENT", frame[1], event])
+      },
+    })
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+    const result = await executor.query(
+      {
+        relayUrls: [relay],
+        operation: "private_settings_read",
+        filters: [{ authors: [PUBKEY_A], kinds: [10421], limit: 8 }],
+      },
+      { authorization, maxBytesPerRelay: 800 }
+    )
+    expect(source(result).failure).toBe("protocol_limit_exceeded")
+    expect(result.events).toEqual([])
+  })
+
   it("reads signed owner app-data without inbox recipient tags and rejects other authors", async () => {
     const event = finalizeEvent(
       {

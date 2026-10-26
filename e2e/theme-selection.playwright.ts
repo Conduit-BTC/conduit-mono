@@ -6,8 +6,12 @@ import {
   type ThemeId,
   type ThemePreference,
 } from "@conduit/ui/theme"
-import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
-import { installTestSigner } from "./helpers/auth"
+import { TEST_RELAY_URL } from "./helpers/auth"
+import {
+  createRuntimeSignerIdentity,
+  disposeRuntimeSignerIdentity,
+  installRealTestSigner,
+} from "./helpers/real-nip07-signer"
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -426,72 +430,68 @@ test("Merchant direct theme toggle stays available through sign-in and responsiv
   await expectResolvedTheme(page, "day-market", "light")
   await expectThemeToggle(page, "day-market", "night-market", "sun")
 
-  const secretKey = generateSecretKey()
+  const identity = createRuntimeSignerIdentity()
   const workspacePage = await page.context().newPage()
-  await workspacePage.setViewportSize({ width: 1440, height: 900 })
-  await workspacePage.emulateMedia({ colorScheme: "dark" })
-  await installFirstFrameThemeProbe(workspacePage)
-  await installTestSigner(workspacePage, getPublicKey(secretKey), { secretKey })
-  await workspacePage.goto(merchantUrl)
-
-  await expect(
-    workspacePage.getByRole("button", { name: "Open merchant account menu" })
-  ).toBeVisible({ timeout: 15_000 })
-  await expectResolvedTheme(workspacePage, "day-market", "light")
-  await expectFirstFrameTheme(workspacePage, "day-market")
-  const workspaceToggle = await expectThemeToggle(
-    workspacePage,
-    "day-market",
-    "night-market",
-    "sun"
-  )
-  await captureScreenshot(
-    workspacePage,
-    "merchant-day-market-direct-toggle-desktop.png"
-  )
-
-  await workspaceToggle.focus()
-  await workspacePage.keyboard.press("Space")
-  await expectResolvedTheme(workspacePage, "night-market", "dark")
-  await expectResolvedTheme(page, "night-market", "dark")
-  const switchToSystem = await expectThemeToggle(
-    workspacePage,
-    "night-market",
-    "system",
-    "moon"
-  )
-  await expect
-    .poll(() =>
-      workspacePage.evaluate(
+  try {
+    await workspacePage.setViewportSize({ width: 1440, height: 900 })
+    await workspacePage.emulateMedia({ colorScheme: "dark" })
+    await installRealTestSigner(workspacePage, identity, TEST_RELAY_URL)
+    await workspacePage.goto(merchantUrl)
+    await expect(
+      workspacePage.getByRole("button", { name: "Open merchant account menu" })
+    ).toBeVisible({ timeout: 15_000 })
+    // A new account starts at System; the guest's device theme is not imported.
+    await expectResolvedTheme(workspacePage, "night-market", "dark")
+    const accountSystem = await expectThemeToggle(
+      workspacePage,
+      "system",
+      "day-market",
+      "sun-moon"
+    )
+    await accountSystem.focus()
+    await workspacePage.keyboard.press("Space")
+    await expectThemeToggle(workspacePage, "day-market", "night-market", "sun")
+    await expectResolvedTheme(workspacePage, "day-market", "light")
+    await workspacePage
+      .getByRole("button", {
+        name: "Appearance: Day Market. Switch to Night Market",
+      })
+      .click()
+    await expectThemeToggle(workspacePage, "night-market", "system", "moon")
+    await expectResolvedTheme(workspacePage, "night-market", "dark")
+    await expectResolvedTheme(page, "day-market", "light")
+    expect(
+      await workspacePage.evaluate(
         (key) => localStorage.getItem(key),
         THEME_STORAGE_KEY
       )
-    )
-    .toBe("night-market")
-
-  await switchToSystem.click()
-  await expect
-    .poll(() =>
-      workspacePage.evaluate(
+    ).toBe("day-market")
+    await workspacePage.reload()
+    await expectThemeToggle(workspacePage, "night-market", "system", "moon")
+    await expectResolvedTheme(workspacePage, "night-market", "dark")
+    await workspacePage
+      .getByRole("button", {
+        name: "Appearance: Night Market. Switch to System",
+      })
+      .click()
+    await expectThemeToggle(workspacePage, "system", "day-market", "sun-moon")
+    await expectResolvedTheme(workspacePage, "night-market", "dark")
+    await expectResolvedTheme(page, "day-market", "light")
+    await workspacePage.reload()
+    await expectThemeToggle(workspacePage, "system", "day-market", "sun-moon")
+    await expectResolvedTheme(workspacePage, "night-market", "dark")
+    expect(
+      await workspacePage.evaluate(
         (key) => localStorage.getItem(key),
         THEME_STORAGE_KEY
       )
+    ).toBe("day-market")
+    await captureScreenshot(
+      workspacePage,
+      "merchant-account-system-direct-toggle-desktop.png"
     )
-    .toBe("system")
-  await expectResolvedTheme(workspacePage, "night-market", "dark")
-  await expectResolvedTheme(page, "night-market", "dark")
-  await expectThemeToggle(workspacePage, "system", "day-market", "sun-moon")
-
-  await page.emulateMedia({ colorScheme: "light" })
-  await expectResolvedTheme(page, "day-market", "light")
-  await expectResolvedTheme(workspacePage, "night-market", "dark")
-
-  await workspacePage.reload()
-  await expectResolvedTheme(workspacePage, "night-market", "dark")
-  await expectFirstFrameTheme(workspacePage, "night-market")
-  await expectThemeToggle(workspacePage, "system", "day-market", "sun-moon")
-  await captureScreenshot(
-    workspacePage,
-    "merchant-system-direct-toggle-desktop.png"
-  )
+  } finally {
+    await workspacePage.close()
+    disposeRuntimeSignerIdentity(identity)
+  }
 })

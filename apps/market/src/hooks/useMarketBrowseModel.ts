@@ -39,7 +39,7 @@ import {
   filterSellersByName,
   groupDiscoveredSellers,
 } from "../lib/sellerDirectory"
-import { useShopperPresets } from "./useShopperPresets"
+import { useShoppingSettings } from "@conduit/core"
 import { useMerchantIdentities } from "./useMerchantIdentities"
 import { useProgressiveProducts } from "./useProgressiveProducts"
 
@@ -68,7 +68,7 @@ export function useMarketBrowseModel({
   }, [authGeneration])
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
-  const shopperPresets = useShopperPresets()
+  const shopperPresets = useShoppingSettings()
   const selectedMerchants = useMemo(
     () =>
       (search.merchant ?? []).map((merchant) => {

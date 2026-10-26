@@ -1369,32 +1369,19 @@ test.describe("CND-162 mobile browser baseline", () => {
 
     await page.goto(`${marketUrl}/preferences`)
     await expect(
-      page.getByRole("heading", { name: "Preferences" })
+      page.getByRole("heading", { name: "Preferences", level: 1, exact: true })
     ).toBeVisible()
     await assertMobileViewport(page)
 
-    const preferencesHeader = page.locator("header").filter({
-      has: page.getByRole("heading", { name: "Preferences" }),
+    const currency = page.getByRole("combobox", {
+      name: "Display currency",
+      exact: true,
     })
-    const preferencesStatusPill = preferencesHeader.getByRole("status")
-    await expect(preferencesStatusPill).toHaveText(
-      /Encrypted on relays|Relay ready/,
-      { timeout: 20_000 }
+    await expect(currency).toBeVisible()
+    await expectMobileTouchTarget(currency)
+    await expectMobileTouchTarget(
+      page.getByRole("button", { name: "Add address", exact: true })
     )
-    const [headerBox, preferencesPillBox, iconBox] = await Promise.all([
-      preferencesHeader.boundingBox(),
-      preferencesStatusPill.boundingBox(),
-      preferencesStatusPill.locator("svg").boundingBox(),
-    ])
-    expect(headerBox).not.toBeNull()
-    expect(preferencesPillBox).not.toBeNull()
-    expect(iconBox).not.toBeNull()
-    expect(preferencesPillBox!.width).toBeLessThan(headerBox!.width * 0.75)
-    expect(preferencesPillBox!.height).toBeLessThanOrEqual(32)
-    expect(iconBox!.width).toBeGreaterThanOrEqual(14)
-    expect(iconBox!.width).toBeLessThanOrEqual(16)
-    expect(iconBox!.height).toBeGreaterThanOrEqual(14)
-    expect(iconBox!.height).toBeLessThanOrEqual(16)
 
     await page.goto(`${marketUrl}/network`)
     await expect(page.getByRole("heading", { name: "Network" })).toBeVisible()

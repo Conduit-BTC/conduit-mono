@@ -5,7 +5,8 @@
  */
 
 :root,
-:root[data-theme="night-market"] {
+:root[data-theme="night-market"],
+[data-storefront-theme="night-market"] {
   color-scheme: dark;
   /* Exact source swatches. Keep these separate from derived UI colors. */
   --brand-ink: #05001d;
@@ -222,7 +223,8 @@
 }
 
 /* Day Market preserves the current light value set. */
-:root[data-theme="day-market"] {
+:root[data-theme="day-market"],
+[data-storefront-theme="day-market"] {
   color-scheme: light;
 
   /*

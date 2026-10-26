@@ -1,0 +1,35 @@
+{
+  "valid": true,
+  "documentType": "private",
+  "document": {
+    "format": "openmarkets.private-settings",
+    "version": 1,
+    "settings": {
+      "display": {
+        "currency": "EUR",
+        "future": {
+          "nested": [
+            1,
+            null,
+            {
+              "enabled": true
+            }
+          ]
+        }
+      }
+    },
+    "extensions": {
+      "org.example.preferences": {
+        "version": 2,
+        "data": {
+          "future": [
+            "a",
+            {
+              "b": 1
+            }
+          ]
+        }
+      }
+    }
+  }
+}

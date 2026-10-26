@@ -1,0 +1,37 @@
+{
+  "valid": true,
+  "documentType": "public",
+  "document": {
+    "format": "openmarkets.public-settings",
+    "version": 1,
+    "settings": {
+      "merchant": {
+        "businessHours": {
+          "timezone": "America/Los_Angeles",
+          "weekly": {
+            "mon": [
+              {
+                "start": "09:00",
+                "end": "17:00",
+                "future": {
+                  "a": 1
+                }
+              }
+            ],
+            "future": {
+              "schedule": true
+            }
+          },
+          "exceptions": {
+            "2026-12-25": []
+          }
+        },
+        "serviceLanguages": ["en", "es"]
+      },
+      "storefront": {
+        "theme": "night-market",
+        "layout": "list"
+      }
+    }
+  }
+}

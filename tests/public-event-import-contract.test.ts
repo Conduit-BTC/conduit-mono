@@ -15,7 +15,6 @@ it("keeps migrated public projections free of direct cryptography and copied tru
     "event-market-schedule",
     "event-market-merchandise",
     "product-deletion",
-    "merchant-shipping-settings",
   ]
   for (const name of files) {
     const source = await Bun.file(

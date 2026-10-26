@@ -328,3 +328,7 @@ export {
   type CommerceInboxRecoveryProps,
 } from "./CommerceInboxRecovery"
 export { PrivateAttachment } from "./PrivateAttachment"
+
+export { OrdinarySettingsPanel } from "./OrdinarySettingsPanel"
+
+export { OrdinarySettingsAppearance } from "./OrdinarySettingsAppearance"

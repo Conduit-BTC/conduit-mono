@@ -1,0 +1,16 @@
+{
+  "valid": true,
+  "documentType": "public",
+  "document": {
+    "format": "openmarkets.public-settings",
+    "version": 1,
+    "settings": {
+      "merchant": {
+        "notice": "Open Saturdays",
+        "future": {
+          "nested": [1, 2]
+        }
+      }
+    }
+  }
+}

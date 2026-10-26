@@ -476,6 +476,50 @@ describe("planPublishRelays", () => {
     })
   }
 
+  it("authenticates exact private settings writes without widening wallet or recipient publication", async () => {
+    const relayUrl = "wss://settings-write.fixture.conduit.market"
+    const socket = installRelayPublishWebSocket()
+    try {
+      const fixture = await authenticatedPublishInput([relayUrl])
+      const input: PublishWithPlannerInput = {
+        ...fixture.input,
+        intent: "author_event",
+        recipientPubkeys: [],
+      }
+      __setRelayPublishTestOverrides({
+        publishSignedEventFrameToRelay: undefined,
+      })
+      const event = signedRawTestEvent({
+        kind: 10421,
+        tags: [["d", "openmarkets.private-settings"]],
+        content: "opaque-fixture",
+      })
+      expect(
+        (await publishWithPlanner(event, input)).successfulRelayUrls
+      ).toEqual([relayUrl])
+      for (const invalid of [
+        signedRawTestEvent({
+          kind: 10420,
+          tags: [["d", "openmarkets.public-settings"]],
+        }),
+        signedRawTestEvent({ kind: 10421, tags: [["d", "wrong"]] }),
+        signedRawTestEvent({
+          kind: 10421,
+          tags: [
+            ["d", "openmarkets.private-settings"],
+            ["p", OTHER_AUTHOR_PUBKEY],
+          ],
+        }),
+      ]) {
+        await expect(publishWithPlanner(invalid, input)).rejects.toThrow(
+          "Relay authentication requires"
+        )
+      }
+    } finally {
+      socket.restore()
+    }
+  })
+
   it("publishes only exact owned complete-wallet coordinates through the authenticated WebSocket writer", async () => {
     const relayUrl = "wss://request-write.fixture.conduit.market"
     const socket = installRelayPublishWebSocket()

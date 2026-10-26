@@ -144,22 +144,14 @@ describe("app account-network read propagation", () => {
     )
   })
 
-  it("threads the signed-in shopper through initial, retry, and manual preset reads", async () => {
-    const shopperPresets = await source(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    )
-
-    expect(
-      shopperPresets.match(/shouldContinue: isCurrentSession/g)
-    ).toHaveLength(2)
-    expect(shopperPresets).toContain(
-      "fetchShopperPresets(identity, {\n        authenticatedPubkey: identity,\n        shouldContinue: () =>"
-    )
-    expect(
-      shopperPresets.match(
-        /isCurrentShopperPresetsRelayLifecycle\(\s+relayLifecycleRef\.current,\s+lifecycle\s+\)/g
-      )?.length ?? 0
-    ).toBeGreaterThanOrEqual(4)
+  it("keeps automatic settings bound to the active signer and protected account reads", async () => {
+    const hook = await source("packages/core/src/hooks/useOrdinarySettings.ts")
+    const transport = await source("packages/core/src/settings/transport.ts")
+    expect(hook).toContain("getAccountSigner() !== signer")
+    expect(hook).toContain("owned.stop()")
+    expect(transport).toContain("getProtectedReadAuthorization(owner)")
+    expect(transport).toContain('operation: "private_settings_read"')
+    expect(transport).toContain("filterEligibleAccountRelayTargets")
   })
 
   it("threads explicit owner authority through media preference I/O", async () => {
@@ -474,7 +466,7 @@ describe("app account-network read propagation", () => {
       source("packages/core/src/protocol/shipping.ts"),
       source("apps/market/src/routes/checkout.tsx"),
       source("apps/merchant/src/routes/products.tsx"),
-      source("apps/merchant/src/routes/shipping.tsx"),
+      source("apps/merchant/src/components/MerchantShippingPolicyEditor.tsx"),
       source("apps/merchant/src/hooks/useMerchantReadiness.ts"),
       source("packages/core/src/protocol/lightning.ts"),
       source("apps/market/src/lib/order-payment-service.ts"),
@@ -500,10 +492,8 @@ describe("app account-network read propagation", () => {
     expect(merchantProducts).toContain(
       'authStatus === "connected" ? pubkey : null'
     )
-    expect(merchantShipping).toContain("accountPubkey: pubkey")
-    expect(merchantShipping).toContain(
-      'authenticatedPubkey: authStatus === "connected" ? pubkey : null'
-    )
+    expect(merchantShipping).toContain("authenticatedPubkey: pubkey")
+    expect(merchantShipping).toContain("fetchMerchantShippingPolicy")
     expect(merchantReadiness).toContain("accountPubkey: pubkey")
     expect(merchantReadiness).toContain(
       'authenticatedPubkey: authStatus === "connected" ? pubkey : null'

@@ -6,13 +6,11 @@ import {
 import {
   getNwcUriStorageKey,
   getNwcConnectionCacheKey,
-  getShippingStorageKey,
   getMerchantSetupReadiness,
   getMerchantPrivateInboxReadinessPresentation,
   hasNwcConfigured,
   isNetworkComplete,
   isStoredShippingConfigAuthoritative,
-  loadShippingConfig,
   parseShippingConfig,
   parseStoredNwcConnection,
   selectConduitShippingOption,
@@ -44,40 +42,6 @@ const shippingConfig = {
       exclude: [],
     },
   ],
-}
-
-function withMockLocalStorage(run: (storage: Storage) => void): void {
-  const hadLocalStorage = "localStorage" in globalThis
-  const originalLocalStorage = globalThis.localStorage
-  const values = new Map<string, string>()
-  const storage = {
-    get length() {
-      return values.size
-    },
-    clear: () => values.clear(),
-    getItem: (key: string) => values.get(key) ?? null,
-    key: (index: number) => Array.from(values.keys())[index] ?? null,
-    removeItem: (key: string) => values.delete(key),
-    setItem: (key: string, value: string) => values.set(key, value),
-  } as Storage
-
-  Object.defineProperty(globalThis, "localStorage", {
-    configurable: true,
-    value: storage,
-  })
-
-  try {
-    run(storage)
-  } finally {
-    if (hadLocalStorage) {
-      Object.defineProperty(globalThis, "localStorage", {
-        configurable: true,
-        value: originalLocalStorage,
-      })
-    } else {
-      Reflect.deleteProperty(globalThis, "localStorage")
-    }
-  }
 }
 
 test("validates stored NWC URIs with the shared NIP-47 parser", () => {
@@ -116,25 +80,6 @@ test("changes the NWC cache identity when saved credentials change", () => {
   expect(firstKey.includes(firstSecret)).toBe(false)
   expect(firstKey.includes(firstUri)).toBe(false)
   expect(getNwcConnectionCacheKey("")).toBe("none")
-})
-
-test("scopes stored shipping configs to the active merchant pubkey", () => {
-  expect(getShippingStorageKey("merchant-pubkey")).toBe(
-    "conduit:merchant:shipping_config:merchant-pubkey"
-  )
-  expect(getShippingStorageKey("")).toBe("conduit:merchant:shipping_config")
-})
-
-test("keeps legacy shipping config out of signed-in merchant readiness", () => {
-  withMockLocalStorage((storage) => {
-    storage.setItem(
-      "conduit:merchant:shipping_config",
-      JSON.stringify(shippingConfig)
-    )
-
-    expect(loadShippingConfig("other-merchant")).toEqual({ countries: [] })
-    expect(loadShippingConfig()).toEqual(shippingConfig)
-  })
 })
 
 test("parses stored shipping config defensively", () => {

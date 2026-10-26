@@ -32,6 +32,7 @@ import {
   SignerRecoveryNotice,
 } from "@conduit/ui"
 import {
+  usePublicOrdinarySettings,
   CONTACT_LIST_WRITES_AVAILABLE,
   formatNpub,
   getCommerceReadRelayUrls,
@@ -218,6 +219,8 @@ function PublicIdentityPage() {
     listingCount: productCount > 0 ? productCount : undefined,
     profileRelayHints,
   })
+  const storefrontSettings =
+    usePublicOrdinarySettings(pubkey).data?.document.settings
   const profile = merchantTrust.profile
   const selectedTags = useMemo(() => search.tag ?? [], [search.tag])
   const selectedTagSet = useMemo(() => new Set(selectedTags), [selectedTags])
@@ -547,7 +550,10 @@ function PublicIdentityPage() {
     selectedTags.length > 0
 
   return (
-    <div className="space-y-6">
+    <div
+      className="space-y-6"
+      data-storefront-theme={storefrontSettings?.storefront?.theme}
+    >
       <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
         <Link
           to="/products"
@@ -567,6 +573,45 @@ function PublicIdentityPage() {
         </span>
       </div>
 
+      {storefrontSettings?.merchant && (
+        <section
+          aria-label="Store information"
+          className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-4"
+        >
+          {storefrontSettings.merchant.generalLocation && (
+            <p>{storefrontSettings.merchant.generalLocation.location}</p>
+          )}
+          {storefrontSettings.merchant.notice && (
+            <p className="whitespace-pre-wrap">
+              {storefrontSettings.merchant.notice}
+            </p>
+          )}
+          {!!storefrontSettings.merchant.serviceLanguages?.length && (
+            <p>
+              Service languages:{" "}
+              {storefrontSettings.merchant.serviceLanguages.join(", ")}
+            </p>
+          )}
+          {storefrontSettings.merchant.businessHours && (
+            <div>
+              <p>
+                Business hours (
+                {storefrontSettings.merchant.businessHours.timezone})
+              </p>
+              {Object.entries(storefrontSettings.merchant.businessHours.weekly)
+                .filter(([, ranges]) => Array.isArray(ranges))
+                .map(([day, ranges]) => (
+                  <p key={day}>
+                    {day}:{" "}
+                    {(ranges as Array<{ start: string; end: string }>)
+                      .map((range) => `${range.start}–${range.end}`)
+                      .join(", ") || "Closed"}
+                  </p>
+                ))}
+            </div>
+          )}
+        </section>
+      )}
       <section className="max-w-full overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
         <ProfileBanner src={profile?.banner} />
         <div className="relative px-5 pb-6 sm:px-6 sm:pb-7">
@@ -930,7 +975,7 @@ function PublicIdentityPage() {
 
             {productsQuery.isInitialLoading && (
               <ul
-                className={`mt-4 min-w-0 max-w-full ${PRODUCT_GRID_CLASS_NAME}`}
+                className={`mt-4 min-w-0 max-w-full ${storefrontSettings?.storefront?.layout === "list" ? "grid grid-cols-1 gap-4" : PRODUCT_GRID_CLASS_NAME}`}
               >
                 {Array.from({ length: 6 }).map((_, index) => (
                   <li key={index} className="h-full">
@@ -1024,7 +1069,7 @@ function PublicIdentityPage() {
 
             {filteredProducts.length > 0 && (
               <ul
-                className={`mt-4 min-w-0 max-w-full ${PRODUCT_GRID_CLASS_NAME}`}
+                className={`mt-4 min-w-0 max-w-full ${storefrontSettings?.storefront?.layout === "list" ? "grid grid-cols-1 gap-4" : PRODUCT_GRID_CLASS_NAME}`}
               >
                 {filteredProducts.map((product, index) => (
                   <li key={product.id} className="h-full">

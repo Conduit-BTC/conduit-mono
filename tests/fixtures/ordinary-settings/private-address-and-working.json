@@ -1,0 +1,34 @@
+{
+  "valid": true,
+  "documentType": "private",
+  "document": {
+    "format": "openmarkets.private-settings",
+    "version": 1,
+    "settings": {
+      "display": {
+        "currency": "BTC",
+        "bitcoinUnit": "sats",
+        "locale": "en-US"
+      },
+      "working": {
+        "orderSort": "priority",
+        "weightUnit": "kg"
+      },
+      "shipping": {
+        "savedAddresses": {
+          "bc5f8a80-c4e9-4a56-8f2e-6003e6b490ca": {
+            "recipientName": "Synthetic recipient",
+            "addressLine1": "Synthetic street",
+            "city": "Test town",
+            "postalCode": "00000",
+            "country": "US",
+            "future": {
+              "nested": null
+            }
+          }
+        },
+        "defaultAddressId": "bc5f8a80-c4e9-4a56-8f2e-6003e6b490ca"
+      }
+    }
+  }
+}

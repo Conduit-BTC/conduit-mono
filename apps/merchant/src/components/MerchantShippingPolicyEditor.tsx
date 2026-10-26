@@ -6,7 +6,9 @@ import {
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
   useAuth,
+  useOrdinarySettings,
   withdrawMerchantShippingPolicy,
+  type PrivateSettingsDocument,
   type ShippingPolicy,
   type ShippingPolicyRevision,
 } from "@conduit/core"
@@ -37,8 +39,6 @@ import {
 } from "../lib/shippingPolicyForm"
 
 import {
-  getShippingWeightUnitPreference,
-  saveShippingWeightUnitPreference,
   SHIPPING_WEIGHT_UNITS,
   type ShippingWeightUnit,
 } from "../lib/shippingWeightUnits"
@@ -69,16 +69,61 @@ function errorMessage(error: unknown): string {
 export function MerchantShippingPolicyEditor() {
   const { pubkey, status: authStatus, authGeneration } = useAuth()
   const generationRef = useRef(authGeneration)
+  const unitWrite = useRef<Promise<PrivateSettingsDocument> | null>(null)
   useLayoutEffect(() => {
     generationRef.current = authGeneration
+    unitWrite.current = null
   }, [authGeneration])
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState<ShippingPolicyDraft>(
     createShippingPolicyDraft
   )
-  const [weightUnit, setWeightUnit] = useState<ShippingWeightUnit>(() =>
-    getShippingWeightUnitPreference(pubkey)
-  )
+  const ordinarySettings = useOrdinarySettings()
+  const [unitDraft, setUnitDraft] = useState<{
+    generation: number
+    unit: ShippingWeightUnit
+  } | null>(null)
+  const weightUnit =
+    unitDraft?.generation === authGeneration
+      ? unitDraft.unit
+      : (ordinarySettings.privateDocument.settings.working?.weightUnit ?? "g")
+  function chooseWeightUnit(unit: ShippingWeightUnit) {
+    const generation = authGeneration
+    setUnitDraft({ generation, unit })
+    // The editor changes its display immediately; persistence must never change
+    // the unit used to interpret an input that the user has already started.
+    const prior =
+      unitWrite.current ?? Promise.resolve(ordinarySettings.privateDocument)
+    const work = prior
+      .catch(() => ordinarySettings.privateDocument)
+      .then(async (baseline) => {
+        if (generationRef.current !== generation) return baseline
+        return (
+          await ordinarySettings.savePrivate({
+            baseline,
+            changes: [{ path: "working.weightUnit", value: unit }],
+          })
+        ).document
+      })
+    unitWrite.current = work
+    void work.then(
+      () => {
+        if (unitWrite.current !== work) return
+        unitWrite.current = null
+        if (generationRef.current === generation) setUnitDraft(null)
+      },
+      () => {
+        if (unitWrite.current !== work) return
+        unitWrite.current = null
+        if (generationRef.current === generation)
+          setStatus({
+            state: "error",
+            message:
+              "The selected unit applies to this draft, but its preference could not be saved. Review Preferences.",
+          })
+      }
+    )
+  }
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [withdrawOpen, setWithdrawOpen] = useState(false)
@@ -368,11 +413,9 @@ export function MerchantShippingPolicyEditor() {
               <Label htmlFor="policy-weight-unit">Weight unit</Label>
               <Select
                 value={weightUnit}
-                onValueChange={(value) => {
-                  const unit = value as ShippingWeightUnit
-                  setWeightUnit(unit)
-                  saveShippingWeightUnitPreference(pubkey, unit)
-                }}
+                onValueChange={(value) =>
+                  chooseWeightUnit(value as ShippingWeightUnit)
+                }
               >
                 <SelectTrigger id="policy-weight-unit">
                   <SelectValue />

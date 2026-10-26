@@ -14,7 +14,6 @@ function runScenario(scenario: string): void {
       const { db } = await import("./packages/core/src/db");
       const proof = await import("./packages/core/src/protocol/verified-public-event");
       const follows = await import("./packages/core/src/protocol/follows");
-      const shipping = await import("./packages/core/src/protocol/merchant-shipping-settings");
       const secret = generateSecretKey();
       const pubkey = getPublicKey(secret);
       const target = getPublicKey(generateSecretKey());
@@ -165,52 +164,4 @@ describe("retained follow-list admission", () => {
       assert(stored.state === "observed" && stored.cachedAt >= row.cachedAt, "metadata regressed");
     `)
   }, 20000)
-})
-
-describe("shipping evidence admission outcomes", () => {
-  it("preserves stored evidence through verification outages, blocks saving, and recovers", () => {
-    runScenario(`
-      const settings = { countries: [], shipsFrom: null };
-      const signedEvent = sign(30078, [["d", shipping.MERCHANT_SHIPPING_SETTINGS_D_TAG]], 100, shipping.serializeMerchantShippingSettings(settings));
-      await db.merchantShippingSettingsEvidence.put({ pubkey, signedEvent });
-      const before = JSON.stringify(await db.merchantShippingSettingsEvidence.get(pubkey));
-      failWorker();
-      const dependencies = { evidenceDb: db, readRelayUrls: [], signer: { getPublicKey: async () => pubkey,
-        signEvent: async () => { throw new Error("must not sign"); } } };
-      const read = await shipping.fetchMerchantShippingSettings(pubkey, dependencies);
-      assert(read.state === "unavailable" && read.reason === "verification_unavailable", "worker outage classified as invalid document");
-      let blocked = false;
-      try { await shipping.publishMerchantShippingSettings({ pubkey, settings, dependencies }); }
-      catch (error) { blocked = error.message.includes("verification is unavailable"); }
-      assert(blocked, "outage did not block saving");
-      assert(JSON.stringify(await db.merchantShippingSettingsEvidence.get(pubkey)) === before, "outage changed storage");
-      recoverWorker();
-      const recovered = await shipping.fetchMerchantShippingSettings(pubkey, dependencies);
-      assert(recovered.state === "found" && recovered.revision.eventId === signedEvent.id, "shipping settings did not recover");
-    `)
-  }, 20000)
-
-  for (const source of ["network", "concurrent storage"] as const) {
-    it(`reports a verification outage for ${source} evidence arriving during the read`, () => {
-      runScenario(`
-        const signedEvent = sign(30078, [["d", shipping.MERCHANT_SHIPPING_SETTINGS_D_TAG]], 100,
-          shipping.serializeMerchantShippingSettings({ countries: [], shipsFrom: null }));
-        const read = await shipping.fetchMerchantShippingSettings(pubkey, { evidenceDb: db, readRelayUrls: [relays[0]],
-          fetchEvents: async () => {
-            ${source === "concurrent storage" ? "await db.merchantShippingSettingsEvidence.put({ pubkey, signedEvent });" : ""}
-            failWorker();
-            return { events: ${source === "network" ? "[signedEvent]" : "[]"}, eventSourceRelayUrls: {},
-              relays: [{ relayUrl: relays[0], status: "success", eventCount: ${source === "network" ? "1" : "0"} }] };
-          },
-        });
-        assert(read.state === "unavailable" && read.reason === "verification_unavailable", "verification outage was collapsed");
-        const stored = await db.merchantShippingSettingsEvidence.get(pubkey);
-        ${
-          source === "concurrent storage"
-            ? 'assert(JSON.stringify(stored.signedEvent) === JSON.stringify(signedEvent), "concurrent bytes changed");'
-            : 'assert(!stored, "unverified network evidence was stored");'
-        }
-      `)
-    }, 20000)
-  }
 })
