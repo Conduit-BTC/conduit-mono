@@ -461,7 +461,7 @@ These are non-negotiable across all code:
 
 ### Authentication
 
-- NIP-07/NIP-46 and enabled installed-PWA local import share the existing
+- NIP-07/NIP-46 and enabled browser/PWA local import share the existing
   account/session owner. Only `packages/core/src/protocol/local-key/` and its
   storage may possess the imported account secret. No key getters, general
   stores/props, logs, telemetry, network submission, export or product key
@@ -470,9 +470,11 @@ These are non-negotiable across all code:
   [the focused review contract](docs/knowledge/local-signer-security-review.md).
 - Preserve automatic restore, account/revision fencing, cancellation and
   durable logout. Failed deletion is a failure, even after live authority stops.
-  Same-origin compromise is outside this containment model. Physical-iPhone
-  installed-PWA validation and maintainer security review precede production
-  activation. Implementation/preview evidence does not approve a release.
+  Same-origin compromise is outside this containment model. Browser tabs and
+  installed apps support nsec sign-in in managed preview and production builds.
+  Require maintainer security review and report physical-device validation
+  separately from automated browser evidence. Follow the normal reviewed release
+  process; do not silently disable previews while claiming testable delivery.
 - A bounded `guest_ephemeral` browser key may serve one guest order and merchant.
   Keep it only in same-tab session storage for recovery of up to 24 hours. Limit
   signing to the initial private order, same-order payment reports, and the

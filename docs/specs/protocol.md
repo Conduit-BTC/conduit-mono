@@ -35,7 +35,7 @@ protected-read grant and bounded operation scheduler.
 | ------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | NIP-07                    | External browser signer                                      | Existing support                                                                      |
 | NIP-46                    | External remote signer; separate revocable client credential | Existing support                                                                      |
-| Local key                 | Security-critical in-monorepo adapter                        | Existing-account import in installed PWAs; opt-in build flag pending production gates |
+| Local key                 | Security-critical in-monorepo adapter                        | Existing-account import in browser tabs and installed PWAs; enabled in managed builds |
 | Product-generated account | Separate product scope                                       | Not implemented by existing-key import                                                |
 
 ### Contained Local Account Key
@@ -80,8 +80,8 @@ available key would not improve that claim. Buffer clearing is best effort:
 JavaScript strings, engine/library copies, browser backups and device storage
 prevent forensic-erasure guarantees.
 
-Show import only in installed standalone PWAs. Installation is a UX condition,
-not authority. Browsing and NIP-07/NIP-46 stay available. Explain that Safari,
+Show nsec sign-in in ordinary browser tabs and installed standalone PWAs.
+Installation is not required. Browsing and NIP-07/NIP-46 stay available. Explain that Safari,
 installed apps, Market and Merchant can have independent storage partitions;
 an import or logout here does not promise changes elsewhere. Do not add
 account creation, export, cloud backup, wallet derivation or recovery to this
@@ -89,16 +89,19 @@ path.
 
 Require focused security review and the regression/physical-device matrix in
 [`local-signer-security-review.md`](../knowledge/local-signer-security-review.md).
-`VITE_ENABLE_LOCAL_KEY_SIGNER` defaults to false pending production review.
-Composed development tests may enable it with freshly generated disposable
-test identities. No credentials in source/history or test evidence; no traces,
+Managed preview, production and staging builds enable `localKeySignerEnabled`
+through `deploy/pages-profiles.json`. The public manifest records the same value
+used by the runtime. Local development defaults on, with an explicit
+`VITE_ENABLE_LOCAL_KEY_SIGNER=false` override. Composed tests use freshly
+generated disposable test identities. No credentials in source/history or test evidence; no traces,
 screenshots, video or payload logs of import. Existing protected-smoke rules
-remain intact. Before production activation, validate a physical iPhone in
-installed Market/Merchant PWAs: import, reopen, full termination/relaunch,
+remain intact. Test browser-tab sign-in in both deployed previews. Track
+physical iPhone validation separately for Safari and installed Market/Merchant: import, reopen, full termination/relaunch,
 signing, NIP-44, offline/online transitions, storage loss, durable logout and
 reimport, including actual partition behavior. Emulation is supporting evidence.
 Implementation, CI, human review, physical validation and release approval are
-distinct evidence. No production activation is implied by merging code.
+distinct evidence. This code-owned profile enables the feature when deployed;
+verify the deployed commit and observed behavior before reporting it live.
 
 ### Relay Read Authentication
 

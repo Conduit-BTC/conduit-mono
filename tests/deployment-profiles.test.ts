@@ -13,18 +13,53 @@ import {
 } from "../scripts/vite/build_info"
 
 describe("deployment profiles", () => {
-  it("keeps local-key sign-in disabled in managed builds despite environment overrides", () => {
+  it("records explicit local sign-in policy and supports a reviewed rollback", () => {
+    for (const name of ["production", "preview", "staging"] as const) {
+      const profiles = structuredClone(loadPagesProfiles())
+      expect(
+        resolveDeploymentProfile({ CONDUIT_DEPLOYMENT_PROFILE: name }, profiles)
+          .publicFeatures.localKeySignerEnabled
+      ).toBe(true)
+      profiles.profiles[name].publicFeatures.localKeySignerEnabled = false
+      expect(
+        resolveDeploymentProfile(
+          {
+            CONDUIT_DEPLOYMENT_PROFILE: name,
+            VITE_ENABLE_LOCAL_KEY_SIGNER: "true",
+          },
+          profiles
+        ).publicFeatures.localKeySignerEnabled
+      ).toBe(false)
+      delete (
+        profiles.profiles[name].publicFeatures as Partial<
+          (typeof profiles.profiles)[typeof name]["publicFeatures"]
+        >
+      ).localKeySignerEnabled
+      expect(() => parsePagesProfiles(profiles)).toThrow(
+        "must explicitly set localKeySignerEnabled"
+      )
+    }
+    expect(
+      resolveDeploymentProfile({}).publicFeatures.localKeySignerEnabled
+    ).toBe(true)
+    expect(
+      resolveDeploymentProfile({ VITE_ENABLE_LOCAL_KEY_SIGNER: "false" })
+        .publicFeatures.localKeySignerEnabled
+    ).toBe(false)
+  })
+
+  it("enables local-key sign-in in managed builds despite stale dashboard overrides", () => {
     const profile = process.env.CONDUIT_DEPLOYMENT_PROFILE
     const enabled = process.env.VITE_ENABLE_LOCAL_KEY_SIGNER
     try {
-      process.env.VITE_ENABLE_LOCAL_KEY_SIGNER = "true"
+      process.env.VITE_ENABLE_LOCAL_KEY_SIGNER = "false"
       for (const name of ["production", "preview", "staging"]) {
         process.env.CONDUIT_DEPLOYMENT_PROFILE = name
         for (const app of ["market", "merchant"]) {
           expect(
             createConduitBuildContract(`${import.meta.dir}/../apps/${app}`)
               .define["import.meta.env.VITE_ENABLE_LOCAL_KEY_SIGNER"]
-          ).toBe('"false"')
+          ).toBe('"true"')
         }
       }
     } finally {
@@ -470,6 +505,7 @@ describe("deployment profiles", () => {
       "breezLightningAddressEnabled",
       "dmCompatibilityOrderRoutingEnabled",
       "livePresenceEnabled",
+      "localKeySignerEnabled",
       "quantumRouterEnabled",
       "quantumRouterExecutionEnabled",
     ])

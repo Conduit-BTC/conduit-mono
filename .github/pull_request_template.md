@@ -67,7 +67,7 @@ Author proposal. Select one:
 
 ## Risk Review
 
-- [ ] NIP-07/NIP-46 remain available; any installed-PWA existing-NSEC path follows
+- [ ] NIP-07/NIP-46 remain available; any browser/PWA existing-NSEC path follows
       the contained in-monorepo lifecycle and production requirements in `docs/specs/protocol.md`
 - [ ] Imported account secrets stay inside the in-monorepo local-key module and
       its storage; no general props/context, logs, telemetry or server submission.

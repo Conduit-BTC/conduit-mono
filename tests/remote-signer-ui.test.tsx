@@ -44,6 +44,22 @@ function hasDisabledButton(markup: string, label: string): boolean {
 }
 
 describe("remote signer UI", () => {
+  it("offers nsec alongside external signers without requiring installed mode", () => {
+    for (const platform of ["desktop", "ios", "android"] as const) {
+      const markup = renderToStaticMarkup(
+        <SignerConnectPanel
+          {...commonProps}
+          platform={platform}
+          localKeyEnabled
+          onImportLocalKey={() => undefined}
+        />
+      )
+      expect(markup.includes("Sign in with nsec")).toBe(true)
+      expect(markup.includes('type="password"')).toBe(true)
+      expect(markup.includes("Existing Nostr secret key")).toBe(true)
+    }
+  })
+
   it("detects phone and touch-first iPad environments", () => {
     expect(
       isMobileSignerEnvironment({ userAgent: "Mozilla/5.0 (iPhone) Mobile" })

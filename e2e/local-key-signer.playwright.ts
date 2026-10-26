@@ -47,10 +47,9 @@ for (const app of ["market", "merchant"] as const) {
     app === "market" ? "Open account menu" : "Open merchant account menu"
   const home = `http://127.0.0.1:${port}/${app === "market" ? "products" : ""}`
 
-  test(`${app} installed local account uses shared authority, envelopes, restore and durable removal @${app}`, async ({
+  test(`${app} browser tab local account uses shared authority, envelopes, restore and durable removal @${app}`, async ({
     page,
   }) => {
-    await installed(page)
     await page.goto(home)
     if (app === "market")
       await page
@@ -187,6 +186,169 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Connect", exact: true })
         .first()
         .click()
+    await importAccount(page)
+    await expect.poll(() => hasOwner(page)).toBe(true)
+  })
+
+  for (const delay of ["lock", "storage"] as const) {
+    test(`${app} dismissing local import during ${delay} leaves no saved account @${app}`, async ({
+      page,
+    }) => {
+      // These signer-free routes expose each app's real header account dialog.
+      await page.goto(
+        `http://127.0.0.1:${port}/${app === "market" ? "products" : "wallet"}`,
+        {
+          waitUntil: "domcontentloaded",
+        }
+      )
+      await page
+        .getByRole("button", { name: "Connect", exact: true })
+        .first()
+        .click()
+      await page.evaluate(
+        async ({ root, delay }) => {
+          const state = { waiting: false, release: () => {}, restore: () => {} }
+          Object.assign(window, { localImportDelay: state })
+          const barrier = new Promise<void>((resolve) => {
+            state.release = resolve
+          })
+          if (delay === "lock") {
+            void navigator.locks.request("conduit-auth-operation", async () => {
+              state.waiting = true
+              await barrier
+            })
+          } else {
+            const { LocalKeyStorage } = await import(
+              `${root}/local-key/storage.ts`
+            )
+            const write = LocalKeyStorage.prototype.write
+            LocalKeyStorage.prototype.write = async function (...args) {
+              await write.apply(this, args)
+              state.waiting = true
+              await barrier
+            }
+            state.restore = () => {
+              LocalKeyStorage.prototype.write = write
+            }
+          }
+        },
+        { root: protocol, delay }
+      )
+      if (delay === "lock")
+        await expect
+          .poll(() =>
+            page.evaluate(
+              () =>
+                (
+                  window as unknown as {
+                    localImportDelay: { waiting: boolean }
+                  }
+                ).localImportDelay.waiting
+            )
+          )
+          .toBe(true)
+      await importAccount(page)
+      await expect(
+        page.getByRole("button", { name: "Signing in…", exact: true })
+      ).toBeVisible()
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as unknown as { localImportDelay: { waiting: boolean } })
+                .localImportDelay.waiting
+          )
+        )
+        .toBe(true)
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: "Close", exact: true })
+        .click()
+      await expect(page.getByRole("dialog")).toBeHidden()
+      await page.evaluate(() => {
+        const state = (
+          window as unknown as {
+            localImportDelay: { release: () => void; restore: () => void }
+          }
+        ).localImportDelay
+        state.restore()
+        state.release()
+      })
+      // Drain the actual auth operation, including rollback, before inspecting.
+      await page.evaluate(() =>
+        navigator.locks.request("conduit-auth-operation", () => undefined)
+      )
+      const result = await page.evaluate(async (root) => {
+        const auth = await import(`${root}/auth-session.ts`)
+        const owner = await import(`${root}/session-signer.ts`)
+        const exists = (await indexedDB.databases()).some(
+          (database) => database.name === "conduit-local-key"
+        )
+        const empty =
+          !exists ||
+          (await new Promise<boolean>((resolve, reject) => {
+            const open = indexedDB.open("conduit-local-key", 1)
+            open.onerror = () => reject(new Error("LOCAL_TEST_STORAGE_FAILED"))
+            open.onsuccess = () => {
+              const db = open.result
+              if (!db.objectStoreNames.contains("record")) {
+                db.close()
+                resolve(true)
+                return
+              }
+              const tx = db.transaction("record", "readonly")
+              const count = tx.objectStore("record").count()
+              tx.oncomplete = () => {
+                db.close()
+                resolve(count.result === 0)
+              }
+              tx.onerror = () => {
+                db.close()
+                reject(new Error("LOCAL_TEST_STORAGE_FAILED"))
+              }
+            }
+          }))
+        return {
+          empty,
+          noSession: auth.readAuthSession() === null,
+          noOwner: !owner.getAccountSigner(),
+        }
+      }, protocol)
+      expect(result).toEqual({ empty: true, noSession: true, noOwner: true })
+      await page.reload()
+      await expect(
+        page.getByRole("button", { name: "Connect", exact: true }).first()
+      ).toBeVisible()
+      expect(await hasOwner(page)).toBe(false)
+      await page
+        .getByRole("button", { name: "Connect", exact: true })
+        .first()
+        .click()
+      await importAccount(page)
+      await expect.poll(() => hasOwner(page)).toBe(true)
+    })
+  }
+
+  test(`${app} invalid nsec stays signed out and allows correction in a browser tab @${app}`, async ({
+    page,
+  }) => {
+    await page.goto(home)
+    if (app === "market")
+      await page
+        .getByRole("button", { name: "Connect", exact: true })
+        .first()
+        .click()
+    await page
+      .getByLabel("Existing Nostr secret key", { exact: true })
+      .fill("invalid input")
+    await page
+      .getByRole("button", { name: "Sign in with nsec", exact: true })
+      .click()
+    await expect(page.getByRole("alert").first()).toBeVisible()
+    expect(await hasOwner(page)).toBe(false)
+    await expect(
+      page.getByLabel("Existing Nostr secret key", { exact: true })
+    ).toHaveValue("")
     await importAccount(page)
     await expect.poll(() => hasOwner(page)).toBe(true)
   })

@@ -1,10 +1,14 @@
 # Contained local signer: security and acceptance
 
-The optional installed-PWA existing-account signer lives in
+The optional browser/PWA existing-account signer lives in
 `packages/core/src/protocol/local-key/`. NIP-07, NIP-46 and local keys share
-`AuthProvider`, `AccountSigner` and `SessionSigner`. Production activation
-defaults off (`VITE_ENABLE_LOCAL_KEY_SIGNER=false`) pending focused review and
-physical-device evidence. Import is not product account creation.
+`AuthProvider`, `AccountSigner` and `SessionSigner`. Existing-nsec sign-in is
+available in ordinary browser tabs and installed apps. Managed preview,
+production and staging profiles enable `localKeySignerEnabled` in
+`deploy/pages-profiles.json`; the compiled value and public deployment manifest
+come from that policy, regardless of stale dashboard environment overrides.
+Local development enables it by default and may explicitly disable it with
+`VITE_ENABLE_LOCAL_KEY_SIGNER=false`. Import is not product account creation.
 
 ## Architecture and ownership
 
@@ -91,23 +95,28 @@ code-owner review and stale-review dismissal are enabled. Recheck before release
 - Run credential history and boundary guards. Generate disposable identities at
   runtime. No real/fixed credentials or key-bearing logs, traces, screenshots,
   videos or evidence. Protected-smoke credential rules remain intact.
-- Managed build profiles compile local-key sign-in off, including when an
-  environment override requests activation. Local browser fixtures enable it
-  explicitly for isolated testing.
-- Keep activation disabled until focused review, physical evidence and an
-  explicit production decision. CI and emulation do not replace those gates.
+- Managed builds must expose the same testable browser/PWA sign-in flow in
+  preview and production. Verify the exact deployed commit and manifest flag,
+  then exercise import, restore, cancellation and removal in both applications.
+- Focused review and normal branch protections still apply. Record physical
+  evidence or its absence honestly; CI and emulation do not prove physical
+  persistence. Do not substitute an installed-mode or hidden preview gate for
+  testing the actual user flow.
+- To disable a managed profile, change its `localKeySignerEnabled` boolean and
+  deploy the reviewed build. Disabling sign-in does not delete persisted keys;
+  retain removal/retry controls and never claim rollback erased stored keys.
 
 ## Acceptance and physical evidence
 
 | ID    | Required evidence                                                                                                                           |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| LS-01 | Shared installed-PWA option; browsing and NIP-07/NIP-46 preserved                                                                           |
+| LS-01 | Shared browser-tab and installed-PWA option; browsing and NIP-07/NIP-46 preserved                                                           |
 | LS-02 | Exclusive secret ownership, narrow API, dependency/leakage guards, honest threat model                                                      |
 | LS-03 | Persistence, automatic restore/reopen, malformed/lost/unavailable storage, failed writes                                                    |
 | LS-04 | Real signatures, official NIP-44 vector, independent NIP-44/NIP-04/NIP-59 and composed Market/Merchant owner flows                          |
 | LS-05 | Replacement/revision fencing, stale completion, cancellation, pending logout, failed deletion, durable removal and no restore after restart |
 | LS-06 | Corrected policy, content-free diagnostics, credential history and focused maintainer sign-off                                              |
-| LS-07 | Current-head checks, browser coverage, physical-iPhone matrix, explicit production decision                                                 |
+| LS-07 | Current-head checks, deployed preview/production availability, browser coverage and separately recorded physical-iPhone evidence            |
 
 Record exact heads/results in the implementation PR. Physical iPhone evidence
 must record device/iOS, build, Safari versus installed Market/Merchant, import,

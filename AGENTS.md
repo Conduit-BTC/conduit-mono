@@ -76,7 +76,7 @@ Read only the references the task actually needs. A route can cross several boun
 
 - Account signing uses one shared `AccountSigner` / `SessionSigner` authority,
   installed and retired by `AuthProvider`. NIP-07, NIP-46 and the optional
-  installed-PWA existing-key adapter use that same owner. Only
+  browser/PWA existing-key adapter use that same owner. Only
   `packages/core/src/protocol/local-key/` and its tightly coupled storage may
   possess an imported account secret. The uncontrolled import input passes its
   element directly to this boundary; no other product code reads its value.
@@ -86,8 +86,8 @@ Read only the references the task actually needs. A route can cross several boun
   compromised same-origin code. Explicit logout must durably remove the record;
   failed deletion revokes live signing but must remain a visible removal failure.
   See `docs/knowledge/local-signer-security-review.md` for focused ownership,
-  review, crypto/lifecycle tests and physical-iPhone production gates. Installed
-  mode is a UX gate. Preserve browsing and external signers. The guest-order,
+  review, crypto/lifecycle tests and separately recorded physical-iPhone evidence.
+  Browser tabs and installed apps both support import. Preserve browsing and external signers. The guest-order,
   NIP-46 client-key and Portable Wallet boundaries remain distinct exceptions;
   none permits product Nostr account creation. The device-owned `/wallet` works
   without a connected signer.

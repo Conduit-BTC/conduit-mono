@@ -257,8 +257,8 @@ must not paste an `nsec` into Market or Merchant.
 
 ### Contained local import regressions
 
-Hermetic local-key tests enable `VITE_ENABLE_LOCAL_KEY_SIGNER` only in test app
-servers and emulate installed display mode. A tightly scoped browser fixture
+Hermetic local-key tests exercise ordinary browser tabs and installed-mode
+emulation with the same enabled sign-in path as managed builds. A tightly scoped browser fixture
 generates a disposable identity, places its import representation directly in
 the uncontrolled import input, clears accessible secret bytes and submits that
 input to the real local-key boundary. No key is returned to the test runner,
@@ -269,7 +269,7 @@ These tests exercise the shared `AuthProvider` in both apps, real signatures,
 NIP-44, shared NIP-59 envelopes/publication, automatic restore, storage loss,
 durable logout and failed-deletion retry after restart. Emulation does not prove
 physical-iPhone installation, termination or storage partition behavior. See
-`docs/knowledge/local-signer-security-review.md` for the activation gate.
+`docs/knowledge/local-signer-security-review.md` for review and deployment evidence.
 
 ## Hermetic Commerce Smoke
 

@@ -96,7 +96,7 @@ status are maintained in the guide rather than duplicated here.
 ### Auth and payments
 
 - Market and Merchant share one account/session owner for NIP-07, NIP-46
-  and optional installed-PWA local import. Only the security-critical
+  and optional browser/PWA local import. Only the security-critical
   `packages/core/src/protocol/local-key/` module and storage possess the
   imported secret; other code requests signer capabilities. Use mature
   `nostr-tools` primitives, official NIP vectors and independent signature/

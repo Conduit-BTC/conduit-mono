@@ -30,12 +30,12 @@ compatibility differences, and unmerged proposal dependencies.
 | [NIP-89](https://github.com/nostr-protocol/nips/blob/master/89.md)                                                                        | App handler discovery metadata and outbound client attribution | Both, publish/attach; descriptor publishing is an operator step | [`nip89.ts`](../packages/core/src/protocol/nip89.ts)                                                                               |
 
 NIP-42 authenticates a relay session; it is not Conduit account login. NIP-07
-and NIP-46 keep account keys in external signers. Optional installed-PWA
+and NIP-46 keep account keys in external signers. Optional browser/PWA
 existing-account import uses NIP-19 decoding and a contained
 [local-key adapter](../packages/core/src/protocol/local-key/index.ts) behind the
 same shared account/session owner. The adapter alone owns the secret and its
-device-local storage. This path defaults off pending security review and
-physical-device validation; it does not protect against compromised same-origin
+device-local storage. This path is enabled for browser tabs and installed apps
+in preview and production; it does not protect against compromised same-origin
 code. See the [local signer contract](specs/protocol.md#contained-local-account-key).
 A guest order may use a temporary order-scoped browser key, and NIP-46 may use
 an encrypted browser-local client connection key; these remain separate,

@@ -73,7 +73,8 @@
         "livePresenceEnabled": true,
         "quantumRouterEnabled": true,
         "quantumRouterExecutionEnabled": true,
-        "breezLightningAddressEnabled": true
+        "breezLightningAddressEnabled": true,
+        "localKeySignerEnabled": true
       }
     },
     "production": {
@@ -84,7 +85,8 @@
         "livePresenceEnabled": true,
         "quantumRouterEnabled": false,
         "quantumRouterExecutionEnabled": false,
-        "breezLightningAddressEnabled": true
+        "breezLightningAddressEnabled": true,
+        "localKeySignerEnabled": true
       }
     },
     "staging": {
@@ -95,7 +97,8 @@
         "livePresenceEnabled": false,
         "quantumRouterEnabled": false,
         "quantumRouterExecutionEnabled": false,
-        "breezLightningAddressEnabled": false
+        "breezLightningAddressEnabled": false,
+        "localKeySignerEnabled": true
       }
     }
   }

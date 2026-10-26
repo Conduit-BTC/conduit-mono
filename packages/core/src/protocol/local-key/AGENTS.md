@@ -14,5 +14,7 @@ Read `docs/knowledge/local-signer-security-review.md` before editing.
 - Run crypto/lifecycle/boundary tests, composed app tests, credential-history
   guards and relevant type/lint/build checks. Runtime disposable identities and
   public official vectors only; no key-bearing artifacts.
-- Require focused maintainer review of this area and auth/input changes. Keep
-  activation off pending physical-iPhone/PWA validation and release approval.
+- Require focused maintainer review of this area and auth/input changes.
+  Browser-tab and installed-PWA import is enabled in managed preview/production
+  builds. Preserve the reviewed deployment profile, test composed flows, and
+  report physical-device evidence separately without claiming emulation proves it.

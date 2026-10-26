@@ -165,10 +165,10 @@ export function createConduitBuildContract(appDir: string): {
   // Local Vite dotenv settings are loaded after this contract is created.
   // Only managed profiles override treasury variables; staging clears all rails.
   if (profile.name !== "local") {
-    // Imported account keys require a separate activation decision. Dashboard
-    // environment overrides cannot enable the development-only import surface.
-    define["import.meta.env.VITE_ENABLE_LOCAL_KEY_SIGNER"] =
-      JSON.stringify("false")
+    // Managed sign-in availability is code-owned and visible in the manifest.
+    define["import.meta.env.VITE_ENABLE_LOCAL_KEY_SIGNER"] = JSON.stringify(
+      profile.publicFeatures.localKeySignerEnabled ? "true" : "false"
+    )
     define["import.meta.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS"] =
       JSON.stringify(profile.quantumRouterTreasury.mainnetAddress)
     define["import.meta.env.VITE_CONDUIT_SPARK_REGTEST_TREASURY_ADDRESS"] =

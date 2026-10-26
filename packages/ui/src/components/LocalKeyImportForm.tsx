@@ -39,6 +39,9 @@ export function LocalKeyImportForm({
         }
       }}
     >
+      <h3 className="text-balance text-base font-semibold">
+        Sign in with nsec
+      </h3>
       <label htmlFor={id} className="block text-sm font-medium">
         Existing Nostr secret key
       </label>
@@ -54,11 +57,15 @@ export function LocalKeyImportForm({
         aria-describedby={`${id}-help`}
         placeholder="nsec…"
       />
-      <p id={`${id}-help`} className="text-sm text-[var(--text-secondary)]">
-        Import an account you have already backed up. This app stores its key on
-        this device and signs automatically. Site scripts can use the signer.
+      <p
+        id={`${id}-help`}
+        className="text-pretty text-sm text-[var(--text-secondary)]"
+      >
+        Use an existing account you have backed up. Your key stays in this
+        browser for automatic sign-in. This site can use it to sign for you.
         Sign out to remove it here. Keep your backup; Conduit cannot recover it.
-        Market and Merchant may need separate imports.
+        Other browsers, installed apps, Market and Merchant may need separate
+        sign-ins.
       </p>
       {failed && (
         <p role="alert" className="text-sm text-error-text">
@@ -67,7 +74,7 @@ export function LocalKeyImportForm({
         </p>
       )}
       <Button type="submit" disabled={disabled || pending} className="w-full">
-        {pending ? "Importing…" : "Import existing account"}
+        {pending ? "Signing in…" : "Sign in with nsec"}
       </Button>
     </form>
   )

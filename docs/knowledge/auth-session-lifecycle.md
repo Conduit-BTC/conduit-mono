@@ -3,8 +3,8 @@
 `AuthProvider` remains the account lifecycle owner. `AccountSigner` is the
 operation contract, and `SessionSigner` remains the single active signing owner.
 Relay clients do not own account authority. NIP-07, NIP-46 and the contained
-local-key adapter share this owner. The optional installed-PWA local path
-defaults off pending focused security review and physical-device validation;
+local-key adapter share this owner. The optional browser/PWA local path
+is enabled in preview and production browser tabs and installed apps;
 see the [local signer contract](local-signer-security-review.md).
 
 ## Responsibilities
@@ -99,9 +99,10 @@ belong to a separate integration. Real-signer, composed Market/Merchant and
 physical-device evidence remain distinct from this shared-lifecycle extraction.
 
 Contained import UI, persistence and composed Market/Merchant coverage use the
-existing publication, NIP-17/NIP-59 and inbox owners. Physical iPhone PWA
-storage/logout validation and a separate production decision remain activation
-gates; emulated coverage does not establish physical-device behavior.
+existing publication, NIP-17/NIP-59 and inbox owners. Managed preview and
+production builds enable this same flow in browser tabs and installed apps.
+Record physical iPhone storage/logout validation separately; emulated coverage
+does not establish physical-device behavior.
 
 ## Wallet recovery boundary
 

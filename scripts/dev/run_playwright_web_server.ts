@@ -27,7 +27,7 @@ export function resolvePlaywrightWebServerTarget(
   const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 
   const sharedAppEnv = {
-    // Hermetic app fixtures only. Production activation remains disabled.
+    // Match the supported sign-in flow with disposable hermetic identities.
     VITE_ENABLE_LOCAL_KEY_SIGNER: "true",
     VITE_DISABLE_DEVTOOLS: "true",
     VITE_E2E_RELAY_URL: relayUrl,

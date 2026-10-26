@@ -585,7 +585,7 @@ export async function resolveFailedAuthAttempt(options: {
 }
 
 export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) {
-  const localKeyEnabled = import.meta.env?.VITE_ENABLE_LOCAL_KEY_SIGNER === "true"
+  const localKeyEnabled = import.meta.env?.VITE_ENABLE_LOCAL_KEY_SIGNER !== "false"
   const initialSessionRef = useRef<AuthSession | null>(readAuthSession())
   const [initialRemoval] = useState(readPendingLocalKeyRemoval)
   const [accountPubkey, setAccountPubkeyState] = useState<string | null>(() =>

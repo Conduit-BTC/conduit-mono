@@ -492,7 +492,9 @@ function ConnectGate() {
           helperText={
             isProbablyMobileBrowser
               ? "Approve sign-in in your app, then return here."
-              : "Choose a browser extension or remote signer."
+              : localKeyEnabled
+                ? "Sign in with your nsec, a browser extension, or a remote signer."
+                : "Choose a browser extension or remote signer."
           }
           unlockLabel="UNLOCK YOUR COMMAND CENTER"
           unlockItems={[

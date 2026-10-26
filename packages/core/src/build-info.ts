@@ -14,6 +14,7 @@ export interface ConduitBuildInfo {
     quantumRouterEnabled: boolean
     quantumRouterExecutionEnabled: boolean
     breezLightningAddressEnabled: boolean
+    localKeySignerEnabled: boolean
   }
 }
 
@@ -65,6 +66,8 @@ export const conduitBuildInfo: ConduitBuildInfo = Object.freeze({
     clean(import.meta.env.VITE_DEPLOYMENT_PROFILE) ?? "unknown",
   publicConfigDigest: clean(import.meta.env.VITE_PUBLIC_CONFIG_DIGEST),
   publicFeatures: Object.freeze({
+    localKeySignerEnabled:
+      import.meta.env?.VITE_ENABLE_LOCAL_KEY_SIGNER !== "false",
     breezLightningAddressEnabled:
       import.meta.env?.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED === "true",
     dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(

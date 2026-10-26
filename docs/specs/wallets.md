@@ -26,7 +26,7 @@ names remain local.
 ## Ownership and key boundary
 
 Nostr authentication follows the signer boundary in `protocol.md`: NIP-07 and
-NIP-46 remain available, and the optional installed-PWA existing-NSEC path keeps
+NIP-46 remain available, and the optional browser/PWA existing-NSEC path keeps
 the account secret exclusively in the in-monorepo local-key implementation
 and its storage. Wallet code never receives, derives, persists or transmits
 that secret; it asks the shared account signer for operations. The wallet provider

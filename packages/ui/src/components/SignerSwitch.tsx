@@ -326,15 +326,7 @@ function SignerDisconnectedContent({
   const platform =
     requestedPlatform ?? (mobile === false ? "desktop" : getSignerPlatform())
   const isMobile = mobile ?? platform !== "desktop"
-  const [installed] = useState(
-    () =>
-      typeof window !== "undefined" &&
-      (window.matchMedia?.("(display-mode: standalone)").matches ||
-        (typeof navigator !== "undefined" &&
-          (navigator as Navigator & { standalone?: boolean }).standalone ===
-            true))
-  )
-  const localAvailable = !!localKeyEnabled && installed && !!onImportLocalKey
+  const localAvailable = !!localKeyEnabled && !!onImportLocalKey
   const reconnectOnly =
     rememberedMethod === "nip46" || rememberedMethod === "local"
   const pairing = useSignerPairing({
@@ -408,6 +400,13 @@ function SignerDisconnectedContent({
             </Button>
           )}
 
+        {localAvailable && onImportLocalKey && (
+          <LocalKeyImportForm
+            disabled={connectDisabled || connectPending}
+            onImport={(input) => pairing.run(() => onImportLocalKey(input))}
+          />
+        )}
+
         {!reconnectOnly && (!isMobile || rememberedMethod !== "nip07") && (
           <ExtensionConnectButton
             connectPending={connectPending && connectingMethod === "nip07"}
@@ -439,13 +438,6 @@ function SignerDisconnectedContent({
             onConnectNostrConnect={pairing.start}
             onConnectBunker={(uri) => pairing.run(() => onConnectRemote(uri))}
             onCancelConnect={pairing.cancel}
-          />
-        )}
-
-        {localAvailable && onImportLocalKey && (
-          <LocalKeyImportForm
-            disabled={connectDisabled || connectPending}
-            onImport={onImportLocalKey}
           />
         )}
 
@@ -738,7 +730,11 @@ export function SignerSwitch({
                 )}
                 {isOpen && !isWorking && (
                   <SignerDisconnectedContent
-                    helperText="Choose a browser extension or remote signer."
+                    helperText={
+                      localKeyEnabled
+                        ? "Sign in with your nsec, a browser extension, or a remote signer."
+                        : "Choose a browser extension or remote signer."
+                    }
                     unlockItems={unlockItems}
                     error={error}
                     authUrl={authUrl}

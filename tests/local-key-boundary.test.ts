@@ -129,6 +129,6 @@ describe("local account secret containment", () => {
       /\bonChange=|\bvalue=|\.value(?!\s*=\s*"")|\bconsole\./.test(source)
     ).toBe(false)
     const env = await Bun.file(".env.example").text()
-    expect(env.includes("VITE_ENABLE_LOCAL_KEY_SIGNER=false")).toBe(true)
+    expect(env.includes("VITE_ENABLE_LOCAL_KEY_SIGNER=true")).toBe(true)
   })
 })

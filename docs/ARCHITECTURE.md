@@ -121,11 +121,13 @@ decoding, storage, restore, key use and deletion. It uses the already pinned
 `nostr-tools` crypto; consumers ask for operations and never receive secrets.
 The local method shares account fencing, the operation scheduler, publication
 owners and NIP-17/NIP-59 helpers. There is no hosted signer or parallel authority.
-The optional installed-PWA path restores automatically and removes its record
+The optional browser/PWA path restores automatically and removes its record
 on explicit logout; failed deletion remains visible. Same-origin compromise is
 outside the containment guarantee. No independent unlock or hardware-backed
-protection is claimed. Production activation remains gated on focused review
-and physical-iPhone evidence; the opt-in build flag defaults off. See
+protection is claimed. Browser tabs and installed apps expose existing-key sign-in.
+Managed preview and production builds enable it through the versioned deployment
+profile. Focused security review and honest device-validation evidence remain
+required; browser emulation is not physical-device proof. See
 [`protocol.md`](specs/protocol.md#contained-local-account-key) and
 [`local-signer-security-review.md`](knowledge/local-signer-security-review.md).
 

@@ -2,7 +2,13 @@
 
 Market and Merchant share the sign-in panel in `@conduit/ui`. It presents browser
 signers and app choices before protocol terminology while preserving standard
-NIP-07 and NIP-46 connections.
+NIP-07 and NIP-46 connections. Existing-nsec sign-in is also visible in ordinary
+browser tabs and installed apps in preview and production. The shared password
+input passes its element directly to the contained core import boundary; no
+secret value enters React state or application callbacks. A successful import
+restores on later visits; explicit sign-out removes the key from this storage
+partition. Market, Merchant, other browsers and installed apps may need separate
+sign-ins. Clearing site data requires reimport from the user's own backup.
 
 ## Platform choices
 
@@ -49,8 +55,10 @@ any compatible signer; the protocol does not attest app brands.
 
 ## Preparation and cancellation
 
-The iOS and Android panels prepare one request on their initial eligible mount.
-Preparation is suppressed during restoration or another operation, for a remembered
+The iOS and Android panels prepare one request on their initial eligible mount
+when local sign-in is unavailable. With nsec available, remote pairing starts
+only when chosen so it does not block local import. Preparation is also
+suppressed during restoration or another operation, for a remembered
 session, or while an error or existing request is present. The Clave Universal Link
 and Amber intent remain native anchors so the user's tap can open the app without
 an asynchronous redirect. Preparing a URI does not prove the signer is installed
@@ -59,7 +67,9 @@ after cancellation. Mobile "Cancel pairing" appears only after the user starts
 or opens a pairing; background preparation does not add a cancel action to the
 initial choices.
 
-The panel owns its generated and pasted-bunker attempts. Closing it, canceling,
+The panel owns its generated, pasted-bunker and local-import attempts. Local
+import uses the same attempt owner synchronously, before awaiting locks or
+storage; dismissal aborts the exact pending attempt and rolls back its candidate. Closing it, canceling,
 or changing to bunker entry cancels owned work.
 StrictMode cleanup and late promise settlement cannot cancel a replacement
 attempt. Authentication state confirms success: a canceled core promise may
@@ -83,7 +93,7 @@ session is established, pairing-path UI no longer controls transport: the shared
 NIP-46 session health, relay negotiation, foreground recovery, and explicit
 reconnect model apply.
 
-The UI never asks users to transfer private keys. Browser app-opening settings and
+External signer paths never ask users to transfer private keys. Browser app-opening settings and
 missing apps have copy/manual/install recovery; there is no install detection.
 
 ## Evidence and required QA

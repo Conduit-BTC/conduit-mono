@@ -564,6 +564,7 @@ describe("fixed public Cloudflare check read", () => {
       "quantumRouterEnabled",
       "quantumRouterExecutionEnabled",
       "breezLightningAddressEnabled",
+      "localKeySignerEnabled",
     ]) {
       expect(script).toContain(field)
     }
