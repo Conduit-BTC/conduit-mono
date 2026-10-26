@@ -206,7 +206,10 @@ export async function prepareControlledWallet(page: Page) {
               probe.disconnects++
             },
             async getAddressIdentity() {
-              const { deriveSparkRecoveryIdentity } = await import(sdkUrl)
+              // Init scripts have a web-inspector: base URL in WebKit.
+              const { deriveSparkRecoveryIdentity } = await import(
+                new URL(sdkUrl, window.location.origin).href
+              )
               return deriveSparkRecoveryIdentity({
                 mnemonic: input.mnemonic,
                 accountNumber: input.accountNumber,
