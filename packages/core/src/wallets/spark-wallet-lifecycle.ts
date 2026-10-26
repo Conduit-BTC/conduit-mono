@@ -12,6 +12,7 @@ export type SparkWalletOperationRunner = <T>(
 ) => Promise<T>
 
 export interface SparkWalletLifecycleManager {
+  isOpen?(walletId: string): boolean
   openWithMnemonic(input: {
     walletId: string
     mnemonic: string
@@ -66,10 +67,13 @@ export async function openRegisteredSparkWallet(
 
     const { commitAfterOpen, ...openInput } =
       await input.resolveOpenInput(registration)
-    await input.manager.openWithMnemonic({
-      walletId: input.walletId,
-      ...openInput,
-    })
+    // Setup and automatic unlock can queue before either has attached a client.
+    // Reuse the authorized session opened ahead of us under this same lock.
+    if (!input.manager.isOpen?.(input.walletId))
+      await input.manager.openWithMnemonic({
+        walletId: input.walletId,
+        ...openInput,
+      })
 
     await validateOpenRegistration(input, registration)
     await input.afterOpen?.()

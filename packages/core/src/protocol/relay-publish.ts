@@ -48,12 +48,7 @@ import {
 } from "./relay-authority"
 import { createDefaultAccountNetworkRoutingPolicy } from "./account-network-routing-policy"
 
-import {
-  isAddressRequestsDTag,
-  isSparkWalletRegistryDTag,
-  isWalletNamesDTag,
-  parseSparkRecoveryChoiceAddress,
-} from "../wallets/spark-recovery-address"
+import { PORTABLE_WALLET_PREFIX } from "../wallets/portable-wallet-address"
 
 const STANDARD_PUBLISH_TIMEOUT_MS = 5_000
 const CRITICAL_PUBLISH_TIMEOUT_MS = 10_000
@@ -311,11 +306,9 @@ function assertRelayAuthenticationConfiguration(
         event.tags.some(
           (tag) =>
             tag[0] === "d" &&
-            (tag[1]?.startsWith("conduit:spark:wallet:v1:") ||
-              !!parseSparkRecoveryChoiceAddress(tag[1]) ||
-              isSparkWalletRegistryDTag(tag[1]) ||
-              isWalletNamesDTag(tag[1]) ||
-              isAddressRequestsDTag(tag[1]))
+            new RegExp("^" + PORTABLE_WALLET_PREFIX + "[0-9a-f]{64}$").test(
+              tag[1] ?? ""
+            )
         ))
     ) ||
     !input.exclusiveRelayUrls ||

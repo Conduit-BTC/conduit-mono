@@ -77,7 +77,7 @@ describe("bounded Event Market discovery storage", () => {
     const upgraded = new ConduitDB(name, { indexedDB, IDBKeyRange })
     databases.push(upgraded)
     await upgraded.open()
-    expect(upgraded.verno).toBe(30)
+    expect(upgraded.verno).toBe(31)
     expect(
       upgraded.eventMarketRosterEvidence.schema.idxByName.discoveryBytes
     ).toBeDefined()

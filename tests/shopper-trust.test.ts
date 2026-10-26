@@ -169,7 +169,7 @@ function createCache(
 
 describe("shopper trust evidence", () => {
   it("registers the combined cache, deletion, signed-network, wallet, shipping, event-market, invoice, and Spark recovery stores", () => {
-    expect(db.verno).toBe(30)
+    expect(db.verno).toBe(31)
     expect(db.tables.map(({ name }) => name)).toEqual(
       expect.arrayContaining([
         "shopperTrustSnapshots",
@@ -259,7 +259,7 @@ describe("shopper trust evidence", () => {
     const upgraded = new ConduitDB(name, options)
     try {
       await upgraded.open()
-      expect(upgraded.verno).toBe(30)
+      expect(upgraded.verno).toBe(31)
       expect(await upgraded.shopperTrustSnapshots.get(snapshot.id)).toEqual(
         snapshot
       )

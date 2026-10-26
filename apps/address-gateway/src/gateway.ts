@@ -9,6 +9,12 @@ import {
 } from "@conduit/core/wallets/address-name-request"
 import { breezAddressMessage } from "@conduit/core/wallets/breez-lightning-address"
 import { verifyEvent, type Event } from "nostr-tools/pure"
+import { boundedText } from "./bounded-text"
+import {
+  admitPreviewOrigin,
+  previewProject,
+  type PreviewOriginEnv,
+} from "./preview-origin"
 
 export interface ApprovedName {
   name: string
@@ -25,7 +31,7 @@ export interface Statement {
   first<T>(): Promise<T | null>
   run(): Promise<{ success: boolean; meta: { changes: number } }>
 }
-export interface AddressGatewayEnv {
+export interface AddressGatewayEnv extends PreviewOriginEnv {
   ADDRESS_REQUESTS: { prepare(sql: string): Statement }
   REQUEST_RATE_LIMITER: {
     limit(input: { key: string }): Promise<{ success: boolean }>
@@ -67,38 +73,6 @@ export function validateApprovedNames(names: ApprovedName[]): void {
     .map((n) => n.sparkIdentity)
   if (new Set(registrations).size !== registrations.length)
     throw new Error("Conflicting wallet approvals.")
-}
-async function boundedText(
-  body: ReadableStream<Uint8Array> | null,
-  max: number
-): Promise<string> {
-  if (!body) throw new Error("missing_body")
-  const reader = body.getReader()
-  const parts: Uint8Array[] = []
-  let size = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      size += value.byteLength
-      if (size > max) {
-        await reader.cancel()
-        throw new Error("body_limit")
-      }
-      parts.push(value)
-    }
-    const bytes = new Uint8Array(size)
-    let offset = 0
-    for (const part of parts) {
-      bytes.set(part, offset)
-      offset += part.length
-    }
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-      bytes
-    )
-  } finally {
-    reader.releaseLock()
-  }
 }
 function response(value: unknown, status = 200): Response {
   return Response.json(value, {
@@ -244,7 +218,9 @@ async function nameRequest(
       body: JSON.stringify({
         secret: env.TURNSTILE_SECRET_KEY,
         response: token,
-        idempotency_key: value.requestId,
+        // A new security token is a new verification attempt. Reusing the
+        // durable request ID here can replay a cached rejection after refresh.
+        idempotency_key: crypto.randomUUID(),
       }),
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
@@ -259,7 +235,9 @@ async function nameRequest(
   if (
     !challenge.success ||
     challenge.action !== ADDRESS_REQUEST_ACTION ||
-    !env.TURNSTILE_HOSTNAMES.split(",").includes(challenge.hostname ?? "")
+    challenge.hostname !== new URL(request.headers.get("Origin")!).hostname ||
+    (!previewProject(request.headers.get("Origin")!) &&
+      !env.TURNSTILE_HOSTNAMES.split(",").includes(challenge.hostname ?? ""))
   )
     return response({ status: "challenge_failed" }, 400)
   const result = await env.ADDRESS_REQUESTS.prepare(
@@ -596,14 +574,37 @@ export async function handleAddressGateway(
   const publicReceiving =
     ["GET", "OPTIONS"].includes(request.method) &&
     isPublicReceivingPath(url.pathname)
-  const allowed =
-    publicReceiving ||
-    !origin ||
-    env.ALLOWED_ORIGINS.split(",").includes(origin)
+  const readiness =
+    url.pathname === `${ADDRESS_REQUEST_PATH}/availability` &&
+    request.method === "GET" &&
+    !url.search
+  const exactOrigin =
+    !!origin && env.ALLOWED_ORIGINS.split(",").includes(origin)
+  const admission =
+    !origin || publicReceiving || exactOrigin
+      ? "allowed"
+      : await admitPreviewOrigin(origin, env, fetcher, now)
+  const allowed = admission === "allowed"
   let result: Response
   try {
     validateApprovedNames(names)
-    if (origin && !allowed) result = response("origin unavailable", 403)
+    if (readiness) {
+      const status = !origin
+        ? "origin_forbidden"
+        : !allowed
+          ? admission
+          : !env.TURNSTILE_SECRET_KEY || !env.REQUEST_RATE_LIMITER
+            ? "unavailable"
+            : "ready"
+      result = response(
+        { status },
+        status === "ready" ? 200 : status === "unavailable" ? 503 : 403
+      )
+    } else if (origin && !allowed)
+      result = response(
+        { status: admission },
+        admission === "unavailable" ? 503 : 403
+      )
     else if (request.method === "OPTIONS")
       result = new Response(null, { status: 204 })
     else if (
@@ -624,7 +625,9 @@ export async function handleAddressGateway(
     result = response("request unavailable", 503)
   }
   result.headers.set("X-Conduit-Address-Gateway", "approved-names-v1")
-  if (origin && allowed) {
+  // Readiness is public, contains no request data and uses no credentials. Expose
+  // its denial to browsers so a blocked preflight is never mistaken for submission.
+  if (origin && (allowed || readiness)) {
     result.headers.set(
       "Access-Control-Allow-Origin",
       publicReceiving ? "*" : origin

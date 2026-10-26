@@ -35,6 +35,48 @@ const WALLET: WalletDescriptor = {
 }
 
 describe("Spark wallet lifecycle coordination", () => {
+  it("reuses a native session opened by the caller ahead of it in the operation lock", async () => {
+    const operations = new SerializedWalletOperations()
+    const state = createLifecycleState()
+    const opening = deferred<void>()
+    const finishOpening = deferred<void>()
+    const mnemonic = generateSparkMnemonic()
+    let resolutions = 0
+    const manager = {
+      ...state.manager,
+      isOpen: (walletId: string) => state.openWallets.has(walletId),
+      async openWithMnemonic(input: {
+        walletId: string
+        mnemonic: string
+        accountNumber: number
+      }) {
+        opening.resolve(undefined)
+        await finishOpening.promise
+        await state.manager.openWithMnemonic(input)
+      },
+    }
+    const input = {
+      walletId: WALLET.id,
+      expectedNetwork: WALLET.network,
+      runExclusive: operations.run,
+      listWallets: async () => [WALLET],
+      manager,
+      resolveOpenInput: async () => {
+        resolutions++
+        return { mnemonic, accountNumber: 0 }
+      },
+    }
+    const first = openRegisteredSparkWallet(input)
+    await opening.promise
+    const queued = openRegisteredSparkWallet(input)
+    finishOpening.resolve(undefined)
+    await Promise.all([first, queued])
+    expect(resolutions).toBe(2)
+    expect(state.openCalls).toBe(1)
+    expect(state.closeCalls).toBe(0)
+    expect(manager.isOpen(WALLET.id)).toBe(true)
+  })
+
   it("allows local-only removal when this page has no Spark manager", async () => {
     await expect(
       assertLocalSparkWalletRemovalSafe({ managerInitialized: false })
