@@ -53,6 +53,12 @@ export interface SparkPreparedPayment {
   amount: bigint
 }
 
+export interface SparkReceiveRequest {
+  paymentRequest: string
+  feeSats: number
+  requestId?: string
+}
+
 export interface SparkPaymentSummary {
   id: string
   paymentType: "send" | "receive"
@@ -364,7 +370,7 @@ export interface SparkSdkClient {
           expirySecs?: number
         }
       | { type: "sparkAddress" }
-  }): Promise<{ paymentRequest: string; fee: bigint }>
+  }): Promise<{ paymentRequest: string; fee: bigint; requestId?: string }>
   getFundsState?(): Promise<SparkFundsState>
   openCheckoutRetirementReader?(
     target: SparkCheckoutRetirementTarget & { walletId: string }
@@ -1393,8 +1399,9 @@ export class SparkWalletManager {
   async receiveLightning(
     walletId: string,
     input: { description: string; amountSats?: number; expirySecs?: number }
-  ): Promise<{ paymentRequest: string; feeSats: number }> {
-    const result = await this.#getClient(walletId).receivePayment({
+  ): Promise<SparkReceiveRequest> {
+    const client = this.#getClient(walletId)
+    const result = await client.receivePayment({
       paymentMethod: {
         type: "bolt11Invoice",
         description: input.description,
@@ -1402,10 +1409,49 @@ export class SparkWalletManager {
         expirySecs: input.expirySecs,
       },
     })
+    if (this.#getClient(walletId) !== client)
+      throw new Error("Wallet sign-in changed.")
+    const feeSats = safeBigIntToNumber(result.fee)
+    if (feeSats === null || feeSats < 0)
+      throw new Error("Wallet returned an invalid receive fee.")
     return {
       paymentRequest: result.paymentRequest,
-      feeSats: Number(result.fee),
+      feeSats,
+      ...(result.requestId ? { requestId: result.requestId } : {}),
     }
+  }
+
+  async checkLightningReceive(walletId: string, request: SparkReceiveRequest) {
+    const result = await this.lookupReceivingInvoice(
+      walletId,
+      request.paymentRequest,
+      request.requestId
+    )
+    const metadata = decodeLightningInvoiceMetadata(request.paymentRequest)
+    const hash = decodeLightningInvoicePaymentHash(request.paymentRequest)
+    if (
+      !hash ||
+      metadata.msats === null ||
+      result.type !== "incoming" ||
+      normalizeLightningInvoice(result.invoice).toLowerCase() !==
+        normalizeLightningInvoice(request.paymentRequest).toLowerCase() ||
+      result.paymentHash.toLowerCase() !== hash.toLowerCase() ||
+      result.amountMsats !== metadata.msats
+    )
+      throw new Error("Conflicting receiving invoice evidence.")
+    if (result.state === "settled") {
+      if (
+        !Number.isSafeInteger(result.settledAt) ||
+        !result.settledAt ||
+        metadata.createdAt === null ||
+        result.settledAt < metadata.createdAt
+      )
+        throw new Error("Receiving invoice settlement could not be confirmed.")
+      return "received" as const
+    }
+    return result.state === "failed"
+      ? ("failed" as const)
+      : ("pending" as const)
   }
 
   async getSparkAddress(walletId: string): Promise<string> {

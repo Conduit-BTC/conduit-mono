@@ -68,7 +68,7 @@ for (const app of ["market", "merchant"] as const) {
       expect(await defaults()).toEqual(before)
       await expect(
         cards.nth(0).getByLabel("Desired name", { exact: true })
-      ).toBeVisible()
+      ).toBeEnabled()
       await expect(
         cards.nth(0).getByRole("button", { name: "Request name", exact: true })
       ).toBeVisible()
@@ -103,20 +103,17 @@ for (const app of ["market", "merchant"] as const) {
         name: "Recovery for Daily wallet",
         exact: true,
       })
-      const recoveryDetails = recoveryDialog.getByText(
-        "Recovery sync details",
-        { exact: true }
-      )
-      await expect(recoveryDetails).toBeVisible()
-      await recoveryDetails.click()
+      await expect(recoveryDialog).toBeVisible()
       await expect(
-        recoveryDialog.getByText("Wallet 1 backup:", { exact: false })
+        recoveryDialog.getByRole("button", {
+          name: "Show recovery phrase",
+          exact: true,
+        })
       ).toBeVisible()
       await expect(
-        recoveryDialog.locator("li").filter({ hasText: "Wallet 1 backup:" })
-      ).toHaveText(
-        "Wallet 1 backup: not enough confirmed copies (1/1 fresh target readbacks; 0 independent copies)"
-      )
+        recoveryDialog.getByText("Recovery sync details", { exact: true })
+      ).toHaveCount(0)
+      await expect(recoveryDialog.locator("[role=alert]")).toHaveCount(0)
       await page.keyboard.press("Escape")
       await page
         .getByRole("button", { name: "Add wallet", exact: true })

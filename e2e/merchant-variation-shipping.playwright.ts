@@ -3,16 +3,344 @@ import {
   finalizeEvent,
   generateSecretKey,
   getPublicKey,
+  verifyEvent,
 } from "nostr-tools/pure"
 import {
   installTestSigner,
   publishTestRelayEvents,
   readTestRelayEvents,
   seedTestRelayIdentity,
+  TEST_RELAY_URL,
 } from "./helpers/auth"
 import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
+
+for (const scenario of [
+  "ready",
+  "late",
+  "restored",
+  "replacement",
+  "newer",
+] as const) {
+  const newer = scenario === "newer"
+  const delayed = scenario === "late"
+  const restoring = scenario === "restored" || scenario === "replacement"
+  const replacement = scenario === "replacement"
+  test(
+    newer
+      ? "fixed family refresh adopts newer signed child terms before publication @merchant"
+      : restoring
+        ? `fixed family restores ${replacement ? "explicit fulfillment edits" : "current signed parent terms"} after unavailable reads @merchant`
+        : delayed
+          ? "fixed family refresh preserves an open draft and restores retained signed terms after restart @merchant"
+          : "fixed family reopen loads exact signed shipping before changing and publishing terms @merchant",
+    async ({ page }, testInfo) => {
+      test.setTimeout(120_000)
+      page.setDefaultTimeout(25_000)
+      const secretKey = generateSecretKey()
+      const pubkey = getPublicKey(secretKey)
+      const createdAt = Math.floor(Date.now() / 1000) - 20
+      const shipping = ["fixed-shoes", "fixed-shoes-small"].map((dTag, index) =>
+        finalizeEvent(
+          {
+            kind: 30406,
+            created_at: createdAt,
+            content: "Synthetic fixed terms",
+            tags: [
+              ["d", `${dTag}-shipping-standard`],
+              ["title", "Standard Shipping"],
+              ["price", index ? "7" : "5", "USD"],
+              ["country", "US"],
+              ["service", "standard"],
+            ],
+          },
+          secretKey
+        )
+      )
+      const products = ["fixed-shoes", "fixed-shoes-small"].map((dTag, index) =>
+        finalizeEvent(
+          {
+            kind: 30402,
+            created_at: createdAt + 1,
+            content: "Synthetic fixed family",
+            tags: [
+              ["d", dTag],
+              ["title", index ? "3 Men/4.5 Women" : "Fixed shoes"],
+              ["price", "20", "USD"],
+              ["type", index ? "variation" : "variable", "physical"],
+              ["stock", "4"],
+              ["shipping_option", `30406:${pubkey}:${dTag}-shipping-standard`],
+              ["image", "https://media.conduit.market/synthetic-shoes.png"],
+              ["t", "shoes"],
+              ["t", "shipping"],
+              ["t", "synthetic"],
+              ...(index
+                ? [
+                    ["a", `30402:${pubkey}:fixed-shoes`],
+                    ["spec", "Size", "3 Men/4.5 Women"],
+                  ]
+                : []),
+            ],
+          },
+          secretKey
+        )
+      )
+      await seedTestRelayIdentity(secretKey)
+      await publishTestRelayEvents([...products, ...(delayed ? [] : shipping)])
+      let unavailable = restoring
+      let blockedReads = 0
+      await page.routeWebSocket(TEST_RELAY_URL, (socket) => {
+        const server = socket.connectToServer()
+        socket.onMessage((message) => {
+          const frame = JSON.parse(String(message))
+          if (
+            unavailable &&
+            frame[0] === "REQ" &&
+            frame
+              .slice(2)
+              .some((filter: { kinds?: number[] }) =>
+                filter.kinds?.includes(30406)
+              )
+          ) {
+            blockedReads++
+            socket.send(
+              JSON.stringify([
+                "CLOSED",
+                frame[1],
+                "auth-required: synthetic shipping read unavailable",
+              ])
+            )
+            return
+          }
+          server.send(message)
+        })
+        server.onMessage((message) => socket.send(message))
+      })
+      await installTestSigner(page, pubkey, { secretKey })
+      await page.goto(`${merchantUrl}/products`, {
+        waitUntil: "domcontentloaded",
+      })
+      await expect(
+        page.getByText("1 of 1 listings", { exact: true })
+      ).toBeVisible()
+      await page
+        .getByRole("button", { name: "Edit", exact: true })
+        .first()
+        .click()
+      const edit = page.getByRole("dialog", { name: "Edit product family" })
+      await expect(edit).toBeVisible()
+      await edit.getByLabel("Title", { exact: true }).fill("Edited fixed shoes")
+      await edit.locator("#product-variation-price-0").fill("29")
+      await expect(
+        edit.getByRole("button", { name: "Save changes", exact: true })
+      ).toBeEnabled()
+      await edit
+        .getByRole("button", { name: "Change fulfillment", exact: true })
+        .click()
+      const warning = edit.locator("#product-variations-help").filter({
+        hasText:
+          "3 Men/4.5 Women shipping could not be verified from the current relay read. Refresh products before saving this family.",
+      })
+      if (delayed) {
+        await expect(warning).toBeVisible()
+        await publishTestRelayEvents(shipping)
+      }
+      if (newer) {
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          "7"
+        )
+        await publishTestRelayEvents([
+          finalizeEvent(
+            {
+              kind: 30406,
+              created_at: createdAt + 1,
+              content: "Synthetic newer fixed terms",
+              tags: shipping[1]!.tags.map((tag) =>
+                tag[0] === "price" ? ["price", "9", "USD"] : tag
+              ),
+            },
+            secretKey
+          ),
+        ])
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          "9",
+          { timeout: 30_000 }
+        )
+      }
+      if (restoring) {
+        await expect.poll(() => blockedReads).toBeGreaterThan(0)
+        await expect(warning).toBeVisible()
+        await expect(edit.locator("#product-shipping")).toHaveValue("")
+        if (replacement) {
+          await edit.locator("#product-shipping").fill("11")
+          await edit.locator("#product-variation-shipping-0").fill("13")
+          const destination = edit.getByRole("combobox", {
+            name: "Search countries to add...",
+          })
+          await destination.fill("Canada")
+          await expect(
+            page.getByRole("option", { name: /CA Canada/ })
+          ).toHaveAttribute("data-selected", "true")
+          await destination.press("Enter")
+        } else {
+          await edit
+            .getByRole("button", {
+              name: "Keep existing fulfillment",
+              exact: true,
+            })
+            .click()
+        }
+        await edit
+          .locator("form")
+          .getByRole("button", { name: "Close", exact: true })
+          .click()
+        await expect(edit).toBeHidden()
+        unavailable = false
+        await page.reload({ waitUntil: "domcontentloaded" })
+        // Complete preparation first, so editing and prepared share references.
+        await expect(
+          page.getByText("1 of 1 listings", { exact: true })
+        ).toBeVisible()
+        await page
+          .getByRole("button", { name: "Edit", exact: true })
+          .first()
+          .click()
+        await expect(edit).toBeVisible()
+        if (!replacement) {
+          await edit
+            .getByRole("button", { name: "Change fulfillment", exact: true })
+            .click()
+        }
+        await expect(edit.getByLabel("Title", { exact: true })).toHaveValue(
+          "Edited fixed shoes"
+        )
+        await expect(edit.locator("#product-variation-price-0")).toHaveValue(
+          "29"
+        )
+        await expect(edit.locator("#product-shipping")).toHaveValue(
+          replacement ? "11" : "5"
+        )
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          replacement ? "13" : "7"
+        )
+        await expect(
+          edit.getByRole("button", {
+            name: replacement ? "Remove Canada" : "Remove United States",
+            exact: true,
+          })
+        ).toBeVisible()
+        await expect(
+          edit.getByRole("button", { name: "Save changes", exact: true })
+        ).toBeEnabled()
+        await expect(warning).toBeHidden()
+        await edit.screenshot({
+          path: testInfo.outputPath(
+            `fixed-shipping-${scenario}-${testInfo.project.name}.png`
+          ),
+        })
+        return
+      }
+      await expect(warning).toBeHidden({ timeout: 30_000 })
+      await expect(edit.locator("#product-shipping")).toHaveValue("5")
+      await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+        newer ? "9" : "7"
+      )
+      await expect(edit.getByLabel("Title", { exact: true })).toHaveValue(
+        "Edited fixed shoes"
+      )
+      await expect(edit.locator("#product-variation-price-0")).toHaveValue("29")
+
+      if (delayed) {
+        await edit
+          .locator("form")
+          .getByRole("button", { name: "Close", exact: true })
+          .click()
+        await expect(edit).toBeHidden()
+        unavailable = true
+        await page.reload()
+        await page
+          .getByRole("button", { name: "Edit", exact: true })
+          .first()
+          .click()
+        await expect.poll(() => blockedReads).toBeGreaterThan(0)
+        await expect(edit).toBeVisible()
+        await expect(edit.getByLabel("Title", { exact: true })).toHaveValue(
+          "Edited fixed shoes"
+        )
+        await expect(edit.locator("#product-variation-price-0")).toHaveValue(
+          "29"
+        )
+        await expect(edit.locator("#product-variation-shipping-0")).toHaveValue(
+          "7"
+        )
+        await expect(warning).toBeHidden()
+        unavailable = false
+        await edit
+          .getByRole("button", {
+            name: "Keep existing fulfillment",
+            exact: true,
+          })
+          .click()
+      } else if (!newer) {
+        await edit.locator("#product-shipping").fill("6")
+        await edit.locator("#product-variation-shipping-0").fill("9")
+      }
+      await edit.screenshot({
+        path: testInfo.outputPath(
+          `fixed-shipping-${delayed ? "restored" : "changed"}-${testInfo.project.name}.png`
+        ),
+      })
+      await edit
+        .getByRole("button", { name: "Save changes", exact: true })
+        .click()
+      await expect(edit).toBeHidden({ timeout: 30_000 })
+      let published: Awaited<ReturnType<typeof readTestRelayEvents>> = []
+      // The dialog closes on durable local signing, before relay delivery ends.
+      await expect
+        .poll(
+          async () => {
+            published = await readTestRelayEvents({
+              kinds: [30402, 30406],
+              authors: [pubkey],
+            })
+            return [
+              ["fixed-shoes", "title", "Edited fixed shoes"],
+              ["fixed-shoes-small", "price", "29"],
+            ].every(([dTag, field, value]) =>
+              published.some(
+                (event) =>
+                  event.kind === 30402 &&
+                  event.tags.some(([key, d]) => key === "d" && d === dTag) &&
+                  event.tags.some(
+                    ([key, text]) => key === field && text === value
+                  )
+              )
+            )
+          },
+          { timeout: 15_000 }
+        )
+        .toBe(true)
+      expect(published.every(verifyEvent)).toBe(true)
+      const amounts = published
+        .filter((event) => event.kind === 30406)
+        .map((event) => event.tags.find(([name]) => name === "price")?.[1])
+        .sort()
+      expect(amounts).toEqual(
+        delayed ? ["5", "7"] : newer ? ["5", "9"] : ["6", "9"]
+      )
+      expect(
+        published.find(
+          (event) =>
+            event.kind === 30402 &&
+            event.tags.some(
+              ([key, value]) => key === "d" && value === "fixed-shoes"
+            )
+        )?.tags
+      ).toContainEqual(["title", "Edited fixed shoes"])
+    }
+  )
+}
 
 for (const malformed of [false, true]) {
   test(

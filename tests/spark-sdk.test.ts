@@ -2002,6 +2002,7 @@ describe("first-party Spark SDK adapter", () => {
     ).resolves.toEqual({
       paymentRequest: invoice,
       fee: 0n,
+      requestId: "lightning-receive",
     })
   })
 
@@ -2024,6 +2025,7 @@ describe("first-party Spark SDK adapter", () => {
     ).resolves.toEqual({
       paymentRequest: invoice,
       fee: 0n,
+      requestId: "lightning-receive",
     })
   })
 

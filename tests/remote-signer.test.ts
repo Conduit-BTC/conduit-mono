@@ -2613,3 +2613,30 @@ describe("remote signer resume verification", () => {
     ).rejects.toMatchObject({ code: "session_identity_mismatch" })
   })
 })
+
+for (const failure of [
+  new Nip46TransportError("invalid_ciphertext", "Invalid encrypted payload."),
+  new Error("invalid MAC"),
+]) {
+  it("keeps the remote session usable after a ciphertext-specific failure", async () => {
+    const transitions: RemoteSignerAdapterInvalidation[] = []
+    let calls = 0
+    const adapter = new RemoteSessionSigner(
+      fakeSigner({
+        nip44Decrypt: async () => {
+          if (++calls === 1) throw failure
+          return "valid"
+        },
+      }),
+      USER_PUBKEY,
+      { onAdapterInvalidated: (transition) => transitions.push(transition) }
+    )
+    await expect(
+      adapter.decryptNip44(OTHER_PUBKEY, "ciphertext")
+    ).rejects.toMatchObject({ code: "invalid_ciphertext" })
+    await expect(
+      adapter.decryptNip44(OTHER_PUBKEY, "ciphertext")
+    ).resolves.toBe("valid")
+    expect(transitions).toEqual([])
+  })
+}

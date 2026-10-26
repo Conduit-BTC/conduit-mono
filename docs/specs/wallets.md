@@ -59,15 +59,16 @@ sessions without deleting recovery or funds. Sign-in restores account recovery a
 opens discovered signer-owned wallets on the configured network through the signer
 on Wallets without a Conduit unlock dialog. External signer consent may still be
 required; deliberate lock or denied opening retains a direct Open action.
-Legacy password-encrypted device wallets retain their existing signed-out
-unlock and recovery path and are never silently reassigned to an account.
+The clean-start account lifecycle ignores previous password credentials, recovery
+events and local registrations. The owner imports the phrase with its original
+network and account number once to establish a new registration. Stored legacy
+data is left untouched; there is no compatibility reader or migration.
 
 ## Local unlock and portable recovery
 
 New wallets use signer-backed encryption without a separate wallet password.
-Legacy PBKDF2/AES-GCM password envelopes remain readable. Explicit migration
-verifies a signer encrypt/decrypt round trip and transactional read-back, retaining
-the old encrypted envelope and its password fallback. Unsupported or denied
+A verified signer encrypt/decrypt round trip protects each imported credential.
+Unsupported or denied
 encryption never falls back to plaintext. The Spark seed remains independent of
 the Nostr key, which never enters app code.
 
@@ -99,7 +100,9 @@ needed to restore the intended wallet.
 
 Market maintains a collection of wallet instances. Each descriptor contains:
 
-- a locally generated opaque identifier;
+- an opaque identifier (Portable Wallets use a domain-separated hash of the
+  owner, network, account number and public native identity; Connected Wallets
+  use random local IDs);
 - kind (`portable` or `connected`);
 - provider identifier;
 - locally persisted display name, generated from `Conduit Wallet` when an
@@ -110,8 +113,8 @@ Market maintains a collection of wallet instances. Each descriptor contains:
 - creation/update timestamps; and
 - default roles.
 
-Addresses, wallet pubkeys, signer pubkeys, and hashes derived from secret
-material are not valid registry identifiers.
+Addresses, raw wallet or signer pubkeys, and hashes derived from seed material
+are not registry identifiers. Portable identifiers contain no secret-derived hash.
 
 The registry supports multiple Portable Wallets and multiple Connected Wallets.
 Defaults are selected by network and intent. The initial intent is
@@ -132,38 +135,46 @@ operations. Initial capabilities are:
 - `history`
 - `spark_transfer`
 
-## Wallet names
+## Complete account wallet records
 
-Renaming saves the local display name immediately. For a signer-owned Spark
-wallet, the label and durable account/network-scoped pending intent commit in
-the same transaction before signer consent or relay work. An outage or denied
-signer request cannot prevent a local rename or erase it on reload. Device-only
-and Connected Wallet names are never included in account name synchronization.
+Each Portable Wallet has one self-encrypted NIP-44 v2 record in NIP-78 kind
+`30078`, with `d=conduit:portable-wallet:v1:<walletId>` and the indexed tag
+`t=conduit:portable-wallet:v1`. The ciphertext contains the schema version,
+owner, provider, network, account number, mnemonic, verified native identity,
+name, current provider-verified Lightning address, active/removed lifecycle,
+spending/receiving preference timestamps, setup acknowledgement and any signed
+address-name request progress. Names are trimmed, nonempty and at most 80
+characters. Balance is read from the native provider, never treated as authority
+from a saved record. A saved address also does not replace provider verification.
 
-Signer-owned names use a separate self-encrypted NIP-44 v2 payload in a NIP-78
-kind `30078` record at `conduit:wallet-names:v1:<network>`. The connected signer
-receives plaintext names for encryption and decryption; with NIP-46, that signer
-may run off-device. Relays receive ciphertext. Names must not enter logs,
-telemetry, public profile metadata or commerce messages. This optional metadata
-does not replace the strict v1 wallet membership or recovery record, and older
-clients can continue their existing recovery lifecycle while ignoring names.
+The new namespace has no readers, fallback, migration or dual writes for the
+old Spark backup, primary/main pointers, wallet registry, wallet-name dictionary,
+Addy records or recovery journal. Existing payment/order operations keep their
+original identifiers and evidence; seed import never replays or reassigns them.
+NWC credentials remain local. Old stored data is not deleted by this cutover.
 
-Only complete, confirmed account membership authorizes applying or publishing a
-wallet's name. Recovery must refresh membership after backup and membership
-mutations before synchronizing names or calculating readiness. Absence from a
-snapshot cannot discard pending intent; an explicit confirmed removal can.
-Names never add membership or restore a removed wallet. A pending rename fences
-older shared names, and a missing shared name never erases a local label.
-Creation and explicit recovery sync seed eligible local labels only when no
-shared name exists.
+Validate owner, event signature, encrypted envelope, schema, record coordinate
+and derived native identity before applying a record. Select the newest valid
+record independently for each wallet using NIP-01 timestamp and lowest-event-ID
+tie breaking. A stale, unavailable or malformed source must not veto another
+valid wallet. Retain stronger local evidence during outages. Removal is an
+explicit signed lifecycle value, never inferred from omission. Routine edits cannot reactivate an observed removal; explicit seed import is
+required. Concurrent updates that have not observed each other follow the same
+newest-complete-record rule.
 
-Name synchronization has its own pending status and retry action, separate from
-wallet recovery and backup readiness. Partial, unavailable, malformed, stale or
-conflicting evidence preserves local names and pending intent. Retained signed
-name operations retry identical bytes; completing an older operation cannot
-clear a newer rename. Ready means the current pending intent has completed the
-bounded relay plan, not that every relay globally agrees. Names are trimmed,
-nonempty and limited to 80 characters.
+After signer approval, the shared account coordinator discovers, decrypts and
+projects every valid wallet, then opens the eligible native sessions. No separate
+name sync or per-wallet restore is required. Updates retain exact signed bytes
+before delivery and retry them after restart, reconnect and foreground wakeup,
+with bounded backoff. Signer refusal pauses background requests until explicit
+consent. A name edit retains its local intent before requesting a signature.
+The winning complete record applies atomically to local wallet metadata.
+
+Both applications use the same coordinator and contract. Routine synchronization
+is quiet. An actionable access failure has one message and collapsed details.
+Relay acknowledgement alone never establishes cross-device availability; current
+exact-event retrieval from the configured storage targets confirms delivery.
+Users retain the independent phrase/account/network recovery bundle.
 
 ## Connected Wallet migration
 
@@ -585,17 +596,16 @@ supports Lightning and Spark payments. Restore accepts the recovery phrase and
 any non-standard account number needed for the intended wallet. The owner is
 informed that signer-owned Spark names synchronize through their account and can
 remain pending while saved locally. Device-only and Connected Wallet names remain
-local. New wallet recovery uses the account signer; older password wallets keep
-their migration and recovery path.
+local. Portable Wallet recovery uses the account signer and the complete record.
 
 The route renders while signed out, with sign-in required for new account-backed
-creation/import and signer-backed access. Legacy device-wallet access remains
-available through its existing password. Logout never deletes network funds or
+creation/import and signer-backed access. Existing wallets enter the new lifecycle
+through explicit seed import. Logout never deletes network funds or
 the independent phrase/account/network recovery bundle.
 
 Sensitive and destructive flow state resets whenever the flow is dismissed or
 closed, including Cancel, close, Escape, and outside dismissal where supported.
-Reopening it must not retain unlock passwords, recovery text, generated
+Reopening it must not retain recovery text, generated
 invoices/addresses, fee approval, or removal acknowledgement from the previous
 session.
 
@@ -610,10 +620,9 @@ specified terminal provider result or explicit acknowledgement may clear it.
 NIP-78 is an application-data envelope, not a general wallet-backup standard.
 Relay backup is optional and must never be the only recovery path.
 
-Any future Wisp/addys compatibility must live behind an explicit versioned
-adapter, use capability-gated NIP-44 encryption, validate the author/signature
-and recovery payload, and ship with cross-application fixtures. Market must not
-derive a Spark seed from a raw Nostr private key.
+This implementation supports only the complete Conduit wallet record. External
+wallets enter through explicit seed import. Market must not derive a Spark seed
+from a raw Nostr private key.
 
 ## Validation
 
@@ -628,7 +637,7 @@ Required coverage includes:
 - no Spark send before explicit fee approval;
 - isolated Portable Wallet provider storage;
 - signed-out `/wallet`, dialog-state reset, and in-flight dismissal behavior;
-- password-encrypted device storage plus phrase/account/network recovery;
+- signer-encrypted provider storage plus phrase/account/network import;
 - phrase-first Mainnet/account-`1` restore with an account-`0` negative control;
 - exact-wrap continuation after interrupted preparation and pristine-only
   revision-checked abandonment before cart retry;

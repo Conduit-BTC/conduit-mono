@@ -159,6 +159,44 @@ function toFamily(
 }
 
 describe("merchant product variation planning", () => {
+  for (const dTag of [undefined, "published-child"]) {
+    it(`lets a ${dTag ? "published" : "new"} table-shipping row clear a temporary fixed price`, () => {
+      const generated = sizeVariationForm("S")
+      const initial = {
+        ...generated,
+        rows: generated.rows.map((row) => ({ ...row, dTag })),
+      }
+      const identity = initial.rows[0]!.identity
+      const priced = updateProductVariationOverride(
+        initial,
+        identity,
+        "shippingCost",
+        "7"
+      )
+      expect(
+        getProductVariationFormError(priced, "USD", {
+          baseFormat: "physical",
+          shippingPricingMode: "weight_table",
+        })
+      ).toContain(
+        "Fixed variation prices cannot be combined with table shipping"
+      )
+      const cleared = updateProductVariationOverride(
+        priced,
+        identity,
+        "shippingCost",
+        ""
+      )
+      expect(
+        getProductVariationFormError(cleared, "USD", {
+          baseFormat: "physical",
+          shippingPricingMode: "weight_table",
+        })
+      ).toBeNull()
+      expect(cleared.rows[0]?.shippingResolution).toBeUndefined()
+    })
+  }
+
   it("applies a selected listing area alongside Event Market associations to every new physical or digital listing", () => {
     const marketCoordinate = `30409:${ORGANIZER_PUBKEY}:future-market`
     for (const format of ["physical", "digital"] as const) {

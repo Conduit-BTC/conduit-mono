@@ -7,9 +7,10 @@ describe("theme startup contract", () => {
     it(`${app} injects the shared synchronous bootstrap ahead of app modules`, async () => {
       const viteConfig = await Bun.file(`apps/${app}/vite.config.ts`).text()
       const bootstrapIndex = viteConfig.indexOf("createThemeBootstrapPlugin()")
-      const appPluginIndex = viteConfig.indexOf("TanStackRouterVite()")
+      const appPluginIndex = viteConfig.indexOf("TanStackRouterVite(")
 
       expect(bootstrapIndex).toBeGreaterThan(-1)
+      expect(appPluginIndex).toBeGreaterThan(-1)
       expect(bootstrapIndex).toBeLessThan(appPluginIndex)
     })
 

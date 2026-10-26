@@ -289,3 +289,58 @@ describe("session signer scheduling", () => {
     })
   })
 })
+
+for (const [failure, expected] of [
+  [new Error("invalid MAC"), "invalid_ciphertext"],
+  [new Error("invalid padding"), "invalid_ciphertext"],
+  [
+    Object.assign(new Error("invalid MAC"), { code: "4001" }),
+    "authorization_denied",
+  ],
+  [
+    Object.assign(new Error("invalid MAC"), { code: "disconnected" }),
+    "disconnected",
+  ],
+  [Object.assign(new Error("invalid MAC"), { code: "timeout" }), "timeout"],
+  [
+    Object.assign(new Error("invalid MAC"), { code: "authority_changed" }),
+    "authority_changed",
+  ],
+  [
+    Object.assign(new Error("invalid MAC"), { name: "NotAllowedError" }),
+    "authorization_denied",
+  ],
+  [new Error("unknown decryption failure"), "unavailable"],
+] as const) {
+  it(`preserves NIP-44 failure meaning: ${expected}`, async () => {
+    let rejected = false
+    const f = fixture({
+      decrypt: async () => {
+        if (!rejected) {
+          rejected = true
+          throw failure
+        }
+        return "valid"
+      },
+    })
+    await expect(
+      f.signer.decryptNip44(f.peer, "ciphertext")
+    ).rejects.toMatchObject({ code: expected })
+    if (expected === "authorization_denied") {
+      await expect(
+        f.signer.decryptNip44(f.peer, "ciphertext")
+      ).rejects.toMatchObject({ code: "background_paused" })
+    } else {
+      await expect(f.signer.decryptNip44(f.peer, "ciphertext")).resolves.toBe(
+        "valid"
+      )
+    }
+  })
+}
+
+it("does not classify encryption failures as invalid ciphertext", async () => {
+  const f = fixture()
+  await expect(f.signer.encryptNip44(f.peer, "")).rejects.toMatchObject({
+    code: "unavailable",
+  })
+})

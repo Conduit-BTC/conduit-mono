@@ -56,3 +56,52 @@ receipt or merchant-verification flow after a deliberately small authorized
 payment. Browser rendering and URL tests do not establish native app behavior or
 settlement. Do not attach real invoices, customer data, or wallet balances to
 test logs or PR evidence.
+
+## Funding a Portable Wallet
+
+The shared Wallets card offers a compact Cash App Add funds action on mainnet.
+Receive remains a separate Lightning-address flow. Funding uses the
+selected open wallet's existing native Spark receive operation, with a required
+positive whole-sat amount. No Cash App Pay account, new wallet provider, custody,
+backend, or wallet-name registration is introduced. The first-party Spark adapter
+remains authoritative; Breez documents the same external Cash App handoff pattern.
+
+Checked October 19, 2026: [Breez's Cash App guide](https://sdk-doc-spark.breez.technology/guide/buy_bitcoin.html)
+explains that fixed-amount BOLT11 invoices enable eligible fiat/debit funding;
+amountless invoices only offer the payer's existing BTC balance. Cash App controls
+eligibility, limits, conversion, and final debit. USD displays use existing fresh
+rate estimates and fall back to exact sats. The provider receive fee is displayed
+separately from Cash App's own fees.
+
+`InvoicePayment` in shared UI owns the existing native links, copy, and QR controls;
+Market's checkout keeps its existing preparation and order-admission callbacks.
+Wallet funding prepares first, then uses an explicit native link click, rechecking
+invoice amount, mainnet, validity, expiry, and current wallet scope. Desktop
+funding shows a bounded QR containing the Cash App universal link, labeled for the
+phone camera. Open Cash App remains available at every width, including landscape
+phones and tablets, for same-device handoff. The separate Lightning fallback keeps
+the same BOLT11 invoice across its link, copy, and QR. Closing the dialog does not
+cancel it; the wallet's provider history remains the recovery surface after reload.
+
+The native receive request ID and fee survive through the wallet hook. Receipt
+checks use that exact request and invoice, including incoming direction, payment
+hash, amount, and settlement timestamp. The existing native adapter verifies the
+completed transfer and preimage. A balance change, app return, expired invoice, or
+unavailable lookup cannot prove receipt or absence. Foreground polling is bounded;
+manual/focus checks can reconcile later receipt. Account changes retire the dialog,
+and native session replacement rejects stale async results. No invoice, provider
+request ID, wallet identifier, balance, or recovery material is added to telemetry.
+
+Wallet acceptance additionally requires physical iOS/Android Cash App handoff,
+cancellation, absent-app fallback, eligible Cash funding, and a separately authorized
+small deposit to the selected wallet. Local browser fixtures use real test signer
+cryptography with a controlled, unfunded wallet provider; they are not funded-device
+or production evidence.
+
+The ordinary Receive dialog shows only a publicly verified wallet Lightning
+address QR, encoded as LNURL. Its 224px square includes a white quiet margin and
+is bounded locally so global SVG styles cannot expand it. Requesting an amount
+replaces the reusable-address view with an invoice; Spark addresses are under
+Other ways to receive. Address setup status is shown only from actual provider
+state. Wallet-associated addresses, name requests, activation, and public-profile
+address choices remain in their existing wallet-card flows.

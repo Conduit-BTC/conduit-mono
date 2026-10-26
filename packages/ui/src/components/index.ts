@@ -330,3 +330,8 @@ export {
 export { PrivateAttachment } from "./PrivateAttachment"
 
 export { RecoverableProductImage } from "./RecoverableProductImage"
+export {
+  InvoicePayment,
+  type ExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentActionResult,
+} from "./InvoicePayment"
