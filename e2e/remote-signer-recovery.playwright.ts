@@ -8,7 +8,10 @@ import {
 } from "nostr-tools/pure"
 import { decrypt, encrypt, getConversationKey } from "nostr-tools/nip44"
 
-import { buildEventMarketCalendarDraft } from "@conduit/core/protocol/event-market"
+import {
+  buildEventMarketCalendarDraft,
+  encodeEventMarketNaddr,
+} from "@conduit/core/protocol/event-market"
 import { buildEventMarketRosterDraft } from "@conduit/core/protocol/event-market-roster"
 
 import type { Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
@@ -839,7 +842,7 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
     })
     expect(JSON.parse(retainedSession).userPubkey).toBe(buyerPubkey)
     await expect(
-      page.getByRole("button", { name: "Connect", exact: true })
+      page.getByRole("button", { name: "Open account menu", exact: true })
     ).toBeVisible()
     await expect(
       page.getByRole("button", { name: "Refresh events", exact: true })
@@ -876,6 +879,111 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
     expect(
       await page.evaluate(() => localStorage.getItem("conduit:auth"))
     ).toBe(retainedSession)
+    expect(harness.responseErrors()).toEqual([])
+  } finally {
+    harness.close()
+  }
+})
+
+test("Merchant participation retains the account and offers recovery without a sign-in dialog @merchant", async ({
+  page,
+}) => {
+  test.setTimeout(90_000)
+  const remoteSecret = generateSecretKey()
+  const merchantSecret = generateSecretKey()
+  const organizerSecret = generateSecretKey()
+  const merchantPubkey = getPublicKey(merchantSecret)
+  const organizerPubkey = getPublicKey(organizerSecret)
+  const harness = await startRemoteSignerHarness(remoteSecret, merchantSecret)
+  try {
+    await seedTestRelayIdentity(merchantSecret)
+    await seedTestRelayIdentity(organizerSecret)
+    const created_at = Math.floor(Date.now() / 1000)
+    await publishTestRelayEvents([
+      finalizeEvent(
+        {
+          ...buildEventMarketCalendarDraft({
+            kind: 31922,
+            dTag: "participation-recovery-date",
+            title: "Participation recovery fixture",
+            start: new Date(Date.now() + 7 * 86_400_000)
+              .toISOString()
+              .slice(0, 10),
+          }),
+          created_at,
+        },
+        organizerSecret
+      ),
+      finalizeEvent(
+        {
+          ...buildEventMarketRosterDraft({
+            organizerPubkey,
+            dTag: "participation-recovery",
+            calendarCoordinate: `31922:${organizerPubkey}:participation-recovery-date`,
+            state: "open",
+            merchants: [],
+          }),
+          created_at,
+        },
+        organizerSecret
+      ),
+    ])
+    await installSignerRelayAlias(page)
+    await page.goto(
+      `${merchantUrl}/events/${encodeEventMarketNaddr(`30409:${organizerPubkey}:participation-recovery`)}`
+    )
+    await connectRemoteSigner(page, getPublicKey(remoteSecret))
+    const participation = page.getByRole("region", {
+      name: "Your participation",
+    })
+    await expect(participation).toBeVisible({ timeout: 15_000 })
+    // Model a real signer transport timeout without publishing a product or
+    // sending a participation request. The local signer withholds this reply.
+    const rejected = await page.evaluate(
+      async ({ url, pubkey }) => {
+        const { getAccountSigner } = await import(url)
+        try {
+          await getAccountSigner().signEvent({
+            pubkey,
+            kind: 30402,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [["d", "timeout-only"]],
+            content: "",
+          })
+          return false
+        } catch {
+          return true
+        }
+      },
+      {
+        url: `/@fs${process.cwd()}/packages/core/src/protocol/session-signer.ts`,
+        pubkey: merchantPubkey,
+      }
+    )
+    expect(rejected).toBe(true)
+    await expect(
+      participation.getByText("Signer reconnect needed", { exact: true })
+    ).toBeVisible()
+    await expect(
+      participation.getByRole("button", { name: "Connect", exact: true })
+    ).toHaveCount(0)
+    await expect(
+      page.getByRole("dialog", { name: "Signer connected" })
+    ).toHaveCount(0)
+    await page
+      .getByRole("button", { name: "Open merchant account menu" })
+      .click()
+    await expect(
+      page.getByRole("menuitem", { name: "Reconnect signer", exact: true })
+    ).toBeVisible()
+    await page.keyboard.press("Escape")
+    await participation
+      .getByRole("button", { name: "Reconnect signer", exact: true })
+      .click()
+    await expect(
+      participation.getByText("Signer reconnect needed", { exact: true })
+    ).toHaveCount(0)
+    expect(harness.productSignRequestCount()).toBe(1)
     expect(harness.responseErrors()).toEqual([])
   } finally {
     harness.close()

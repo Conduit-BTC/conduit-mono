@@ -1,5 +1,6 @@
 import {
   buildMarketEventCatalogUrl,
+  parseSignInReturnTo,
   decodeEventMarketReference,
   buildMarketProductShareUrl,
   buildMerchantEventParticipationUrl,
@@ -90,6 +91,7 @@ export interface MerchantEventsSearch {
 
 export interface MerchantAuthHandoffSearch extends MerchantEventsSearch {
   authRequired?: true
+  returnTo?: string
 }
 
 /** Accept only one exact kind-30409 naddr from the Merchant route query. */
@@ -128,6 +130,7 @@ export function parseMerchantAuthHandoffSearch(
   const authRequired =
     search.authRequired === true || search.authRequired === "true"
   return {
+    returnTo: parseSignInReturnTo(search.returnTo, "merchant"),
     ...(authRequired ? { authRequired: true as const } : {}),
     ...(event ? { event } : {}),
   }

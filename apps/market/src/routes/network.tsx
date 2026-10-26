@@ -18,8 +18,8 @@ import {
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/network")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: SettingsPage,
 })

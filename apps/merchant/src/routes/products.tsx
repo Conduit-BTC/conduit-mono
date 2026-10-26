@@ -226,8 +226,8 @@ export const Route = createFileRoute("/products")({
         ? search.eventMarket
         : undefined,
   }),
-  beforeLoad: ({ search }) => {
-    requireAuth({ event: search.eventMarket })
+  beforeLoad: ({ search, location }) => {
+    requireAuth({ event: search.eventMarket, returnTo: location.href })
   },
   component: ProductsPage,
 })

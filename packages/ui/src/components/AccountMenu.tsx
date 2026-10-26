@@ -1,16 +1,8 @@
-import { ChevronDown, LogOut, RadioTower, UserRound } from "lucide-react"
+import { ChevronDown, KeyRound, LogOut, CircleUser } from "lucide-react"
 import { type ReactNode, useState } from "react"
 import { normalizePublicMediaUrl } from "@conduit/core"
 import { Avatar, AvatarFallback, AvatarImage } from "./Avatar"
 import { Button } from "./Button"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./Dialog"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,153 +11,155 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./DropdownMenu"
-import { cn } from "../utils"
 
 export interface AccountMenuProps {
   displayName: string
-  pubkeyLabel: string
+  pubkeyLabel?: string
   avatarUrl?: string | null
-  statusLabel?: string
-  variant?: "compact" | "panel"
+  accountPresent: boolean
+  pending: boolean
+  recoveryRequired?: boolean
+  incompatible?: boolean
+  label?: string
   fallback?: ReactNode
-  onProfile: () => void
-  onNetwork: () => void
-  onDisconnect: () => void
-  className?: string
+  items: Array<{ label: string; content: ReactNode }>
+  onConnect: () => void
+  onReconnect: () => Promise<void> | void
+  onDisconnect: () => Promise<void> | void
 }
 
 export function AccountMenu({
   displayName,
   pubkeyLabel,
   avatarUrl,
-  statusLabel = "Connected signer",
-  variant = "compact",
+  accountPresent,
+  pending,
+  recoveryRequired,
+  incompatible,
+  label = "Open account menu",
   fallback,
-  onProfile,
-  onNetwork,
+  items,
+  onConnect,
+  onReconnect,
   onDisconnect,
-  className,
 }: AccountMenuProps) {
-  const [disconnectOpen, setDisconnectOpen] = useState(false)
-  const isPanel = variant === "panel"
+  const [open, setOpen] = useState(false)
+  const [working, setWorking] = useState<"reconnect" | "disconnect" | null>(
+    null
+  )
+  const [error, setError] = useState<string | null>(null)
   const safeAvatarUrl = normalizePublicMediaUrl(avatarUrl)
-
+  async function run(
+    action: () => Promise<void> | void,
+    operation: "reconnect" | "disconnect"
+  ) {
+    if (working) return
+    setWorking(operation)
+    setError(null)
+    try {
+      await action()
+      setOpen(false)
+    } catch {
+      setError("Could not finish the account action. Please try again.")
+    } finally {
+      setWorking(null)
+    }
+  }
+  if (!accountPresent)
+    return (
+      <Button
+        aria-label="Connect"
+        aria-busy={pending}
+        disabled={working !== null}
+        onClick={onConnect}
+        className="h-11 gap-2"
+      >
+        <CircleUser className="size-5 sm:hidden" aria-hidden="true" />
+        <span className="hidden sm:inline">Connect</span>
+      </Button>
+    )
   return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          {isPanel ? (
-            <button
-              type="button"
-              className={cn(
-                "inline-flex items-center gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-2 text-left transition-colors hover:bg-[var(--surface-elevated)]",
-                className
-              )}
-            >
-              <Avatar className="h-8 w-8 border border-[var(--border)]">
-                <AvatarImage
-                  src={safeAvatarUrl ?? undefined}
-                  alt={displayName}
-                />
-                <AvatarFallback className="bg-transparent p-0">
-                  {fallback ?? displayName[0]?.toUpperCase() ?? "?"}
-                </AvatarFallback>
-              </Avatar>
-              <div className="hidden min-w-0 sm:block">
-                <div className="truncate text-sm font-medium text-[var(--text-primary)]">
-                  {displayName}
-                </div>
-                <div className="text-xs text-[var(--text-muted)]">
-                  {statusLabel}
-                </div>
-              </div>
-              <ChevronDown className="h-3.5 w-3.5 text-[var(--text-secondary)]" />
-            </button>
-          ) : (
-            <Button
-              variant="primary"
-              size="sm"
-              className={cn("gap-2 text-xs", className)}
-            >
-              {safeAvatarUrl ? (
-                <img
-                  src={safeAvatarUrl}
-                  alt=""
-                  className="h-5 w-5 rounded-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : null}
-              {displayName}
-              <ChevronDown className="h-3.5 w-3.5" />
-            </Button>
-          )}
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          className="min-w-[15rem] rounded-[var(--radius-md)] border-[var(--border)] bg-[var(--surface-dialog)] p-2"
+    <DropdownMenu
+      open={open}
+      onOpenChange={(next) => {
+        if (!working) setOpen(next)
+      }}
+    >
+      <DropdownMenuTrigger asChild>
+        <Button
+          aria-label={label}
+          className="size-11 p-1.5 sm:h-12 sm:w-auto sm:min-w-48 sm:justify-start sm:gap-3 sm:px-3"
         >
-          <DropdownMenuLabel className="px-2 py-2">
-            <div className="flex items-center gap-2 text-xs font-normal text-[var(--text-secondary)]">
-              <span className="h-2 w-2 rounded-full bg-success" />
-              {statusLabel}
-            </div>
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-[var(--radius-md)]"
-            onSelect={onProfile}
-          >
-            <UserRound className="h-4 w-4 text-secondary-300" />
-            Profile
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-[var(--radius-md)]"
-            onSelect={onNetwork}
-          >
-            <RadioTower className="h-4 w-4 text-secondary-300" />
-            Network
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            className="h-10 cursor-pointer gap-2 rounded-[var(--radius-md)] text-[var(--error-text)] focus:text-[var(--error-text)]"
-            onSelect={() => setDisconnectOpen(true)}
-          >
-            <LogOut className="h-4 w-4" />
-            Disconnect
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <Dialog open={disconnectOpen} onOpenChange={setDisconnectOpen}>
-        <DialogContent className="max-w-sm border-[var(--border)] bg-[var(--surface-dialog)] text-[var(--text-primary)] shadow-[var(--shadow-dialog)]">
-          <DialogHeader>
-            <DialogTitle>Disconnect signer?</DialogTitle>
-            <DialogDescription className="text-sm leading-7 text-[var(--text-secondary)]">
-              You can reconnect later, but signed actions will require
-              connecting again.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-secondary)]">
-            <div className="font-medium text-[var(--text-primary)]">
+          <Avatar className="size-8 shrink-0">
+            <AvatarImage src={safeAvatarUrl ?? undefined} alt="" />
+            <AvatarFallback>
+              {fallback ?? displayName.slice(0, 1).toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <span className="hidden min-w-0 flex-1 text-left sm:block">
+            <span className="block truncate text-sm font-semibold">
               {displayName}
-            </div>
-            <div className="font-mono">{pubkeyLabel}</div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDisconnectOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                onDisconnect()
-                setDisconnectOpen(false)
-              }}
-            >
-              Disconnect
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
+            </span>
+            <span className="block truncate text-xs">{pubkeyLabel}</span>
+          </span>
+          <ChevronDown className="hidden size-4 sm:block" aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={10}
+        className="w-56 bg-[var(--surface-dialog)] p-2"
+      >
+        <DropdownMenuLabel className="text-xs font-normal text-[var(--text-secondary)]">
+          {incompatible
+            ? "Signer capability required"
+            : recoveryRequired
+              ? "Signer reconnect needed"
+              : "Connected"}
+        </DropdownMenuLabel>
+        {recoveryRequired && (
+          <DropdownMenuItem
+            disabled={pending || working !== null}
+            onSelect={(event) => {
+              event.preventDefault()
+              void run(onReconnect, "reconnect")
+            }}
+          >
+            <KeyRound className="mr-2 size-4" aria-hidden="true" />
+            {pending ? "Reconnecting..." : "Reconnect signer"}
+          </DropdownMenuItem>
+        )}
+        {items.map((item) => (
+          <DropdownMenuItem
+            asChild
+            key={item.label}
+            disabled={working !== null}
+            className="min-h-11 cursor-pointer gap-3"
+          >
+            {item.content}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          disabled={working !== null || pending}
+          onSelect={(event) => {
+            event.preventDefault()
+            void run(onDisconnect, "disconnect")
+          }}
+          className="min-h-11 cursor-pointer gap-3 text-[var(--error-text)] focus:text-[var(--error-text)]"
+        >
+          <LogOut className="size-4" aria-hidden="true" />
+          {working === "disconnect" ? "Disconnecting..." : "Disconnect"}
+        </DropdownMenuItem>
+        {error && (
+          <p
+            role="alert"
+            className="px-2 py-2 text-sm text-[var(--error-text)]"
+          >
+            {error}
+          </p>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }

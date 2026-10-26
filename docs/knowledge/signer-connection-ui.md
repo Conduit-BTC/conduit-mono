@@ -1,4 +1,4 @@
-# Mobile signer connection UI
+# Signer connection UI
 
 Market and Merchant share the sign-in panel in `@conduit/ui`. It presents browser
 signers and app choices before protocol terminology while preserving standard
@@ -109,3 +109,34 @@ telemetry.
 - [Clave NIP-46 compatibility guidance](https://github.com/DocNR/clave/blob/master/docs/nip46-compatibility.md)
 - [Android browser intents](https://developer.chrome.com/docs/android/intents)
 - [Amber Android manifest](https://github.com/greenart7c3/Amber/blob/master/app/src/main/AndroidManifest.xml)
+
+## Connection ownership and account controls
+
+Each product shell mounts one `AppSignIn` adapter around the shared
+`SignInProvider`. Routes and headers call `useSignIn().requestSignIn()`; they
+never mount their own connection dialog. The provider owns pairing above the
+modal/full-page presentation. Checkout loading and Merchant gate transitions
+therefore do not destroy the active request. Dismissal cancels only its owned
+pairing; an older canceled promise cannot settle a newer request.
+
+`SignInDialog` is connection-only and closes from authoritative connected
+state, including when mounted with an already connected account. It has no
+connected-account panel or account-switch action. The shared `AccountMenu`
+displays the current identity, app-specific navigation, reconnect when needed,
+and an awaited disconnect. Disconnect failures remain visible at the product
+shell even if account retirement removes the header. A fresh connection cannot
+start while disconnect cleanup is pending.
+
+Signer approval is shown inline during sign-in and globally only outside that
+surface. Retained-account recovery uses `SignerRecoveryNotice`; a signer that
+lacks capabilities is not treated as a signed-out user. Recovery preserves the
+existing account and draft fences and never automatically retries an order,
+follow, publish, participation request, or payment.
+
+Protected route redirects carry only an allowlisted app-relative destination.
+The catalog and Merchant dashboard resume that destination after connection.
+A profile's Send message action can resume navigation to its conversation;
+this does not send a message. Explicit modal dismissal discards its pending
+navigation, and moving to another route invalidates the old continuation.
+Public legal/about boot boundaries and device-owned wallets retain their
+existing unauthenticated behavior.

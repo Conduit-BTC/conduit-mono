@@ -23,9 +23,9 @@ import {
   LegalFooter,
   legalFooterActionClassName,
   NotFoundPage,
-  SignerAuthUrlNotice,
   isProductLegalPath,
 } from "@conduit/ui"
+import { AppSignIn } from "../components/AppSignIn"
 import {
   MarketHeader,
   type MarketChromeState,
@@ -120,6 +120,7 @@ function RootShell({
     >
       <MarketHeader chromeState={chromeState} />
       <main
+        tabIndex={-1}
         className={
           isNotFound
             ? "flex min-w-0 w-full flex-1"
@@ -248,7 +249,7 @@ function RootLayout() {
 }
 
 function MarketProductRoot({ pathname }: { pathname: string }) {
-  const { authUrl, dismissAuthUrl, method, status } = useAuth()
+  const { method, status } = useAuth()
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
   const previousAuthMethodRef = useRef(method)
@@ -334,14 +335,13 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
   throwSyntheticClientErrorForTelemetryTest()
 
   return (
-    <EventActorIdentityProvider>
-      <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
-        <Outlet />
-        {authUrl && (
-          <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
-        )}
-      </RootShell>
-    </EventActorIdentityProvider>
+    <AppSignIn>
+      <EventActorIdentityProvider>
+        <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
+          <Outlet />
+        </RootShell>
+      </EventActorIdentityProvider>
+    </AppSignIn>
   )
 }
 
@@ -476,21 +476,26 @@ function MarketProductRootError({ error }: { error: unknown }) {
   }, [error])
 
   return (
-    <RootShell>
-      <ErrorPage
-        title="Something went wrong"
-        message={getClientErrorMessage(error, "An unexpected error occurred.")}
-        showReload
-      >
-        <div className="space-y-2 text-sm">
-          <ReportBugLink className="font-medium text-[var(--link-text)] underline underline-offset-4 hover:text-[var(--link-text)]" />
-          <p className="text-xs leading-5 text-[var(--text-muted)]">
-            Do not include private keys, wallet secrets, payment credentials, or
-            sensitive personal information.
-          </p>
-        </div>
-      </ErrorPage>
-    </RootShell>
+    <AppSignIn>
+      <RootShell>
+        <ErrorPage
+          title="Something went wrong"
+          message={getClientErrorMessage(
+            error,
+            "An unexpected error occurred."
+          )}
+          showReload
+        >
+          <div className="space-y-2 text-sm">
+            <ReportBugLink className="font-medium text-[var(--link-text)] underline underline-offset-4 hover:text-[var(--link-text)]" />
+            <p className="text-xs leading-5 text-[var(--text-muted)]">
+              Do not include private keys, wallet secrets, payment credentials,
+              or sensitive personal information.
+            </p>
+          </div>
+        </ErrorPage>
+      </RootShell>
+    </AppSignIn>
   )
 }
 

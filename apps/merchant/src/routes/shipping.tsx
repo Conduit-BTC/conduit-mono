@@ -38,8 +38,8 @@ import {
 } from "../lib/readiness"
 
 export const Route = createFileRoute("/shipping")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: ShippingPage,
 })

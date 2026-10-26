@@ -18,7 +18,7 @@ but do not establish physical-iPhone persistence or production readiness.
 `packages/core/src/protocol/nostr-event-signer.ts` defines `AccountSigner` and
 `NostrKeySigner`. `session-signer.ts` owns principal/revision fencing, serialized
 operations, signed-event validation, timeout and cancellation. `AuthContext.tsx`
-owns account lifecycle; `SignerSwitch.tsx` owns shared connection UX. A future
+owns account lifecycle; `SignInProvider.tsx` owns shared connection UX. A future
 provider must adapt to these owners. It must not impersonate NIP-07/NIP-46, add a
 second account owner, or replace publication/public-read/protected-read owners.
 

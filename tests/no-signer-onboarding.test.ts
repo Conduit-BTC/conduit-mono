@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises"
 describe("no-signer onboarding", () => {
   it("keeps lightweight custody-safe setup guidance near signer connect surfaces", async () => {
     const sharedSigner = await readFile(
-      "packages/ui/src/components/SignerSwitch.tsx",
+      "packages/ui/src/components/SignInDialog.tsx",
       "utf8"
     )
     const merchantRoot = await readFile(
@@ -27,10 +27,14 @@ describe("no-signer onboarding", () => {
     expect(sharedSigner).toContain('rel="noopener noreferrer"')
     expect(sharedSigner).toContain("<NoSignerSetupGuide />")
     expect(merchantRoot).toContain("<SignerConnectPanel")
-    expect(merchantRoot).toContain(
+    const merchantOwner = await readFile(
+      "apps/merchant/src/components/AppSignIn.tsx",
+      "utf8"
+    )
+    expect(merchantOwner).toContain(
       "Use your Nostr account to open your merchant workspace."
     )
-    expect(merchantRoot).toContain(
+    expect(sharedSigner).toContain(
       "Choose a browser extension or remote signer."
     )
     expect(sharedSigner).toContain("Connect Extension (NIP-07)")

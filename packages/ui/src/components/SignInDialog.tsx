@@ -1,13 +1,5 @@
 import { Check, ExternalLink, KeyRound, ShieldCheck } from "lucide-react"
-import {
-  useEffect,
-  useEffectEvent,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type Ref,
-} from "react"
+import { useEffect, useEffectEvent, useId, useRef, type Ref } from "react"
 import { Button } from "./Button"
 import {
   Dialog,
@@ -15,9 +7,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "./Dialog"
-import { SignerConnectedContent } from "./SignerConnectedContent"
 import { RemoteSignerConnect } from "./RemoteSignerConnect"
 import {
   getSignerPlatform,
@@ -28,26 +18,23 @@ import { useSignerPairing } from "./use-signer-pairing"
 export type { SignerEnvironmentInput } from "./signer-platform"
 import { cn } from "../utils"
 
-export type SignerSwitchStatus =
+export type SignInDialogStatus =
   "disconnected" | "restoring" | "connecting" | "connected" | "error"
 
-export interface SignerSwitchProps {
+export interface SignInDialogProps {
+  onReturnFocus?: () => void
+  pairing?: ReturnType<typeof useSignerPairing>
   logoSrc?: string
-  status: SignerSwitchStatus
-  pubkeyLabel?: string | null
-  pubkeyDetailLabel?: string | null
+  status: SignInDialogStatus
   error?: string | null
   authUrl?: string | null
   signerMethod?: "nip07" | "nip46" | null
   rememberedMethod?: "nip07" | "nip46" | null
   extensionAvailable: boolean
-  connectedDescription: string
   connectDescription: string
   unlockItems: readonly string[]
-  connectedUseDescription: string
-  open?: boolean
-  onOpenChange?: (open: boolean) => void
-  hideTrigger?: boolean
+  open: boolean
+  onOpenChange: (open: boolean) => void
   nostrConnectUri?: string | null
   onConnectExtension: () => Promise<void> | void
   onConnectNostrConnect: () => Promise<void> | void
@@ -58,6 +45,7 @@ export interface SignerSwitchProps {
 }
 
 export interface SignerConnectPanelProps {
+  pairing?: ReturnType<typeof useSignerPairing>
   logoSrc?: string
   title?: string
   description: string
@@ -68,7 +56,6 @@ export interface SignerConnectPanelProps {
   authUrl?: string | null
   rememberedMethod?: "nip07" | "nip46" | null
   connectingMethod?: "nip07" | "nip46" | null
-  pendingSwitch?: boolean
   extensionNotice?: string | null
   mobile?: boolean
   platform?: SignerPlatform
@@ -292,6 +279,7 @@ export function SignerUnlockCard({
 }
 
 function SignerDisconnectedContent({
+  pairing: ownedPairing,
   helperText,
   unlockLabel,
   unlockItems,
@@ -299,7 +287,6 @@ function SignerDisconnectedContent({
   authUrl,
   rememberedMethod,
   connectingMethod,
-  pendingSwitch = false,
   extensionNotice,
   mobile,
   platform: requestedPlatform,
@@ -320,8 +307,9 @@ function SignerDisconnectedContent({
     requestedPlatform ?? (mobile === false ? "desktop" : getSignerPlatform())
   const isMobile = mobile ?? platform !== "desktop"
   const reconnectOnly = rememberedMethod === "nip46"
-  const pairing = useSignerPairing({
-    autoPrepare: platform === "ios" || platform === "android",
+  const localPairing = useSignerPairing({
+    autoPrepare:
+      !ownedPairing && (platform === "ios" || platform === "android"),
     connectPending,
     connectDisabled,
     rememberedMethod,
@@ -330,6 +318,7 @@ function SignerDisconnectedContent({
     onConnect: onConnectNostrConnect,
     onCancel: onCancelConnect,
   })
+  const pairing = ownedPairing ?? localPairing
   const browserSignerLabel =
     platform === "ios" ? "Use a Safari extension" : "Use a browser signer"
   const browserSignerDisabled =
@@ -453,18 +442,6 @@ function SignerDisconnectedContent({
         <SignerUnlockCard label={unlockLabel} unlockItems={unlockItems} />
       </div>
 
-      {pendingSwitch && (
-        <div
-          className={cn(
-            "mx-auto mt-4 max-w-md rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
-            bodyClassName
-          )}
-        >
-          Choose another extension account or paste a new remote signer URI,
-          then reconnect here.
-        </div>
-      )}
-
       {extensionNotice && (
         <div
           className={cn(
@@ -480,6 +457,7 @@ function SignerDisconnectedContent({
 }
 
 export function SignerConnectPanel({
+  pairing,
   logoSrc,
   title = "Sign in to Conduit",
   description,
@@ -490,7 +468,6 @@ export function SignerConnectPanel({
   authUrl,
   rememberedMethod,
   connectingMethod,
-  pendingSwitch,
   extensionNotice,
   mobile,
   platform,
@@ -532,6 +509,7 @@ export function SignerConnectPanel({
         </div>
 
         <SignerDisconnectedContent
+          pairing={pairing}
           helperText={helperText}
           unlockLabel={unlockLabel}
           unlockItems={unlockItems}
@@ -539,7 +517,6 @@ export function SignerConnectPanel({
           authUrl={authUrl}
           rememberedMethod={rememberedMethod}
           connectingMethod={connectingMethod}
-          pendingSwitch={pendingSwitch}
           extensionNotice={extensionNotice}
           mobile={mobile}
           platform={platform}
@@ -560,23 +537,21 @@ export function SignerConnectPanel({
   )
 }
 
-export function SignerSwitch({
+/** Connection-only surface. Account management belongs in AccountMenu. */
+export function SignInDialog({
+  pairing,
+  onReturnFocus,
   logoSrc,
   status,
-  pubkeyLabel,
-  pubkeyDetailLabel,
   error,
   authUrl,
   signerMethod,
   rememberedMethod,
   extensionAvailable,
-  connectedDescription,
   connectDescription,
   unlockItems,
-  connectedUseDescription,
   open,
   onOpenChange,
-  hideTrigger = false,
   nostrConnectUri,
   onConnectExtension,
   onConnectNostrConnect,
@@ -584,152 +559,67 @@ export function SignerSwitch({
   onCancelConnect,
   onReconnect,
   onDisconnect,
-}: SignerSwitchProps) {
-  const [internalOpen, setInternalOpen] = useState(false)
-  const [isWorking, setIsWorking] = useState(false)
+}: SignInDialogProps) {
   const titleRef = useRef<HTMLHeadingElement>(null)
   const mobile = isMobileSignerEnvironment()
-  const isControlled = typeof open === "boolean"
-  const isOpen = isControlled ? open : internalOpen
-  const connected = status === "connected" && !!pubkeyLabel
+  const connected = status === "connected"
   const authPending = status === "connecting" || status === "restoring"
-  const extensionNotice =
-    !extensionAvailable && !mobile
-      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
-      : null
-
-  function setOpen(nextOpen: boolean): void {
-    if (!isControlled) setInternalOpen(nextOpen)
-    onOpenChange?.(nextOpen)
-  }
-
-  const triggerLabel = useMemo(() => {
-    if (authPending) return "Connecting..."
-    if (connected) return `Signer: ${pubkeyLabel}`
-    return "Connect"
-  }, [authPending, connected, pubkeyLabel])
-
-  const finishSignIn = useEffectEvent(() => setOpen(false))
-  const wasConnected = useRef(connected)
+  const finishSignIn = useEffectEvent(() => onOpenChange(false))
   useEffect(() => {
-    const becameConnected = connected && !wasConnected.current
-    wasConnected.current = connected
-    if (becameConnected) finishSignIn()
-  }, [connected])
-
-  async function handleSwitchSigner(): Promise<void> {
-    if (!connected || isWorking) return
-    setIsWorking(true)
-    try {
-      await onDisconnect()
-    } catch {
-      // Keep the current signer view open so its cleanup error stays visible.
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
-  async function handleDisconnect(): Promise<void> {
-    if (isWorking) return
-    setIsWorking(true)
-    try {
-      await onDisconnect()
-      setOpen(false)
-    } catch {
-      // Keep the dialog open so the inline cleanup error remains visible.
-    } finally {
-      setIsWorking(false)
-    }
-  }
+    // Also settle a restored/remounted open request. No transition history is
+    // needed, and a connected account can never reveal a management screen.
+    if (open && connected) finishSignIn()
+  }, [open, connected])
 
   return (
-    <Dialog open={isOpen} onOpenChange={setOpen}>
-      {!hideTrigger && (
-        <DialogTrigger asChild>
-          <Button
-            variant={connected ? "muted" : "primary"}
-            size="sm"
-            type="button"
-          >
-            {triggerLabel}
-          </Button>
-        </DialogTrigger>
-      )}
-
+    <Dialog open={open && !connected} onOpenChange={onOpenChange}>
       <DialogContent
         className="max-h-[calc(100dvh-1.5rem)] max-w-xl touch-pan-y overflow-y-auto overscroll-contain border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] [-webkit-overflow-scrolling:touch]"
+        onCloseAutoFocus={(event) => {
+          if (onReturnFocus) {
+            event.preventDefault()
+            onReturnFocus()
+          }
+        }}
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           titleRef.current?.focus({ preventScroll: true })
         }}
       >
-        <div className="relative rounded-[inherit]">
-          <div className="relative px-5 py-5 sm:px-6 sm:py-6">
-            {connected ? (
-              <>
-                <SignerHeader
-                  logoSrc={logoSrc}
-                  title="Signer connected"
-                  description={connectedDescription}
-                  titleRef={titleRef}
-                />
-
-                <SignerConnectedContent
-                  pubkeyLabel={pubkeyLabel}
-                  pubkeyDetailLabel={pubkeyDetailLabel}
-                  signerMethod={signerMethod}
-                  connectedUseDescription={connectedUseDescription}
-                  authUrl={authUrl}
-                  error={error}
-                  isWorking={isWorking}
-                  onDisconnect={handleDisconnect}
-                  onSwitchSigner={handleSwitchSigner}
-                />
-              </>
-            ) : (
-              <>
-                <SignerHeader
-                  logoSrc={logoSrc}
-                  title="Sign in to Conduit"
-                  description={connectDescription}
-                  titleRef={titleRef}
-                />
-
-                {isWorking && (
-                  <p
-                    role="status"
-                    className="mt-6 text-center text-sm text-[var(--text-secondary)]"
-                  >
-                    Finishing sign-out…
-                  </p>
-                )}
-                {isOpen && !isWorking && (
-                  <SignerDisconnectedContent
-                    helperText="Choose a browser extension or remote signer."
-                    unlockItems={unlockItems}
-                    error={error}
-                    authUrl={authUrl}
-                    rememberedMethod={rememberedMethod}
-                    connectingMethod={
-                      status === "restoring" ? null : signerMethod
-                    }
-                    extensionNotice={extensionNotice}
-                    mobile={mobile}
-                    extensionAvailable={extensionAvailable}
-                    connectPending={authPending || isWorking}
-                    connectDisabled={isWorking || authPending}
-                    nostrConnectUri={nostrConnectUri}
-                    onConnectExtension={onConnectExtension}
-                    onConnectNostrConnect={onConnectNostrConnect}
-                    onConnectRemote={onConnectRemote}
-                    onCancelConnect={onCancelConnect}
-                    onReconnect={onReconnect}
-                    onForget={onDisconnect}
-                  />
-                )}
-              </>
-            )}
-          </div>
+        <div className="relative px-5 py-5 sm:px-6 sm:py-6">
+          <SignerHeader
+            logoSrc={logoSrc}
+            title="Sign in to Conduit"
+            description={connectDescription}
+            titleRef={titleRef}
+          />
+          {open && !connected && (
+            <SignerDisconnectedContent
+              pairing={pairing}
+              helperText="Choose a browser extension or remote signer."
+              unlockItems={unlockItems}
+              error={error}
+              authUrl={authUrl}
+              rememberedMethod={rememberedMethod}
+              connectingMethod={status === "restoring" ? null : signerMethod}
+              extensionNotice={
+                !extensionAvailable && !mobile
+                  ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
+                  : null
+              }
+              mobile={mobile}
+              extensionAvailable={extensionAvailable}
+              connectPending={authPending}
+              connectDisabled={authPending}
+              nostrConnectUri={nostrConnectUri}
+              onConnectExtension={onConnectExtension}
+              onConnectNostrConnect={onConnectNostrConnect}
+              onConnectRemote={onConnectRemote}
+              onCancelConnect={onCancelConnect}
+              onReconnect={onReconnect}
+              onForget={onDisconnect}
+            />
+          )}
         </div>
       </DialogContent>
     </Dialog>

@@ -198,7 +198,7 @@ describe("Market wallet route contracts", () => {
     expect(content).not.toContain("balanceMsats")
     expect(content).not.toContain("refreshBalance: true")
     expect(content).toMatch(
-      /<AccountMenuLink[\s\S]*?label="Wallets"[\s\S]*?to="\/wallet"/
+      /<AccountMenu[\s\S]*?label: "Wallets"[\s\S]*?to="\/wallet"/
     )
     expect(content).not.toMatch(/<HeaderAction\s+label="Wallets"/)
   })

@@ -30,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
   SignerRecoveryNotice,
+  useSignIn,
 } from "@conduit/ui"
 import {
   CONTACT_LIST_WRITES_AVAILABLE,
@@ -43,7 +44,6 @@ import {
   recordBrowserTelemetryEvent,
   useAuth,
 } from "@conduit/core"
-import { SignerSwitch } from "../components/SignerSwitch"
 import {
   resolveProfileReference,
   getIdentityPath,
@@ -181,7 +181,7 @@ function PublicIdentityPage() {
   const btcUsdRate = shopperPricing.quote
   const [localSearch, setLocalSearch] = useState(search.q ?? "")
   const [searchDirty, setSearchDirty] = useState(false)
-  const [connectOpen, setConnectOpen] = useState(false)
+  const { requestSignIn } = useSignIn()
   const [shareCopied, setShareCopied] = useState(false)
   // Read the bounded catalog once; visible filters must not erase store evidence.
   const productsQuery = useProgressiveProducts({
@@ -417,23 +417,18 @@ function PublicIdentityPage() {
   }
 
   function handleSendMessage(): void {
-    if (!accountPubkey) {
-      setConnectOpen(true)
-      return
-    }
-
-    navigate({
-      to: "/messages",
-      search: {
-        tab: "dms",
-        merchant: pubkey,
-      },
-    })
+    const openConversation = () =>
+      void navigate({
+        to: "/messages",
+        search: { tab: "dms", merchant: pubkey },
+      })
+    if (!accountPubkey) requestSignIn(openConversation)
+    else openConversation()
   }
 
   async function handleFollow(): Promise<void> {
     if (!signerReady || !viewerPubkey || viewerPubkey === pubkey) {
-      if (!accountPubkey) setConnectOpen(true)
+      if (!accountPubkey) requestSignIn()
       return
     }
     if (isFollowBusy) return
@@ -1045,12 +1040,6 @@ function PublicIdentityPage() {
           </section>
         </div>
       )}
-
-      <SignerSwitch
-        open={connectOpen}
-        onOpenChange={setConnectOpen}
-        hideTrigger
-      />
     </div>
   )
 }

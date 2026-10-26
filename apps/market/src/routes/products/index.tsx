@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { ChevronDown, X } from "lucide-react"
-import { normalizePubkey, pubkeyToNpub } from "@conduit/core"
+import {
+  normalizePubkey,
+  pubkeyToNpub,
+  parseSignInReturnTo,
+} from "@conduit/core"
 import {
   Badge,
   Button,
@@ -11,8 +15,8 @@ import {
   DropdownMenuTrigger,
   getResultPresentation,
   RefreshChip,
+  useSignIn,
 } from "@conduit/ui"
-import { SignerSwitch } from "../../components/SignerSwitch"
 import { DeferredMerchantAvatar } from "../../components/DeferredMerchantAvatar"
 import {
   PRODUCT_GRID_CLASS_NAME,
@@ -68,6 +72,7 @@ export const Route = createFileRoute("/products/")({
       raw.authRequired === "1"
 
     return {
+      returnTo: parseSignInReturnTo(raw.returnTo, "market"),
       merchant: merchants.length > 0 ? merchants : undefined,
       q: typeof raw.q === "string" ? raw.q : undefined,
       sort: (["newest", "price_asc", "price_desc"] as const).includes(
@@ -110,7 +115,7 @@ function ProductsPage() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
-  const [connectOpen, setConnectOpen] = useState(false)
+  const { requestSignIn } = useSignIn()
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
   const [merchantMenuOpen, setMerchantMenuOpen] = useState(false)
   const [visibleMerchantCount, setVisibleMerchantCount] =
@@ -273,21 +278,23 @@ function ProductsPage() {
       status !== "connected" &&
       !hasAutoPromptedConnect.current
     ) {
-      setConnectOpen(true)
+      requestSignIn()
       hasAutoPromptedConnect.current = true
     }
 
     if (!search.authRequired) {
       hasAutoPromptedConnect.current = false
     }
-  }, [search.authRequired, status])
+  }, [search.authRequired, status, requestSignIn])
 
   useEffect(() => {
     if (search.authRequired && status === "connected") {
-      updateSearch({ authRequired: undefined })
+      const returnTo = parseSignInReturnTo(search.returnTo, "market")
+      if (returnTo) void navigate({ href: returnTo, replace: true })
+      else updateSearch({ authRequired: undefined, returnTo: undefined })
       hasAutoPromptedConnect.current = false
     }
-  }, [search.authRequired, status, updateSearch])
+  }, [search.authRequired, search.returnTo, status, updateSearch, navigate])
 
   const getMerchantName = useCallback(
     (merchantPubkey: string) => getMerchantIdentity(merchantPubkey).displayName,
@@ -327,7 +334,7 @@ function ProductsPage() {
               ) : (
                 <Button
                   className="h-11 px-4 text-sm"
-                  onClick={() => setConnectOpen(true)}
+                  onClick={() => requestSignIn()}
                 >
                   Connect
                 </Button>
@@ -344,11 +351,6 @@ function ProductsPage() {
           <div className="mt-4 text-xs text-[var(--text-secondary)]">
             You were redirected here because the next step requires a signer.
           </div>
-          <SignerSwitch
-            open={connectOpen}
-            onOpenChange={setConnectOpen}
-            hideTrigger
-          />
         </section>
       )}
 

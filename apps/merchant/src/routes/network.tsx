@@ -32,8 +32,8 @@ import {
 } from "../lib/productDraftReturn"
 
 export const Route = createFileRoute("/network")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: NetworkPage,
 })

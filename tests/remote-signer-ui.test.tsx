@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import {
   SignerConnectPanel,
   isMobileSignerEnvironment,
-} from "../packages/ui/src/components/SignerSwitch"
+} from "../packages/ui/src/components/SignInDialog"
 import { ClaveConnectButton } from "../packages/ui/src/components/ClaveConnectButton"
 import { claveConnectUrl } from "../packages/ui/src/components/signer-platform"
 import { SignerAuthUrlNotice } from "../packages/ui/src/components/SignerAuthUrlNotice"
@@ -384,13 +384,12 @@ describe("remote signer UI", () => {
   })
 
   it("wires the same Nostr Connect flow through both apps", async () => {
-    const [market, merchant, merchantRoot] = await Promise.all([
-      readFile("apps/market/src/components/SignerSwitch.tsx", "utf8"),
-      readFile("apps/merchant/src/components/SignerSwitch.tsx", "utf8"),
-      readFile("apps/merchant/src/routes/__root.tsx", "utf8"),
+    const [market, merchant] = await Promise.all([
+      readFile("apps/market/src/components/AppSignIn.tsx", "utf8"),
+      readFile("apps/merchant/src/components/AppSignIn.tsx", "utf8"),
     ])
 
-    for (const source of [market, merchant, merchantRoot]) {
+    for (const source of [market, merchant]) {
       expect(source).toContain("nostrConnectUri")
       expect(source).toContain('nip46Flow: "nostrconnect"')
       expect(source).toContain("onConnectNostrConnect")
@@ -442,13 +441,12 @@ describe("remote signer UI", () => {
 
   it("uses one explicit momentum scroll surface for the signer dialog", async () => {
     const source = await readFile(
-      "packages/ui/src/components/SignerSwitch.tsx",
+      "packages/ui/src/components/SignInDialog.tsx",
       "utf8"
     )
 
     expect(source).toContain("overflow-y-auto overscroll-contain")
     expect(source).toContain("[-webkit-overflow-scrolling:touch]")
-    expect(source).toContain('<div className="relative rounded-[inherit]">')
     expect(source).not.toContain(
       '<div className="relative rounded-[inherit] border border-[var(--border)] bg-[var(--surface-dialog)]">'
     )
@@ -564,12 +562,17 @@ describe("remote signer UI", () => {
       readFile("apps/merchant/src/routes/__root.tsx", "utf8"),
     ])
 
+    const owner = await readFile(
+      "packages/ui/src/components/SignInProvider.tsx",
+      "utf8"
+    )
+    expect(owner).toContain("!active && props.authUrl")
+    expect(owner).toContain("onDismiss={onDismissAuthUrl}")
     expect(markup).toContain("Signer approval required")
     expect(markup).toContain("https://signer.example/approve")
     expect(markup).toContain("Dismiss signer approval notice")
     for (const source of [marketRoot, merchantRoot]) {
-      expect(source).toContain("SignerAuthUrlNotice")
-      expect(source).toContain("onDismiss={dismissAuthUrl}")
+      expect(source).toContain("<AppSignIn")
     }
   })
 

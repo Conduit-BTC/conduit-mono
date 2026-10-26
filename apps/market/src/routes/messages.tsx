@@ -96,8 +96,8 @@ type BuyerOrderReplySend = {
 }
 
 export const Route = createFileRoute("/messages")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   validateSearch: (raw: Record<string, unknown>): MessagesSearch => ({
     tab: raw.tab === "dms" || raw.tab === "merchants" ? raw.tab : undefined,

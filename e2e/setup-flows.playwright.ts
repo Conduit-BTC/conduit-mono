@@ -1349,97 +1349,146 @@ test("merchant product authoring warns about missing Lightning setup without blo
   ).toBeEnabled()
 })
 
-test("market checkout explains missing merchant Lightning setup without blocking signed order-first @market", async ({
-  browser,
-  page,
-}) => {
-  const merchantSecret = generateSecretKey()
-  const merchantPubkey = getPublicKey(merchantSecret)
-  const createdAt = Math.floor(Date.now() / 1_000)
-  const productCoordinate = `30402:${merchantPubkey}:manual-payment-checkout`
-  await publishTestRelayEvents([
-    finalizeEvent(
-      {
-        kind: 0,
-        created_at: createdAt,
-        tags: [],
-        content: JSON.stringify({ name: "Manual Payment Merchant" }),
-      },
-      merchantSecret
-    ),
-    finalizeEvent(
-      {
-        kind: 10_002,
-        created_at: createdAt,
-        tags: [["r", TEST_RELAY_URL]],
-        content: "",
-      },
-      merchantSecret
-    ),
-    finalizeEvent(
-      {
-        kind: 30_402,
-        created_at: createdAt,
-        tags: [
-          ["d", "manual-payment-checkout"],
-          ["title", "Manual payment checkout product"],
-          ["summary", "Paid product without a profile Lightning Address."],
-          ["price", "1000", "SATS"],
-          ["type", "simple", "digital"],
-          ["stock", "3"],
-          ["image", "https://media.conduit.market/manual-payment-checkout.png"],
-        ],
-        content: "Paid product without a profile Lightning Address.",
-      },
-      merchantSecret
-    ),
-  ])
-  await installTestSigner(page, TEST_BUYER_PUBKEY)
-  await seedManualPaymentCart(page, { productCoordinate, merchantPubkey })
-
-  await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
-  await expect(
-    page.getByRole("heading", { name: "Checkout", exact: true })
-  ).toBeVisible({ timeout: 30_000 })
-  await expect(
-    page.getByText("Merchant Lightning payments are not set up", {
-      exact: true,
+for (const initiallyConnected of [true, false]) {
+  test(`market checkout explains missing Lightning setup ${initiallyConnected ? "while signed in" : "and completes guest sign-in without submitting"} @market`, async ({
+    page,
+  }) => {
+    const merchantSecret = generateSecretKey()
+    const merchantPubkey = getPublicKey(merchantSecret)
+    const createdAt = Math.floor(Date.now() / 1_000)
+    const productCoordinate = `30402:${merchantPubkey}:manual-payment-checkout`
+    await publishTestRelayEvents([
+      finalizeEvent(
+        {
+          kind: 0,
+          created_at: createdAt,
+          tags: [],
+          content: JSON.stringify({ name: "Manual Payment Merchant" }),
+        },
+        merchantSecret
+      ),
+      finalizeEvent(
+        {
+          kind: 10_002,
+          created_at: createdAt,
+          tags: [["r", TEST_RELAY_URL]],
+          content: "",
+        },
+        merchantSecret
+      ),
+      finalizeEvent(
+        {
+          kind: 30_402,
+          created_at: createdAt,
+          tags: [
+            ["d", "manual-payment-checkout"],
+            ["title", "Manual payment checkout product"],
+            ["summary", "Paid product without a profile Lightning Address."],
+            ["price", "1000", "SATS"],
+            ["type", "simple", "digital"],
+            ["stock", "3"],
+            [
+              "image",
+              "https://media.conduit.market/manual-payment-checkout.png",
+            ],
+          ],
+          content: "Paid product without a profile Lightning Address.",
+        },
+        merchantSecret
+      ),
+    ])
+    await installTestSigner(page, TEST_BUYER_PUBKEY, {
+      rememberAuth: initiallyConnected,
     })
-  ).toBeVisible({ timeout: 30_000 })
-  await expect(
-    page.getByText(
-      "You can still send the order first and arrange payment with the merchant.",
-      { exact: true }
+    await seedManualPaymentCart(page, { productCoordinate, merchantPubkey })
+
+    await page.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
+    await expect(
+      page.getByRole("heading", { name: "Checkout", exact: true })
+    ).toBeVisible({ timeout: 30_000 })
+    await expect(
+      page.getByText("Merchant Lightning payments are not set up", {
+        exact: true,
+      })
+    ).toBeVisible({ timeout: 30_000 })
+    if (initiallyConnected) {
+      await expect(
+        page.getByText(
+          "You can still send the order first and arrange payment with the merchant.",
+          { exact: true }
+        )
+      ).toBeVisible()
+      await expect(
+        page.getByText("Checking fulfillment", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Send order", exact: true })
+      ).toBeEnabled({
+        timeout: 30_000,
+      })
+
+      return
+    }
+    const guestPage = page
+    await expect(
+      guestPage.getByText("Merchant Lightning payments are not set up", {
+        exact: true,
+      })
+    ).toBeVisible({ timeout: 30_000 })
+    await expect(
+      guestPage.getByText(
+        "Connect a signer to send the order and arrange payment with the merchant.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    await expect(
+      guestPage.getByText("Checking fulfillment", { exact: true })
+    ).toHaveCount(0)
+    // Exercise the route-owned CTA that previously lost its dialog while auth
+    // was pending. Signing in must neither send an order nor leave a success modal.
+    await guestPage.evaluate(() => {
+      const signer = (
+        window as unknown as { nostr: { getPublicKey: () => Promise<string> } }
+      ).nostr
+      const original = signer.getPublicKey
+      signer.getPublicKey = async () => {
+        await new Promise<void>((resolve) => {
+          ;(window as unknown as { finishSignIn: () => void }).finishSignIn =
+            resolve
+        })
+        return original()
+      }
+    })
+    await guestPage
+      .getByRole("button", {
+        name: "Connect signer to send order",
+        exact: true,
+      })
+      .click()
+    const signIn = guestPage.getByRole("dialog", { name: "Sign in to Conduit" })
+    await signIn
+      .getByRole("button", { name: "Connect Extension (NIP-07)", exact: true })
+      .click()
+    await expect(
+      guestPage.getByText("Restoring checkout…", { exact: true })
+    ).toBeVisible()
+    await expect(signIn).toBeVisible()
+    await guestPage.evaluate(() =>
+      (window as unknown as { finishSignIn: () => void }).finishSignIn()
     )
-  ).toBeVisible()
-  await expect(
-    page.getByText("Checking fulfillment", { exact: true })
-  ).toHaveCount(0)
-  await expect(
-    page.getByRole("button", { name: "Send order", exact: true })
-  ).toBeEnabled({
-    timeout: 30_000,
+    await expect(signIn).toHaveCount(0)
+    await expect(guestPage.locator("main").first()).toBeFocused()
+    await expect(
+      guestPage.getByRole("heading", { name: "Checkout", exact: true })
+    ).toBeVisible()
+    await expect(
+      guestPage.getByRole("button", { name: "Send order", exact: true })
+    ).toBeEnabled()
+    await expect(
+      guestPage.getByRole("button", { name: "Switch account", exact: true })
+    ).toHaveCount(0)
   })
-
-  const guestPage = await browser.newPage()
-  await seedManualPaymentCart(guestPage, { productCoordinate, merchantPubkey })
-  await guestPage.goto(`${marketUrl}/checkout?merchant=${merchantPubkey}`)
-  await expect(
-    guestPage.getByText("Merchant Lightning payments are not set up", {
-      exact: true,
-    })
-  ).toBeVisible({ timeout: 30_000 })
-  await expect(
-    guestPage.getByText(
-      "Connect a signer to send the order and arrange payment with the merchant.",
-      { exact: true }
-    )
-  ).toBeVisible()
-  await expect(
-    guestPage.getByText("Checking fulfillment", { exact: true })
-  ).toHaveCount(0)
-  await guestPage.close()
-})
+}
 
 test("merchant product tags suggest the loaded catalog without blocking freeform entry @merchant", async ({
   browser,
@@ -1985,6 +2034,7 @@ test("market checkout claims a guest draft when a signer connects @market", asyn
   await expect(
     page.getByRole("button", { name: "Open account menu" })
   ).toBeVisible()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
   await expect(firstName).toHaveValue("Guest")
   await expect(lastName).toHaveValue("Buyer")
   await expect(street).toHaveValue("123 Guest Street")
