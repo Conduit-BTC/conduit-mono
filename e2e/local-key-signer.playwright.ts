@@ -147,7 +147,7 @@ for (const app of ["market", "merchant"] as const) {
         .click()
     await expect(
       page.getByText(
-        "Your key is saved in this browser so you stay signed in. We don’t send it to our servers. Use a trusted device and keep a backup.",
+        "Stay signed in. Your key stays in your browser, not on our servers.",
         { exact: true }
       )
     ).toBeVisible()

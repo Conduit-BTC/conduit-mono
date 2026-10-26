@@ -133,8 +133,7 @@ export function LocalKeyImportForm({
         id={`${id}-help`}
         className="text-sm text-pretty text-[var(--text-secondary)]"
       >
-        Your key is saved in this browser so you stay signed in. We don’t send
-        it to our servers. Use a trusted device and keep a backup.
+        Stay signed in. Your key stays in your browser, not on our servers.
       </p>
       {pasteStatus === "failed" && (
         <p role="alert" className="text-sm text-error-text">
