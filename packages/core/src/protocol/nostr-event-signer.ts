@@ -1,3 +1,4 @@
+import type { AuthMethod } from "./auth-session"
 import { isTransientNip07BridgeError } from "./signing-retry"
 import type { SignedPublicNostrEvent } from "./signed-event"
 
@@ -13,7 +14,7 @@ export type SignedNostrEvent = SignedPublicNostrEvent
 
 export interface NostrEventSigner {
   /** Protected-read eligibility is limited to externally backed account sessions. */
-  readonly authMethod?: "nip07" | "nip46"
+  readonly authMethod?: AuthMethod
   getPublicKey(): Promise<string>
   signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent>
 }
@@ -26,6 +27,7 @@ export type NostrSignerFailureCode =
   | "disconnected"
   | "authority_changed"
   | "invalid_response"
+  | "invalid_ciphertext"
 
 export class NostrSignerError extends Error {
   readonly code: NostrSignerFailureCode
@@ -52,11 +54,29 @@ export interface NostrKeySigner extends NostrEventSigner {
   decryptLegacy(senderPubkey: string, ciphertext: string): Promise<string>
 }
 
+export interface AccountSignerOperationOptions {
+  priority?: "foreground" | "background"
+}
+
 /** Established account authority. Guest order keys never implement this grant. */
 export interface AccountSigner extends NostrKeySigner {
+  signEvent(
+    event: UnsignedNostrEvent,
+    options?: AccountSignerOperationOptions
+  ): Promise<SignedNostrEvent>
+  encryptNip44(
+    recipientPubkey: string,
+    plaintext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
   readonly revision: string
-  readonly authMethod: "nip07" | "nip46"
+  readonly authMethod: AuthMethod
   readonly capabilities: AccountSignerCapabilities
+  decryptNip44(
+    senderPubkey: string,
+    ciphertext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
 }
 
 export function classifyNostrSignerError(error: unknown): NostrSignerError {
@@ -113,6 +133,7 @@ export function classifyNostrSignerError(error: unknown): NostrSignerError {
   ) {
     return new NostrSignerError("authority_changed")
   }
+  if (code === "invalid_ciphertext") return new NostrSignerError(code)
   if (code === "invalid_response") {
     return new NostrSignerError("invalid_response")
   }
@@ -124,4 +145,25 @@ export function classifyNostrSignerError(error: unknown): NostrSignerError {
     return new NostrSignerError("authorization_denied")
   }
   return new NostrSignerError("unavailable")
+}
+
+/** Only explicit payload failures are skippable; ambiguous signer errors stay blocking. */
+export function isInvalidNip44CiphertextError(error: unknown): boolean {
+  const record =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; message?: unknown })
+      : undefined
+  if (record?.code === "invalid_ciphertext") return true
+  if (
+    record?.code !== undefined ||
+    classifyNostrSignerError(error).code !== "unavailable"
+  )
+    return false
+  const message = typeof error === "string" ? error : record?.message
+  // NIP-44 reference implementation/nostr-tools errors, scoped to decrypt calls.
+  // Never match arbitrary substrings or retain provider messages in diagnostics.
+  return (
+    typeof message === "string" &&
+    /^(invalid MAC|invalid padding)$/i.test(message.trim())
+  )
 }

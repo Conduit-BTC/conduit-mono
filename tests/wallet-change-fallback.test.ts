@@ -4,7 +4,7 @@ import {
   notifyWalletChangeFallback,
   subscribeToWalletChangeFallback,
   type WalletChangeFallbackRuntime,
-} from "../apps/market/src/lib/wallet-change-fallback"
+} from "@conduit/core/wallets/wallet-change-fallback"
 
 const STORAGE_KEY = "conduit:wallets-change:v1"
 

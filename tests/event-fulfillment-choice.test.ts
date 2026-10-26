@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -23,6 +25,7 @@ import {
   incrementCartRepositoryItem,
 } from "../apps/market/src/lib/cart-repository"
 import { hasEventShippingChoice } from "../apps/market/src/lib/event-fulfillment-choice"
+import { CartEventFulfillmentChoice } from "../apps/market/src/components/CartEventFulfillmentChoice"
 
 const organizerSecret = generateSecretKey()
 const organizer = getPublicKey(organizerSecret)
@@ -162,6 +165,32 @@ describe("Event Market fulfillment choice", () => {
       shippingCostSats: 200,
     }
   }
+  it("renders pickup without a switch and leaves historical shipping selections unchanged", () => {
+    for (const [saved, label] of [
+      [pickup(), "Take it at the event"],
+      [shipping(), "Shipping · saved selection"],
+    ] as const) {
+      const before = JSON.stringify(saved)
+      const html = renderToStaticMarkup(
+        createElement(CartEventFulfillmentChoice, {
+          item: saved,
+          authenticatedPubkey: null,
+        })
+      )
+      expect(html).toContain(label)
+      expect(html).not.toContain("<button")
+      expect(html).not.toContain("Ship it")
+      expect(JSON.stringify(saved) === before).toBe(true)
+    }
+    expect(
+      renderToStaticMarkup(
+        createElement(CartEventFulfillmentChoice, {
+          item: { ...shipping(), eventMarketContext: undefined },
+          authenticatedPubkey: null,
+        })
+      )
+    ).toBe("")
+  })
   it("persists choice and groups shipping separately from the same product at an event", () => {
     const parsed = parsePersistedCart({
       version: 2,

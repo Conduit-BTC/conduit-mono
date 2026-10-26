@@ -20,7 +20,8 @@ Do not assume contributors have personal or machine-level agent rules.
 - Get explicit maintainer approval before merge, deployment, release, production
   changes, destructive operations, irreversible migrations, credential or access
   changes, spending, or material runtime dependency upgrades. An explicit
-  request for the action counts as approval. Preserve unrelated work.
+  request for the action counts as approval. Preserve unrelated work. Never
+  force push `main`; use `git restore --staged` when unstaging files.
 - Do not change `docs/ARCHITECTURE.md` or `docs/specs/*.md` without explicit
   maintainer approval. Read existing contracts when they apply; ordinary work
   does not require a new spec. Add public-safe knowledge notes only when useful.
@@ -30,21 +31,46 @@ Do not assume contributors have personal or machine-level agent rules.
 
 ## Task-specific reading
 
-| Work                                                                                                                                       | Read before implementation                                                                                                                                                                                                                                                                        |
-| ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| UI, shared controls, theme, accessibility                                                                                                  | [`docs/DESIGN.md`](docs/DESIGN.md); relevant app and `@conduit/ui` code                                                                                                                                                                                                                           |
-| System boundary or broad data flow                                                                                                         | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the applicable existing spec                                                                                                                                                                                                                   |
-| Nostr protocol, relay, signer, NDK, NIP-17/NIP-44/NIP-59 messaging, NWC/payment, signed-event cache/outbox, product identity or event code | [`docs/knowledge/decentralized-network-product-posture.md`](docs/knowledge/decentralized-network-product-posture.md), [`docs/knowledge/external-nostr-references.md`](docs/knowledge/external-nostr-references.md), the applicable existing spec, and the relevant public NIP/Open Markets source |
-| Checkout, orders, wallet, or guest flow                                                                                                    | Applicable contracts under [`docs/specs/`](docs/specs/) and affected core/app implementation; also use the Nostr row when protocol, signed delivery, or payments change                                                                                                                           |
-| Telemetry or smoke artifacts                                                                                                               | [`docs/analytics/events.md`](docs/analytics/events.md) and relevant test/CI rules                                                                                                                                                                                                                 |
-| Dependencies, CI, PR, preview, or release                                                                                                  | [`CONTRIBUTING.md`](CONTRIBUTING.md), affected workflow/configuration, and release guidance there; inspect current gates before claiming status                                                                                                                                                   |
-| Agent intake, dispatch, review, or hardening                                                                                               | [`docs/knowledge/agent-automation-boundary.md`](docs/knowledge/agent-automation-boundary.md), affected workflows, and `CONTRIBUTING.md` for PR evidence                                                                                                                                           |
+- **UI, shared controls, theme, accessibility:** [`docs/DESIGN.md`](docs/DESIGN.md)
+  and the relevant app and `@conduit/ui` code.
+- **System boundaries or broad data flow:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+  and the applicable existing spec.
+- **Nostr protocol, relay, signer, NDK, messaging, payments, signed-event
+  cache/outbox, product identity or event code:**
+  [`network posture`](docs/knowledge/decentralized-network-product-posture.md),
+  [`external references`](docs/knowledge/external-nostr-references.md), the
+  applicable existing spec, and the relevant public NIP/Open Markets source.
+- **Checkout, orders, wallet, or guest flow:** applicable contracts under
+  [`docs/specs/`](docs/specs/) and affected core/app code. Also read the Nostr
+  references when protocol, signed delivery, or payments change.
+- **Telemetry or smoke artifacts:** [`docs/analytics/events.md`](docs/analytics/events.md)
+  and relevant test/CI rules.
+- **Dependencies, CI, PR, preview, or release:** [`CONTRIBUTING.md`](CONTRIBUTING.md),
+  affected workflow/configuration, and relevant operator guidance. Inspect current
+  gates before claiming status; keep private release instructions outside the repo.
+- **Agent intake, dispatch, review, or hardening:**
+  [`agent automation boundary`](docs/knowledge/agent-automation-boundary.md),
+  affected workflows, and `CONTRIBUTING.md` for PR evidence.
 
 For commerce interoperability, start with [Open Markets in Conduit](docs/OPEN_MARKETS.md)
 for the implementation map, compatibility differences, and proposal dependencies.
 
-Read only the rows the change actually touches. A route can cross several rows.
+Read only the references the task actually needs. A route can cross several boundaries.
 `docs/README.md` is a navigation aid, not another mandatory startup read.
+
+## Before implementing
+
+- Trace the affected flow before choosing a solution: inputs, callers, shared
+  owners, outputs, and persisted data. Check relevant tests, fixtures, exports,
+  and configuration when an interface or behavior changes.
+- Reuse existing helpers, shared controls, platform capabilities, and installed
+  dependencies. Add only what the task needs; include all affected callers and
+  recovery paths. Preserve validation, error handling, accessibility, observability,
+  required documentation, migrations, and compatibility.
+- Read versions, dependencies, and available commands from the relevant
+  `package.json` and `bun.lock`; event kinds from `packages/core/src/protocol/kinds.ts`;
+  defaults from `packages/core/src/config.ts`. Use existing code as the pattern
+  instead of copying examples from agent instructions.
 
 ## Trust and product boundaries
 
@@ -64,8 +90,10 @@ Read only the rows the change actually touches. A route can cross several rows.
   installed mode is a UX gate, not key authority.
   Apps must not generate, store, or derive account keys. The bounded guest-order
   key and isolated device-local Portable Wallet credential boundaries are distinct
-  exceptions; neither creates a Nostr account. The device-owned `/wallet`
-  surface works without a connected signer.
+  exceptions; neither creates a Nostr account. New account-scoped wallets use
+  verified signer-backed encryption and close on logout/account replacement.
+  Legacy password-encrypted device wallets retain signed-out access and an
+  explicit migration/fallback path. See `docs/specs/wallets.md`.
 - Test identities are ordinary newly generated Nostr keys from a CSPRNG, used
   in controlled test processes and the signer-owned test surface. They are not
   a separate class of non-account key. No fixed credential may enter source or
@@ -83,6 +111,10 @@ Read only the rows the change actually touches. A route can cross several rows.
   unavailable, stale, conflicting, and malformed states distinct. Require
   positive evidence for irreversible actions; do not let an unavailable source
   veto safe behavior solely because unknown negative evidence might exist.
+- NDK is a compatibility edge inside shared protocol helpers. Its shared context
+  remains offline; do not add ambient connections, global relay discovery, or
+  bare event publishes. Use core Zod schemas for validation and the bounded,
+  source-aware reader/planner for relay reads.
 - Keep relay planning, event parsing/emission, encryption, publishing, and
   signed-event persistence in shared `@conduit/core` boundaries. Routes compose
   workflows. Model ACK, rejection, timeout, and degraded state where decisions
@@ -94,12 +126,17 @@ Read only the rows the change actually touches. A route can cross several rows.
 - Payments remain non-custodial. Do not turn cache, partial relay state, or
   advisory notifications into payment, settlement, fulfillment, or purchase
   authority. Preserve signed authority and exact order/fulfillment snapshots.
-  Guest checkout must not require a guest inbox, self-copy, or reply channel.
+  Conduit-operated services never receive wallet credentials, control funds, or
+  process refunds. Account-owned order and private-message actions require a
+  connected signer, not just a persisted pubkey. Preserve the bounded guest-order
+  exception in `docs/specs/protocol.md`; guest checkout must not require a guest
+  inbox, self-copy, or reply channel.
 - Telemetry is optional, allowlisted, aggregate, and content-free. Logs,
   diagnostics, smoke artifacts, and agent inputs must not expose pubkeys,
   npubs, nsecs, messages, ciphertext, order contents, invoices, payment hashes,
   addresses, contact details, IPs, fingerprints, signer connection strings,
-  NWC URIs, wallet balances, recovery material, or provider credentials.
+  NWC URIs, selected wallet instance IDs, wallet balances, recovery material, or
+  provider credentials.
 
 ## Code, validation, and review
 
@@ -110,11 +147,16 @@ Read only the rows the change actually touches. A route can cross several rows.
 - Use Bun, TypeScript strict mode, double quotes, two-space indentation,
   `async`/`await`, and explicit error handling. Check existing implementations,
   dependency docs, and types before adding packages or custom code.
+- Keep scope tied to the requested outcome and acceptance criteria. Report
+  adjacent issues separately. Reproduce bugs when practical and fix the shared
+  root cause within scope. Preserve unrelated changes.
 - Match validation to the changed boundary. Use focused tests and relevant
   typecheck, lint, build, telemetry, and smoke checks. Browser evidence is
   appropriate for UI work; stubbed signers do not prove cryptography or relay
   delivery. Inspect the final diff and distinguish local checks, CI, preview,
-  human QA, release, and production observation.
+  human QA, release, and production observation. Investigate failures before
+  expanding scope; never weaken safeguards or tests to obtain a pass. Report
+  checks run and material gaps; stop when acceptance criteria are met.
 - PRs target protected `main`, use Conventional Commit titles by default, and
   follow [`.github/pull_request_template.md`](.github/pull_request_template.md).
   Tie acceptance criteria to current-head evidence and name gaps. Human review

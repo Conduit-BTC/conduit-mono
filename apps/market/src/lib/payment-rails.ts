@@ -49,6 +49,8 @@ export type CheckoutInvoicePaymentResult =
     }
   | {
       status: "retryable_failure"
+      /** Only before_publish permits settled funding to clear its reservation. */
+      phase: "before_publish" | "after_publish"
       reason: string
       diagnostics?: WalletPaymentDiagnostic[]
     }
@@ -114,6 +116,7 @@ export async function payCheckoutInvoice(
     if (!input.walletPaymentAttemptId) {
       return {
         status: "retryable_failure",
+        phase: "before_publish",
         reason: "Wallet payment attempt is missing an idempotency key.",
       }
     }
@@ -178,6 +181,7 @@ export async function payCheckoutInvoice(
       : result.reason
     return {
       status: "retryable_failure",
+      phase: result.status === "failed" ? result.phase : "before_publish",
       reason,
       diagnostics:
         result.status === "declined" ? undefined : result.diagnostics,
@@ -193,6 +197,7 @@ export async function payCheckoutInvoice(
       })
       return {
         status: "retryable_failure",
+        phase: "before_publish",
         reason: "The selected browser wallet is unavailable.",
       }
     }
@@ -232,6 +237,7 @@ export async function payCheckoutInvoice(
         })
         return {
           status: "retryable_failure",
+          phase: "before_publish",
           reason: message,
         }
       }

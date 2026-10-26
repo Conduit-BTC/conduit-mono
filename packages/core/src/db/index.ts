@@ -1,3 +1,7 @@
+import type { InboxCipher } from "../protocol/commerce-inbox-store"
+import type { EventMarketFreePurchaseDelivery } from "../protocol/event-market-free-purchase-delivery-record"
+import type { ReceivingWalletBinding } from "../wallets/receiving"
+import type { PortableWalletAccount } from "../wallets/portable-wallet-sync"
 import Dexie, {
   liveQuery,
   type DexieOptions,
@@ -5,10 +9,12 @@ import Dexie, {
   type Table,
 } from "dexie"
 import type { ShippingPolicyQuote } from "../protocol/shipping-policy"
+import type { PrivateMessageRumor } from "../protocol/private-message-primitives"
 import { config } from "../config"
 import type {
   OrderItemFulfillmentSchema,
   ProductShippingOptionReference,
+  ProductSupplierAllocation,
   ProductZapMessagePolicy,
 } from "../schemas"
 import type { AccountNetworkRoutingPolicy } from "../protocol/account-network-routing-policy"
@@ -16,6 +22,21 @@ import type {
   CheckoutSparkReconciliation,
   CheckoutSparkRetirementTombstone,
 } from "../protocol/checkout-spark-reconciliation"
+import type { CheckoutSparkSettledReconciliation } from "../protocol/checkout-spark-settled-router"
+import type { CheckoutSparkMerchantSettlementRecord } from "../protocol/checkout-spark-merchant-settlement"
+import type { CheckoutSparkInvoiceOriginRecord } from "../protocol/checkout-spark-invoice-origin"
+import type { CheckoutSparkInvoiceRecipientRecord } from "../protocol/checkout-spark-invoice-recipient"
+import type { CheckoutSparkMerchantOrderWitness } from "../protocol/checkout-spark-merchant-order-witness"
+import type { CheckoutSparkPlanSourceValidation } from "../protocol/checkout-spark-plan-sources"
+import type { StoredMerchantCheckoutSparkProgressDelivery } from "../protocol/checkout-spark-merchant-progress-repository"
+import type {
+  CheckoutSparkSupplierNotification,
+  StoredCheckoutSparkSupplierNotification,
+} from "../protocol/checkout-spark-supplier-notification"
+import type {
+  CheckoutSparkBuyerOrderBinding,
+  CheckoutSparkRetiredSettlementSummary,
+} from "../protocol/checkout-spark-retired-settlement"
 import type { RelayScanResult } from "../protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "../protocol/signed-event"
 import type { ProductSpecification } from "../types"
@@ -152,6 +173,7 @@ export interface CachedProduct {
   publicZapEnabled?: boolean
   zapMessagePolicy?: ProductZapMessagePolicy
   publicZapPolicyKnown?: boolean
+  supplierAllocation?: ProductSupplierAllocation
   eventGuestContactOptional?: boolean
   location?: string
   geohash?: string
@@ -212,6 +234,8 @@ export interface CachedEventMarketRosterEvidence {
   marketCoordinate: string
   signedEvent: SignedPublicNostrEvent
   cachedAt: number
+  /** Bounded browsing cache only; absent on durable and legacy evidence. */
+  discoveryBytes?: number
 }
 
 /** Account-scoped signed settings evidence; relay omission cannot erase it. */
@@ -245,7 +269,8 @@ export type ProductDeletionRelayDeliveryStatus =
   | "policy_blocked"
   | "error"
 
-export type ProductDeletionDeliveryState = "pending" | "partial" | "delivered"
+export type ProductDeletionDeliveryState =
+  "pending" | "partial" | "delivered" | "superseded_unpublished"
 
 export interface ProductDeletionRelayTarget {
   relayUrl: string
@@ -260,6 +285,8 @@ export interface ProductDeletionRelayDelivery {
   relayUrl: string
   status: ProductDeletionRelayDeliveryStatus
   attemptCount: number
+  /** Durable streak used only to pace background retries of explicit OK false. */
+  consecutiveRejections?: number
   lastAttemptAt?: number
   acknowledgedAt?: number
   rejectedAt?: number
@@ -282,6 +309,8 @@ export interface ProductDeletionDeliveryJob {
   state: ProductDeletionDeliveryState
   deliveryAttemptCount: number
   retryCount: number
+  /** Mixed mutation gate; deletion waits for one relay to ACK the full listing family. */
+  companionListingJobId?: string
   lastAttemptAt?: number
   nextRetryAt?: number
   /** Opaque local worker claim used to avoid duplicate cross-tab delivery. */
@@ -290,6 +319,131 @@ export interface ProductDeletionDeliveryJob {
   deliveryLeaseExpiresAt?: number
   createdAt: number
   updatedAt: number
+}
+
+export type ProductListingRelayDeliveryStatus =
+  "pending" | "acked" | "rejected" | "timed_out"
+
+export type ProductListingDeliveryState =
+  | "pending"
+  | "partial"
+  | "delivered"
+  | "failed"
+  /** Exact signed bytes remain durable, but this unattempted stage cannot publish. */
+  | "superseded_unpublished"
+
+export interface ProductListingRelayTarget {
+  relayUrl: string
+  /** True only when this target came from the merchant's own relay settings. */
+  ownerSelected: boolean
+  /** Immutable source provenance; retries still recheck the current layer policy. */
+  appRelay?: boolean
+  personalRelay?: boolean
+  independentRelay?: boolean
+}
+
+export interface ProductListingRelayDelivery {
+  eventId: string
+  relayUrl: string
+  status: ProductListingRelayDeliveryStatus
+  attemptCount: number
+  lastAttemptAt?: number
+  acknowledgedAt?: number
+  rejectedAt?: number
+  timedOutAt?: number
+}
+
+/**
+ * Durable delivery state for one exact, already-signed product-family revision.
+ *
+ * The signed events and relay targets are immutable. Delivery updates only the
+ * corresponding event/relay outcome so a later tab can replay the same bytes
+ * without asking the merchant to sign a mixed family revision.
+ */
+export interface ProductListingDeliveryJob {
+  id: string
+  merchantPubkey: string
+  signedEvents: SignedPublicNostrEvent[]
+  relayTargets: ProductListingRelayTarget[]
+  relayDelivery: ProductListingRelayDelivery[]
+  /** Exact NIP-09 job required by this mixed product mutation, when present. */
+  companionDeletionJobId?: string
+  /** Newly signed fixed-shipping events that must be ACKed before this listing can leave. */
+  prerequisiteShippingEventIds?: string[]
+  /** False while a mixed mutation is still staging its deletion and local cache. */
+  readyForDelivery?: boolean
+  /** Local-only provenance for an explicitly re-signed terminal rejection. */
+  replacedByListingJobId?: string
+  /** Durable successor-side recovery intent, persisted before readiness. */
+  replacesRejectedListingJobId?: string
+  /** Local replay authority only; historical signed bytes and ACKs stay immutable. */
+  localReplaySupersededBy?: Record<string, string>
+  state: ProductListingDeliveryState
+  deliveryAttemptCount: number
+  lastAttemptAt?: number
+  nextRetryAt?: number
+  createdAt: number
+  updatedAt: number
+}
+
+/** One committed local product mutation. No worker may infer authority from an uncommitted row. */
+export interface LocalProductWriteIntent {
+  id: string
+  merchantPubkey: string
+  productAddressIds: string[]
+  /** Exact signed baseline accepted by the atomic local commit. */
+  sourceRevisions?: Array<{ addressId: string; eventId: string | null }>
+  listingJobId?: string
+  deletionJobId?: string
+  shippingEventIds: string[]
+  stockCheckpointId?: string
+  committedAt: number
+}
+
+/** Device-local signed revision frontier for one merchant-owned coordinate. */
+export interface LocalProductWriteFrontier {
+  id: string
+  merchantPubkey: string
+  /** Last signed product revision, if any; a deletion does not invent a listing. */
+  eventId: string | null
+  eventCreatedAt: number | null
+  /** Strongest local address deletion cutoff, kept across later writes. */
+  deletionEventId?: string
+  deletionCreatedAt?: number
+  intentId: string
+}
+
+/** Exact signed shipping prerequisite; delivery and ACK handling remain separate. */
+export interface LocalProductShippingJob {
+  id: string
+  merchantPubkey: string
+  signedEvent: SignedPublicNostrEvent
+  relayUrls: string[]
+  acknowledgedRelayUrls: string[]
+  createdAt: number
+}
+
+/** Order stock recovery evidence committed with its signed product revision. */
+export interface LocalProductStockCheckpoint {
+  id: string
+  merchantPubkey: string
+  orderId: string
+  productAddressId: string
+  sourceEventId: string
+  signedEventId: string
+  adjustment: {
+    key: string
+    addressId: string
+    sourceEventId: string
+    title: string
+    quantity: number
+    currentStock: number
+    nextStock: number
+    shortfall: number
+    targetMode?: "custom"
+  }
+  state: "pending" | "applied" | "unpublished"
+  committedAt: number
 }
 
 export interface CachedProfile {
@@ -359,6 +513,7 @@ export type OwnerRelayListLookupCoverage =
   "complete" | "partial" | "unavailable"
 
 export interface OwnerRelayListLookupEvidence {
+  sources?: import("../protocol/account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: OwnerRelayListLookupCoverage
   /** True only when this lookup returned a valid, owner-authored kind-10002. */
@@ -399,7 +554,15 @@ export type NetworkPreferencePublishStatus =
   | "error"
 
 export type NetworkPreferenceReadbackStatus =
-  "pending" | "observed" | "absent" | "timed_out"
+  | "pending"
+  | "observed"
+  | "absent"
+  | "timed_out"
+  | "auth_required"
+  | "verification_unavailable"
+  | "unavailable"
+  | "policy_blocked"
+  | "cancelled"
 
 /** Content-free delivery evidence for one immutable signed-event target. */
 export interface NetworkPreferenceRelayOutcome {
@@ -450,6 +613,7 @@ export type InboxDeclarationLookupCoverage =
  * observation cannot disappear after a process restart.
  */
 export interface InboxDeclarationLookupEvidence {
+  sources?: import("../protocol/account-network-evidence").AccountNetworkReadEvidence["sources"]
   observedAt: number
   coverage: InboxDeclarationLookupCoverage
   /** True when the lookup returned an event, including unusable evidence. */
@@ -726,7 +890,8 @@ export interface StoredMerchantPendingInvoice {
   amountMsats: number
   note?: string
   delivery: "buyer_and_self" | "self_only"
-  source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock"
+  source: "profile_lud16" | "webln" | "nwc" | "manual" | "mock" | "wallet"
+  receivingWallet?: ReceivingWalletBinding
   invoiceExpiresAt: number
   deliveryState: "pending" | "sent"
   /** A semantic publish began; absent positive evidence, only exact-wrap recovery is safe. */
@@ -963,10 +1128,14 @@ export interface OrderLifecycle {
   }
   buyerPubkey: string
   buyerIdentityKind?: OrderBuyerIdentityKind
+  /** Local-only guest signing deadline; never extend it when preparation is slow. */
+  guestSessionExpiresAt?: number
   merchantPubkey: string
   checkoutMode: OrderCheckoutMode
   /** When present, legacy direct-payment retries must not pay this order. */
   checkoutSparkRouterBinding?: OrderCheckoutSparkRouterBinding
+  /** Organizer ciphertext committed atomically with the original Merchant wrap. */
+  eventMarketFreePurchaseDelivery?: EventMarketFreePurchaseDelivery
   publicZapSigner?: OrderPublicZapSigner
   /** A public anon-zap attempt failed before invoice issuance and continued privately. */
   publicZapFallback?: boolean
@@ -1078,19 +1247,254 @@ export interface OrderLifecycle {
 export interface StoredCheckoutSparkPlanBinding {
   checkoutId: string
   planDigest: string
+  /** Exact authenticated buyer order; absent for older local preparations. */
+  orderWitness?: CheckoutSparkMerchantOrderWitness
+  /** Local signed-source admission; never copied from buyer recovery payloads. */
+  sourceValidation?: CheckoutSparkPlanSourceValidation
+  /** Exact verified public sources retained only while this plan is active. */
+  sourceEvents?: SignedPublicNostrEvent[]
+  /** Local exact-invoice resolution attestations; never imported from recovery. */
+  invoiceOrigins?: CheckoutSparkInvoiceOriginRecord[]
+  /** Independent provider attribution, verified on this device; never imported. */
+  invoiceRecipients?: CheckoutSparkInvoiceRecipientRecord[]
+  /** Private provider-verified facts retained when the active plan retires. */
+  merchantSettlement?: CheckoutSparkMerchantSettlementRecord
+  /** Bound to the delivered buyer order; no order body or session authority. */
+  buyerOrderBinding?: CheckoutSparkBuyerOrderBinding
+  /** Minimal frozen accounting facts kept after active state retirement. */
+  retiredSettlementSummary?: CheckoutSparkRetiredSettlementSummary
+  /** Exact signed ciphertext wraps pending private relay delivery; never plaintext. */
+  merchantProgressOutbox?: StoredMerchantCheckoutSparkProgressDelivery[]
+  /** Exact organizer execution ciphertext only; authenticated afresh on recovery. */
+  organizerProgressOutbox?: unknown[]
+  /** Immutable supplier notices; retained after wallet retirement for exact retry/dedup. */
+  supplierNotificationOutbox?: StoredCheckoutSparkSupplierNotification[]
+  /** Minimal provider-verified notification eligibility; contains no wallet recovery data. */
+  supplierNotificationIntents?: CheckoutSparkSupplierNotification[]
 }
 
 export interface StoredCheckoutSparkReconciliation {
   checkoutId: string
   revision: number
-  state: CheckoutSparkReconciliation
+  state: CheckoutSparkReconciliation | CheckoutSparkSettledReconciliation
 }
 
 export interface StoredCheckoutSparkRetirement extends CheckoutSparkRetirementTombstone {
   checkoutId: string
 }
 
+/** Durable merchant inventory, separate from the relay-scoped product cache. */
+export interface MerchantInventoryPublicationJob {
+  id: string
+  state: "awaiting_signature" | "signed" | "delivered" | "superseded"
+  /** Immutable accepted local revision; signing must follow this sequence. */
+  revision: number
+  createdAt: number
+  productStock?: number
+  assignmentSnapshot?: {
+    state: "active" | "removed"
+    inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
+    fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+    organizerStockHold?: MerchantInventoryAssignment["organizerStockHold"]
+  }
+  draft?: {
+    pubkey: string
+    kind: number
+    created_at: number
+    tags: string[][]
+    content: string
+  }
+  signedEvent?: SignedPublicNostrEvent
+}
+
+export interface MerchantInventoryProduct {
+  coordinate: string
+  merchantPubkey: string
+  /** Undefined means genuinely untracked, never zero or infinity. */
+  stock?: number
+  revision: number
+  sourceProductEvent: SignedPublicNostrEvent
+  signedProductEvent: SignedPublicNostrEvent
+  publicationJobs: MerchantInventoryPublicationJob[]
+  /** Exact Merchant-only encrypted stock checkpoint; not a relay cache. */
+  organizerStockCheckpoint?: {
+    sequence: number
+    previousId: string | null
+    snapshotKey: string
+    /** Legacy plaintext is repaired on authenticated use. New writes retain ciphertext only. */
+    rumor?: PrivateMessageRumor
+    rumorId?: string
+    sealedRumor?: InboxCipher
+    selfEnvelope?: SignedPublicNostrEvent
+    acknowledgedRelayUrls: string[]
+  }
+}
+
+export interface MerchantInventoryAssignment {
+  coordinate: string
+  merchantPubkey: string
+  productCoordinate: string
+  marketCoordinate: string
+  occurrenceCoordinate: string
+  inventory: { mode: "tracked"; quantity: number } | { mode: "untracked" }
+  state: "active" | "removed"
+  fulfillmentMethods: Array<"pickup" | "shipping" | "digital">
+  /** Exclusive end from a validated signed occurrence snapshot. */
+  occurrenceEndMs: number
+  /** Only verified terminal cancellation or applicable deletion sets this. */
+  terminal: boolean
+  /** Private advance handover. Lifecycle expiry never releases this stock. */
+  organizerStockHold?: {
+    poolId: string
+    organizerPubkey: string
+    quantity: number
+    importedQuantity: number
+    /** Only a completely reconciled organizer closing frontier sets this. */
+    closed: boolean
+  }
+  revision: number
+  signedAssignmentEvent?: SignedPublicNostrEvent
+  publicationJobs: MerchantInventoryPublicationJob[]
+}
+
+export interface MerchantInventoryAcceptedOrder {
+  orderId: string
+  merchantPubkey: string
+  identityBinding: string
+  termsBinding: string
+  /** Exact validated order snapshot encrypted by the account-owned device store. */
+  evidence: string
+  /** Absent only on legacy preview records awaiting account-owned repair. */
+  evidenceFormat?: "device-encrypted-v1"
+  evidenceBinding?: string
+  items: Array<{
+    productCoordinate: string
+    assignmentCoordinate?: string
+    method: "ordinary" | "pickup" | "shipping" | "digital"
+    quantity: number
+    remainingStock?: number
+    remainingAllocation?: number
+  }>
+  acceptedAt: number
+  /** Authenticated delegated stock provenance, not payment or handout proof. */
+  organizerImport?: {
+    originalOrderRumorId: string
+    organizerPubkey: string
+    claimRef: string
+    entries: Array<{
+      poolId: string
+      entryId: string
+      writerId: string
+      quantity: number
+    }>
+  }
+}
+
+/** Durable, account-scoped private stock authority; never a relay cache. */
+export interface EventMarketOrganizerStockPool {
+  id: string
+  accountPubkey: string
+  poolId: string
+  merchantPubkey: string
+  organizerPubkey: string
+  writerId: string
+  assignmentCoordinate: string
+  productCoordinate: string
+  grantRumor: PrivateMessageRumor
+  /** Original Merchant-authenticated grant delivered to the organizer. */
+  receivedEnvelope?: SignedPublicNostrEvent
+  quantity: number
+  acceptedQuantity: number
+  acceptedSequence: number
+  lastAcceptedId: string
+  importedQuantity: number
+  importedSequence: number
+  lastImportedId: string
+  /** Preparation consumes Merchant availability before any external signing. */
+  state: "prepared" | "active" | "closing" | "closed"
+  closingRumor?: PrivateMessageRumor
+  /** Authenticated incoming organizer close retained by the Merchant. */
+  receivedClosingEnvelope?: SignedPublicNostrEvent
+  /** Closed-prefix history on a replacement device never reactivates its writer. */
+  readOnlyRecovery?: true
+  /** Exact encrypted retries, not proof of recipient observation. */
+  grantWraps?: {
+    recipient: SignedPublicNostrEvent
+    self: SignedPublicNostrEvent
+  }
+  closingWraps?: {
+    recipient: SignedPublicNostrEvent
+    self: SignedPublicNostrEvent
+  }
+}
+
+export interface EventMarketOrganizerStockEntry {
+  id: string
+  accountPubkey: string
+  poolId: string
+  sequence: number
+  orderId: string
+  claimRef: string
+  rumor: PrivateMessageRumor
+  quantity: number
+  /** Exact original evidence retained privately, never displayed as a message. */
+  evidence: string
+  /** Exact private whole-order pool manifest; prevents subset replay. */
+  orderPoolBinding?: string
+  wraps?: { recipient: SignedPublicNostrEvent; self: SignedPublicNostrEvent }
+  /** Original incoming organizer seal, independently rechecked on close. */
+  receivedEnvelope?: SignedPublicNostrEvent
+  /** Authenticated whole-order handout, independent of stock import/payment. */
+  handout?: {
+    rumor: PrivateMessageRumor
+    wraps?: { recipient: SignedPublicNostrEvent; self: SignedPublicNostrEvent }
+    receivedEnvelope?: SignedPublicNostrEvent
+  }
+  imported: boolean
+}
+
+/** Durable local device ownership; never inferred from an inbox/cache miss. */
+export interface EventMarketOrganizerStockWriter {
+  id: string
+  accountPubkey: string
+  marketCoordinate: string
+  deviceId: string
+  /** Immutable logical writer in the original Merchant grants and plans. */
+  writerId?: string
+  state: "target" | "active" | "retired"
+  /** Monotonic positive installation frontier, including closed pools. */
+  installedPoolIds: string[]
+  generation: number
+  transferId?: string
+  previousTransferId?: string
+  /** Retired source keeps the exact complete draft and ciphertext for retry. */
+  outgoing?: {
+    rumor: PrivateMessageRumor
+    envelope?: SignedPublicNostrEvent
+    relayAccepted?: true
+    /** Root plus ordered chunks; all ciphertext is saved before the first I/O. */
+    packets?: Array<{
+      rumor: PrivateMessageRumor
+      envelope?: SignedPublicNostrEvent
+      relayAccepted?: true
+    }>
+  }
+  /** Positive authenticated activation evidence on the replacement device. */
+  receivedEnvelope?: SignedPublicNostrEvent
+}
+
 export class ConduitDB extends Dexie {
+  /** Exact encrypted checkout delivery state; never an evictable cache. */
+  checkoutRecoveryStorage!: EntityTable<
+    {
+      key: string
+      value: string | null
+      legacyDigest: string | null
+    },
+    "key"
+  >
+  sparkRecoveryEvidence!: EntityTable<{ ownerPubkey: string }, "ownerPubkey">
+  portableWalletAccounts!: EntityTable<PortableWalletAccount, "ownerPubkey">
   orders!: EntityTable<StoredOrder, "id">
   messages!: EntityTable<StoredMessage, "id">
   commerceInboxDeletions!: EntityTable<InboxDeletionRow, "id">
@@ -1117,6 +1521,11 @@ export class ConduitDB extends Dexie {
   merchantPendingInvoices!: EntityTable<StoredMerchantPendingInvoice, "id">
   orderLifecycles!: EntityTable<OrderLifecycle, "orderId">
   productDeletionOutbox!: EntityTable<ProductDeletionDeliveryJob, "id">
+  productListingOutbox!: EntityTable<ProductListingDeliveryJob, "id">
+  localProductWriteIntents!: EntityTable<LocalProductWriteIntent, "id">
+  localProductWriteFrontiers!: EntityTable<LocalProductWriteFrontier, "id">
+  localProductShippingOutbox!: EntityTable<LocalProductShippingJob, "id">
+  localProductStockCheckpoints!: EntityTable<LocalProductStockCheckpoint, "id">
   inboxDeclarationEvidence!: EntityTable<
     InboxDeclarationEvidenceRecord,
     "pubkey"
@@ -1146,6 +1555,30 @@ export class ConduitDB extends Dexie {
   checkoutSparkRetirements!: EntityTable<
     StoredCheckoutSparkRetirement,
     "checkoutId"
+  >
+  merchantInventoryProducts!: EntityTable<
+    MerchantInventoryProduct,
+    "coordinate"
+  >
+  merchantInventoryAssignments!: EntityTable<
+    MerchantInventoryAssignment,
+    "coordinate"
+  >
+  merchantInventoryAcceptedOrders!: EntityTable<
+    MerchantInventoryAcceptedOrder,
+    "orderId"
+  >
+  eventMarketOrganizerStockPools!: EntityTable<
+    EventMarketOrganizerStockPool,
+    "id"
+  >
+  eventMarketOrganizerStockEntries!: EntityTable<
+    EventMarketOrganizerStockEntry,
+    "id"
+  >
+  eventMarketOrganizerStockWriters!: EntityTable<
+    EventMarketOrganizerStockWriter,
+    "id"
   >
 
   constructor(databaseName = "conduit", options?: DexieOptions) {
@@ -1347,11 +1780,20 @@ export class ConduitDB extends Dexie {
       checkoutSparkReconciliations: "checkoutId",
       checkoutSparkRetirements: "checkoutId",
       eventMarketRosterEvidence: "id, marketCoordinate, cachedAt",
+      // The local product-write preview used v20/v21 independently. Retain its
+      // stores while upgrading either lineage; v24 also adds them to main.
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
     })
 
     this.version(21).stores({
       eventMarketMerchantDecisionJobs:
         "id, [marketCoordinate+merchantPubkey], status, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
     })
 
     this.version(22).stores({
@@ -1368,6 +1810,12 @@ export class ConduitDB extends Dexie {
     })
 
     this.version(24).stores({
+      // Local write authority and delivery history are durable, not prunable cache.
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
       // v24 also opened on recovery previews. Retain their additive stores in
       // the historical union so Dexie does not delete/recreate their rows.
       sparkRecoveryEvidence: "ownerPubkey",
@@ -1378,15 +1826,48 @@ export class ConduitDB extends Dexie {
       eventMarketMerchantDecisionJobs:
         "id, marketCoordinate, merchantPubkey, status, updatedAt",
     })
-
+    // Both development histories introduced version 24 independently. Reapply
+    // their union so an already-v24 database acquires every durable table/index.
     this.version(25).stores({
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
+      localProductStockCheckpoints:
+        "id, merchantPubkey, orderId, productAddressId, state, committedAt",
       // v24 exists in concurrent recovery branches. Preserve their additive
       // stores/indexes without rewriting an already-opened database lineage.
       sparkRecoveryEvidence: "ownerPubkey",
       eventMarketMerchantDecisionJobs:
         "id, marketCoordinate, merchantPubkey, [marketCoordinate+merchantPubkey], status, updatedAt, createdAt",
+      commerceInboxDeletions: "id, accountPubkey",
+      commerceInboxKeys: "id",
+      commerceInboxWrappers: "id, accountPubkey, state, observedAt",
+      commerceInboxRecords: "id, accountPubkey, kind, createdAt, read",
+      commerceInboxRanges: "id, accountPubkey",
+      commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
+      // Dexie also replays the installed version's schema during upgrade.
+      // Keep the concurrent v25 assignment preview's populated stores here;
+      // adding them only at a later version would delete/recreate their rows.
+      merchantInventoryProducts: "coordinate, merchantPubkey",
+      merchantInventoryAssignments:
+        "coordinate, productCoordinate, merchantPubkey, occurrenceCoordinate",
+      merchantInventoryAcceptedOrders: "orderId, merchantPubkey, acceptedAt",
+    })
+    // Both preview lineages already opened v25. Add the complete union at a
+    // fresh version so neither lineage loses durable authority or recovery.
+    this.version(26).stores({
+      productListingOutbox:
+        "id, merchantPubkey, state, nextRetryAt, updatedAt, createdAt",
+      localProductWriteIntents: "id, merchantPubkey, listingJobId, committedAt",
+      localProductWriteFrontiers: "id, merchantPubkey, intentId",
+      localProductShippingOutbox: "id, merchantPubkey, createdAt",
       localProductStockCheckpoints:
         "id, merchantPubkey, orderId, productAddressId, state, committedAt",
+      sparkRecoveryEvidence: "ownerPubkey",
+      eventMarketMerchantDecisionJobs:
+        "id, marketCoordinate, merchantPubkey, [marketCoordinate+merchantPubkey], status, updatedAt, createdAt",
       commerceInboxDeletions: "id, accountPubkey",
       commerceInboxKeys: "id",
       commerceInboxWrappers: "id, accountPubkey, state, observedAt",
@@ -1394,6 +1875,31 @@ export class ConduitDB extends Dexie {
       commerceInboxRanges: "id, accountPubkey",
       commerceInboxDeliveries: "id, accountPubkey, state, updatedAt",
     })
+
+    this.version(27).stores({
+      // Main and discovery previews independently used v26. A fresh version
+      // applies their complete additive union to either installed lineage.
+      // Size keys bound background discovery without scanning signed payloads.
+      // The additive index does not rewrite durable or legacy evidence rows.
+      eventMarketRosterEvidence:
+        "id, marketCoordinate, cachedAt, discoveryBytes",
+    })
+
+    this.version(28).stores({
+      // Additive only: preserve the complete installed inventory/discovery union.
+      // Account-scoped unique bindings prevent a replay from consuming twice.
+      eventMarketOrganizerStockPools:
+        "id, accountPubkey, &[accountPubkey+poolId], [accountPubkey+assignmentCoordinate]",
+      eventMarketOrganizerStockEntries:
+        "id, accountPubkey, [accountPubkey+poolId], &[accountPubkey+poolId+sequence], &[accountPubkey+poolId+orderId], &[accountPubkey+poolId+claimRef]",
+    })
+    this.version(29).stores({
+      // Additive device handover owner. All installed stock/inventory rows stay.
+      eventMarketOrganizerStockWriters:
+        "id, accountPubkey, &[accountPubkey+marketCoordinate]",
+    })
+    this.version(30).stores({ checkoutRecoveryStorage: "key" })
+    this.version(31).stores({ portableWalletAccounts: "ownerPubkey" })
   }
 }
 

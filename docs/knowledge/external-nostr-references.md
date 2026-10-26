@@ -116,11 +116,24 @@ status are maintained in the guide rather than duplicated here.
   composed previews. They are not a product key-creation feature. Fixed
   credentials in source/history and raw-key app/service/diagnostic/artifact sinks
   remain prohibited.
-  Existing guest-order/Portable Wallet boundaries and protected-smoke checks
-  remain enforced. The only approved server-side private-key exception is the
-  Anon Conduit Shopper public zap signer, scoped to authenticated merchant-
+  The guest capability in `docs/specs/protocol.md` is limited to one guest
+  order, same-order payment reports and separately constrained router recovery
+  sealing. In an authorized Event Market organizer handoff, the exact frozen
+  organizer may receive its separately typed recovery/progress package for a
+  version-five organizer-handoff plan or the zero-commerce, zero-fee purchase
+  packet without a wallet or
+  invoice. Sealing binds the same order, canonical payload, exact authorized
+  recipient role and existing deadline. Stock records, generic messages, direct
+  rumor signatures, other recipients and a guest reply inbox remain prohibited.
+  Existing Portable Wallet boundaries and
+  protected-smoke checks remain enforced.
+- The approved server-side signing exceptions are the Anon Conduit Shopper
+  public zap signer, scoped to authenticated merchant-
   authorized checkout zap and fixed-recipient Conduit.Market project-tip zap
-  requests. See `docs/knowledge/anon-zap-signer-handoff.md` for its boundary.
+  requests, and a separate pricing-only live-rate attestation signer. The
+  pricing signer cannot sign Nostr events, authorize payments or hold user keys;
+  its contract does not itself authorize key creation or deployment. See
+  `docs/specs/protocol.md` and `docs/knowledge/anon-zap-signer-handoff.md`.
 - NIP-42 relay AUTH is ephemeral relay-session authentication, not an app login
   system or persisted Conduit identity layer. The Conduit client keeps challenge
   and auth-event state in memory, but sends the signing request to the selected

@@ -989,11 +989,16 @@ describe("progressive exact product reads", () => {
     const slow = listing(slowSecret, "survivor")
     const { held, fastReturned } = installHeldRead([fast], slow, deletion(fast))
     const snapshots: ProductsByIdsResult[] = []
+    const firstProgress = gate()
     const read = getProductsByIds([fast, slow].map(address), {
-      onProgress: (snapshot) => snapshots.push(snapshot),
+      onProgress: (snapshot) => {
+        snapshots.push(snapshot)
+        firstProgress.release()
+      },
     })
     try {
-      await afterFastRead(fastReturned)
+      await fastReturned.promise
+      await Promise.race([firstProgress.promise, read])
       expect(snapshots[0]?.data.map((record) => record.addressId)).toContain(
         address(fast)
       )

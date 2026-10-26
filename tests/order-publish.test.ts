@@ -34,6 +34,15 @@ import {
 
 import { createGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 import {
+  createInMemoryInboxDeclarationEvidenceRepository,
+  mergeInboxDeclarationEvidence,
+} from "../packages/core/src/protocol/inbox-declaration-evidence"
+import {
+  readRetainedInboxDeclaration,
+  sharedInboxDiscoveryRelayUrls,
+} from "../packages/core/src/protocol/private-message-routing"
+import { admitFixture } from "./helpers/public-event"
+import {
   buildOrderCompanionNotificationRumor,
   buildPaymentProofRumor,
   getDeliveryNotice,
@@ -1021,10 +1030,38 @@ describe("buyer order publishing", () => {
   })
 
   it("filters a whole-removed relay from both signed-in order sends", async () => {
-    const buyerPubkey = "a".repeat(64)
-    const merchantPubkey = "b".repeat(64)
+    const buyerSecret = generateSecretKey()
+    const merchantSecret = generateSecretKey()
+    const buyerPubkey = getPublicKey(buyerSecret)
+    const merchantPubkey = getPublicKey(merchantSecret)
     const excludedRelayUrl = "wss://removed-order.conduit.market"
     const eligibleRelayUrl = "wss://eligible-order.conduit.market"
+    const inboxEvidence = createInMemoryInboxDeclarationEvidenceRepository()
+    for (const secret of [buyerSecret, merchantSecret]) {
+      const signedEvent = await admitFixture(
+        finalizeEvent(
+          {
+            kind: 10050,
+            created_at: 1,
+            content: "",
+            tags: [
+              ["relay", excludedRelayUrl],
+              ["relay", eligibleRelayUrl],
+            ],
+          },
+          secret
+        )
+      )
+      await mergeInboxDeclarationEvidence(
+        {
+          pubkey: getPublicKey(secret),
+          signedEvent,
+          sourceRelayUrls: sharedInboxDiscoveryRelayUrls(),
+          sharedSourceRelayUrls: sharedInboxDiscoveryRelayUrls(),
+        },
+        inboxEvidence
+      )
+    }
     const repository = createInMemoryAccountNetworkLocalStateRepository(
       [],
       () => 100
@@ -1058,20 +1095,29 @@ describe("buyer order publishing", () => {
           await publishPrivateMessage({
             ...input,
             accountNetworkLocalStateRepository: repository,
+            inboxDeclarationEvidenceRepository: inboxEvidence,
             recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
             // Keep the non-critical self-copy off live inbox discovery.
             senderInboxRelays: [eligibleRelayUrl],
             inspectOwnInboxReadiness: async () => ({
               state: "ready",
-              eventId: "c".repeat(64),
+              eventId: (await readRetainedInboxDeclaration(buyerPubkey, {
+                durableEvidenceRepository: inboxEvidence,
+              }))!.eventId!,
               relayUrls: [eligibleRelayUrl],
               stale: false,
               distributionRepairable: false,
             }),
             giftWrapFn: (async (_rumor, recipient) =>
-              new NDKEvent(undefined, {
-                id: `wrap-${recipient.pubkey}`,
-              })) as never,
+              finalizeEvent(
+                {
+                  kind: 1059,
+                  created_at: 1_700_000_000,
+                  tags: [["p", recipient.pubkey]],
+                  content: "synthetic encrypted wrap",
+                },
+                generateSecretKey()
+              )) as never,
             publishFn: (async (_event, options) => {
               openedRelayUrls.push(...(options.exclusiveRelayUrls ?? []))
               return {

@@ -11,7 +11,13 @@ import {
 } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
   getConfiguredIsolatedE2eRelayUrl,
+  loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -25,6 +31,26 @@ import {
 const HEX_64 = /^[0-9a-f]{64}$/i
 
 const CONTROL_CHARACTER = /\p{Cc}/u
+function hasUnsupportedCalendarControl(value: string): boolean {
+  return CONTROL_CHARACTER.test(
+    value.replaceAll("\t", "").replaceAll("\n", "").replaceAll("\r", "")
+  )
+}
+
+export const EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH = 1_000
+
+/** Calendar prose may contain line breaks and tabs, but not other controls. */
+export function normalizeEventMarketCalendarSummary(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  if (normalized.length > EVENT_MARKET_CALENDAR_SUMMARY_MAX_LENGTH)
+    throw new Error("Description must be 1,000 characters or fewer.")
+  if (hasUnsupportedCalendarControl(normalized))
+    throw new Error("Description contains unsupported control characters.")
+  return normalized
+}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 
@@ -98,6 +124,7 @@ export type EventMarketCalendarDraftInput =
     })
 
 export interface ParsedEventMarketCalendar {
+  /** Exact verified public revision; retaining it does not establish freshness. */
   signedEvent?: SignedPublicNostrEvent
   coordinate: string
   eventId: string
@@ -120,6 +147,56 @@ export interface ParsedEventMarketCalendar {
   endDate?: string
   startTzid?: string
   endTzid?: string
+  createdAt: number
+  sourceRelayUrls?: string[]
+}
+
+/** Historical router evidence only; new public markets use kind 31927. */
+export type EventMarketOrderAcceptance = "open" | "closed"
+
+const EVENT_MARKET_LIFECYCLE_TAG = "conduit_event_market"
+
+export interface ParsedEventMarketPickup {
+  /** Exact verified public revision; retaining it does not establish freshness. */
+  signedEvent?: SignedPublicNostrEvent
+  coordinate: string
+  eventId: string
+  authorPubkey: string
+  dTag: string
+  title: string
+  content: string
+  price: number
+  currency: string
+  countries: string[]
+  location?: string
+  geohash?: string
+  createdAt: number
+  sourceRelayUrls?: string[]
+  /** Network-read provenance; retained records remain display-only. */
+  evidenceState?: "live" | "retained"
+}
+
+export interface ParsedEventMarketCollection {
+  /** Exact verified revision used for lossless lifecycle-only updates. */
+  signedEvent?: SignedPublicNostrEvent
+  /** Omitted only for legacy events whose scheduled end closes ordering. */
+  orderAcceptance?: EventMarketOrderAcceptance
+  coordinate: string
+  eventId: string
+  authorPubkey: string
+  dTag: string
+  title: string
+  content: string
+  summary?: string
+  image?: string
+  location?: string
+  geohash?: string
+  eventCoordinates: string[]
+  pickupCoordinates: string[]
+  productCoordinates: string[]
+  /** Valid bounded relay hints from product `a` tags, keyed by coordinate. */
+  productRelayHintsByCoordinate?: Record<string, string[]>
+  unsupportedReferences: string[]
   createdAt: number
   sourceRelayUrls?: string[]
 }
@@ -429,7 +506,7 @@ export function buildEventMarketCalendarDraft(
     ["d", dTag],
     ["title", title],
   ]
-  const summary = normalizeOptionalText(input.summary, "Summary", 1_000)
+  const summary = normalizeEventMarketCalendarSummary(input.summary)
   const image = normalizeOptionalText(input.image, "Image", 2_048)
   const geohash = normalizeOptionalText(input.geohash, "Geohash", 32)
   if (geohash && !GEOHASH.test(geohash)) throw new Error("Geohash is invalid.")
@@ -478,12 +555,19 @@ export function buildEventMarketCalendarDraft(
   if (input.clientAppId) tags = appendConduitClientTag(tags, input.clientAppId)
   return {
     kind: input.kind,
-    content:
-      normalizeOptionalText(input.content, "Calendar content", 10_000) ??
-      summary ??
-      "",
+    content: normalizeOptionalCalendarContent(input.content) ?? summary ?? "",
     tags,
   }
+}
+
+function normalizeOptionalCalendarContent(
+  value: string | undefined
+): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized) return undefined
+  if (normalized.length > 10_000 || hasUnsupportedCalendarControl(normalized))
+    throw new Error("Calendar content is invalid.")
+  return normalized
 }
 
 function tagValues(
@@ -638,6 +722,201 @@ export function parseEventMarketCalendarFieldsForPrivateOrder(
     ...(endDate ? { endDate } : {}),
     ...(startTzid ? { startTzid } : {}),
     ...(endTzid ? { endTzid } : {}),
+    createdAt: event.created_at * 1_000,
+  }
+}
+
+/** Parse a signed legacy pickup revision for immutable checkout recovery only. */
+export function parseEventMarketPickupEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketPickup | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketPickupFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private-order fields; its owner validates the signature first. */
+export function parseEventMarketPickupFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedEventMarketPickup | null {
+  if (event.kind !== EVENT_KINDS.SHIPPING_OPTION) return null
+  if (
+    event.tags.some(
+      (tag) => tag[0] === "destination_schema" || tag[0] === "destination"
+    )
+  ) {
+    return null
+  }
+  const coordinate = eventCoordinate(event, [EVENT_KINDS.SHIPPING_OPTION])
+  const title = singleTag(event.tags, "title")
+  const service = singleTag(event.tags, "service")
+  const priceTags = event.tags.filter((tag) => tag[0] === "price")
+  const location = optionalSingleTag(event.tags, "location")
+  const geohash = optionalSingleTag(event.tags, "g")
+  if (
+    !coordinate ||
+    !title ||
+    service !== "pickup" ||
+    priceTags.length !== 1 ||
+    location === null ||
+    geohash === null ||
+    (!location && !geohash) ||
+    (geohash !== undefined && !GEOHASH.test(geohash))
+  ) {
+    return null
+  }
+  const priceValue = priceTags[0]?.[1]
+  const price =
+    priceValue !== undefined && /^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(priceValue)
+      ? Number(priceValue)
+      : NaN
+  const currency = priceTags[0]?.[2]?.trim().toUpperCase()
+  if (!Number.isFinite(price) || price < 0 || !currency) return null
+  const countries = Array.from(
+    new Set(
+      event.tags
+        .filter((tag) => tag[0] === "country")
+        .flatMap((tag) => tag.slice(1))
+        .map((country) => country.trim().toUpperCase())
+    )
+  )
+  if (
+    countries.length === 0 ||
+    countries.some((country) => !/^[A-Z]{2}$/.test(country))
+  ) {
+    return null
+  }
+
+  return {
+    signedEvent: event,
+    coordinate: coordinate.coordinate,
+    eventId: event.id.toLowerCase(),
+    authorPubkey: coordinate.authorPubkey,
+    dTag: coordinate.dTag,
+    title,
+    content: event.content,
+    price,
+    currency,
+    countries,
+    ...(location ? { location } : {}),
+    ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
+    createdAt: event.created_at * 1_000,
+  }
+}
+
+/** Parse a signed legacy collection revision for immutable checkout recovery only. */
+export function parseEventMarketCollectionEvent(
+  event: VerifiedNostrEvent
+): ParsedEventMarketCollection | null {
+  return isVerifiedNostrEvent(event)
+    ? parseEventMarketCollectionFieldsForPrivateOrder(event)
+    : null
+}
+
+/** Historical private-order fields; its owner validates the signature first. */
+export function parseEventMarketCollectionFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedEventMarketCollection | null {
+  if (event.kind !== EVENT_KINDS.PRODUCT_COLLECTION) return null
+  const coordinate = eventCoordinate(event, [EVENT_KINDS.PRODUCT_COLLECTION])
+  const title = singleTag(event.tags, "title")
+  const summary = optionalSingleTag(event.tags, "summary")
+  const image = optionalSingleTag(event.tags, "image")
+  const location = optionalSingleTag(event.tags, "location")
+  const geohash = optionalSingleTag(event.tags, "g")
+  const lifecycleTags = event.tags.filter(
+    (tag) => tag[0] === EVENT_MARKET_LIFECYCLE_TAG
+  )
+  const lifecycle = lifecycleTags[0]
+  if (
+    lifecycleTags.length > 1 ||
+    (lifecycle &&
+      (lifecycle.length !== 3 ||
+        lifecycle[1] !== "1" ||
+        (lifecycle[2] !== "open" && lifecycle[2] !== "closed")))
+  ) {
+    return null
+  }
+  const orderAcceptance = lifecycle?.[2] as
+    EventMarketOrderAcceptance | undefined
+  if (
+    !coordinate ||
+    !title ||
+    summary === null ||
+    image === null ||
+    location === null ||
+    geohash === null
+  ) {
+    return null
+  }
+  if (geohash && !GEOHASH.test(geohash)) return null
+
+  const eventCoordinates: string[] = []
+  const productCoordinates: string[] = []
+  const productRelayHintsByCoordinate = new Map<string, string[]>()
+  const pickupCoordinates: string[] = []
+  const unsupportedReferences: string[] = []
+  for (const tag of event.tags) {
+    if (tag[0] === "a" && tag[1]) {
+      const parsed = parseAddressableCoordinate(tag[1])
+      if (!parsed) unsupportedReferences.push(tag[1])
+      else if (EVENT_MARKET_CALENDAR_KINDS.includes(parsed.kind as never)) {
+        eventCoordinates.push(parsed.coordinate)
+      } else if (parsed.kind === EVENT_KINDS.PRODUCT) {
+        productCoordinates.push(parsed.coordinate)
+        const relayHints = normalizePortableRelayHints(tag[2] ? [tag[2]] : [])
+        if (relayHints.length > 0) {
+          productRelayHintsByCoordinate.set(
+            parsed.coordinate,
+            Array.from(
+              new Set([
+                ...(productRelayHintsByCoordinate.get(parsed.coordinate) ?? []),
+                ...relayHints,
+              ])
+            )
+          )
+        }
+      } else {
+        unsupportedReferences.push(parsed.coordinate)
+      }
+    }
+    if (tag[0] === "shipping_option" && tag[1]) {
+      const parsed = parseAddressableCoordinate(tag[1])
+      if (
+        parsed?.kind === EVENT_KINDS.SHIPPING_OPTION &&
+        parsed.authorPubkey === coordinate.authorPubkey
+      ) {
+        pickupCoordinates.push(parsed.coordinate)
+      } else {
+        unsupportedReferences.push(parsed?.coordinate ?? tag[1])
+      }
+    }
+  }
+
+  return {
+    signedEvent: event,
+    coordinate: coordinate.coordinate,
+    eventId: event.id.toLowerCase(),
+    authorPubkey: coordinate.authorPubkey,
+    dTag: coordinate.dTag,
+    title,
+    content: event.content,
+    ...(summary ? { summary } : {}),
+    ...(image ? { image } : {}),
+    ...(location ? { location } : {}),
+    ...(geohash ? { geohash: geohash.toLowerCase() } : {}),
+    ...(orderAcceptance ? { orderAcceptance } : {}),
+    eventCoordinates: Array.from(new Set(eventCoordinates)),
+    pickupCoordinates: Array.from(new Set(pickupCoordinates)),
+    productCoordinates: Array.from(new Set(productCoordinates)),
+    ...(productRelayHintsByCoordinate.size > 0
+      ? {
+          productRelayHintsByCoordinate: Object.fromEntries(
+            productRelayHintsByCoordinate
+          ),
+        }
+      : {}),
+    unsupportedReferences: Array.from(new Set(unsupportedReferences)),
     createdAt: event.created_at * 1_000,
   }
 }
@@ -807,10 +1086,11 @@ function mergeRelayUrlsWithOwnerAuthority(
 }
 
 export interface EventMarketReadPlan {
-  /** Bounded prefix used for coverage and truncation reporting. */
+  /** Priority prefix; reads and truncation use the full candidate list. */
   relayUrls: string[]
   /** Full ordered candidates passed to final source-policy admission. */
   candidateRelayUrls: string[]
+  relayTargets: RelayTarget[]
   maxRelayAttempts?: number
   ownerSelectedRelayUrls: string[]
   appRelayUrls: string[]
@@ -818,6 +1098,115 @@ export interface EventMarketReadPlan {
   independentRelayUrls: string[]
   relayListState: RelayListResolutionState
   relayHintTruncated: boolean
+}
+
+/** One bounded public plan, including batched NIP-65 hints for explicit authors. */
+export async function getEventMarketDiscoveryReadPlan(input: {
+  organizerPubkeys?: readonly string[]
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  shouldContinue?: PublicRelayReadOptions["shouldContinue"]
+  signal?: AbortSignal
+}): Promise<EventMarketReadPlan> {
+  const accountPubkey = normalizePubkey(
+    input.accountPubkey === undefined
+      ? input.authenticatedPubkey
+      : input.accountPubkey
+  )
+  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
+  const authenticatedPubkey =
+    requestedAuth === accountPubkey ? requestedAuth : null
+  const authors = [
+    ...new Set(
+      (input.organizerPubkeys ?? []).filter((author) =>
+        /^[0-9a-f]{64}$/.test(author)
+      )
+    ),
+  ].sort()
+  const includesAuthenticatedOwner =
+    authenticatedPubkey !== null && authors.includes(authenticatedPubkey)
+  const snapshot = authenticatedPubkey
+    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
+    : loadRelaySettingsPlanningSnapshot()
+  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
+    snapshot.settings.entries.flatMap((entry) =>
+      entry.readEnabled || (includesAuthenticatedOwner && entry.writeEnabled)
+        ? [entry.url]
+        : []
+    )
+  )
+  const lookupPlan = planRelayReads({
+    intent: "relay_lists",
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: snapshot.settings,
+    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+  })
+  let discoveredLists = {
+    relayLists: new Map<string, RelayList>(),
+    resolutionStates: new Map<string, RelayListResolutionState>(),
+  }
+  if (authors.length) {
+    try {
+      discoveredLists = await lookupEventMarketRelayLists(authors, {
+        relayUrls: lookupPlan.candidateRelayUrls,
+        relayTargets: lookupPlan.relayTargets,
+        maxRelayAttempts: lookupPlan.maxRelayAttempts,
+        accountPubkey,
+        authenticatedPubkey,
+        ownerSelectedRelayUrls,
+        appRelayUrls: lookupPlan.appRelayUrls,
+        personalRelayUrls: lookupPlan.personalRelayUrls,
+        independentRelayUrls: lookupPlan.independentRelayUrls,
+        shouldContinue: input.shouldContinue,
+        signal: input.signal,
+      })
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+      // Optional routing metadata cannot veto the selected public sources.
+      // Missing states below preserve the unavailable lookup as limited coverage.
+    }
+  }
+  const { relayLists, resolutionStates } = discoveredLists
+  const relayListState = authors.reduce<RelayListResolutionState>(
+    (state, author) => {
+      const next = resolutionStates.get(author) ?? "lookup-unavailable"
+      for (const limited of [
+        "lookup-unavailable",
+        "stale-cache",
+        "partial-network",
+      ] as const)
+        if (state === limited || next === limited) return limited
+      return next
+    },
+    "missing"
+  )
+  const plan = planRelayReads({
+    intent: "commerce_products",
+    authors,
+    relayLists,
+    authenticatedPubkey,
+    ownerSelectedRelayUrls,
+    settings: snapshot.settings,
+    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
+    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
+  })
+  return {
+    relayUrls: plan.candidateRelayUrls,
+    candidateRelayUrls: plan.candidateRelayUrls,
+    relayTargets: plan.relayTargets,
+    maxRelayAttempts: plan.maxRelayAttempts,
+    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
+    appRelayUrls: plan.appRelayUrls ?? [],
+    personalRelayUrls: plan.personalRelayUrls ?? [],
+    independentRelayUrls: plan.independentRelayUrls ?? [],
+    relayListState,
+    relayHintTruncated: plan.hintRelayUrls.some(
+      (url) => !plan.candidateRelayUrls.includes(url)
+    ),
+  }
 }
 
 function relayListStateFromLegacyLookup(
@@ -829,17 +1218,47 @@ function relayListStateFromLegacyLookup(
   return list.lookupState ?? "fresh-cache"
 }
 
+async function lookupEventMarketRelayLists(
+  authors: readonly string[],
+  options: Parameters<typeof getRelayListsDetailed>[1]
+) {
+  if (eventMarketTestOverrides.getRelayListsDetailed)
+    return eventMarketTestOverrides.getRelayListsDetailed(authors, options)
+  if (eventMarketTestOverrides.getRelayLists) {
+    const relayLists = await eventMarketTestOverrides.getRelayLists(
+      authors,
+      options
+    )
+    return {
+      relayLists,
+      resolutionStates: new Map(
+        authors.map((author) => [
+          author,
+          relayListStateFromLegacyLookup(relayLists, author),
+        ])
+      ),
+    }
+  }
+  return getRelayListsDetailed(authors, options)
+}
+
 export async function getEventMarketReadPlan(input: {
   organizerPubkey: string
   relayHints?: readonly string[]
+  accountPubkey?: string | null
   authenticatedPubkey?: string | null
   accountNetworkLocalStateRepository?: PublicRelayReadOptions["accountNetworkLocalStateRepository"]
   shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketReadPlan> {
-  const authenticatedPubkey = input.authenticatedPubkey
-    ? normalizePubkey(input.authenticatedPubkey)
-    : null
+  const accountPubkey = normalizePubkey(
+    input.accountPubkey === undefined
+      ? input.authenticatedPubkey
+      : input.accountPubkey
+  )
+  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
+  const authenticatedPubkey =
+    requestedAuth === accountPubkey ? requestedAuth : null
   let ownerSettingsSnapshot: Awaited<
     ReturnType<typeof readDurableAccountRelaySettingsPlanningSnapshot>
   > | null = null
@@ -872,8 +1291,9 @@ export async function getEventMarketReadPlan(input: {
   const lookupOptions = {
     signal: input.signal,
     relayUrls: relayListLookupPlan.candidateRelayUrls,
+    relayTargets: relayListLookupPlan.relayTargets,
     maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
-    accountPubkey: authenticatedPubkey,
+    accountPubkey,
     authenticatedPubkey,
     ownerSelectedRelayUrls,
     appRelayUrls: relayListLookupPlan.appRelayUrls,
@@ -883,36 +1303,12 @@ export async function getEventMarketReadPlan(input: {
       input.accountNetworkLocalStateRepository,
     shouldContinue: input.shouldContinue,
   }
-  let relayLists: Map<string, RelayList>
-  let relayListState: RelayListResolutionState
-  if (eventMarketTestOverrides.getRelayListsDetailed) {
-    const detailed = await eventMarketTestOverrides.getRelayListsDetailed(
-      [input.organizerPubkey],
-      lookupOptions
-    )
-    relayLists = detailed.relayLists
-    relayListState =
-      detailed.resolutionStates.get(input.organizerPubkey) ??
-      "lookup-unavailable"
-  } else if (eventMarketTestOverrides.getRelayLists) {
-    relayLists = await eventMarketTestOverrides.getRelayLists(
-      [input.organizerPubkey],
-      lookupOptions
-    )
-    relayListState = relayListStateFromLegacyLookup(
-      relayLists,
-      input.organizerPubkey
-    )
-  } else {
-    const detailed = await getRelayListsDetailed(
-      [input.organizerPubkey],
-      lookupOptions
-    )
-    relayLists = detailed.relayLists
-    relayListState =
-      detailed.resolutionStates.get(input.organizerPubkey) ??
-      "lookup-unavailable"
-  }
+  const { relayLists, resolutionStates } = await lookupEventMarketRelayLists(
+    [input.organizerPubkey],
+    lookupOptions
+  )
+  const relayListState =
+    resolutionStates.get(input.organizerPubkey) ?? "lookup-unavailable"
   const plan = planRelayReads({
     intent: "author_products",
     authors: [input.organizerPubkey],
@@ -978,12 +1374,19 @@ export async function getEventMarketReadPlan(input: {
     planFallbackRelayUrls,
     plan.candidateRelayUrls
   )
-  const selectedRelays = new Set(
-    selectedRelayUrls.map((relayUrl) => relayUrl.toLowerCase())
+  const candidateRelays = new Set(
+    relayUrls.map((relayUrl) => relayUrl.toLowerCase())
   )
   return {
     relayUrls: selectedRelayUrls,
     candidateRelayUrls: relayUrls,
+    relayTargets: mergeRelayTargets(
+      plan.relayTargets,
+      relayTargetsFromUrls(portableRelayHints, {
+        kind: "public_hint",
+        operation: "read",
+      })
+    ).filter((target) => relayUrls.includes(target.url)),
     maxRelayAttempts: plan.maxRelayAttempts ?? EVENT_MARKET_MAX_RELAY_HINTS,
     ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
     appRelayUrls: plan.appRelayUrls ?? [],
@@ -993,7 +1396,7 @@ export async function getEventMarketReadPlan(input: {
     ),
     relayListState,
     relayHintTruncated: plan.hintRelayUrls.some(
-      (relayUrl) => !selectedRelays.has(relayUrl.toLowerCase())
+      (relayUrl) => !candidateRelays.has(relayUrl.toLowerCase())
     ),
   }
 }

@@ -4,7 +4,12 @@ import {
 } from "@conduit/core/protocol/future-market-handoff"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
-import { finalizeEvent, getEventHash, getPublicKey } from "nostr-tools"
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getEventHash,
+  getPublicKey,
+} from "nostr-tools"
 import {
   encrypt as encryptNip04,
   decrypt as decryptNip04,
@@ -21,8 +26,15 @@ import {
   closeAllProtectedRelayConnections,
   createInMemoryAccountNetworkLocalStateRepository,
   getBuyerConversationList,
+  getCachedMerchantConversationList,
+  getConversationDetail,
+  projectCommerceInbox,
   getDirectMessageConversationList,
   getMerchantConversationList,
+  createInMemoryInboxDeclarationEvidenceRepository,
+  mergeInboxDeclarationEvidence,
+  EVENT_KINDS,
+  sharedInboxDiscoveryRelayUrls,
 } from "@conduit/core"
 import { ConduitDB } from "../packages/core/src/db"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
@@ -32,6 +44,8 @@ import type {
   SignedNostrEvent,
 } from "../packages/core/src/protocol/nostr-event-signer"
 import { parseOrderMessageRumorEvent } from "../packages/core/src/protocol/orders"
+import { readRetainedInboxDeclaration } from "../packages/core/src/protocol/private-message-routing"
+import { admitFixture } from "./helpers/public-event"
 import {
   __resetProtectedReadSigner,
   getProtectedReadAuthorization,
@@ -116,6 +130,36 @@ let decryptCalls = 0
 let rejectAuthentication = false
 let challengeAuthentication = true
 const sockets: CommerceProtectedRelaySocket[] = []
+const protectedReadPlans: Array<{
+  transport: string | undefined
+  relayUrls: string[]
+}> = []
+let inboxDeclarationEvidenceRepository =
+  createInMemoryInboxDeclarationEvidenceRepository()
+
+async function seedInboxDeclaration(key: Uint8Array): Promise<void> {
+  const discoveryRelay = sharedInboxDiscoveryRelayUrls()[0]!
+  const signedEvent = await admitFixture(
+    finalizeEvent(
+      {
+        kind: EVENT_KINDS.PRIVATE_MESSAGE_RELAYS,
+        created_at: 1_700_000_000,
+        tags: [["relay", RELAY_URL]],
+        content: "",
+      },
+      key
+    )
+  )
+  await mergeInboxDeclarationEvidence(
+    {
+      pubkey: getPublicKey(key),
+      signedEvent,
+      sourceRelayUrls: [discoveryRelay],
+      sharedSourceRelayUrls: [discoveryRelay],
+    },
+    inboxDeclarationEvidenceRepository
+  )
+}
 
 class CommerceProtectedRelaySocket {
   static CONNECTING = 0
@@ -272,7 +316,7 @@ function installAccount(
 
 const originalWebSocket = globalThis.WebSocket
 
-beforeEach(() => {
+beforeEach(async () => {
   paginatedWraps = null
   __resetFutureMarketHandoffTestState()
   rejectAuthentication = false
@@ -282,17 +326,33 @@ beforeEach(() => {
   signCalls = 0
   decryptCalls = 0
   sockets.splice(0)
+  protectedReadPlans.splice(0)
   __resetCommerceTestOverrides()
   const accountNetworkLocalStateRepository =
     createInMemoryAccountNetworkLocalStateRepository()
+  inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await seedInboxDeclaration(BUYER_KEY)
+  await seedInboxDeclaration(MERCHANT_KEY)
   __setCommerceTestOverrides({
     accountNetworkLocalStateRepository,
-    readProtectedInbox: (options) =>
-      readProtectedInbox({
+    readProtectedInbox: (options) => {
+      protectedReadPlans.push({
+        transport: options.transport,
+        relayUrls: [...options.relayUrls],
+      })
+      return readProtectedInbox({
         ...options,
         accountNetworkLocalStateRepository,
-      }),
-    resolveInboxRelayUrls: async () => [RELAY_URL],
+        inboxDeclarationEvidenceRepository,
+      })
+    },
+    resolveInboxRelayUrls: async (principal) =>
+      (
+        await readRetainedInboxDeclaration(principal, {
+          durableEvidenceRepository: inboxDeclarationEvidenceRepository,
+        })
+      )?.relayUrls ?? [],
     getCommerceInbox: (principal) => {
       const owner = accounts.get(principal)?.owner
       if (!owner) throw new Error("Missing synthetic inbox owner")
@@ -357,6 +417,16 @@ describe("Market and Merchant protected inbox integration", () => {
       expect(result.meta.inbox?.coverage).toBe("complete")
       expect(result.meta.inbox?.authentication?.state).toBe("not_challenged")
     }
+    const legacyPlans = protectedReadPlans.filter((plan) =>
+      plan.transport?.startsWith("nip04")
+    )
+    expect(legacyPlans.length).toBeGreaterThan(0)
+    expect(legacyPlans.flatMap((plan) => plan.relayUrls)).not.toContain(
+      "wss://nos.lol"
+    )
+    expect(legacyPlans.flatMap((plan) => plan.relayUrls)).not.toContain(
+      "wss://relay.primal.net"
+    )
     expect(signCalls).toBe(0)
     expect(decryptCalls).toBe(4)
     expect(merchantSockets.every((socket) => socket.closed)).toBe(true)
@@ -372,6 +442,79 @@ describe("Market and Merchant protected inbox integration", () => {
     ).toBeGreaterThanOrEqual(2)
     expect(await merchant.database.commerceInboxRecords.count()).toBe(1)
     expect(await buyer.database.commerceInboxRecords.count()).toBe(1)
+  })
+
+  it("keeps colliding authenticated orders separate in live, cached and owner projections", async () => {
+    const otherBuyerKey = generateSecretKey()
+    const otherBuyer = getPublicKey(otherBuyerKey)
+    const original = orderRumor()
+    const second = {
+      ...original,
+      pubkey: otherBuyer,
+      created_at: original.created_at + 1,
+      content: JSON.stringify({
+        ...JSON.parse(original.content),
+        buyerPubkey: otherBuyer,
+      }),
+    }
+    second.id = getEventHash(second)
+    paginatedWraps = [
+      wraps.get(MERCHANT)!,
+      wrapEvent(second, otherBuyerKey, MERCHANT),
+    ]
+    const { owner, database } = installAccount(MERCHANT_KEY)
+    const live = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(live.data).toHaveLength(2)
+    expect(new Set(live.data.map((row) => row.id)).size).toBe(2)
+    expect(
+      live.data.every(
+        (row) => row.orderId === original.tags[2]![1] && row.messageCount === 1
+      )
+    ).toBe(true)
+    expect(
+      live.data
+        .find((row) => row.buyerPubkey === BUYER)
+        ?.messages?.map((message) => message.id)
+    ).toEqual([original.id])
+    expect(
+      live.data
+        .find((row) => row.buyerPubkey === otherBuyer)
+        ?.messages?.map((message) => message.id)
+    ).toEqual([second.id])
+    const filtered = await getMerchantConversationList({
+      principalPubkey: MERCHANT,
+      counterpartyPubkey: BUYER,
+    })
+    expect(filtered.data).toHaveLength(1)
+    expect(filtered.data[0]?.messages?.[0]?.id).toBe(original.id)
+    const query = {
+      principalPubkey: MERCHANT,
+      orderId: "synthetic-order",
+      role: "merchant" as const,
+    }
+    expect((await getConversationDetail(query)).data).toBeNull()
+    for (const [counterpartyPubkey, id] of [
+      [BUYER, original.id],
+      [otherBuyer, second.id],
+    ]) {
+      expect(
+        (
+          await getConversationDetail({ ...query, counterpartyPubkey })
+        ).data?.messages.map((message) => message.id)
+      ).toEqual([id])
+    }
+    // Reload the view from encrypted storage; grouping is not only a live-read property.
+    await owner.refresh()
+    const cached = await getCachedMerchantConversationList({
+      principalPubkey: MERCHANT,
+    })
+    expect(cached.data).toEqual(live.data)
+    expect(
+      projectCommerceInbox(owner.getSnapshot(), MERCHANT).merchant.data
+    ).toEqual(live.data)
+    expect(await database.commerceInboxRecords.count()).toBe(2)
   })
 
   it("authenticates socket reads and persists only encrypted projections", async () => {

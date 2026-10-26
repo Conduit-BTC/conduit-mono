@@ -173,7 +173,7 @@ describe("checkout Spark recovery outbox", () => {
           signedWrap(recipient.pubkey)) as never,
         publishFn: (async (_event, options) => {
           calls.push(
-            listCheckoutSparkRecoveryDeliveries(storage).length === 1
+            (await listCheckoutSparkRecoveryDeliveries(storage)).length === 1
               ? "persisted-before-publish"
               : "missing-before-publish"
           )
@@ -189,7 +189,7 @@ describe("checkout Spark recovery outbox", () => {
     expect(raw).not.toContain(MNEMONIC)
     expect(raw).not.toContain("lnbc-router-funding-secret")
     expect(raw).toContain("opaque-nip59-ciphertext")
-    expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
+    expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
   })
 
   it("resumes a zero-ACK attempt with the exact persisted wrapper", async () => {
@@ -216,7 +216,7 @@ describe("checkout Spark recovery outbox", () => {
       })
     ).rejects.toThrow("relay ACK")
 
-    const stored = listCheckoutSparkRecoveryDeliveries(storage)[0]!
+    const stored = (await listCheckoutSparkRecoveryDeliveries(storage))[0]!
     let retriedWrapId = ""
     const retried = await retryStoredCheckoutSparkRecoveryHandoff({
       handoffId: stored.record.handoffId,
@@ -232,7 +232,7 @@ describe("checkout Spark recovery outbox", () => {
     expect(retriedWrapId).toBe(stored.record.signedRecipientWrap.id)
     expect(retried.canExposeFundingInvoice).toBe(true)
     expect(
-      getCheckoutSparkRecoveryDelivery(stored.record.handoffId, storage)
+      (await getCheckoutSparkRecoveryDelivery(stored.record.handoffId, storage))
         ?.deliveryProgress.acknowledgedRelayRefs
     ).toHaveLength(1)
 
@@ -243,7 +243,7 @@ describe("checkout Spark recovery outbox", () => {
       CREATED_AT + 4_000
     )
     expect(
-      getCheckoutSparkRecoveryDelivery(stored.record.handoffId, storage)
+      (await getCheckoutSparkRecoveryDelivery(stored.record.handoffId, storage))
         ?.deliveryProgress.acknowledgedRelayRefs
     ).toHaveLength(1)
   })
@@ -270,7 +270,7 @@ describe("checkout Spark recovery outbox", () => {
           delivery(options.exclusiveRelayUrls ?? [])) as never,
       },
     })
-    const stored = listCheckoutSparkRecoveryDeliveries(storage)[0]!
+    const stored = (await listCheckoutSparkRecoveryDeliveries(storage))[0]!
     const replacement = signedWrap(MERCHANT, "different-ciphertext").rawEvent()
 
     await expect(
@@ -333,6 +333,6 @@ describe("checkout Spark recovery outbox", () => {
     })
 
     expect(result.canExposeFundingInvoice).toBe(true)
-    expect(listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
+    expect(await listCheckoutSparkRecoveryDeliveries(storage)).toHaveLength(1)
   })
 })

@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { createInMemoryAccountNetworkLocalStateRepository } from "../packages/core/src/protocol/account-network-local-state"
+import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
+import { admitFixture } from "./helpers/public-event"
 import {
   bindProtectedInboxHistoryCursor,
   visitProtectedInboxHistoryPage,
@@ -270,6 +273,188 @@ describe("protected inbox history paging", () => {
     expect(page.status).toBe("source_eose")
     expect(page.range.until).toBe(stored.until)
   })
+
+  it("bounds and validates streamed positives on an interrupted history page", async () => {
+    const auth = authorization()
+    const at = 1_700_000_000
+    const events = Array.from({ length: 51 }, (_, index) => wrap(index, at))
+    const invalid = { ...events[0]!, content: "tampered" }
+    const wrongRecipient = finalizeEvent(
+      {
+        kind: 1_059,
+        created_at: at,
+        tags: [["p", getPublicKey(generateSecretKey())]],
+        content: "synthetic other recipient",
+      },
+      WRAPPER_KEY
+    )
+    const wrongTransport = finalizeEvent(
+      {
+        kind: 4,
+        created_at: at,
+        tags: [["p", ACCOUNT]],
+        content: "synthetic legacy transport",
+      },
+      WRAPPER_KEY
+    )
+    const cursor = bindProtectedInboxHistoryCursor(
+      { relayUrl: RELAY, until: at },
+      auth
+    )
+    const original = result([events[0]!], "partial", false)
+    const visited = new Set<string>()
+    const page = await visitProtectedInboxHistoryPage({
+      principalPubkey: ACCOUNT,
+      relayUrl: RELAY,
+      authorizedRelayUrls: [RELAY],
+      authorization: auth,
+      cursor,
+      read: async (options) => {
+        for (const event of [
+          invalid,
+          wrongRecipient,
+          wrongTransport,
+          wrap(52, at + 1),
+        ]) {
+          options.onEvent?.(event)
+        }
+        for (const event of events) {
+          options.onEvent?.(event)
+          options.onEvent?.(event)
+        }
+        return original
+      },
+      visit: async (event) => {
+        visited.add(event.id)
+      },
+    })
+    expect(page.status).toBe("partial")
+    expect(page.range.eose).toBe(false)
+    expect(page.visitedCount).toBe(50)
+    expect(page.range.observedCount).toBe(50)
+    expect(page.nextCursor).toBe(cursor)
+    expect(events.slice(0, 50).every((event) => visited.has(event.id))).toBe(
+      true
+    )
+    expect(visited.has(events[50]!.id)).toBe(false)
+    expect(original.events).toHaveLength(1)
+    expect(original.relayResult.relays[0]?.eventCount).toBe(1)
+    expect(original.relayResult.observations).toHaveLength(0)
+  })
+
+  it("retains streamed positives only within the exact inclusive boundary", async () => {
+    const auth = authorization()
+    const at = 1_700_000_000
+    const first = Array.from({ length: 50 }, (_, index) => wrap(index, at))
+    const matching = wrap(51, at)
+    const outside = [wrap(52, at - 1), wrap(53, at + 1)]
+    const visited = new Set<string>()
+    let reads = 0
+    const page = await visitProtectedInboxHistoryPage({
+      principalPubkey: ACCOUNT,
+      relayUrl: RELAY,
+      authorizedRelayUrls: [RELAY],
+      authorization: auth,
+      read: async (options) => {
+        reads++
+        if (reads === 1) return result(first)
+        expect(options.since).toBe(at)
+        expect(options.until).toBe(at)
+        for (const event of [...outside, matching]) options.onEvent?.(event)
+        return result([], "unavailable", false)
+      },
+      visit: async (event) => {
+        visited.add(event.id)
+      },
+    })
+    expect(reads).toBe(2)
+    expect(page.status).toBe("unavailable")
+    expect(page.nextCursor).toBeNull()
+    expect(page.visitedCount).toBe(51)
+    expect(visited.has(matching.id)).toBe(true)
+    expect(outside.some((event) => visited.has(event.id))).toBe(false)
+  })
+
+  it("keeps complete history snapshots unchanged when callbacks contain extra positives", async () => {
+    const auth = authorization()
+    const event = wrap(1, 1_700_000_000)
+    const callbackOnly = wrap(2, 1_700_000_000)
+    const original = result([event])
+    const visited: SignedNostrEvent[] = []
+    const page = await visitProtectedInboxHistoryPage({
+      principalPubkey: ACCOUNT,
+      relayUrl: RELAY,
+      authorizedRelayUrls: [RELAY],
+      authorization: auth,
+      read: async (options) => {
+        options.onEvent?.(callbackOnly)
+        return original
+      },
+      visit: async (received) => {
+        visited.push(received)
+      },
+    })
+    expect(page.status).toBe("source_eose")
+    expect(page.range.eose).toBe(true)
+    expect(page.visitedCount).toBe(1)
+    expect(page.range.observedCount).toBe(1)
+    expect(visited[0]).toBe(event)
+    expect(original.events[0]).toBe(event)
+    expect(original.events).toHaveLength(1)
+    expect(original.relayResult.relays[0]?.eventCount).toBe(1)
+  })
+
+  it("does not repair incomplete EOSE counters with callback-only positives", async () => {
+    const auth = authorization()
+    const event = wrap(1, 1_700_000_000)
+    const original = result([])
+    original.relayResult.relays[0]!.eventCount = 1
+    const page = await visitProtectedInboxHistoryPage({
+      principalPubkey: ACCOUNT,
+      relayUrl: RELAY,
+      authorizedRelayUrls: [RELAY],
+      authorization: auth,
+      read: async (options) => {
+        options.onEvent?.(event)
+        return original
+      },
+      visit: async () => {},
+    })
+    expect(page.status).toBe("partial")
+    expect(page.range.eose).toBe(false)
+    expect(page.visitedCount).toBe(1)
+    expect(page.nextCursor).toBeNull()
+    expect(original.events).toHaveLength(0)
+    expect(original.relayResult.relays[0]?.eventCount).toBe(1)
+  })
+
+  it.each(["revoked", "aborted"] as const)(
+    "discards streamed positives when authority is %s before the read completes",
+    async (interruption) => {
+      const auth = authorization()
+      const controller = new AbortController()
+      let visited = 0
+      await expect(
+        visitProtectedInboxHistoryPage({
+          principalPubkey: ACCOUNT,
+          relayUrl: RELAY,
+          authorizedRelayUrls: [RELAY],
+          authorization: auth,
+          signal: controller.signal,
+          read: async (options) => {
+            options.onEvent?.(wrap(1, 1_700_000_000))
+            if (interruption === "revoked") authorization()
+            else controller.abort()
+            return result([], "unavailable", false)
+          },
+          visit: async () => {
+            visited++
+          },
+        })
+      ).rejects.toThrow()
+      expect(visited).toBe(0)
+    }
+  )
 })
 
 class Socket implements RelayWebSocket {
@@ -280,8 +465,12 @@ class Socket implements RelayWebSocket {
   onclose: ((event: CloseEvent | Event) => void) | null = null
   readonly sent: unknown[][] = []
   private eoseSent = false
+  private authenticated = false
 
-  constructor(private readonly event: SignedNostrEvent) {
+  constructor(
+    private readonly event: SignedNostrEvent,
+    private readonly closeAfterEvent = false
+  ) {
     queueMicrotask(() => {
       this.readyState = 1
       this.onopen?.(new Event("open"))
@@ -294,14 +483,27 @@ class Socket implements RelayWebSocket {
     this.sent.push(frame)
     if (frame[0] === "AUTH") {
       const authEvent = frame[1] as SignedNostrEvent
-      queueMicrotask(() => this.relay(["OK", authEvent.id, true, ""]))
+      queueMicrotask(() => {
+        this.authenticated = true
+        this.relay(["OK", authEvent.id, true, ""])
+      })
     }
     if (frame[0] === "REQ") {
       const sub = frame[1]
+      if (this.closeAfterEvent && !this.authenticated) {
+        queueMicrotask(() =>
+          this.relay(["CLOSED", sub, "auth-required: authentication required"])
+        )
+        return
+      }
       this.relay(["EVENT", sub, this.event])
       queueMicrotask(() => {
-        this.eoseSent = true
-        this.relay(["EOSE", sub])
+        if (this.closeAfterEvent) {
+          this.relay(["CLOSED", sub, "error: controlled interruption"])
+        } else {
+          this.eoseSent = true
+          this.relay(["EOSE", sub])
+        }
       })
     }
   }
@@ -323,6 +525,23 @@ class Socket implements RelayWebSocket {
 it("streams a signed recipient wrapper after NIP-42 auth and before EOSE", async () => {
   const auth = authorization()
   const event = wrap(1, 1_700_000_000)
+  const inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await inboxDeclarationEvidenceRepository.merge({
+    pubkey: ACCOUNT,
+    signedEvent: await admitFixture(
+      finalizeEvent(
+        {
+          kind: 10050,
+          created_at: 1_699_999_998,
+          tags: [["relay", RELAY]],
+          content: "",
+        },
+        ACCOUNT_KEY
+      )
+    ),
+    observedAt: Date.now(),
+  })
   let socket: Socket | null = null
   const executor = new WebSocketCommerceRelayExecutor({
     createWebSocket: () => {
@@ -338,7 +557,12 @@ it("streams a signed recipient wrapper after NIP-42 auth and before EOSE", async
     const read = await readProtectedInbox({
       principalPubkey: ACCOUNT,
       relayUrls: [RELAY],
-      ownerSelectedRelayUrls: [RELAY],
+      relayTargets: relayTargetsFromUrls([RELAY], {
+        kind: "owner_nip17",
+        operation: "read",
+        ownerPubkey: ACCOUNT,
+      }),
+      inboxDeclarationEvidenceRepository,
       limit: 10,
       since: 1_699_999_999,
       until: 1_700_000_001,
@@ -361,6 +585,76 @@ it("streams a signed recipient wrapper after NIP-42 auth and before EOSE", async
       since: 1_699_999_999,
       until: 1_700_000_001,
     })
+  } finally {
+    executor.dispose()
+  }
+})
+
+it("retains authenticated streamed history when the relay closes before EOSE", async () => {
+  const auth = authorization()
+  const event = wrap(2, 1_700_000_000)
+  const inboxDeclarationEvidenceRepository =
+    createInMemoryInboxDeclarationEvidenceRepository()
+  await inboxDeclarationEvidenceRepository.merge({
+    pubkey: ACCOUNT,
+    signedEvent: await admitFixture(
+      finalizeEvent(
+        {
+          kind: 10050,
+          created_at: 1_699_999_998,
+          tags: [["relay", RELAY]],
+          content: "",
+        },
+        ACCOUNT_KEY
+      )
+    ),
+    observedAt: Date.now(),
+  })
+  const executor = new WebSocketCommerceRelayExecutor({
+    createWebSocket: () => new Socket(event, true),
+    now: () => 1_700_000_000_000,
+    createSubscriptionId: () => "history-interruption-test",
+  })
+  try {
+    let streamed = 0
+    let snapshotCount = -1
+    const visited: SignedNostrEvent[] = []
+    const page = await visitProtectedInboxHistoryPage({
+      principalPubkey: ACCOUNT,
+      relayUrl: RELAY,
+      authorizedRelayUrls: [RELAY],
+      relayTargets: relayTargetsFromUrls([RELAY], {
+        kind: "owner_nip17",
+        operation: "read",
+        ownerPubkey: ACCOUNT,
+      }),
+      authorization: auth,
+      inboxDeclarationEvidenceRepository,
+      accountNetworkLocalStateRepository:
+        createInMemoryAccountNetworkLocalStateRepository(),
+      read: async (options) => {
+        const read = await readProtectedInbox({
+          ...options,
+          executor,
+          onEvent: (received) => {
+            streamed++
+            options.onEvent?.(received)
+          },
+        })
+        snapshotCount = read.events.length
+        return read
+      },
+      visit: async (received) => {
+        visited.push(received)
+      },
+    })
+    expect(streamed).toBe(1)
+    expect(snapshotCount).toBe(0)
+    expect(page.status).toBe("unavailable")
+    expect(page.range.eose).toBe(false)
+    expect(page.nextCursor).toBeNull()
+    expect(page.visitedCount).toBe(1)
+    expect(visited.length === 1 && visited[0]?.id === event.id).toBe(true)
   } finally {
     executor.dispose()
   }

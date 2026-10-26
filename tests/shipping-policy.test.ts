@@ -228,6 +228,82 @@ afterEach(() => {
 })
 
 describe("shipping policy arithmetic", () => {
+  it.each(["BGN", "ZZZ"])(
+    "rejects %s in new previews even when rates and free shipping are available",
+    (currency) => {
+      const currentPolicy: ShippingPolicyV2 = {
+        version: 2,
+        title: "Shipping",
+        originCountry: "US",
+        currency: "USD",
+        domestic: {
+          freeShippingThresholdMinor: 0,
+          rules: [
+            { country: "US", bands: [{ maxWeightGrams: 1000, priceMinor: 0 }] },
+          ],
+        },
+        international: null,
+      }
+      const input = {
+        policy: currentPolicy,
+        items: [
+          {
+            currency: "USD",
+            subtotalMinor: 100,
+            weightGrams: 100,
+            quantity: 1,
+          },
+        ],
+        destination: { country: "US" },
+        rateInput: {
+          rate: 50_000,
+          fetchedAt: 1,
+          source: "mempool" as const,
+          fiatUsdRates: { [currency]: 0.5 },
+          fiatSource: "frankfurter" as const,
+        },
+      }
+      expect(
+        previewShippingPolicy({
+          ...input,
+          policy: { ...currentPolicy, currency },
+        })
+      ).toEqual({ status: "invalid_policy" })
+      expect(
+        previewShippingPolicy({
+          ...input,
+          items: [{ ...input.items[0]!, currency }],
+        })
+      ).toEqual({ status: "invalid_items" })
+      expect(
+        previewShippingPolicy({
+          ...input,
+          items: [
+            {
+              ...input.items[0]!,
+              shippingHandling: {
+                amount: 0,
+                currency,
+                normalizedCurrency: currency,
+              },
+            },
+          ],
+        })
+      ).toEqual({ status: "invalid_items" })
+    }
+  )
+  it.each(["sat", " sats ", "MSAT", "MSATS", "btc", "XBT", " usd "])(
+    "keeps supported %s aliases available for new policy publication",
+    (currency) => {
+      const draft = buildShippingPolicyEventDraft({
+        policy: { ...policy, currency },
+      })
+      const tag = draft.tags.find((tag) => tag[0] === "conduit_shipping_table")!
+      expect(JSON.parse(tag[2]!).currency).toBe(
+        parseShippingPolicy({ ...policy, currency }).currency
+      )
+    }
+  )
   it("normalizes identifiers and rejects duplicate rules after normalization", () => {
     const normalized = parseShippingPolicy({
       ...policy,
@@ -564,6 +640,80 @@ describe("shipping policy arithmetic", () => {
 })
 
 describe("shipping signed terms and product wire tags", () => {
+  it.each(["BGN", "ZZZ"])(
+    "rejects %s for new shipping policy publication",
+    (currency) => {
+      expect(() =>
+        buildShippingPolicyEventDraft({ policy: { ...policy, currency } })
+      ).toThrow("Unsupported shipping currency")
+    }
+  )
+  it("keeps a retained BGN signed quote readable but cannot quote a new checkout", async () => {
+    const rates: BtcUsdRateQuote = {
+      rate: 50_000,
+      fetchedAt: 1,
+      source: "mempool",
+      fiatUsdRates: { BGN: 0.5 },
+      fiatSource: "frankfurter",
+    }
+    const saved = await quote(policy, { rateInput: rates })
+    const historicalPolicy = { ...policy, currency: "BGN" }
+    const draft = buildShippingPolicyEventDraft({ policy })
+    const event = finalizeEvent(
+      {
+        ...draft,
+        created_at: saved.policyCreatedAt,
+        tags: draft.tags.map((tag) =>
+          tag[0] === "conduit_shipping_table"
+            ? [
+                tag[0],
+                "1",
+                JSON.stringify(parseShippingPolicy(historicalPolicy)),
+              ]
+            : tag
+        ),
+      },
+      secret
+    )
+    const productEvent = signedProduct("BGN")
+    const historicalQuote: ShippingPolicyQuote = {
+      ...saved,
+      currency: "BGN",
+      amountSats: saved.amountSats! / 2,
+      policyEventId: event.id,
+      policyEvent: event,
+      items: saved.items.map((item) => ({
+        ...item,
+        currency: "BGN",
+        productEventId: productEvent.id,
+        productEvent,
+      })),
+    }
+    expect(
+      parseShippingOptionEvent(await admitSigned(event))?.shippingPolicy
+        ?.currency
+    ).toBe("BGN")
+    expect(shippingPolicyQuoteSchema.parse(historicalQuote)).toEqual(
+      historicalQuote
+    )
+    const admittedProduct = await admitSigned(productEvent)
+    expect(
+      quoteShippingPolicy({
+        policy: historicalPolicy,
+        policyCoordinate: coordinate,
+        policyEventId: event.id,
+        policyCreatedAt: event.created_at,
+        merchantPubkey: merchant,
+        policyEvent: await admitSigned(event),
+        items: historicalQuote.items.map((item) => ({
+          ...item,
+          productEvent: admittedProduct,
+        })),
+        destination: historicalQuote.destination,
+        rateInput: rates,
+      })
+    ).toEqual({ status: "invalid_policy" })
+  })
   it("does not offer a fixed amount to readers that ignore table extensions", async () => {
     const event = signedPolicy()
     const standardNames = new Set([

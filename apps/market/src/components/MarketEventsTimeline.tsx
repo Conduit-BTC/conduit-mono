@@ -3,6 +3,7 @@ import { CalendarDays, RefreshCw, SlidersHorizontal } from "lucide-react"
 import {
   encodeEventMarketNaddr,
   useAuth,
+  useConduitSession,
   type EventMarketRosterReadResult,
 } from "@conduit/core"
 import {
@@ -90,9 +91,11 @@ export function MarketEventsTimeline({
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
+  const session = useConduitSession()
+  const accountPubkey = session.mode === "signed_in" ? session.pubkey : null
   const connected = status === "connected"
   const discovery = useEventTimeline(source)
-  const filterKey = `${discovery.effectiveSource}:${connected ? pubkey : "guest"}:${search.organizer ?? "all"}:${search.location ?? "all"}`
+  const filterKey = `${discovery.effectiveSource}:${accountPubkey ?? "guest"}:${search.organizer ?? "all"}:${search.location ?? "all"}`
   const [presentationLimits, setPresentationLimits] =
     useState<TimelinePresentationLimits>({
       earlier: MARKET_EVENT_TIMELINE_PAGE_SIZE,
@@ -170,6 +173,7 @@ export function MarketEventsTimeline({
     itemCount: visibleFutureOccurrences.length,
     pastCount: presentation.past.length,
     viewportKey: filterKey,
+    scrollMode: "page",
   })
   const facets = useMemo(() => {
     return {
@@ -205,7 +209,7 @@ export function MarketEventsTimeline({
     [presentation.currentAndFuture, presentation.past]
   )
   const organizerIdentities = useMerchantIdentities({
-    accountPubkey: connected ? pubkey : null,
+    accountPubkey,
     authenticatedPubkey: connected ? pubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     allMerchantPubkeys: facets.organizers,
@@ -345,9 +349,15 @@ export function MarketEventsTimeline({
         </div>
       </div>
 
+      {discovery.publicAudience && (
+        <p className="text-sm text-[var(--text-muted)]">
+          Browsing public events from your selected relays.
+        </p>
+      )}
+
       <section
         aria-label="Event filters"
-        className="rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
+        className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4"
       >
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
@@ -361,7 +371,7 @@ export function MarketEventsTimeline({
           ) : null}
         </div>
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-1.5">
+          <div className="grid gap-1">
             <Label htmlFor="event-organizer-filter">Organizer</Label>
             <Select
               value={search.organizer ?? "all"}
@@ -387,7 +397,7 @@ export function MarketEventsTimeline({
               </SelectContent>
             </Select>
           </div>
-          <div className="grid gap-1.5">
+          <div className="grid gap-1">
             <Label htmlFor="event-location-filter">Location</Label>
             <Select
               value={search.location ? `value:${search.location}` : "all"}
@@ -417,6 +427,7 @@ export function MarketEventsTimeline({
         <EventTimelineLoading />
       ) : visibleFutureOccurrences.length > 0 ? (
         <EventTimelineViewport
+          scrollMode="page"
           busy={discovery.isFetching}
           currentAndFutureEvents={renderMixedEntries(
             presentation.currentAndFuture
@@ -433,7 +444,7 @@ export function MarketEventsTimeline({
       ) : discovery.futureMarkets.length > 0 ? (
         <div
           className={cn(
-            "rounded-xl px-6 py-12 text-center",
+            "rounded-[var(--radius-md)] px-6 py-12 text-center",
             filteredDiscoveryIncomplete
               ? "border border-[var(--warning)]/40 bg-[var(--warning)]/10"
               : "border border-dashed border-[var(--border)]"
@@ -496,6 +507,18 @@ export function MarketEventsTimeline({
           onRetry={discovery.refetch}
           retrying={discovery.isFetching}
         />
+      )}
+      {discovery.hasMore && (
+        <div className="mt-6 text-center">
+          <Button
+            type="button"
+            variant="outline"
+            disabled={discovery.isFetching}
+            onClick={discovery.loadMore}
+          >
+            Find more events
+          </Button>
+        </div>
       )}
     </section>
   )

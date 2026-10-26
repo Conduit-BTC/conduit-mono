@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "names": [
+    {
+      "name": "release-check-1013",
+      "ownerPubkey": "7821ccd67e51093e67751ad5fce9b9fc73fb545736dc29cf75f3f8dafcd5ecec",
+      "sparkIdentity": "03742b3712bbe0dabb7e4acf2b391c6270a0f2812bdcb9ea2dac3490ad301086a0",
+      "registration": true
+    },
+    {
+      "name": "ericfj",
+      "ownerPubkey": "7999814161743f2279006ab10cfd83bd33adff23c85e5d9d0949fdd60f8f1901",
+      "sparkIdentity": "02ef800f6ed167a83c5fe8c92415a267c457f2bd23099eef6950ae20ec6dc25280",
+      "registration": true
+    },
+    {
+      "name": "receiver",
+      "ownerPubkey": "9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146",
+      "sparkIdentity": "0320ed7d4f8d233e2419203c483985ef9c64048db25c7fdfa14d0e499c1e4f84c4",
+      "registration": true
+    }
+  ]
+}

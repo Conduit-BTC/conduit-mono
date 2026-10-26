@@ -231,37 +231,67 @@ function scanAddedHunks(
   return findings
 }
 
+type HistoryCommit = {
+  commit: string
+  parents: string[]
+  message: string
+}
+
+function parseHistoryCommitMetadata(source: string): HistoryCommit[] {
+  if (!source) return []
+  const fields = source.split("\0")
+  if (fields.pop() !== "" || fields.length % 3 !== 0) {
+    throw new Error("Static credential history inspection failed.")
+  }
+  const objectIdPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+  const commits: HistoryCommit[] = []
+
+  for (let index = 0; index < fields.length; index += 3) {
+    const commit = fields[index]!.trim()
+    const parents = fields[index + 1]!.split(" ").filter(Boolean)
+    if (
+      !objectIdPattern.test(commit) ||
+      parents.some((parent) => !objectIdPattern.test(parent))
+    ) {
+      throw new Error("Static credential history inspection failed.")
+    }
+    commits.push({ commit, parents, message: fields[index + 2]!.trim() })
+  }
+  return commits
+}
+
 function findHistoryCredentialFixtures(
   base: string,
-  head: string
+  head: string,
+  inspectGit: typeof runGit = runGit
 ): CredentialFixtureFinding[] {
-  const commits = runGit([
-    "rev-list",
-    "--reverse",
-    "--topo-order",
-    `${base}..${head}`,
-  ])
-    .split("\n")
-    .filter(Boolean)
+  // Batch metadata only: each root or first-parent patch still uses the
+  // original complete diff command. NUL framing keeps source text separate
+  // from commit identifiers and avoids two extra Git processes per commit.
+  const commits = parseHistoryCommitMetadata(
+    inspectGit([
+      "log",
+      "--reverse",
+      "--topo-order",
+      "--format=%H%x00%P%x00%B%x00",
+      `${base}..${head}`,
+    ])
+  )
   const findings: CredentialFixtureFinding[] = []
 
-  for (const commit of commits) {
-    const commitMessage = runGit(["show", "-s", "--format=%B", commit])
+  for (const { commit, parents, message } of commits) {
     findings.push(
       ...findStaticCredentialFixtures(
         "commit-message",
-        commitMessage,
+        message,
         commit,
         1,
         commitMessageCredentialRules
       )
     )
-    const parents = runGit(["rev-list", "--parents", "-n", "1", commit])
-      .split(" ")
-      .slice(1)
     const diff =
       parents.length > 0
-        ? runGit([
+        ? inspectGit([
             "diff",
             "--no-color",
             "--no-ext-diff",
@@ -270,7 +300,7 @@ function findHistoryCredentialFixtures(
             parents[0],
             commit,
           ])
-        : runGit([
+        : inspectGit([
             "show",
             "--root",
             "--format=",
@@ -287,6 +317,147 @@ function findHistoryCredentialFixtures(
 }
 
 describe("Playwright smoke credential fixtures", () => {
+  it("preserves ordered batched history metadata and complete messages", () => {
+    const rootCommit = "a".repeat(40)
+    const childCommit = "b".repeat(40)
+    const mergeCommit = "c".repeat(40)
+    const otherParent = "d".repeat(40)
+    const metadata = [
+      rootCommit,
+      "",
+      "\nroot subject\n\nroot body\n",
+      `\n${childCommit}`,
+      rootCommit,
+      "child subject\n",
+      `\n${mergeCommit}`,
+      `${childCommit} ${otherParent}`,
+      "merge subject\n\nmerge body\n",
+      "",
+    ].join("\0")
+
+    const commits = parseHistoryCommitMetadata(metadata)
+    expect(commits).toEqual([
+      { commit: rootCommit, parents: [], message: "root subject\n\nroot body" },
+      { commit: childCommit, parents: [rootCommit], message: "child subject" },
+      {
+        commit: mergeCommit,
+        parents: [childCommit, otherParent],
+        message: "merge subject\n\nmerge body",
+      },
+    ])
+    expect(parseHistoryCommitMetadata("")).toEqual([])
+    expect(
+      parseHistoryCommitMetadata([rootCommit, "", "", ""].join("\0"))
+    ).toEqual([{ commit: rootCommit, parents: [], message: "" }])
+    expect(
+      findStaticCredentialFixtures(
+        "commit-message",
+        commits[2]!.message,
+        commits[2]!.commit,
+        1,
+        [{ rule: "synthetic message rule", pattern: /merge body/g }]
+      )
+    ).toEqual([
+      {
+        commit: mergeCommit,
+        file: "commit-message",
+        line: 3,
+        rule: "synthetic message rule",
+      },
+    ])
+  })
+
+  it("keeps batched history root and first-parent merge diff coverage", () => {
+    const rootCommit = "a".repeat(40)
+    const childCommit = "b".repeat(40)
+    const mergeCommit = "c".repeat(40)
+    const otherParent = "d".repeat(40)
+    const metadata = [
+      rootCommit,
+      "",
+      "root subject",
+      `\n${childCommit}`,
+      rootCommit,
+      "child subject",
+      `\n${mergeCommit}`,
+      `${childCommit} ${otherParent}`,
+      "merge subject",
+      "",
+    ].join("\0")
+    const commands: string[][] = []
+    const inspectGit = (args: string[]): string => {
+      commands.push(args)
+      return args[0] === "log"
+        ? metadata
+        : [
+            "diff --git a/example.ts b/example.ts",
+            "+++ b/example.ts",
+            "@@ -0,0 +1 @@",
+            "+safe added marker",
+          ].join("\n")
+    }
+
+    expect(
+      findHistoryCredentialFixtures(
+        "synthetic-base",
+        "synthetic-head",
+        inspectGit
+      )
+    ).toEqual([])
+    expect(commands).toEqual([
+      [
+        "log",
+        "--reverse",
+        "--topo-order",
+        "--format=%H%x00%P%x00%B%x00",
+        "synthetic-base..synthetic-head",
+      ],
+      [
+        "show",
+        "--root",
+        "--format=",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-renames",
+        "--unified=0",
+        rootCommit,
+      ],
+      [
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-renames",
+        "--unified=0",
+        rootCommit,
+        childCommit,
+      ],
+      [
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-renames",
+        "--unified=0",
+        childCommit,
+        mergeCommit,
+      ],
+    ])
+  })
+
+  it("rejects malformed or truncated batched history metadata", () => {
+    const commit = "a".repeat(40)
+    for (const metadata of [
+      [commit, "", "subject"].join("\0"),
+      [commit, "", ""].join("\0"),
+      ["invalid-commit", "", "subject", ""].join("\0"),
+      [commit, "invalid-parent", "subject", ""].join("\0"),
+      [commit, "", "subject", "", "unexpected field", ""].join("\0"),
+    ]) {
+      expect(() => parseHistoryCommitMetadata(metadata)).toThrow(
+        "Static credential history inspection failed."
+      )
+    }
+  })
+
   it("rejects fixed scalar constructors under generic key names", () => {
     for (const name of ["key", "keyBytes", "sk"]) {
       // An unfinished constructor is enough to exercise the rule. No scalar

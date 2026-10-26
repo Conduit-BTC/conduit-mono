@@ -33,8 +33,11 @@ describe("generic Market event fulfillment", () => {
     expect(detail).toContain("productCartCandidate")
     expect(detail).toContain("productCartBlocked")
     expect(detail).toContain("let candidate = productCartCandidate")
-    expect(detail).toContain("await readEventShippingProduct({")
-    expect(detail).toContain("expectedEventId: candidate.productEventId")
+    expect(detail).toContain("await readEventMarketProduct({")
+    expect(detail).toContain(
+      "productRead.resolution.revision.id !== candidate.productEventId"
+    )
+    expect(detail).not.toContain("EventFulfillmentChoice")
     expect(detail).toContain("if (!shouldContinue()) return")
     expect(detail).toContain("cart.addItem(candidate, quantity)")
     expect(detail).toContain(
@@ -131,12 +134,14 @@ describe("generic Market event fulfillment", () => {
     expect(checkout).not.toContain("useProductCartFulfillmentBatch")
     expect(checkout).not.toContain("getCartEventFulfillmentBlock")
     expect(checkout).toContain("authorizeCurrentCheckoutItems")
+    // The settled router entry authorizes both the initial quote and the
+    // authenticated fiat rate before preparing its immutable plan.
     expect(
       checkout.match(/await assertCheckoutItemsAvailable\(/g)
-    ).toHaveLength(2)
+    ).toHaveLength(4)
     expect(
       checkout.match(/getFreshPricingRateInput\(checkoutItems\)/g)
-    ).toHaveLength(2)
+    ).toHaveLength(3)
     expect(authorization).toContain(
       "resolveCurrentFutureEventMarketFulfillments"
     )

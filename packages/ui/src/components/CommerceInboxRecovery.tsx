@@ -20,6 +20,32 @@ const transportLabel = (
       ? "Legacy sent"
       : "Legacy received"
 
+const INBOX_READ_FAILURE_LABELS = {
+  transport_unavailable: "Connection unavailable",
+  authentication_required: "Authentication required",
+  missing_challenge: "Authentication challenge missing",
+  authentication_rejected: "Authentication rejected",
+  authentication_timed_out: "Authentication timed out",
+  signer_unavailable: "Signer unavailable",
+  signer_authorization_denied: "Signer permission declined",
+  authority_changed: "Read authority changed",
+  subscription_rejected: "Read request rejected",
+  challenge_invalid: "Authentication challenge invalid",
+  challenge_replayed: "Authentication challenge already used",
+  challenge_loop: "Authentication challenge limit reached",
+  challenge_superseded: "Authentication challenge replaced",
+  protocol_invalid: "Invalid relay response",
+  protocol_limit_exceeded: "Read response limit reached",
+  consumer_failed: "Local message intake failed",
+  query_timed_out: "Read timed out",
+  aborted: "Read stopped",
+} as const satisfies Record<
+  NonNullable<
+    CommerceInboxSnapshot["diagnostics"]["sources"][number]["failure"]
+  >,
+  string
+>
+
 export interface CommerceInboxRecoveryProps {
   snapshot: CommerceInboxSnapshot | null
   loadOlder?: () => Promise<unknown>
@@ -58,7 +84,8 @@ export function CommerceInboxRecovery({
   const retryable =
     (states.permission_declined ?? 0) +
     (states.retryable_failure ?? 0) +
-    (states.provider_unavailable ?? 0)
+    (states.provider_unavailable ?? 0) +
+    (states.malformed ?? 0)
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true)
     setError(false)
@@ -74,7 +101,7 @@ export function CommerceInboxRecovery({
   return (
     <section
       aria-label="Inbox history and recovery"
-      className="space-y-3 rounded-xl border border-[var(--border)] p-4 xl:shrink-0"
+      className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4 xl:shrink-0"
     >
       <details className="text-sm text-[var(--text-secondary)]">
         <summary className="min-h-11 cursor-pointer py-2">
@@ -89,11 +116,15 @@ export function CommerceInboxRecovery({
           return (
             <p key={transport}>
               {transport === "nip17" ? "Encrypted" : "Legacy"}:{" "}
-              {counts.opened ?? 0} opened · {counts.invalid_envelope ?? 0}{" "}
+              {counts.opened ?? 0} opened · {counts.machine ?? 0} machine
+              records · {counts.malformed ?? 0} malformed · {counts.queued ?? 0}{" "}
+              queued · {counts.waiting_for_signer ?? 0} waiting for signer ·{" "}
+              {counts.opening ?? 0} opening · {counts.invalid_envelope ?? 0}{" "}
               invalid envelopes · {counts.unsupported ?? 0} unsupported ·{" "}
               {(counts.permission_declined ?? 0) +
                 (counts.provider_unavailable ?? 0) +
-                (counts.retryable_failure ?? 0)}{" "}
+                (counts.retryable_failure ?? 0) +
+                (counts.malformed ?? 0)}{" "}
               awaiting recovery
             </p>
           )
@@ -110,6 +141,13 @@ export function CommerceInboxRecovery({
               <time dateTime={new Date(source.observedAt).toISOString()}>
                 {new Date(source.observedAt).toLocaleString()}
               </time>
+              {typeof source.failure === "string" &&
+              Object.hasOwn(INBOX_READ_FAILURE_LABELS, source.failure) ? (
+                <>
+                  {" "}
+                  · Read failure: {INBOX_READ_FAILURE_LABELS[source.failure]}
+                </>
+              ) : null}
             </li>
           ))}
           {snapshot.diagnostics.historyRanges.map((range) => (
@@ -173,7 +211,7 @@ export function CommerceInboxRecovery({
         ) : null}
       </div>
       {error ? (
-        <p role="alert" className="text-sm text-error">
+        <p role="alert" className="text-sm text-[var(--error-text)]">
           Recovery is incomplete. Saved records are available for another
           attempt.
         </p>
@@ -195,7 +233,7 @@ export function CommerceInboxRecovery({
                 record.category === "commerce" ? (
                   <article
                     key={record.provenance.rumorId}
-                    className="space-y-2 rounded-lg border border-[var(--border)] p-3 text-sm"
+                    className="space-y-2 rounded-[var(--radius-md)] border border-[var(--border)] p-3 text-sm"
                   >
                     <p className="font-medium">
                       {record.fields.messageType ?? "Unknown commerce type"} ·{" "}

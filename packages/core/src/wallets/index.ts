@@ -22,14 +22,23 @@ export function getWalletNetworkFromLightningConfig(
 }
 
 export type WalletCapability =
-  "pay_invoice" | "receive" | "balance" | "history" | "spark_transfer"
+  | "pay_invoice"
+  | "receive"
+  | "verify_invoice"
+  | "balance"
+  | "history"
+  | "spark_transfer"
 
-export type WalletDefaultIntent = "pay_invoice"
+export type WalletDefaultIntent = "pay_invoice" | "receive"
 
 export type WalletLifecycleStatus =
   "registered" | "connecting" | "ready" | "unavailable" | "locked" | "error"
 
 export interface WalletDescriptor {
+  portableRecordVersion?: 1
+  accountRemoved?: boolean
+  accountPaySelectedAt?: number
+  accountReceiveSelectedAt?: number
   id: string
   kind: WalletKind
   providerId: WalletProviderId
@@ -38,6 +47,8 @@ export interface WalletDescriptor {
   capabilities: WalletCapability[]
   status: WalletLifecycleStatus
   defaultIntents: WalletDefaultIntent[]
+  /** Device-local choices by account/network; never included in relay recovery. */
+  defaultIntentsByScope?: Record<string, WalletDefaultIntent[]>
   createdAt: number
   updatedAt: number
 }
@@ -324,3 +335,5 @@ export class WalletRegistry {
 }
 
 export * from "./provider"
+
+export * from "./breez-lightning-address"

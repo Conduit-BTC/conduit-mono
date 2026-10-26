@@ -16,7 +16,7 @@ import {
   emptyAccountNetworkLocalState,
   extractFollowPubkeys,
   fetchMerchantTrustSocialSummary,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   peekRetainedOwnFollowListSnapshot,
   publishContactListUpdate,
   readRetainedOwnFollowListSnapshot,
@@ -283,7 +283,7 @@ describe("NIP-02 merchant trust helpers", () => {
     const merchantPrivateRelay = "wss://127.0.0.1:7447"
     const merchantPublicRelay = "wss://merchant.conduit.market"
     const attemptedByAuthor = new Map<string, string[]>()
-    const ownerSelectedByAuthor = new Map<string, readonly string[]>()
+    const ownerReadTargetByAuthor = new Map<string, boolean>()
     const viewerEvent = await followListEvent({
       secret: viewerSecret,
       createdAt: 100,
@@ -350,9 +350,18 @@ describe("NIP-02 merchant trust helpers", () => {
         fetchEvents: async (filter, options) => {
           const author = filter.authors?.[0] ?? ""
           attemptedByAuthor.set(author, options?.relayUrls ?? [])
-          ownerSelectedByAuthor.set(
+          ownerReadTargetByAuthor.set(
             author,
-            options?.ownerSelectedRelayUrls ?? []
+            Boolean(
+              options?.relayTargets?.some(
+                (target) =>
+                  target.url === viewerLocalRelay &&
+                  target.grants.some(
+                    (grant) =>
+                      grant.kind === "owner_nip65" && grant.operation === "read"
+                  )
+              )
+            )
           )
           const event = author === viewerPubkey ? viewerEvent : merchantEvent
           return {
@@ -372,7 +381,7 @@ describe("NIP-02 merchant trust helpers", () => {
     )
 
     expect(attemptedByAuthor.get(viewerPubkey)).toContain(viewerLocalRelay)
-    expect(ownerSelectedByAuthor.get(viewerPubkey)).toContain(viewerLocalRelay)
+    expect(ownerReadTargetByAuthor.get(viewerPubkey)).toBe(true)
     expect(attemptedByAuthor.get(merchantPubkey)).toContain(merchantPublicRelay)
     expect(attemptedByAuthor.get(merchantPubkey)).not.toContain(
       merchantPrivateRelay
@@ -694,15 +703,15 @@ describe("NIP-02 merchant trust helpers", () => {
         fetchEvents: async (_filter, options) => {
           candidates = [...(options.relayUrls ?? [])]
           maxRelayAttempts = options.maxRelayAttempts
-          const eligible = await filterEligibleAccountRelayUrls({
-            accountPubkey: options.accountPubkey ?? viewerPubkey,
-            authenticatedPubkey: options.authenticatedPubkey,
-            candidateRelayUrls: candidates,
-            ownerSelectedRelayUrls: options.ownerSelectedRelayUrls,
-            appRelayUrls: options.appRelayUrls,
-            personalRelayUrls: options.personalRelayUrls,
-            repository,
-          })
+          const eligible = (
+            await filterEligibleAccountRelayTargets({
+              accountPubkey: options.accountPubkey ?? viewerPubkey,
+              authenticatedPubkey: options.authenticatedPubkey,
+              targets: options.relayTargets ?? [],
+              operation: "read",
+              repository,
+            })
+          ).map((target) => target.url)
           attempted = eligible.slice(
             0,
             options.maxRelayAttempts ?? eligible.length

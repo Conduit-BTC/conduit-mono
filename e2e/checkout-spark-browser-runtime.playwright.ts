@@ -600,13 +600,10 @@ for (const store of ["preparation", "recovery"] as const) {
                     reconciliation: { plan: { checkoutId: string } }
                   }) => entry.reconciliation.plan.checkoutId
                 )
-            : module
-                .listCheckoutSparkRecoveryDeliveries()
-                .map(
-                  (entry: {
-                    record: { signedRecipientWrap: { id: string } }
-                  }) => entry.record.signedRecipientWrap.id
-                )
+            : (await module.listCheckoutSparkRecoveryDeliveries()).map(
+                (entry: { record: { signedRecipientWrap: { id: string } } }) =>
+                  entry.record.signedRecipientWrap.id
+              )
         },
         { moduleUrl, store }
       )

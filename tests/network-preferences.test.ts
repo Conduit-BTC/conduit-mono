@@ -649,8 +649,10 @@ describe("account Network preferences", () => {
       relayScope: ACCOUNT_SCOPE,
       ownerRelayList: await signedOwnerResolution(),
       inboxDeclaration: inboxResolution({
-        state: "distribution_pending",
-        pendingRelayUrls: ["wss://signed.example", "wss://inbox.example"],
+        state: "declared",
+        eventId: "a".repeat(64),
+        relayUrls: ["wss://signed.example", "wss://inbox.example"],
+        pendingPublishRelayUrls: ["wss://discovery.example"],
       }),
     })
     expect(projection.rows).toEqual([

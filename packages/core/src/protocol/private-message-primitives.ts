@@ -1,3 +1,4 @@
+import { inboxDeclarationEvidenceFacts } from "./account-network-evidence"
 import { getEventHash } from "nostr-tools"
 import { v2 as nip44 } from "nostr-tools/nip44"
 import { createWrap } from "nostr-tools/nip59"
@@ -428,7 +429,7 @@ export type UnwrapOutcome =
   | {
       status: "deferred_machine"
       wrapId: string
-      kind: typeof EVENT_KINDS.ORDER
+      kind: number
     }
   | { status: "decrypt_failed"; wrapId: string; reason: DecryptFailureReason }
 
@@ -507,14 +508,41 @@ export function assertPrivateMessageFitsTransport(
   }
 }
 
+export type PrivateMessageWrappingOperation =
+  | "identity"
+  | "preparation"
+  | "encryption"
+  | "seal_signing"
+  | "seal_validation"
+  | "local_wrap"
+
 /** NIP-59 construction with plain key operations, independent of relay clients. */
 export async function wrapPrivateMessage(
   event: PrivateMessageEvent,
   recipient: { pubkey: string },
   signer: NostrKeySigner,
-  params: { rumorKind?: number } = {}
+  params: {
+    rumorKind?: number
+    /** Fixed transient observation only; never part of the private envelope. */
+    onOperation?: (operation: PrivateMessageWrappingOperation) => void
+  } = {}
 ): Promise<SignedPublicNostrEvent> {
+  // Pass values through synchronously to preserve nested signer evaluation.
+  const observe = <T>(
+    operation: PrivateMessageWrappingOperation,
+    value: T
+  ): T => {
+    try {
+      const observer = params.onOperation
+      if (observer) void Promise.resolve(observer(operation)).catch(() => {})
+    } catch {
+      // Observers cannot replace a signer result or the original failure.
+    }
+    return value
+  }
+  observe("identity", undefined)
   const pubkey = await signer.getPublicKey()
+  observe("preparation", undefined)
   if (event.pubkey && event.pubkey !== pubkey)
     throw new NostrSignerError("authority_changed")
   const rumor: UnsignedNostrEvent = {
@@ -530,13 +558,21 @@ export async function wrapPrivateMessage(
     kind: EVENT_KINDS.SEAL,
     created_at: Math.round(Date.now() / 1000 - Math.random() * 100_000),
     tags: [],
-    content: await signer.encryptNip44(
-      recipient.pubkey,
-      JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+    content: observe(
+      "seal_signing",
+      await signer.encryptNip44(
+        recipient.pubkey,
+        observe(
+          "encryption",
+          JSON.stringify({ ...rumor, id: getEventHash(rumor) })
+        )
+      )
     ),
   })
+  observe("seal_validation", undefined)
   if (!isValidSignedPublicNostrEvent(seal) || seal.pubkey !== pubkey)
     throw new NostrSignerError("invalid_response")
+  observe("local_wrap", undefined)
   return createWrap(
     { ...seal, tags: seal.tags.map((tag) => [...tag]) },
     recipient.pubkey
@@ -676,7 +712,7 @@ export async function unwrapGiftWrap(
         // Invalid recovery never gains generic rendering or domain authority.
       }
     }
-    return { status: "deferred_machine", wrapId, kind: EVENT_KINDS.ORDER }
+    return { status: "deferred_machine", wrapId, kind: rumor.kind }
   }
   if (decodedRecord.category === "commerce") {
     if (decodedRecord.parsedOrderMessage)
@@ -966,6 +1002,8 @@ export interface FetchInboxRelayOptions {
   fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   relayUrls?: string[]
   evidenceRepository?: InboxDeclarationEvidenceRepository
+  /** Read-only durable evidence for callers that cannot mutate declarations. */
+  durableEvidenceRepository?: Pick<InboxDeclarationEvidenceRepository, "get">
   /** Account whose durable whole-relay exclusions govern declaration lookup. */
   requestingAccountPubkey?: string | null
   /** Active authenticated account for owner-selected ws:// read authority. */
@@ -986,14 +1024,6 @@ export type OwnPrivateMessageRelayReadiness =
       eventId: string
       relayUrls: string[]
       stale: boolean
-      distributionRepairable: boolean
-    }
-  | {
-      state: "distribution_pending"
-      eventId: string
-      relayUrls: string[]
-      retainedRelayUrls: string[]
-      stale: true
       distributionRepairable: boolean
     }
   | {
@@ -1021,47 +1051,18 @@ function projectOwnPrivateMessageRelayReadiness(
     distributionRepairable?: boolean
   } = {}
 ): OwnPrivateMessageRelayReadiness {
-  const sharedPlanRelayUrlSet = new Set(
-    normalizeSecureOrIsolatedE2eRelayUrls(
-      options.sharedPlanRelayUrls ?? sharedInboxDiscoveryRelayUrls()
-    )
-  )
   const distributionRepairable = options.distributionRepairable ?? false
-  switch (resolution.state) {
+  const facts = inboxDeclarationEvidenceFacts(resolution)
+  switch (facts.state) {
     case "declared":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
-      if (
-        !normalizeSecureOrIsolatedE2eRelayUrls(
-          resolution.sharedSourceRelayUrls ?? []
-        ).some((relayUrl) => sharedPlanRelayUrlSet.has(relayUrl))
-      ) {
-        return {
-          state: "distribution_pending",
-          eventId: resolution.eventId,
-          relayUrls: resolution.relayUrls,
-          retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
-          stale: true,
-          distributionRepairable,
-        }
-      }
       return {
         state: "ready",
         eventId: resolution.eventId,
         relayUrls: resolution.relayUrls,
-        stale: resolution.stale,
-        distributionRepairable,
-      }
-    case "distribution_pending":
-      if (!resolution.eventId) return { state: "lookup_unavailable" }
-      return {
-        state: "distribution_pending",
-        eventId: resolution.eventId,
-        relayUrls: resolution.pendingRelayUrls ?? [],
-        retainedRelayUrls: resolution.retainedReadRelayUrls ?? [],
-        stale: true,
+        stale: facts.stale,
         distributionRepairable:
-          (resolution.pendingPublishRelayUrls?.length ?? 0) > 0 ||
-          distributionRepairable,
+          facts.distributionPending || distributionRepairable,
       }
     case "signed_empty":
       if (!resolution.eventId) return { state: "lookup_unavailable" }
@@ -1096,7 +1097,10 @@ function projectOwnPrivateMessageRelayReadiness(
  */
 export async function inspectRetainedOwnPrivateMessageRelayReadiness(
   pubkey: string,
-  options: Pick<FetchInboxRelayOptions, "evidenceRepository"> = {}
+  options: Pick<
+    FetchInboxRelayOptions,
+    "evidenceRepository" | "durableEvidenceRepository"
+  > = {}
 ): Promise<OwnPrivateMessageRelayReadiness> {
   try {
     const resolution = await readRetainedInboxDeclaration(pubkey, options)
@@ -1168,7 +1172,6 @@ export async function fetchInboxRelayUrls(
   switch (resolution.state) {
     case "declared":
       return resolution.relayUrls
-    case "distribution_pending":
     case "signed_empty":
     case "not_observed":
     case "malformed":

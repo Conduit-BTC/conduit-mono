@@ -33,6 +33,7 @@ function retainUnrefreshedRows(
       ...(read.schedule ? { scheduleCoverage: "stale" as const } : {}),
     }))
   return {
+    ...next,
     markets: [...next.markets, ...unrefreshed].sort((left, right) =>
       left.coordinate.localeCompare(right.coordinate)
     ),
@@ -47,6 +48,7 @@ export function createProgressiveEventMarketDiscoveryQuery(input: {
   discoveryInput: DiscoveryInput
   isCurrent: () => boolean
   discover?: typeof discoverFutureEventMarkets
+  getContinuation?: () => DiscoveryInput["continuation"]
 }) {
   let run = 0
   return async ({
@@ -77,6 +79,9 @@ export function createProgressiveEventMarketDiscoveryQuery(input: {
     try {
       const result = await (input.discover ?? discoverFutureEventMarkets)({
         ...input.discoveryInput,
+        continuation: input.getContinuation
+          ? input.getContinuation()
+          : input.discoveryInput.continuation,
         signal,
         shouldContinue: () =>
           active &&
@@ -110,8 +115,10 @@ export function useProgressiveEventMarketDiscovery(input: {
   const queryClient = useQueryClient()
   const scope = hashKey(input.queryKey)
   const activeScope = useRef(scope)
+  const nextContinuation = useRef<DiscoveryInput["continuation"]>(undefined)
   useLayoutEffect(() => {
     activeScope.current = scope
+    nextContinuation.current = undefined
     return () => {
       activeScope.current = ""
     }
@@ -123,6 +130,11 @@ export function useProgressiveEventMarketDiscovery(input: {
         queryKey: input.queryKey,
         discoveryInput: input.discoveryInput,
         isCurrent: () => activeScope.current === scope,
+        getContinuation: () => {
+          const continuation = nextContinuation.current
+          nextContinuation.current = undefined
+          return continuation
+        },
         // Query keys include every input that changes read authority or authors.
         // Reuse the same run fence during ordinary observer renders.
       }),
@@ -130,11 +142,20 @@ export function useProgressiveEventMarketDiscovery(input: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [queryClient, scope]
   )
-  return useQuery({
+  const query = useQuery({
     queryKey: input.queryKey,
     queryFn,
     enabled: input.enabled,
     retry: false,
     refetchInterval: input.refetchInterval,
   })
+  return {
+    ...query,
+    hasMore: Boolean(query.data?.continuation),
+    loadMore: () => {
+      if (query.isFetching || !query.data?.continuation) return
+      nextContinuation.current = query.data.continuation
+      void query.refetch()
+    },
+  }
 }

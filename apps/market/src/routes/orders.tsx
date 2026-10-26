@@ -12,7 +12,9 @@ import {
   appendConduitClientTag,
   clearProtectedReadAuthenticationSuppression,
   config,
+  isQuantumRouterExecutionEnabled,
   db,
+  DexieCheckoutSparkSettledRepository,
   encodeEventMarketNaddr,
   formatEventMarketPickupClaimCode,
   formatEventMarketPickupDate,
@@ -23,6 +25,8 @@ import {
   formatPubkey,
   getAccountSigner,
   getOrderLifecycle,
+  getOrderConversationId,
+  findOrderConversation,
   getProductImageCandidates,
   getOrderPublicZapSigner,
   getWalletDisplayLabels,
@@ -87,6 +91,20 @@ import {
   ShoppingBag,
 } from "lucide-react"
 import { ConversationProfilePicture } from "../components/ConversationProfilePicture"
+import { CheckoutSparkFundingExpiry } from "../components/CheckoutSparkFundingExpiry"
+import { CheckoutSparkExternalFunding } from "../components/CheckoutSparkExternalFunding"
+import {
+  performExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentActionResult,
+} from "../components/invoice-payment-action"
+import {
+  applyCheckoutSparkFundingChoice,
+  resolveCheckoutSparkFundingSelection,
+} from "../components/checkout-spark-funding-selection"
+import { CheckoutSparkPaymentReceipt } from "../components/CheckoutSparkPaymentReceipt"
+import { CheckoutPaymentProgress } from "../components/CheckoutPaymentProgress"
+import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
 import { MarketProjectTip } from "../components/MarketProjectTip"
 import { useCart } from "../hooks/useCart"
 import { groupCartPurchases } from "../lib/cart-model"
@@ -103,7 +121,10 @@ import {
   SparkFeeApprovalDialog,
   useSparkFeeApproval,
 } from "../components/SparkFeeApprovalDialog"
-import { type BuyerConversation } from "../lib/orderConversations"
+import {
+  mergeBuyerOrderConversations,
+  type BuyerConversation,
+} from "../lib/orderConversations"
 import { fetchStoreProducts } from "../lib/storeProducts"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useWallets } from "../hooks/useWallets"
@@ -121,6 +142,10 @@ import {
   type OrderHeaderStatus,
   type OrderViewModel,
 } from "../lib/order-view"
+import {
+  presentSettledRouterHeaderStatus,
+  presentSettledRouterTimeline,
+} from "../lib/checkout-spark-settled-order-presentation"
 import { assertCreatedEventMarketPickupTerms } from "../lib/order-pickup-retry"
 import { assertCartPickupHandlerReady } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
@@ -166,6 +191,7 @@ type PriceFormatter = (
 import {
   clearSessionGuestOrderSigningIdentity,
   getSessionGuestOrderSigningIdentity,
+  isCurrentGuestOrderSigningIdentity,
   type GuestOrderSigningIdentity,
 } from "../lib/guest-order-identity"
 import {
@@ -185,15 +211,56 @@ import {
 import {
   getCheckoutPaymentTargetOptions,
   getCheckoutPaymentTargetValue,
+  resolveCheckoutPaymentTarget,
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
+import {
+  canReplayCheckoutSparkOrderRecovery,
+  replayCheckoutSparkOrderRecovery,
+  type CheckoutSparkRecoveryReplayDeliveryEvidence,
+} from "../lib/checkout-spark-order-recovery-replay"
+import {
+  acknowledgeOrRetryCheckoutSparkSettledSnapshot,
+  getCheckoutSparkRecoveryDelivery,
+} from "../lib/checkout-spark-recovery-handoff"
+import {
+  readCurrentCheckoutSparkSettledOrderControl,
+  matchesCheckoutSparkSettledOrderControl,
+  type CheckoutSparkSettledOrderControlState,
+} from "../lib/checkout-spark-settled-order-control"
+import { getCheckoutSparkSettledOutcomeMessage } from "../lib/checkout-spark-settled-outcome-message"
+import { getCheckoutSparkSettledPreparation } from "../lib/checkout-spark-settled-preparation"
+import { canContinueCheckoutSparkSettledRouteSession } from "../lib/checkout-spark-settled-route-session"
+import {
+  createCheckoutSparkSettledShopperRunner,
+  type CheckoutSparkSettledShopperProgress,
+} from "../lib/checkout-spark-settled-shopper-runner"
+import type { CheckoutSparkExternalFundingInvoice } from "../lib/checkout-spark-settled-funding"
+import { getSparkWalletManager } from "../lib/spark-sdk"
+import {
+  BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY,
+  getCheckoutSparkBuyerSettlementQueryOptions,
+  NO_BUYER_CHECKOUT_SPARK_SETTLEMENTS,
+  type CheckoutSparkPaymentReceipt as PaymentReceipt,
+} from "../lib/checkout-spark-buyer-settlement"
 
 type OrdersSearch = {
   order?: string
+  counterparty?: string
   focus?: "payment"
 }
 
 const ORDERS_SEARCH_DEFAULT: OrdersSearch = {}
+
+type RouterConfirmation = {
+  control: Exclude<
+    CheckoutSparkSettledOrderControlState,
+    { status: "blocked" | "complete" | "retired" }
+  >
+  external: boolean
+  payerValue: string
+  externalAction?: ExternalInvoicePaymentAction
+}
 
 function getRetryZapMode(lifecycle: OrderLifecycle): CheckoutZapMode {
   if (
@@ -216,7 +283,14 @@ export const Route = createFileRoute("/orders")({
     if (typeof order !== "string" || order.length === 0) {
       return ORDERS_SEARCH_DEFAULT
     }
-    return search.focus === "payment" ? { order, focus: "payment" } : { order }
+    return {
+      order,
+      ...(typeof search.counterparty === "string" &&
+      /^[0-9a-f]{64}$/.test(search.counterparty)
+        ? { counterparty: search.counterparty }
+        : {}),
+      ...(search.focus === "payment" ? { focus: "payment" as const } : {}),
+    }
   },
   component: OrdersPage,
 })
@@ -234,12 +308,14 @@ const TONE_VARIANT: Record<
 
 /** A merged order: durable local lifecycle and/or relay conversation. */
 interface OrderRow {
+  id: string
   orderId: string
   merchantPubkey: string
   lifecycle?: OrderLifecycle
   conversation?: BuyerConversation
   vm: OrderViewModel
   headerStatus: OrderHeaderStatus
+  receipt?: PaymentReceipt | null
   updatedAt: number
 }
 
@@ -284,7 +360,7 @@ function StatusNotice({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <StatusPill variant={variant}>{title}</StatusPill>
@@ -336,12 +412,13 @@ function OrderListCard({
 }) {
   const itemTitle = row.vm.items[0]?.displayTitle ?? "Order"
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
       data-order-id={row.orderId}
       className={[
-        "w-full rounded-[1.1rem] border p-3 text-left transition-[border-color,background-color]",
+        "w-full rounded-[var(--radius-md)] border p-3 text-left transition-[border-color,background-color]",
         active
           ? // Selected: subtle purple wash from the primary token.
             "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
@@ -383,7 +460,7 @@ function OrderListCard({
               {row.headerStatus.primaryLabel}
             </StatusPill>
             {row.headerStatus.actionNeeded && (
-              <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+              <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
             )}
           </div>
         </div>
@@ -420,12 +497,13 @@ function MobileOrderFilterPills({
         {options.map((option) => {
           const active = tab === option.value
           return (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               key={option.value}
               type="button"
               onClick={() => onChange(option.value)}
               className={[
-                "shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-[border-color,background-color,color]",
+                "shrink-0 rounded-[var(--radius-sm)] border px-4 py-2 text-sm font-medium transition-[border-color,background-color,color]",
                 active
                   ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_12%,transparent)] text-[var(--text-primary)]"
                   : "border-[var(--border)] bg-[color-mix(in_srgb,var(--surface-elevated)_92%,transparent)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]",
@@ -467,9 +545,9 @@ function MobileOrdersScroller({
   }, [selectedOrderId])
 
   return (
-    <section className="min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+    <section className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
       {rows.length === 0 ? (
-        <div className="rounded-[1.25rem] border border-dashed border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-dashed border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
           No orders match this filter.
         </div>
       ) : (
@@ -484,18 +562,19 @@ function MobileOrdersScroller({
         >
           <div className="flex min-w-max gap-3 pb-1 pr-14 snap-x snap-mandatory">
             {rows.map((row) => {
-              const active = row.orderId === selectedOrderId
+              const active = row.id === selectedOrderId
               return (
+                // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
                 <button
-                  key={row.orderId}
+                  key={row.id}
                   type="button"
                   ref={(el) => {
-                    if (el) cardRefs.current.set(row.orderId, el)
-                    else cardRefs.current.delete(row.orderId)
+                    if (el) cardRefs.current.set(row.id, el)
+                    else cardRefs.current.delete(row.id)
                   }}
-                  onClick={() => onSelect(row.orderId)}
+                  onClick={() => onSelect(row.id)}
                   className={[
-                    "w-[16.5rem] shrink-0 snap-start rounded-[1.25rem] border p-4 text-left transition-[border-color,background-color,transform]",
+                    "w-[16.5rem] shrink-0 snap-start rounded-[var(--radius-md)] border p-4 text-left transition-[border-color,background-color,transform]",
                     active
                       ? "border-[color-mix(in_srgb,var(--primary-500)_45%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_7%,transparent)]"
                       : "border-[var(--border)] bg-[var(--surface-elevated)] hover:border-[var(--text-secondary)] hover:bg-[var(--surface)]",
@@ -529,7 +608,7 @@ function MobileOrdersScroller({
                       </span>
                     )}
                     {row.headerStatus.actionNeeded ? (
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+                      <span className="h-2 w-2 shrink-0 rounded-full bg-warning" />
                     ) : null}
                   </div>
                 </button>
@@ -557,7 +636,7 @@ function OrderItemsSection({
   formatSats: (sats: number) => string
 }) {
   return (
-    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
       <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
         <ShoppingBag className="h-4 w-4" /> Items
       </h3>
@@ -585,7 +664,7 @@ function OrderItemsSection({
               className="flex items-start justify-between gap-3 text-sm"
             >
               <div className="flex min-w-0 items-start gap-3">
-                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)]">
+                <div className="h-12 w-12 shrink-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)]">
                   {image ? (
                     <img
                       src={image.url}
@@ -644,16 +723,22 @@ function OrderItemsSection({
 function OrderTimeline({
   vm,
   formatSats,
+  isRouterOrder,
 }: {
   vm: OrderViewModel
   formatSats: (sats: number) => string
+  isRouterOrder: boolean
 }) {
   const rows = useMemo(
-    () => buildOrderTimeline(vm, formatSats),
-    [formatSats, vm]
+    () =>
+      presentSettledRouterTimeline(
+        buildOrderTimeline(vm, formatSats),
+        isRouterOrder
+      ),
+    [formatSats, isRouterOrder, vm]
   )
   return (
-    <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
       <h2 className="text-lg font-semibold text-[var(--text-primary)]">
         Order progress
       </h2>
@@ -710,7 +795,30 @@ function OrderDetail({
     guestIdentity
       ? isGuestGenerationCurrent(authGeneration)
       : isAuthGenerationCurrent(authGeneration)
-  const actionsReady = !!guestIdentity || signerReady
+  function getCurrentRouterGuestIdentity(): GuestOrderSigningIdentity | null {
+    const currentIdentity = guestIdentity
+      ? getSessionGuestOrderSigningIdentity(vm.orderId)
+      : null
+    if (
+      !guestIdentity ||
+      !currentIdentity ||
+      !isGuestGenerationCurrent(authGeneration) ||
+      currentIdentity.pubkey !== guestIdentity.pubkey ||
+      currentIdentity.createdAt !== guestIdentity.createdAt ||
+      currentIdentity.expiresAt !== guestIdentity.expiresAt ||
+      !isCurrentGuestOrderSigningIdentity(currentIdentity, {
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        pubkey: buyerPubkey,
+      })
+    ) {
+      return null
+    }
+    return currentIdentity
+  }
+  const actionsReady = guestIdentity
+    ? getCurrentRouterGuestIdentity() !== null
+    : signerReady
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
@@ -757,8 +865,34 @@ function OrderDetail({
     [eventActorProfiles.data]
   )
   const [busy, setBusy] = useState(false)
+  const routerActionInFlightRef = useRef(false)
+  const routerApprovalGenerationRef = useRef(0)
+  const [routerRunner] = useState(createCheckoutSparkSettledShopperRunner)
+  const [routerProgress, setRouterProgress] =
+    useState<CheckoutSparkSettledShopperProgress | null>(null)
+  const [routerPausing, setRouterPausing] = useState(false)
+  const [routerTarget, setRouterTarget] = useState<OrderPaymentTarget | null>(
+    null
+  )
+  const [settledRouterOutcome, setSettledRouterOutcome] = useState<
+    string | null
+  >(null)
+  const [externalFundingInvoice, setExternalFundingInvoice] = useState<
+    | (CheckoutSparkExternalFundingInvoice & {
+        authGeneration: number
+        actionResult?: ExternalInvoicePaymentActionResult
+      })
+    | null
+  >(null)
   const [privateFallbackOpen, setPrivateFallbackOpen] = useState(false)
   const [recoveryError, setRecoveryError] = useState<string | null>(null)
+  const [recoveryReplayNotice, setRecoveryReplayNotice] = useState<{
+    orderId: string
+    buyerPubkey: string
+    authGeneration: number
+    text: string
+    deliveries: CheckoutSparkRecoveryReplayDeliveryEvidence[]
+  } | null>(null)
   const [paymentAddressUpdate, setPaymentAddressUpdate] =
     useState<OrderPaymentAddressUpdate | null>(null)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -785,11 +919,57 @@ function OrderDetail({
   )
   const [priorInvoiceIndex, setPriorInvoiceIndex] = useState("0")
   const sparkFeeApproval = useSparkFeeApproval()
+  const declineSparkFeeRef = useRef(sparkFeeApproval.decline)
+  useLayoutEffect(() => {
+    declineSparkFeeRef.current = sparkFeeApproval.decline
+  }, [sparkFeeApproval.decline])
   const queryClient = useQueryClient()
 
   useEffect(() => {
     if (!actionsReady && sparkFeeApproval.quote) sparkFeeApproval.decline()
   }, [actionsReady, sparkFeeApproval])
+
+  useEffect(() => {
+    if (!actionsReady) {
+      setExternalFundingInvoice(null)
+      routerApprovalGenerationRef.current += 1
+      void routerRunner.pause()
+    }
+  }, [actionsReady, routerRunner])
+
+  useEffect(() => {
+    setExternalFundingInvoice(null)
+    setSettledRouterOutcome(null)
+  }, [
+    authGeneration,
+    buyerPubkey,
+    vm.orderId,
+    row.lifecycle?.checkoutSparkRouterBinding?.planDigest,
+  ])
+
+  useLayoutEffect(() => {
+    const pause = () => {
+      routerApprovalGenerationRef.current += 1
+      void routerRunner.pause()
+      declineSparkFeeRef.current()
+    }
+    const pauseWhenHidden = () => {
+      if (document.visibilityState !== "visible") pause()
+    }
+    document.addEventListener("visibilitychange", pauseWhenHidden)
+    window.addEventListener("pagehide", pause)
+    return () => {
+      pause()
+      document.removeEventListener("visibilitychange", pauseWhenHidden)
+      window.removeEventListener("pagehide", pause)
+    }
+  }, [
+    routerRunner,
+    authGeneration,
+    buyerPubkey,
+    vm.orderId,
+    row.lifecycle?.checkoutSparkRouterBinding?.planDigest,
+  ])
 
   useEffect(() => {
     if (
@@ -893,6 +1073,440 @@ function OrderDetail({
     wallets.runtime[paymentWallet.id]?.status === "ready"
   const selectedStoredPaymentTarget: OrderPaymentTarget | null =
     retryTarget?.type === "wallet" && !paymentWallet ? null : retryTarget
+
+  const routerBinding = row.lifecycle?.checkoutSparkRouterBinding
+  function isRouterSavedStateCurrent(): boolean {
+    return (
+      authGenerationRef.current === authGeneration &&
+      shouldContinueBuyerSession() &&
+      currentViewRef.current.orderId === vm.orderId &&
+      currentViewRef.current.merchantPubkey === row.merchantPubkey &&
+      (guestIdentity
+        ? getCurrentRouterGuestIdentity() !== null
+        : authenticatedPubkey === buyerPubkey)
+    )
+  }
+  const settledRouterQuery = useQuery({
+    queryKey: [
+      "checkout-spark-settled-order-control",
+      vm.orderId,
+      routerBinding?.planDigest ?? "none",
+      buyerPubkey,
+      authGeneration,
+    ],
+    enabled: routerBinding !== undefined && isRouterSavedStateCurrent(),
+    queryFn: ({ signal }) => readSettledRouterControl(signal),
+    refetchOnWindowFocus: false,
+  })
+  const settledRouterControl = isRouterSavedStateCurrent()
+    ? (settledRouterQuery.data ?? null)
+    : null
+  const recoveryReplayEligible =
+    !!routerBinding &&
+    !guestIdentity &&
+    actionsReady &&
+    isRouterSavedStateCurrent() &&
+    !routerProgress &&
+    settledRouterControl !== null &&
+    settledRouterControl.status !== "complete" &&
+    settledRouterControl.status !== "retired"
+  function recoveryReplayRequest(shouldContinue: () => boolean) {
+    if (!routerBinding)
+      throw new Error("This order has no saved router binding.")
+    return {
+      orderId: vm.orderId,
+      buyerPubkey,
+      merchantPubkey: row.merchantPubkey,
+      ...routerBinding,
+      shouldContinue,
+    }
+  }
+  const recoveryReplayQuery = useQuery({
+    queryKey: [
+      "checkout-spark-order-recovery-replay",
+      vm.orderId,
+      routerBinding?.planDigest ?? "none",
+      buyerPubkey,
+      authGeneration,
+      settledRouterControl?.status ?? "unavailable",
+    ],
+    enabled: recoveryReplayEligible,
+    queryFn: ({ signal }) =>
+      canReplayCheckoutSparkOrderRecovery(
+        recoveryReplayRequest(
+          () =>
+            !signal.aborted &&
+            viewMountedRef.current &&
+            isRouterSavedStateCurrent()
+        )
+      ),
+    refetchOnWindowFocus: false,
+  })
+  const settledControlRefreshAt =
+    settledRouterControl?.status === "pay_funding"
+      ? settledRouterControl.fundingExpiresAt
+      : settledRouterControl?.status === "route_payout"
+        ? settledRouterControl.sendWindowEndsAt
+        : null
+  const refetchSettledRouterControl = settledRouterQuery.refetch
+  useEffect(() => {
+    if (settledControlRefreshAt === null) return
+    let timer = 0
+    const refreshAtCutoff = () => {
+      const remaining = settledControlRefreshAt - Date.now()
+      if (remaining <= 0) {
+        void refetchSettledRouterControl()
+        return
+      }
+      timer = window.setTimeout(
+        refreshAtCutoff,
+        Math.min(remaining, 2_147_483_647)
+      )
+    }
+    refreshAtCutoff()
+    return () => window.clearTimeout(timer)
+  }, [settledControlRefreshAt, refetchSettledRouterControl])
+  const fundingWalletId =
+    settledRouterControl?.status === "pay_funding"
+      ? settledRouterControl.walletId
+      : null
+  const routerPayerWallets = eligibleWallets.filter((candidate) => {
+    if (candidate.id === fundingWalletId) return false
+    if (candidate.providerId === "spark") {
+      return wallets.runtime[candidate.id]?.status === "ready"
+    }
+    if (candidate.providerId === "nwc") {
+      const snapshot = wallets.nwcSnapshots[candidate.id]
+      return (
+        !!snapshot &&
+        getNwcPaymentReadiness({
+          snapshot,
+          walletNetwork: candidate.network,
+          configuredNetwork: walletNetwork,
+        }).ready
+      )
+    }
+    return false
+  })
+  const routerPayerOptions = getCheckoutPaymentTargetOptions({
+    eligibleWallets: routerPayerWallets,
+    // A stale WebLN choice must not stay payable after the browser rail drops.
+    selectedTarget: { type: "manual" },
+    // Router funding is device-local, independent of a Nostr account signer.
+    weblnAvailable: hasWebLN(),
+  })
+  const routerFundingSelection = resolveCheckoutSparkFundingSelection({
+    selection: routerTarget,
+    defaultTarget: resolveCheckoutPaymentTarget({
+      selection: null,
+      eligibleWallets: routerPayerWallets,
+      weblnAvailable: hasWebLN(),
+    }),
+    options: routerPayerOptions,
+    guestSession: !!guestIdentity,
+  })
+  const routerTargetValue =
+    routerFundingSelection.selectedOption?.value ??
+    (routerTarget ? getCheckoutPaymentTargetValue(routerTarget) : "")
+  const routerSelectedOption = routerFundingSelection.selectedOption
+  const routerSelectedTarget = routerSelectedOption?.target
+  const routerPayerWallet =
+    routerSelectedTarget?.type === "wallet"
+      ? routerPayerWallets.find(
+          (wallet) => wallet.id === routerSelectedTarget.walletId
+        )
+      : null
+
+  async function readSettledRouterControl(signal?: AbortSignal) {
+    return readCurrentCheckoutSparkSettledOrderControl({
+      signal,
+      isCurrent: isRouterSavedStateCurrent,
+      async read(assertCurrent) {
+        const lifecycle = await getOrderLifecycle(vm.orderId)
+        assertCurrent()
+        const binding = lifecycle?.checkoutSparkRouterBinding
+        const preparation = binding
+          ? getCheckoutSparkSettledPreparation(binding.checkoutId)
+          : null
+        const snapshot = binding
+          ? await new DexieCheckoutSparkSettledRepository().load(
+              binding.checkoutId,
+              binding.planDigest
+            )
+          : ({ status: "absent" } as const)
+        assertCurrent()
+        const initialRecovery = preparation?.recoveryHandoffId
+          ? await getCheckoutSparkRecoveryDelivery(
+              preparation.recoveryHandoffId
+            )
+          : null
+        assertCurrent()
+        const manager = getSparkWalletManager()
+        const currentGuestIdentity = getCurrentRouterGuestIdentity()
+        return {
+          lifecycle,
+          preparation,
+          snapshot,
+          buyerPubkey:
+            currentGuestIdentity || authenticatedPubkey === buyerPubkey
+              ? buyerPubkey
+              : null,
+          guestIdentity: currentGuestIdentity,
+          initialRecoverySenderPubkey:
+            initialRecovery?.record.senderPubkey ?? null,
+          initialRecoveryAcked: Boolean(
+            initialRecovery?.deliveryProgress.acknowledgedRelayRefs.length
+          ),
+          now: Date.now(),
+          routerWalletOpen: Boolean(
+            binding && manager?.isOpen(binding.walletId)
+          ),
+        }
+      },
+    })
+  }
+
+  function canContinueRouterSession(): boolean {
+    return canContinueCheckoutSparkSettledRouteSession({
+      enabled: isQuantumRouterExecutionEnabled(),
+      mounted: viewMountedRef.current,
+      visible: document.visibilityState === "visible",
+      actionsReady,
+      identityCurrent: guestIdentity
+        ? getCurrentRouterGuestIdentity() !== null
+        : authenticatedPubkey === buyerPubkey &&
+          isAuthGenerationCurrent(authGeneration),
+      orderId: vm.orderId,
+      view: currentViewRef.current,
+    })
+  }
+
+  function canUseRouterExternalInvoice(
+    invoice: CheckoutSparkExternalFundingInvoice
+  ) {
+    if (
+      invoice.buyerPubkey !== buyerPubkey ||
+      invoice.orderId !== vm.orderId ||
+      invoice.checkoutId !== routerBinding?.checkoutId ||
+      invoice.planDigest !== routerBinding.planDigest ||
+      !canContinueRouterSession()
+    )
+      return false
+    try {
+      const now = Date.now()
+      const saved = getCheckoutSparkSettledPreparation(invoice.checkoutId)
+      return (
+        saved?.planDigest === invoice.planDigest &&
+        saved.fundingSubmissionState === "provisional" &&
+        saved.externalFundingExposedAt === invoice.exposedAt &&
+        Number.isSafeInteger(invoice.exposedAt) &&
+        Number.isSafeInteger(invoice.expiresAt) &&
+        Number.isSafeInteger(invoice.takeoverAt) &&
+        invoice.takeoverAt > 0 &&
+        invoice.exposedAt > 0 &&
+        invoice.exposedAt <= now &&
+        now < invoice.expiresAt
+      )
+    } catch {
+      return false
+    }
+  }
+
+  async function continueSettledRouterCheckout(
+    confirmation: RouterConfirmation
+  ): Promise<void> {
+    if (routerActionInFlightRef.current) return
+    routerActionInFlightRef.current = true
+    setSettledRouterOutcome(null)
+    setExternalFundingInvoice(null)
+    setRouterPausing(false)
+    const exposeExternalInvoice = confirmation.external
+    const approvalGeneration = routerApprovalGenerationRef.current
+    const approvedSessionIsCurrent = () =>
+      approvalGeneration === routerApprovalGenerationRef.current &&
+      canContinueRouterSession()
+    try {
+      if (!approvedSessionIsCurrent()) {
+        throw new Error(
+          "Keep this order open in the original buyer session to continue payment."
+        )
+      }
+      const current = await readSettledRouterControl()
+      if (
+        !approvedSessionIsCurrent() ||
+        current.status === "blocked" ||
+        current.status === "complete" ||
+        current.status === "retired" ||
+        !matchesCheckoutSparkSettledOrderControl({
+          displayed: confirmation.control,
+          current,
+          bindingPlanDigest: routerBinding?.planDigest,
+        })
+      ) {
+        throw new Error(
+          "Settled router state changed. Refresh this order before continuing."
+        )
+      }
+      const paying = current.status === "pay_funding"
+      if (exposeExternalInvoice && !current.externalFundingAvailable) {
+        throw new Error(
+          "This invoice cannot be opened for external payment. Check its saved funding status."
+        )
+      }
+      const namedExternalChoice =
+        confirmation.externalAction !== undefined &&
+        exposeExternalInvoice &&
+        confirmation.payerValue === "manual" &&
+        routerPayerOptions.some((option) => option.target.type === "manual")
+      const selectedChoice =
+        routerSelectedOption &&
+        routerTargetValue === confirmation.payerValue &&
+        exposeExternalInvoice ===
+          (routerSelectedOption.target.type === "manual")
+      if (paying && !namedExternalChoice && !selectedChoice) {
+        throw new Error("Choose how to pay before funding this order.")
+      }
+      const preparation = getCheckoutSparkSettledPreparation(current.checkoutId)
+      const currentGuestIdentity = getCurrentRouterGuestIdentity()
+      const signer = currentGuestIdentity?.signer ?? getAccountSigner()
+      if (
+        !preparation?.recoveryHandoffId ||
+        !signer ||
+        (guestIdentity && !currentGuestIdentity)
+      ) {
+        throw new Error("The signed recovery handoff is unavailable.")
+      }
+      const initialHandoffId = preparation.recoveryHandoffId
+      const paymentTarget =
+        paying && !exposeExternalInvoice
+          ? routerSelectedOption!.target
+          : ({ type: "manual" } as const)
+      let externalActionHandled = false
+      const result = await routerRunner.run({
+        checkoutId: current.checkoutId,
+        planDigest: current.planDigest,
+        orderId: vm.orderId,
+        merchantPubkey: row.merchantPubkey,
+        network: current.network,
+        buyerPubkey,
+        guestIdentity: currentGuestIdentity,
+        currentGuestIdentity: getCurrentRouterGuestIdentity,
+        currentBuyerPubkey: () =>
+          !guestIdentity && approvedSessionIsCurrent() ? buyerPubkey : null,
+        shouldContinue: approvedSessionIsCurrent,
+        shouldRetainSubmittedReference: shouldContinueBuyerSession,
+        authorization: {
+          planDigest: confirmation.control.planDigest,
+          walletId: confirmation.control.walletId,
+          grossFundingSats: confirmation.control.grossFundingSats,
+        },
+        fundingMode: paying || exposeExternalInvoice ? "pay_once" : "inspect",
+        onProgress: (progress) => {
+          if (!approvedSessionIsCurrent()) return
+          setRouterProgress(progress)
+          void settledRouterQuery.refetch()
+          void queryClient.invalidateQueries({
+            queryKey: [BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY, buyerPubkey],
+          })
+        },
+        onExternalInvoice: (invoice) => {
+          if (
+            !approvedSessionIsCurrent() ||
+            !canUseRouterExternalInvoice(invoice)
+          )
+            return
+          if (!confirmation.externalAction) {
+            setExternalFundingInvoice({ ...invoice, authGeneration })
+            return
+          }
+          // Observation polls may return the same reservation again. A named
+          // preparation belongs to this explicit approval exactly once.
+          if (externalActionHandled) return
+          externalActionHandled = true
+          // Expose the reserved links first. Wallet launch happens on a fresh
+          // link click; async preparation must not consume the old gesture.
+          // Copy/QR requests retain their existing preparation behavior.
+          setExternalFundingInvoice({ ...invoice, authGeneration })
+          void performExternalInvoicePaymentAction({
+            action: confirmation.externalAction,
+            invoice: invoice.invoice,
+            expectedAmountSats: invoice.amountSats,
+            onBeforeInvoiceUse: () =>
+              approvedSessionIsCurrent() &&
+              canUseRouterExternalInvoice(invoice),
+          }).then((actionResult) => {
+            if (
+              approvedSessionIsCurrent() &&
+              canUseRouterExternalInvoice(invoice)
+            ) {
+              setExternalFundingInvoice({
+                ...invoice,
+                authGeneration,
+                actionResult,
+              })
+            }
+          })
+        },
+        fundingPayment: {
+          buyerPubkey,
+          shouldContinue: approvedSessionIsCurrent,
+          inspectionOnly:
+            current.status === "check_funding" && !exposeExternalInvoice,
+          exposeExternalInvoice,
+          paymentTarget,
+          ...(paymentTarget.type === "wallet"
+            ? { walletPaymentAttemptId: crypto.randomUUID() }
+            : {}),
+          ...(paymentTarget.type === "wallet" &&
+          paymentTarget.providerId === "spark"
+            ? { approveFee: sparkFeeApproval.requestApproval }
+            : {}),
+          beforeSend: async () => {
+            if (!approvedSessionIsCurrent()) {
+              throw new Error("Buyer session changed before funding was sent.")
+            }
+          },
+          timeoutMs: 60_000,
+          appId: "market",
+        },
+        acknowledgeRecoverySnapshot: async (state) => {
+          if (!approvedSessionIsCurrent()) {
+            throw new Error("Buyer session changed before recovery handoff.")
+          }
+          await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+            initialHandoffId,
+            state,
+            identity: currentGuestIdentity ?? {
+              kind: "signed_in",
+              pubkey: buyerPubkey,
+              signer,
+            },
+            transport: { shouldContinue: approvedSessionIsCurrent },
+          })
+          if (!approvedSessionIsCurrent()) {
+            throw new Error("Buyer session changed during recovery handoff.")
+          }
+        },
+      })
+      if (
+        viewMountedRef.current &&
+        currentViewRef.current.orderId === vm.orderId &&
+        authGenerationRef.current === authGeneration
+      ) {
+        setSettledRouterOutcome(getCheckoutSparkSettledOutcomeMessage(result))
+      }
+    } finally {
+      routerActionInFlightRef.current = false
+      setRouterProgress(null)
+      setRouterPausing(false)
+      await Promise.all([
+        settledRouterQuery.refetch(),
+        queryClient.invalidateQueries({
+          queryKey: [BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY, buyerPubkey],
+        }),
+      ])
+    }
+  }
 
   function buildServiceCtx(): OrderPaymentContext | null {
     if (!actionsReady) return null
@@ -1004,6 +1618,34 @@ function OrderDetail({
     [actionsReady]
   )
 
+  async function resendSelectedOrderRecovery(): Promise<void> {
+    if (routerActionInFlightRef.current || !recoveryReplayEligible) return
+    routerActionInFlightRef.current = true
+    setRecoveryReplayNotice(null)
+    const shouldContinue = () =>
+      viewMountedRef.current && isRouterSavedStateCurrent() && !routerProgress
+    try {
+      await withBusy(async () => {
+        const result = await replayCheckoutSparkOrderRecovery(
+          recoveryReplayRequest(shouldContinue)
+        )
+        if (!shouldContinue()) return
+        setRecoveryReplayNotice({
+          orderId: vm.orderId,
+          buyerPubkey,
+          authGeneration,
+          deliveries: result.deliveries,
+          text:
+            result.status === "relay_accepted"
+              ? "Saved recovery copies were resent to the seller and organizer inbox relays. This does not confirm they were read. No payment was sent."
+              : "Both inbox relay acknowledgements could not be confirmed. No payment was sent; retry this same action.",
+        })
+      })
+    } finally {
+      routerActionInFlightRef.current = false
+    }
+  }
+
   async function verifyRetryFreshness(): Promise<void> {
     await assertCreatedEventMarketPickupTerms({
       id: row.orderId,
@@ -1030,11 +1672,20 @@ function OrderDetail({
       shippingCostSats: row.lifecycle?.shippingCostSats ?? 0,
       createdAt: row.lifecycle?.createdAt ?? vm.createdAt,
     })
-    await assertCartPickupHandlerReady(row.lifecycle?.items ?? [], undefined, {
-      requestingAccountPubkey: authenticatedPubkey,
-      authenticatedPubkey,
-      shouldContinue: shouldContinueBuyerSession,
-    })
+    await assertCartPickupHandlerReady(
+      (row.lifecycle?.items ?? []).map((item) => ({
+        fulfillment:
+          item.fulfillment?.type === "event_market_pickup"
+            ? item.fulfillment
+            : undefined,
+      })),
+      undefined,
+      {
+        requestingAccountPubkey: authenticatedPubkey,
+        authenticatedPubkey,
+        shouldContinue: shouldContinueBuyerSession,
+      }
+    )
   }
 
   async function retryPayment(): Promise<void> {
@@ -1079,6 +1730,7 @@ function OrderDetail({
   }
 
   async function renewExpiredInvoice(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     assertGeneralPaymentRetryEligible()
     await verifyRetryFreshness()
     if (!vm.invoice) {
@@ -1094,6 +1746,7 @@ function OrderDetail({
       throw new Error("Choose manual payment to renew this invoice.")
     }
     const lifecycle = await getOrderLifecycle(vm.orderId)
+    assertLegacyOrderPaymentAllowed(lifecycle)
     if (
       !lifecycle ||
       lifecycle.invoice?.toLowerCase() !== expectedInvoice.toLowerCase() ||
@@ -1392,6 +2045,12 @@ function OrderDetail({
       : undefined
 
   function beginMerchantInvoicePayment(): boolean {
+    if (routerBinding) {
+      setRecoveryError(
+        "This order uses Spark routing. Resume its exact saved checkout instead of paying the merchant directly."
+      )
+      return false
+    }
     if (
       manualInvoiceAccess === "report_only" ||
       manualInvoiceAccess === "receipt_only" ||
@@ -1417,6 +2076,7 @@ function OrderDetail({
   }
 
   async function prepareCurrentMerchantInvoice(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     if (!shouldContinueAccountRead()) {
       throw new Error("Your account changed. Reopen the order to continue.")
     }
@@ -1431,6 +2091,7 @@ function OrderDetail({
   }
 
   async function reportExternalPayment(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     if (manualInvoiceAccess === "closed") {
       throw new Error("The merchant already confirmed this payment.")
     }
@@ -1446,6 +2107,7 @@ function OrderDetail({
       authenticatedPubkey ?? null,
       shouldContinueBuyerSession,
       (lifecycle) =>
+        lifecycle.checkoutSparkRouterBinding === undefined &&
         shouldContinueAccountRead() &&
         canClaimManualInvoiceReport(
           vm,
@@ -1457,6 +2119,7 @@ function OrderDetail({
   }
 
   async function reportPriorExpiredInvoice(): Promise<void> {
+    assertLegacyOrderPaymentAllowed(row.lifecycle)
     const prior =
       priorInvoiceChoices.find(
         ({ index }) => index === Number(priorInvoiceIndex)
@@ -1526,6 +2189,7 @@ function OrderDetail({
   }
 
   const merchantInvoicePrepared =
+    !routerBinding &&
     !!vm.merchantInvoiceAction &&
     vm.merchantInvoiceAction.status === "payable" &&
     isMerchantInvoicePaymentActionBound(
@@ -1541,6 +2205,7 @@ function OrderDetail({
       : null
 
   const generalPaymentRetryEligible =
+    !routerBinding &&
     vm.phase !== "cancelled" &&
     vm.phase !== "completed" &&
     vm.merchantStatus !== "cancelled" &&
@@ -1564,6 +2229,7 @@ function OrderDetail({
   const showAmbiguousPayment =
     !zeroCostPickupOrder && vm.paymentStatus === "ambiguous"
   const showExternalWallet =
+    !routerBinding &&
     !zeroCostPickupOrder &&
     manualInvoiceAccess !== "closed" &&
     manualInvoiceAccess !== "report_only" &&
@@ -1576,6 +2242,7 @@ function OrderDetail({
         !vm.invoice || entry.invoice.toLowerCase() !== vm.invoice.toLowerCase()
     )
   const showPriorExpiredInvoiceReport =
+    !routerBinding &&
     priorInvoiceChoices.length > 0 &&
     !vm.publicZapSigner &&
     (row.lifecycle?.checkoutMode === "private_checkout" ||
@@ -1600,6 +2267,7 @@ function OrderDetail({
     !!vm.publicZapSigner &&
     vm.zapReceiptStatus === "receipt_not_observed"
   const showResendProof =
+    !vm.checkoutSparkRouted &&
     !zeroCostPickupOrder &&
     vm.paymentStatus === "paid" &&
     (vm.proofDeliveryStatus === "retry_needed" ||
@@ -1609,6 +2277,7 @@ function OrderDetail({
     !!row.lifecycle.orderRelayDelivery
   const showContinueAcceptedCheckout =
     !zeroCostPickupOrder &&
+    !routerBinding &&
     !!row.lifecycle &&
     requiresAcceptedOrderPaymentContinuation(row.lifecycle)
   const showFinishAcceptedOrderRecovery =
@@ -1710,7 +2379,7 @@ function OrderDetail({
       {/* Hero */}
       {!paymentFocused && (
         <>
-          <section className="hidden rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
+          <section className="hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 xl:block">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="flex min-w-0 items-center gap-3">
                 <MerchantAvatar
@@ -1768,11 +2437,11 @@ function OrderDetail({
       )}
 
       {!zeroCostPickupOrder && isBuyerOrderPaid(vm) && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
           <p className="text-sm text-[var(--text-secondary)]">
             Had a good experience?
           </p>
-          <MarketProjectTip className="min-h-11 text-primary-500" />
+          <MarketProjectTip className="min-h-11 text-[var(--link-text)]" />
         </div>
       )}
 
@@ -1798,7 +2467,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+              className="mt-3 text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1824,7 +2493,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="mt-3 text-pretty text-sm text-[var(--destructive)]"
+              className="mt-3 text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1832,35 +2501,387 @@ function OrderDetail({
         </StatusNotice>
       )}
 
-      {(manualInvoiceAccess === "report_only" ||
-        manualInvoiceAccess === "receipt_only") && (
+      {routerBinding && !isQuantumRouterExecutionEnabled() && (
+        <StatusNotice variant="warning" title="Payment processing paused">
+          <p className="text-sm text-[var(--text-secondary)]">
+            Saved payment status remains available. Processing is paused in this
+            build; do not pay again or try a different rail.
+          </p>
+        </StatusNotice>
+      )}
+
+      {routerBinding && (
         <StatusNotice
-          variant="warning"
-          title="Order no longer accepts payment"
+          variant={
+            settledRouterControl?.status === "complete" &&
+            vm.checkoutSparkCommerceVerified === true
+              ? "success"
+              : settledRouterControl?.status === "blocked" ||
+                  settledRouterQuery.isError
+                ? "warning"
+                : "info"
+          }
+          title={
+            settledRouterControl?.status === "retired"
+              ? "Payment complete"
+              : "Order payment"
+          }
           detail={
-            vm.merchantStatus === "refund_requested"
-              ? "Refund requested"
-              : "Order cancelled"
+            settledRouterControl &&
+            settledRouterControl.status !== "blocked" &&
+            settledRouterControl.status !== "retired"
+              ? settledRouterControl.status === "complete"
+                ? "Payment recorded"
+                : settledRouterControl.status === "pay_funding"
+                  ? "Awaiting payment"
+                  : "Completing payment"
+              : undefined
           }
         >
-          <p className="text-pretty text-sm text-[var(--text-secondary)]">
-            {manualInvoiceAccess === "receipt_only"
-              ? "Do not pay this invoice. If your wallet already confirms payment, report it for merchant verification while Conduit continues checking for a public receipt."
-              : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
-          </p>
-          {(manualInvoiceAccess === "report_only" ||
-            manualInvoiceAccess === "receipt_only") && (
+          {settledRouterControl && "priceSummary" in settledRouterControl && (
+            <div className="mb-4 max-w-lg">
+              <CheckoutCoordinationSummary
+                price={settledRouterControl.priceSummary}
+                formatSats={formatSats}
+              />
+            </div>
+          )}
+          {settledRouterQuery.isPending ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              Checking this order&apos;s saved payment state…
+            </p>
+          ) : settledRouterQuery.isError ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              Saved payment status could not be read. Do not pay again until it
+              is checked.
+            </p>
+          ) : settledRouterControl?.status === "blocked" ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              {settledRouterControl.reason}
+            </p>
+          ) : settledRouterControl?.status === "complete" ? (
+            <div className="space-y-3">
+              <p className="text-sm text-[var(--text-secondary)]">
+                Your payment is recorded. Delivery confirmation is separate;
+                check the order status for the latest confirmation.
+              </p>
+              <p className="text-xs text-[var(--text-secondary)]">
+                The checkout wallet and saved recovery stay attached to this
+                order.
+              </p>
+            </div>
+          ) : settledRouterControl?.status === "retired" ? (
+            <p className="text-sm text-[var(--text-secondary)]">
+              Payment processing is complete. Delivery confirmation is separate.
+            </p>
+          ) : settledRouterControl ? (
+            <div className="space-y-3">
+              <p className="text-sm text-[var(--text-secondary)]">
+                {settledRouterControl.status === "pay_funding"
+                  ? "Pay once for this order. After your payment is verified, we'll finish automatically."
+                  : "Continue this order from its saved payment status. An uncertain payment is never sent again."}
+              </p>
+              <p className="text-xs leading-5 text-[var(--text-secondary)]">
+                Keep this order visible while your payment finishes. You can
+                pause processing; a submitted payment cannot be cancelled. Your
+                wallet may charge a separate fee.
+              </p>
+              {(settledRouterControl.status === "pay_funding" ||
+                settledRouterControl.status === "check_funding") && (
+                <CheckoutSparkFundingExpiry
+                  expiresAt={settledRouterControl.fundingExpiresAt}
+                />
+              )}
+              {!row.receipt && (
+                <details className="text-xs leading-5 text-[var(--text-secondary)]">
+                  <summary className="cursor-pointer">Payment details</summary>
+                  <p className="mt-2">
+                    Gross funding:{" "}
+                    {settledRouterControl.grossFundingSats.toLocaleString()}{" "}
+                    sats
+                    {settledRouterControl.creditedSats !== null
+                      ? ` · exact credit: ${settledRouterControl.creditedSats.toLocaleString()} sats`
+                      : " · exact credit pending"}
+                    . Each recipient payment is verified before the next starts.
+                  </p>
+                </details>
+              )}
+              {routerProgress && routerProgress.phase !== "funding" && (
+                <CheckoutPaymentProgress pausing={routerPausing} />
+              )}
+              {settledRouterControl.status === "pay_funding" &&
+                routerFundingSelection.showSelector && (
+                  <div className="grid max-w-sm gap-1.5">
+                    <label
+                      htmlFor={`settled-router-payer-${vm.orderId}`}
+                      className="text-xs font-medium text-[var(--text-secondary)]"
+                    >
+                      Pay with
+                    </label>
+                    <Select
+                      value={routerTargetValue}
+                      onValueChange={(value) =>
+                        setRouterTarget((selection) =>
+                          applyCheckoutSparkFundingChoice({
+                            selection,
+                            value,
+                            options: routerPayerOptions,
+                          })
+                        )
+                      }
+                      disabled={busy || wallets.loading}
+                    >
+                      <SelectTrigger
+                        id={`settled-router-payer-${vm.orderId}`}
+                        className={PAYMENT_TARGET_SELECT_TRIGGER_CLASS_NAME}
+                      >
+                        <PaymentTargetSelectValue
+                          target={routerSelectedOption?.target ?? null}
+                          eligibleWallets={routerPayerWallets}
+                          walletDisplayLabels={getWalletDisplayLabels(
+                            routerPayerWallets
+                          )}
+                          weblnAvailable={weblnAvailable}
+                          placeholder="Choose a ready wallet"
+                        />
+                      </SelectTrigger>
+                      <PaymentTargetSelectContent
+                        options={routerPayerOptions}
+                        eligibleWallets={routerPayerWallets}
+                        walletDisplayLabels={getWalletDisplayLabels(
+                          routerPayerWallets
+                        )}
+                        staleWalletValue={null}
+                        weblnAvailable={weblnAvailable}
+                      />
+                    </Select>
+                  </div>
+                )}
+              <Button
+                type="button"
+                className="h-11 px-4 text-sm"
+                disabled={
+                  busy ||
+                  !actionsReady ||
+                  !canContinueRouterSession() ||
+                  settledRouterQuery.isFetching ||
+                  (settledRouterControl.status === "route_payout" &&
+                    !settledRouterControl.payoutReview &&
+                    !settledRouterControl.nativeTreasury?.prepared) ||
+                  (settledRouterControl.status === "pay_funding" &&
+                    !routerSelectedOption)
+                }
+                onClick={() =>
+                  void withBusy(() =>
+                    continueSettledRouterCheckout({
+                      control: settledRouterControl,
+                      external:
+                        settledRouterControl.status === "pay_funding" &&
+                        routerSelectedOption?.target.type === "manual",
+                      payerValue: routerTargetValue,
+                    })
+                  )
+                }
+              >
+                {settledRouterControl.status === "pay_funding"
+                  ? "Pay for order"
+                  : "Resume payment"}
+              </Button>
+              {routerProgress && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={routerPausing}
+                  onClick={() => {
+                    setRouterPausing(true)
+                    routerApprovalGenerationRef.current += 1
+                    void routerRunner.pause()
+                    sparkFeeApproval.decline()
+                  }}
+                >
+                  Pause payment
+                </Button>
+              )}
+              {settledRouterControl.status === "check_funding" &&
+                !externalFundingInvoice &&
+                settledRouterControl.externalFundingAvailable && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 px-4 text-sm"
+                    disabled={
+                      busy ||
+                      !canContinueRouterSession() ||
+                      settledRouterQuery.isFetching
+                    }
+                    onClick={() =>
+                      void withBusy(() =>
+                        continueSettledRouterCheckout({
+                          control: settledRouterControl,
+                          external: true,
+                          payerValue: routerTargetValue,
+                        })
+                      )
+                    }
+                  >
+                    Reopen external invoice
+                  </Button>
+                )}
+              <CheckoutSparkExternalFunding
+                externalInvoice={externalFundingInvoice}
+                enabled={
+                  settledRouterControl.externalFundingAvailable === true &&
+                  canContinueRouterSession() &&
+                  ((settledRouterControl.status === "pay_funding" &&
+                    !externalFundingInvoice) ||
+                    (settledRouterControl.status === "check_funding" &&
+                      externalFundingInvoice?.authGeneration ===
+                        authGeneration &&
+                      canUseRouterExternalInvoice(externalFundingInvoice)))
+                }
+                preparation={
+                  settledRouterControl.status === "pay_funding"
+                    ? {
+                        amountSats: settledRouterControl.grossFundingSats,
+                        cashAppAvailable:
+                          settledRouterControl.network === "mainnet",
+                        disabled:
+                          busy ||
+                          !actionsReady ||
+                          settledRouterQuery.isFetching,
+                        onApprove: (externalAction) => {
+                          void withBusy(() =>
+                            continueSettledRouterCheckout({
+                              control: settledRouterControl,
+                              external: true,
+                              payerValue: "manual",
+                              externalAction,
+                            })
+                          )
+                        },
+                      }
+                    : undefined
+                }
+                actionResult={externalFundingInvoice?.actionResult}
+                onBeforeInvoiceUse={() =>
+                  !!externalFundingInvoice &&
+                  externalFundingInvoice.authGeneration === authGeneration &&
+                  canUseRouterExternalInvoice(externalFundingInvoice)
+                }
+                preference={shopperPricing.preference}
+                quote={shopperPricing.quote}
+              />
+            </div>
+          ) : null}
+          <div className="mt-3 flex flex-wrap items-center gap-3">
             <Button
+              type="button"
               variant="outline"
-              className="mt-4 h-10 px-4 text-sm"
-              disabled={busy}
-              onClick={() => void withBusy(reportExternalPayment)}
+              className="h-9 px-3 text-xs"
+              disabled={busy || settledRouterQuery.isFetching}
+              onClick={() => void settledRouterQuery.refetch()}
             >
-              Report a payment already made
+              Refresh saved status
             </Button>
+            {settledRouterOutcome && (
+              <span className="text-xs text-[var(--text-secondary)]">
+                {settledRouterOutcome}
+              </span>
+            )}
+          </div>
+          {recoveryReplayEligible && recoveryReplayQuery.data === true && (
+            <details className="mt-3 text-xs text-[var(--text-secondary)]">
+              <summary className="cursor-pointer">Recovery delivery</summary>
+              <p className="mt-2">
+                Resend this order's saved recovery copies if the seller or
+                organizer cannot find them. This does not send another payment
+                or extend buyer routing.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="mt-2 h-9 px-3 text-xs"
+                disabled={busy || recoveryReplayQuery.isFetching}
+                onClick={() => void resendSelectedOrderRecovery()}
+              >
+                Resend saved recovery copies
+              </Button>
+              {recoveryReplayNotice?.orderId === vm.orderId &&
+                recoveryReplayNotice.buyerPubkey === buyerPubkey &&
+                recoveryReplayNotice.authGeneration === authGeneration && (
+                  <div className="mt-2" role="status">
+                    <p>{recoveryReplayNotice.text}</p>
+                    <ul className="mt-2 space-y-1">
+                      {recoveryReplayNotice.deliveries.map((delivery) => (
+                        <li key={delivery.recipient}>
+                          {delivery.recipient === "seller"
+                            ? "Seller"
+                            : "Organizer"}{" "}
+                          copy
+                          {" · "}encrypted envelope {delivery.outerEnvelopeSize}
+                          {" · "}attempted:{" "}
+                          {delivery.attemptedSources.join(", ") ||
+                            "none confirmed"}
+                          {" · "}accepted:{" "}
+                          {delivery.acceptedSources.join(", ") ||
+                            "none confirmed"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+            </details>
           )}
         </StatusNotice>
       )}
+
+      {routerBinding && row.receipt && (
+        <CheckoutSparkPaymentReceipt receipt={row.receipt} />
+      )}
+
+      {routerBinding &&
+        settledRouterControl?.status !== "retired" &&
+        settledRouterControl?.status !== "complete" && (
+          <p
+            role="note"
+            className="text-xs leading-5 text-[var(--text-secondary)]"
+          >
+            Keep this page open until payment processing finishes. If you leave,
+            return to this order to check its saved status—do not pay again. If
+            you cannot return, the merchant can help recover your checkout.
+          </p>
+        )}
+
+      {!routerBinding &&
+        (manualInvoiceAccess === "report_only" ||
+          manualInvoiceAccess === "receipt_only") && (
+          <StatusNotice
+            variant="warning"
+            title="Order no longer accepts payment"
+            detail={
+              vm.merchantStatus === "refund_requested"
+                ? "Refund requested"
+                : "Order cancelled"
+            }
+          >
+            <p className="text-pretty text-sm text-[var(--text-secondary)]">
+              {manualInvoiceAccess === "receipt_only"
+                ? "Do not pay this invoice. If your wallet already confirms payment, report it for merchant verification while Conduit continues checking for a public receipt."
+                : "Do not pay this invoice. If your wallet already confirms a payment, report it so the merchant can verify what happened."}
+            </p>
+            {(manualInvoiceAccess === "report_only" ||
+              manualInvoiceAccess === "receipt_only") && (
+              <Button
+                variant="outline"
+                className="mt-4 h-10 px-4 text-sm"
+                disabled={busy}
+                onClick={() => void withBusy(reportExternalPayment)}
+              >
+                Report a payment already made
+              </Button>
+            )}
+          </StatusNotice>
+        )}
 
       {showPriorExpiredInvoiceReport && (
         <StatusNotice
@@ -1873,7 +2894,7 @@ function OrderDetail({
             merchant verification.
           </p>
           <div className="mt-4 flex flex-wrap items-end gap-3">
-            <div className="grid min-w-[15rem] gap-1.5">
+            <div className="grid min-w-[15rem] gap-1">
               <label
                 htmlFor={`prior-invoice-${vm.orderId}`}
                 className="text-xs font-medium text-[var(--text-secondary)]"
@@ -1958,7 +2979,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="text-pretty text-sm text-[var(--destructive)]"
+              className="text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1967,7 +2988,7 @@ function OrderDetail({
       )}
 
       {showFinishAcceptedOrderRecovery && showExternalWallet && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
           <Button
             variant="outline"
             className="h-10 w-full px-4 text-sm"
@@ -1980,7 +3001,7 @@ function OrderDetail({
           {recoveryError && (
             <p
               role="alert"
-              className="mt-2 text-pretty text-sm text-[var(--destructive)]"
+              className="mt-2 text-pretty text-sm text-[var(--error-text)]"
             >
               {recoveryError}
             </p>
@@ -1998,7 +3019,7 @@ function OrderDetail({
         >
           <div className="flex flex-wrap items-end gap-3">
             {showPaymentRecoveryAction && (
-              <div className="grid min-w-[15rem] gap-1.5">
+              <div className="grid min-w-[15rem] gap-1">
                 <label
                   htmlFor={`retry-wallet-${vm.orderId}`}
                   className="text-xs font-medium text-[var(--text-secondary)]"
@@ -2134,7 +3155,7 @@ function OrderDetail({
             {paymentRecoveryError && (
               <p
                 role="alert"
-                className="w-full text-sm text-[var(--destructive)]"
+                className="w-full text-sm text-[var(--error-text)]"
               >
                 {paymentRecoveryError}
               </p>
@@ -2142,7 +3163,7 @@ function OrderDetail({
             {showPaymentRecoveryAction && wallets.initializationError && (
               <div
                 role="alert"
-                className="w-full rounded-xl border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
+                className="w-full rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--error)_40%,transparent)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-3 text-sm leading-6 text-[var(--text-secondary)]"
               >
                 <p className="font-medium text-[var(--text-primary)]">
                   Saved wallets could not be loaded
@@ -2262,17 +3283,23 @@ function OrderDetail({
       <SparkFeeApprovalDialog
         controller={sparkFeeApproval}
         walletLabel={
-          paymentWallet?.providerId === "spark"
-            ? (eligibleWalletDisplayLabels.get(paymentWallet.id) ??
-              paymentWallet.label)
-            : undefined
+          routerBinding && routerPayerWallet?.providerId === "spark"
+            ? routerPayerWallet.label
+            : paymentWallet?.providerId === "spark"
+              ? (eligibleWalletDisplayLabels.get(paymentWallet.id) ??
+                paymentWallet.label)
+              : undefined
         }
       />
 
       {paymentFocused ? (
         <div className="space-y-4">
           {!showExternalWallet && (
-            <OrderTimeline vm={vm} formatSats={formatSats} />
+            <OrderTimeline
+              vm={vm}
+              formatSats={formatSats}
+              isRouterOrder={vm.checkoutSparkRouted === true}
+            />
           )}
           <OrderItemsSection
             vm={vm}
@@ -2286,14 +3313,21 @@ function OrderDetail({
             formatSats={formatSats}
           />
           <Button asChild variant="outline" className="h-10 w-full text-sm">
-            <Link to="/orders" search={{ order: vm.orderId }}>
+            <Link
+              to="/orders"
+              search={{ order: vm.orderId, counterparty: row.merchantPubkey }}
+            >
               View full order details
             </Link>
           </Button>
         </div>
       ) : (
         <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-          <OrderTimeline vm={vm} formatSats={formatSats} />
+          <OrderTimeline
+            vm={vm}
+            formatSats={formatSats}
+            isRouterOrder={vm.checkoutSparkRouted === true}
+          />
 
           <div className="space-y-4">
             <div className="hidden xl:block">
@@ -2330,7 +3364,7 @@ function OrderDetail({
               return (
                 <section
                   key={pickup.market.coordinate}
-                  className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5"
+                  className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5"
                   data-testid="future-market-order-pickup"
                 >
                   <h3 className="text-sm font-semibold text-[var(--text-primary)]">
@@ -2349,7 +3383,7 @@ function OrderDetail({
                     />
                   </p>
                   {claimCode && (
-                    <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
+                    <div className="mt-4 flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2 text-sm">
                       <span className="text-[var(--text-secondary)]">
                         Pickup code
                       </span>
@@ -2378,7 +3412,7 @@ function OrderDetail({
             {/* Shipping address */}
             {/* Shipping address */}
             {vm.shippingAddress && (
-              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                     Shipping address
@@ -2411,7 +3445,8 @@ function OrderDetail({
             )}
 
             {/* Order details (technical, collapsed) */}
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)]">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)]">
+              {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
               <button
                 type="button"
                 onClick={() => setDetailsOpen((open) => !open)}
@@ -2483,7 +3518,7 @@ function OrderDetail({
             </section>
 
             {/* Need help */}
-            <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5">
               <h3 className="text-sm font-semibold text-[var(--text-primary)]">
                 Need help?
               </h3>
@@ -2517,7 +3552,7 @@ function OrderDetail({
             replyNotice.merchantPubkey === row.merchantPubkey &&
             replyNotice.orderId === vm.orderId &&
             replyNotice.text ? (
-              <p role="status" className="text-sm text-warning">
+              <p role="status" className="text-sm text-[var(--warning-text)]">
                 {replyNotice.text}
               </p>
             ) : null
@@ -2583,6 +3618,8 @@ function OrdersPage() {
   const {
     accountPubkey,
     authGeneration,
+    isAuthGenerationCurrent,
+    isGuestGenerationCurrent,
     connect,
     pubkey,
     remoteSignerRecovery,
@@ -2604,7 +3641,11 @@ function OrdersPage() {
   const shopperPricing = useShopperPricing()
   const formatSats = (sats: number) =>
     shopperPricing.formatSatsAmount(sats).primary
-  const { order: selectedFromUrl, focus } = Route.useSearch()
+  const {
+    order: selectedFromUrl,
+    counterparty: counterpartyFromUrl,
+    focus,
+  } = Route.useSearch()
   const paymentFocused = focus === "payment" && !!selectedFromUrl
   const [searchValue, setSearchValue] = useState("")
   const [tab, setTab] = useState<PhaseTab>("all")
@@ -2627,11 +3668,9 @@ function OrdersPage() {
     const delayMs = Math.max(0, guestIdentity.expiresAt - Date.now())
     const timer = window.setTimeout(() => {
       clearSessionGuestOrderSigningIdentity(guestIdentity.orderId)
-      void pruneExpiredGuestOrderData()
-        .catch(() => {})
-        .finally(() => {
-          setGuestSessionEpoch((epoch) => epoch + 1)
-        })
+      // Hide cached guest payment projections immediately, not after DB pruning.
+      setGuestSessionEpoch((epoch) => epoch + 1)
+      void pruneExpiredGuestOrderData().catch(() => {})
     }, delayMs)
     return () => window.clearTimeout(timer)
   }, [guestIdentity])
@@ -2659,15 +3698,34 @@ function OrdersPage() {
   })
   const inbox = useCommerceInbox(activeBuyerPubkey, signerConnected)
   const messagesQuery = inbox.buyer
+  const { syncRecent } = inbox
 
-  const refetchAll = useCallback(async () => {
-    const refreshes: Promise<unknown>[] = [lifecyclesQuery.refetch()]
-    if (signerConnected && activeBuyerPubkey) {
-      clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
-      refreshes.push(messagesQuery.refetch())
-    }
-    await Promise.all(refreshes)
-  }, [activeBuyerPubkey, lifecyclesQuery, messagesQuery, signerConnected])
+  const refetchAll = useCallback(
+    async (fresh = true) => {
+      const refreshes: Promise<unknown>[] = [
+        lifecyclesQuery.refetch(),
+        queryClient.invalidateQueries({
+          queryKey: [
+            BUYER_CHECKOUT_SPARK_SETTLEMENT_QUERY_KEY,
+            activeBuyerPubkey ?? "none",
+          ],
+        }),
+      ]
+      if (signerConnected && activeBuyerPubkey) {
+        clearProtectedReadAuthenticationSuppression(activeBuyerPubkey)
+        refreshes.push(fresh ? messagesQuery.refetch() : syncRecent())
+      }
+      await Promise.all(refreshes)
+    },
+    [
+      activeBuyerPubkey,
+      lifecyclesQuery,
+      messagesQuery,
+      queryClient,
+      syncRecent,
+      signerConnected,
+    ]
+  )
 
   const reconnectSigner = useCallback(async () => {
     setSignerReconnectPending(true)
@@ -2681,7 +3739,8 @@ function OrdersPage() {
   useEffect(() => {
     const refetchAfterResume = () => {
       if (document.visibilityState === "hidden") return
-      void refetchAll()
+      // Automatic resume joins an active read; only explicit Refresh queues one.
+      void refetchAll(false)
     }
 
     window.addEventListener("focus", refetchAfterResume)
@@ -2721,6 +3780,46 @@ function OrdersPage() {
     [lifecyclesQuery.data]
   )
   const refetchLifecycles = lifecyclesQuery.refetch
+  function getCurrentSettlementGuestIdentity(): GuestOrderSigningIdentity | null {
+    const currentIdentity = guestIdentity
+      ? getSessionGuestOrderSigningIdentity(guestIdentity.orderId)
+      : null
+    if (
+      !guestIdentity ||
+      !currentIdentity ||
+      !isGuestGenerationCurrent(authGeneration) ||
+      currentIdentity.pubkey !== guestIdentity.pubkey ||
+      currentIdentity.createdAt !== guestIdentity.createdAt ||
+      currentIdentity.expiresAt !== guestIdentity.expiresAt ||
+      !isCurrentGuestOrderSigningIdentity(currentIdentity, {
+        orderId: guestIdentity.orderId,
+        merchantPubkey: guestIdentity.merchantPubkey,
+        pubkey: guestIdentity.pubkey,
+      })
+    ) {
+      return null
+    }
+    return currentIdentity
+  }
+  const canReadRouterSettlement = guestIdentity
+    ? getCurrentSettlementGuestIdentity() !== null
+    : signerConnected && isAuthGenerationCurrent(authGeneration)
+  const buyerSettlementsQuery = useQuery(
+    getCheckoutSparkBuyerSettlementQueryOptions({
+      enabled: canReadRouterSettlement,
+      lifecycles,
+      buyerPubkey: activeBuyerPubkey,
+      guestIdentity,
+      currentGuestIdentity: getCurrentSettlementGuestIdentity,
+      authGeneration,
+      isAuthGenerationCurrent: guestIdentity
+        ? isGuestGenerationCurrent
+        : isAuthGenerationCurrent,
+    })
+  )
+  const buyerSettlements = canReadRouterSettlement
+    ? (buyerSettlementsQuery.data ?? NO_BUYER_CHECKOUT_SPARK_SETTLEMENTS)
+    : NO_BUYER_CHECKOUT_SPARK_SETTLEMENTS
 
   useEffect(() => {
     const nextLeaseExpiry = getNextOrderPaymentLeaseExpiry(lifecycles)
@@ -2781,57 +3880,68 @@ function OrdersPage() {
     signerConnected,
   ])
 
-  // Merge lifecycle records and relay conversations by orderId.
+  // Join local recovery and inbox evidence only for the same participants.
   const orders = useMemo<OrderRow[]>(() => {
-    const byId = new Map<
-      string,
-      { lifecycle?: OrderLifecycle; conversation?: BuyerConversation }
-    >()
-    for (const lc of lifecycles) {
-      byId.set(lc.orderId, { lifecycle: lc })
-    }
-    for (const conversation of conversations) {
-      const entry = byId.get(conversation.orderId) ?? {}
-      entry.conversation = conversation
-      byId.set(conversation.orderId, entry)
-    }
     const rows: OrderRow[] = []
-    for (const [orderId, entry] of byId) {
-      const merchantPubkey =
-        entry.lifecycle?.merchantPubkey ??
-        entry.conversation?.merchantPubkey ??
-        ""
+    const entries = mergeBuyerOrderConversations(
+      activeBuyerPubkey ?? "",
+      lifecycles,
+      conversations
+    )
+    for (const entry of entries) {
+      const { id, orderId, merchantPubkey } = entry
+      const settlement = entry.lifecycle
+        ? buyerSettlements.get(orderId)
+        : undefined
       const vm = buildOrderViewModel({
         orderId,
         merchantPubkey,
         lifecycle: entry.lifecycle,
         conversation: entry.conversation,
         messages: entry.conversation?.messages,
+        checkoutSparkSettlement: settlement,
       })
       rows.push({
+        id,
         orderId,
         merchantPubkey,
         lifecycle: entry.lifecycle,
         conversation: entry.conversation,
         vm,
-        headerStatus: deriveOrderHeaderStatus(vm),
+        receipt: settlement?.receipt,
+        headerStatus: presentSettledRouterHeaderStatus(
+          deriveOrderHeaderStatus(vm),
+          vm.checkoutSparkRouted === true
+        ),
         updatedAt: vm.updatedAt,
       })
     }
     return rows.sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [conversations, lifecycles])
+  }, [activeBuyerPubkey, buyerSettlements, conversations, lifecycles])
 
   useEffect(() => {
     for (const row of orders) {
       const lifecycle = row.lifecycle
       if (!lifecycle || !isBuyerOrderPaid(row.vm)) continue
+      if (
+        row.vm.checkoutSparkRouted &&
+        (!canReadRouterSettlement || !isAuthGenerationCurrent(authGeneration))
+      )
+        continue
       void reportCommerceGmvEstimate({
         orderId: lifecycle.orderId,
         orderCreatedAt: lifecycle.createdAt,
         invoicedAmountSats: lifecycle.totalSats,
       })
     }
-  }, [lifecyclesQuery.dataUpdatedAt, messagesQuery.dataUpdatedAt, orders])
+  }, [
+    authGeneration,
+    canReadRouterSettlement,
+    isAuthGenerationCurrent,
+    lifecyclesQuery.dataUpdatedAt,
+    messagesQuery.dataUpdatedAt,
+    orders,
+  ])
 
   const merchantPubkeys = useMemo(
     () =>
@@ -2871,45 +3981,75 @@ function OrdersPage() {
   }, [tab, merchantName, orders, searchValue])
 
   const selectedOrderId = useMemo(() => {
-    if (paymentFocused && selectedFromUrl) {
-      return orders.some((order) => order.orderId === selectedFromUrl)
-        ? selectedFromUrl
-        : null
+    if (selectedFromUrl) {
+      const requestedId =
+        counterpartyFromUrl && activeBuyerPubkey
+          ? getOrderConversationId({
+              orderId: selectedFromUrl,
+              buyerPubkey: activeBuyerPubkey,
+              merchantPubkey: counterpartyFromUrl,
+            })
+          : undefined
+      const requested = findOrderConversation(
+        orders,
+        selectedFromUrl,
+        requestedId
+      )
+      if (!requested) return null
+      if (
+        paymentFocused ||
+        filteredOrders.some((row) => row.id === requested.id)
+      )
+        return requested.id
+      return null
     }
-    if (
-      selectedFromUrl &&
-      filteredOrders.some((o) => o.orderId === selectedFromUrl)
-    ) {
-      return selectedFromUrl
-    }
-    return filteredOrders[0]?.orderId ?? null
-  }, [filteredOrders, orders, paymentFocused, selectedFromUrl])
+    return filteredOrders[0]?.id ?? null
+  }, [
+    activeBuyerPubkey,
+    counterpartyFromUrl,
+    filteredOrders,
+    orders,
+    paymentFocused,
+    selectedFromUrl,
+  ])
 
   const selected = useMemo(
-    () => orders.find((o) => o.orderId === selectedOrderId) ?? null,
+    () => orders.find((row) => row.id === selectedOrderId) ?? null,
     [orders, selectedOrderId]
   )
   const selectOrder = useCallback(
-    (orderId: string) => {
+    (id: string) => {
+      const row = orders.find((candidate) => candidate.id === id)
+      if (!row) return
       setChangeOrderOpen(false)
       void navigate({
         to: "/orders",
-        search: { order: orderId },
+        search: { order: row.orderId, counterparty: row.merchantPubkey },
         replace: true,
       })
     },
-    [navigate]
+    [navigate, orders]
   )
 
   // Attach the stored payment attempt to the selected order's view-model and
   // subscribe to the live payment service so progress refreshes without reload.
   const paymentAttemptQuery = useQuery({
-    queryKey: ["buyer-payment-attempt", selected?.orderId ?? "none"],
+    queryKey: [
+      "buyer-payment-attempt",
+      selected?.orderId ?? "none",
+      activeBuyerPubkey,
+      selected?.merchantPubkey,
+    ],
     enabled:
       !!selected?.orderId &&
       (!paymentFocused || selected.orderId === selectedFromUrl),
-    queryFn: async () =>
-      (await db.paymentAttempts.get(selected!.orderId)) ?? null,
+    queryFn: async () => {
+      const attempt = await db.paymentAttempts.get(selected!.orderId)
+      return attempt?.buyerPubkey === activeBuyerPubkey &&
+        attempt?.merchantPubkey === selected!.merchantPubkey
+        ? attempt
+        : null
+    },
   })
   useEffect(() => {
     if (!selected?.orderId) return
@@ -2934,13 +4074,19 @@ function OrdersPage() {
       conversation: selected.conversation,
       messages: selected.conversation?.messages,
       paymentAttempt: paymentAttemptQuery.data,
+      checkoutSparkSettlement: selected.lifecycle
+        ? buyerSettlements.get(selected.orderId)
+        : undefined,
     })
     return {
       ...selected,
       vm,
-      headerStatus: deriveOrderHeaderStatus(vm),
+      headerStatus: presentSettledRouterHeaderStatus(
+        deriveOrderHeaderStatus(vm),
+        vm.checkoutSparkRouted === true
+      ),
     }
-  }, [paymentAttemptQuery.data, selected])
+  }, [buyerSettlements, paymentAttemptQuery.data, selected])
 
   useEffect(() => {
     const current = selectedRow?.lifecycle
@@ -2977,7 +4123,10 @@ function OrdersPage() {
     }
     void navigate({
       to: "/orders",
-      search: { order: selectedRow.orderId },
+      search: {
+        order: selectedRow.orderId,
+        counterparty: selectedRow.merchantPubkey,
+      },
       replace: true,
     })
   }, [navigate, paymentFocused, selectedFromUrl, selectedRow])
@@ -3125,7 +4274,7 @@ function OrdersPage() {
           {/* Desktop left rail */}
           {!paymentFocused && (
             <aside className="hidden xl:block">
-              <section className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                 <div className="text-sm font-medium text-[var(--text-primary)]">
                   Your orders
                 </div>
@@ -3154,9 +4303,10 @@ function OrdersPage() {
                     <MobileOrderFilterPills tab={tab} onChange={setTab} />
                   </div>
                   <SheetTrigger asChild>
+                    {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                     <button
                       type="button"
-                      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
+                      className="inline-flex h-10 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)] hover:bg-[var(--surface-elevated)]"
                     >
                       Browse
                       <ChevronRight className="h-4 w-4" />
@@ -3209,7 +4359,7 @@ function OrdersPage() {
                 historyIncomplete={protectedOrdersReadState !== "complete"}
               />
             ) : (
-              <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
+              <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-6 text-center text-sm text-[var(--text-secondary)]">
                 Select an order to view its status.
               </div>
             )}
@@ -3256,7 +4406,7 @@ function OrderList({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="mt-4 rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+      <div className="mt-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
         No orders match this filter.
       </div>
     )
@@ -3265,13 +4415,13 @@ function OrderList({
     <div className="mt-4 space-y-2">
       {rows.map((row) => (
         <OrderListCard
-          key={row.orderId}
+          key={row.id}
           row={row}
           merchantName={merchantName(row.merchantPubkey)}
           merchantPicture={merchantPicture(row.merchantPubkey)}
-          active={row.orderId === selectedOrderId}
+          active={row.id === selectedOrderId}
           formatSats={formatSats}
-          onClick={() => onSelect(row.orderId)}
+          onClick={() => onSelect(row.id)}
         />
       ))}
     </div>
@@ -3288,8 +4438,8 @@ function EmptyState({
   action?: React.ReactNode
 }) {
   return (
-    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
         <ReceiptText className="h-7 w-7" />
       </div>
       <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">

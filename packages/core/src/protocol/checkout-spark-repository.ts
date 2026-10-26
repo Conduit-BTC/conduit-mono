@@ -141,6 +141,9 @@ function snapshotFromRows(
   }
   if (active) {
     assertRevision(active.revision)
+    if (active.state.schemaVersion !== 1) {
+      throw new CheckoutSparkRepositoryIntegrityError()
+    }
     const state = projectState(active.state)
     if (
       active.checkoutId !== checkoutId ||

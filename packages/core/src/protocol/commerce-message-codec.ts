@@ -1,4 +1,7 @@
 import { parseOrderMessageRumorEvent, type ParsedOrderMessage } from "./orders"
+import { isEventMarketStockAuthorityRumor } from "./event-market-stock-marker"
+import { isCheckoutSparkRecoveryMachineRumor } from "./checkout-spark-recovery-marker"
+import { isEventMarketFreePurchaseRumor } from "./event-market-free-purchase-marker"
 
 /** An already authenticated inner NIP-17 rumor. Authentication belongs to unwrap. */
 export interface CommerceRumor {
@@ -245,13 +248,29 @@ export function decodeCommerceMessageRumor(
   rumor: CommerceRumor
 ): DecodedCommerceMessage {
   const source = provenance(rumor)
+  if (
+    isEventMarketStockAuthorityRumor(rumor) ||
+    isEventMarketFreePurchaseRumor(rumor) ||
+    isCheckoutSparkRecoveryMachineRumor(rumor)
+  )
+    return { category: "machine", provenance: source }
   const tags = rumor.tags ?? []
   const typeTags = values(tags, "type")
   const contentObject = rumor.kind === 16 ? objectContent(rumor.content) : null
   if (
     rumor.kind === 16 &&
-    (typeTags.some((tag) => tag[1] === "checkout_spark_recovery") ||
-      contentObject?.type === "checkout_spark_recovery" ||
+    (typeTags.some((tag) =>
+      [
+        "checkout_spark_recovery",
+        "checkout_spark_recovery_progress",
+        "checkout_spark_merchant_progress",
+      ].includes(tag[1] ?? "")
+    ) ||
+      [
+        "checkout_spark_recovery",
+        "checkout_spark_recovery_progress",
+        "checkout_spark_merchant_progress",
+      ].includes(String(contentObject?.type ?? "")) ||
       typeTags.some(
         (tag) =>
           tag[1]?.startsWith("organizer_") ||

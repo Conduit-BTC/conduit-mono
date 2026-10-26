@@ -31,6 +31,7 @@ import {
   getGeneralWriteRelayUrls,
   loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
+  normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
   tryNormalizeRelayUrl,
   type RelayPlanOptions,
@@ -39,6 +40,14 @@ import {
 import { filterRelayListForContext, type RelayList } from "./relay-list"
 import { partitionByHealth } from "./relay-health"
 import type { AccountNetworkRoutingPolicy } from "./account-network-routing-policy"
+import { EVENT_KINDS } from "./kinds"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  selectRelayTargets,
+  type RelayGrant,
+  type RelayTarget,
+} from "./relay-authority"
 
 export type RelayReadIntent =
   /** Marketplace listings — commerce + public fallback. */
@@ -91,7 +100,7 @@ export interface RelayReadPlanInput {
    * selection. Remote NIP-65 lists and relay hints must never populate this.
    */
   ownerSelectedRelayUrls?: readonly string[]
-  /** Maximum number of relays to query (bounded fanout). */
+  /** Concurrent read attempts; does not truncate selected coverage. */
   maxRelays?: number
   /** Skip per-relay health filtering (test seam / last-resort retries). */
   skipHealthFilter?: boolean
@@ -110,16 +119,16 @@ export interface RelayReadPlanInput {
 
 export interface RelayReadPlan {
   intent: RelayReadIntent
-  /** Ordered relay URLs to query under the legacy planner-time fanout cap. */
+  /** Ordered candidates with every independent authority retained. */
+  relayTargets: RelayTarget[]
+  /** Complete ordered relay selection, independent of concurrency. */
   relayUrls: string[]
   /**
-   * Full ordered, health-eligible candidate set. Final I/O applies
-   * `maxRelayAttempts` after re-reading live account source policy so a
-   * disabled source cannot consume the bounded fanout ahead of an enabled
-   * source.
+   * Full ordered, health-eligible selection. Final I/O rechecks live authority
+   * for each candidate as a concurrency slot becomes available.
    */
   candidateRelayUrls: string[]
-  /** Maximum admitted relay attempts. Omitted when fanout is unbounded. */
+  /** Concurrent relay attempts. Omitted uses the reader's bounded default. */
   maxRelayAttempts?: number
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
@@ -147,9 +156,9 @@ export interface RelayWritePlanInput {
   authenticatedPubkey?: string | null
   /** Exact relay subset backed by that authenticated owner's Network choice. */
   ownerSelectedRelayUrls?: readonly string[]
-  /** Cap the primary relay count. */
+  /** Primary write concurrency, independent of selected target count. */
   maxPrimaryRelays?: number
-  /** Cap the broadcast relay count (best-effort, beyond primary). */
+  /** Best-effort broadcast concurrency, independent of target count. */
   maxBroadcastRelays?: number
   /** Skip health filtering. */
   skipHealthFilter?: boolean
@@ -167,6 +176,10 @@ export interface RelayWritePlanInput {
 }
 
 export interface RelayWritePlan {
+  /** Exact primary candidates and their independent write authorities. */
+  primaryRelayTargets: RelayTarget[]
+  /** Exact best-effort candidates and their independent write authorities. */
+  broadcastRelayTargets: RelayTarget[]
   /** Fixed fallback candidates resolved before any publish I/O. */
   fallbackRelayUrls?: string[]
   intent: RelayWriteIntent
@@ -184,7 +197,7 @@ export interface RelayWritePlan {
   primaryRelayUrls: string[]
   /** Full ordered candidates retained until final live-policy admission. */
   primaryCandidateRelayUrls?: string[]
-  /** Maximum admitted primary relay attempts; omitted when unbounded. */
+  /** Primary concurrency; omission uses the writer's bounded default. */
   maxPrimaryRelayAttempts?: number
   /**
    * Best-effort broadcast targets. Failures here do not fail the publish.
@@ -194,7 +207,7 @@ export interface RelayWritePlan {
   broadcastRelayUrls: string[]
   /** Full ordered broadcast candidates retained until final admission. */
   broadcastCandidateRelayUrls?: string[]
-  /** Maximum admitted broadcast attempts; omitted when unbounded. */
+  /** Broadcast concurrency; omission uses the writer's bounded default. */
   maxBroadcastRelayAttempts?: number
   /** Relays that were parked by health and excluded. */
   parkedRelayUrls: string[]
@@ -204,6 +217,92 @@ export interface RelayWritePlan {
   personalRelayUrls?: string[]
   /** Remote signed NIP-65 hints that remain authoritative across local switches. */
   independentRelayUrls: string[]
+}
+
+/**
+ * Prepare read authority for verifying a public event after a write ACK.
+ * Recipient and owner NIP-17 grants are deliberately omitted: private inbox
+ * delivery authority does not authorize reading an author's public event.
+ */
+export function planPublicEventReadbackTargets(
+  targets: readonly RelayTarget[]
+): RelayTarget[] {
+  const readback: RelayTarget[] = []
+  for (const target of targets) {
+    const grants: RelayGrant[] = []
+    for (const grant of target.grants) {
+      if (
+        grant.kind === "owner_nip17" ||
+        grant.kind === "recipient_nip17" ||
+        grant.kind === "recovery" ||
+        grant.kind === "retained_inbox" ||
+        grant.kind === "compatibility"
+      ) {
+        continue
+      }
+      if (grant.operation === "read") {
+        grants.push({ ...grant })
+        continue
+      }
+      switch (grant.kind) {
+        case "owner_nip65":
+          if (grant.selection === "write") {
+            grants.push({
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey: grant.ownerPubkey,
+              selection: "write",
+            })
+          }
+          break
+        case "remote_nip65":
+          grants.push({
+            kind: "remote_nip65",
+            operation: "read",
+            pubkey: grant.pubkey,
+          })
+          break
+        case "app":
+          if (
+            grant.bucket === "general_write" ||
+            grant.bucket === "commerce_write"
+          ) {
+            grants.push({
+              kind: "app",
+              operation: "read",
+              bucket: "author_readback",
+            })
+          } else {
+            // A successful public write ACK is direct evidence that this
+            // secure relay can be queried for exact readback.
+            grants.push({ kind: "public_hint", operation: "read" })
+          }
+          break
+        case "discovery":
+          grants.push({
+            kind: "discovery",
+            operation: "read",
+            registry: grant.registry,
+          })
+          break
+        case "source_delivery":
+          grants.push({ kind: "public_hint", operation: "read" })
+          break
+        case "owner_selection":
+          if (grant.eventKind === EVENT_KINDS.RELAY_LIST) {
+            grants.push({
+              kind: "owner_nip65",
+              operation: "read",
+              ownerPubkey: grant.ownerPubkey,
+              selection: "write",
+            })
+          }
+          break
+      }
+    }
+    if (grants.length > 0) readback.push({ url: target.url, grants })
+  }
+  return mergeRelayTargets(readback)
 }
 
 export const DEFAULT_READ_FANOUT = 6
@@ -420,9 +519,75 @@ function applyHealthFilter(
   return { kept: dedupeOrdered(healthy), parked: dedupeOrdered(parked) }
 }
 
-function clampFanout(urls: string[], limit: number | undefined): string[] {
-  if (limit === undefined || limit <= 0) return urls
-  return urls.slice(0, limit)
+/** Alternate app and additive sources; neither can starve behind a large set. */
+function interleaveAppRelays(
+  urls: readonly string[],
+  appUrls: readonly string[]
+): string[] {
+  const appSet = new Set(appUrls)
+  const app = urls.filter((url) => appSet.has(url))
+  const personal = urls.filter((url) => !appSet.has(url))
+  const ordered: string[] = []
+  for (
+    let index = 0;
+    index < Math.max(app.length, personal.length);
+    index += 1
+  ) {
+    if (personal[index]) ordered.push(personal[index])
+    if (app[index]) ordered.push(app[index])
+  }
+  return ordered
+}
+
+function targetsForCandidateUrls(
+  urls: readonly string[],
+  ...sources: readonly { urls: readonly string[]; grant: RelayGrant }[]
+): RelayTarget[] {
+  return selectRelayTargets(
+    sources.flatMap((source) =>
+      relayTargetsFromUrls(source.urls, source.grant)
+    ),
+    urls
+  )
+}
+
+function appReadGrantSources(intent: RelayReadIntent, urls: readonly string[]) {
+  const sources: { urls: readonly string[]; grant: RelayGrant }[] = [
+    {
+      urls: config.appReadRelayUrls,
+      grant: { kind: "app", operation: "read", bucket: "general_read" },
+    },
+    {
+      urls: config.appCommerceRelayUrls,
+      grant: { kind: "app", operation: "read", bucket: "commerce_read" },
+    },
+    {
+      urls: config.corePublicFallbackRelayUrls,
+      grant: {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "core_public",
+      },
+    },
+    {
+      urls: config.commerceDiscoveryRelayUrls,
+      grant: {
+        kind: "public_fallback",
+        operation: "read",
+        bucket: "commerce_discovery",
+      },
+    },
+  ]
+  if (intent === "dm_inbox" || intent === "legacy_dm") {
+    sources.push({
+      urls: config.commerceDmFallbackRelayUrls,
+      grant: { kind: "compatibility", operation: "read", policy: "inbox_read" },
+    })
+  }
+  return sources.map((source) => ({
+    ...source,
+    urls: source.urls.filter((url) => urls.includes(url)),
+  }))
 }
 
 /**
@@ -433,7 +598,7 @@ function clampFanout(urls: string[], limit: number | undefined): string[] {
  * 2. User's commerce relays (for commerce intents) or general read relays.
  * 3. Public fallback relays.
  *
- * The result is deduplicated and capped at `maxRelays`.
+ * The complete selection is deduplicated. `maxRelays` bounds concurrency only.
  */
 export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   const isolatedRelayUrl = getConfiguredIsolatedE2eRelayUrl()
@@ -443,17 +608,50 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
         "E2E relay isolation requires one configured loopback relay"
       )
     }
+    const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
+    const hintsForOwner = (isOwner: boolean) =>
+      normalizePublicOrIsolatedE2eRelayHints([
+        ...hintReadRelaysForAuthors(
+          (input.authors ?? []).filter(
+            (pubkey) =>
+              (pubkey.trim().toLowerCase() === authenticatedOwner) === isOwner
+          ),
+          input.relayLists,
+          input.authenticatedPubkey
+        ),
+        ...hintReadRelaysForRecipients(
+          (input.recipients ?? []).filter(
+            (pubkey) =>
+              (pubkey.trim().toLowerCase() === authenticatedOwner) === isOwner
+          ),
+          input.relayLists,
+          input.authenticatedPubkey
+        ),
+      ])
+    // Isolation selects the transport, not evidence that an author uses it.
+    // Retain only actual NIP-65 declarations of that exact test relay.
+    const independentRelayUrls = hintsForOwner(false)
+    const personalRelayUrls = personalLayerEnabled(input.routingPolicy)
+      ? hintsForOwner(true)
+      : []
     return {
       intent: input.intent,
+      relayTargets: targetsForCandidateUrls([isolatedRelayUrl], {
+        urls: [isolatedRelayUrl],
+        grant: { kind: "app", operation: "read", bucket: "general_read" },
+      }),
       relayUrls: [isolatedRelayUrl],
       candidateRelayUrls: [isolatedRelayUrl],
       maxRelayAttempts: 1,
       parkedRelayUrls: [],
-      hintRelayUrls: [],
+      hintRelayUrls: dedupeOrdered([
+        ...personalRelayUrls,
+        ...independentRelayUrls,
+      ]),
       ownerSelectedRelayUrls: [],
       appRelayUrls: [isolatedRelayUrl],
-      personalRelayUrls: [],
-      independentRelayUrls: [],
+      personalRelayUrls,
+      independentRelayUrls,
     }
   }
 
@@ -582,7 +780,14 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   )
 
   const ordered = applyReadTransportAuthority(
-    dedupeOrdered([...hintRelayUrls, ...personalBaseRelays, ...appBaseRelays]),
+    interleaveAppRelays(
+      dedupeOrdered([
+        ...hintRelayUrls,
+        ...personalBaseRelays,
+        ...appBaseRelays,
+      ]),
+      appBaseRelays
+    ),
     ownerSelectedRelayUrls
   )
   const { kept, parked } = applyHealthFilter(
@@ -594,7 +799,7 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
   const requestedMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
   const maxRelayAttempts =
     requestedMaxRelays > 0 ? requestedMaxRelays : undefined
-  const relayUrls = clampFanout(kept, requestedMaxRelays)
+  const relayUrls = kept
   const candidateRelayUrlSet = new Set(kept)
   const appRelaySet = new Set(appBaseRelays)
   const personalRelaySet = new Set([
@@ -604,8 +809,73 @@ export function planRelayReads(input: RelayReadPlanInput): RelayReadPlan {
     ...authenticatedOwnerRecipientHints,
   ])
   const independentRelaySet = new Set([...authorHints, ...recipientHints])
+  const remoteHintSources = [
+    ...(input.authors ?? []),
+    ...(input.recipients ?? []),
+  ]
+    .filter((pubkey) => pubkey.trim().toLowerCase() !== authenticatedOwner)
+    .map((pubkey) => ({
+      urls: [
+        ...(input.authors?.includes(pubkey)
+          ? filterRelayListForContext(
+              input.relayLists?.get(pubkey) ?? {
+                pubkey,
+                readRelayUrls: [],
+                writeRelayUrls: [],
+                eventCreatedAt: 0,
+                cachedAt: 0,
+              }
+            ).writeRelayUrls
+          : []),
+        ...(input.recipients?.includes(pubkey)
+          ? filterRelayListForContext(
+              input.relayLists?.get(pubkey) ?? {
+                pubkey,
+                readRelayUrls: [],
+                writeRelayUrls: [],
+                eventCreatedAt: 0,
+                cachedAt: 0,
+              }
+            ).readRelayUrls
+          : []),
+      ],
+      grant: { kind: "remote_nip65", operation: "read", pubkey } as const,
+    }))
+  const relayTargets = targetsForCandidateUrls(
+    kept,
+    ...appReadGrantSources(input.intent, appBaseRelays),
+    {
+      urls: personalBaseRelays,
+      grant: {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: authenticatedOwner ?? "",
+        selection: "read",
+      },
+    },
+    {
+      urls: authenticatedOwnerAuthorHints,
+      grant: {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: authenticatedOwner ?? "",
+        selection: "write",
+      },
+    },
+    {
+      urls: authenticatedOwnerRecipientHints,
+      grant: {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: authenticatedOwner ?? "",
+        selection: "read",
+      },
+    },
+    ...remoteHintSources
+  )
   return {
     intent: input.intent,
+    relayTargets,
     relayUrls,
     candidateRelayUrls: kept,
     ...(maxRelayAttempts === undefined ? {} : { maxRelayAttempts }),
@@ -650,6 +920,11 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     }
     return {
       intent: input.intent,
+      primaryRelayTargets: targetsForCandidateUrls([isolatedRelayUrl], {
+        urls: [isolatedRelayUrl],
+        grant: { kind: "app", operation: "write", bucket: "general_write" },
+      }),
+      broadcastRelayTargets: [],
       primaryRelayUrls: [isolatedRelayUrl],
       primaryCandidateRelayUrls: [isolatedRelayUrl],
       maxPrimaryRelayAttempts: 1,
@@ -706,10 +981,13 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
             input.authenticatedPubkey,
             input.ownerSelectedRelayUrls
           )
-    const ordered = dedupeOrdered(
-      hasReconciledOwnerProjection
-        ? userWriteRelays
-        : [...authorWriteHints, ...userWriteRelays]
+    const ordered = interleaveAppRelays(
+      dedupeOrdered(
+        hasReconciledOwnerProjection
+          ? userWriteRelays
+          : [...authorWriteHints, ...userWriteRelays]
+      ),
+      appWriteRelays
     )
     const { kept, parked } = applyHealthFilter(
       ordered,
@@ -718,10 +996,53 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     )
     const requestedMaxPrimaryRelays =
       input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
-    const primaryRelayUrls = clampFanout(kept, requestedMaxPrimaryRelays)
+    const primaryRelayUrls = kept
     const authorWriteHintSet = new Set(authorWriteHints)
+    const primaryRelayTargets = targetsForCandidateUrls(
+      kept,
+      {
+        urls: appWriteRelays,
+        grant: {
+          kind: "app",
+          operation: "write",
+          bucket:
+            input.intent === "commerce_author_event"
+              ? "commerce_write"
+              : "general_write",
+        },
+      },
+      {
+        urls: personalWriteRelays,
+        grant: {
+          kind: "owner_nip65",
+          operation: "write",
+          ownerPubkey: authenticatedPubkey ?? "",
+          selection: "write",
+        },
+      },
+      isAuthenticatedAuthor
+        ? {
+            urls: authorWriteHints,
+            grant: {
+              kind: "owner_nip65",
+              operation: "write",
+              ownerPubkey: authenticatedPubkey ?? "",
+              selection: "write",
+            },
+          }
+        : {
+            urls: authorWriteHints,
+            grant: {
+              kind: "remote_nip65",
+              operation: "write",
+              pubkey: authorPubkey ?? "",
+            },
+          }
+    )
     return {
       intent: input.intent,
+      primaryRelayTargets,
+      broadcastRelayTargets: [],
       signedRelayListAuthoritative: hasReconciledOwnerProjection,
       primaryRelayUrls,
       primaryCandidateRelayUrls: kept,
@@ -806,8 +1127,9 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
   )
 
   const primaryKeptSet = new Set(primaryKept)
-  const broadcastOrdered = dedupeOrdered(
-    userWriteRelays.filter((url) => !primaryKeptSet.has(url))
+  const broadcastOrdered = interleaveAppRelays(
+    dedupeOrdered(userWriteRelays.filter((url) => !primaryKeptSet.has(url))),
+    appWriteRelays
   )
   const { kept: broadcastKept, parked: broadcastParked } = applyHealthFilter(
     broadcastOrdered,
@@ -819,16 +1141,59 @@ export function planRelayWrites(input: RelayWritePlanInput): RelayWritePlan {
     input.maxPrimaryRelays ?? DEFAULT_PRIMARY_FANOUT
   const requestedMaxBroadcastRelays =
     input.maxBroadcastRelays ?? DEFAULT_BROADCAST_FANOUT
-  const primaryRelayUrls = clampFanout(primaryKept, requestedMaxPrimaryRelays)
-  const broadcastRelayUrls = clampFanout(
-    broadcastKept,
-    requestedMaxBroadcastRelays
-  )
+  const primaryRelayUrls = primaryKept
+  const broadcastRelayUrls = broadcastKept
   const executableRelayUrls = dedupeOrdered([...primaryKept, ...broadcastKept])
   const missingRecipientFallbackSet = new Set(missingRecipientFallback)
   const authenticatedRecipientHintSet = new Set(authenticatedRecipientHints)
+  const primaryRelayTargets = targetsForCandidateUrls(
+    primaryKept,
+    {
+      urls: missingRecipientFallback,
+      grant: { kind: "app", operation: "write", bucket: "recipient_delivery" },
+    },
+    {
+      urls: authenticatedRecipientHints,
+      grant: {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: authenticatedPubkey ?? "",
+        selection: "read",
+      },
+    },
+    ...remoteRecipientPubkeys.map((pubkey) => ({
+      urls: filterRelayListForContext(
+        input.relayLists?.get(pubkey) ?? {
+          pubkey,
+          readRelayUrls: [],
+          writeRelayUrls: [],
+          eventCreatedAt: 0,
+          cachedAt: 0,
+        }
+      ).readRelayUrls,
+      grant: { kind: "remote_nip65", operation: "write", pubkey } as const,
+    }))
+  )
+  const broadcastRelayTargets = targetsForCandidateUrls(
+    broadcastKept,
+    {
+      urls: appWriteRelays,
+      grant: { kind: "app", operation: "write", bucket: "general_write" },
+    },
+    {
+      urls: personalWriteRelays,
+      grant: {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: authenticatedPubkey ?? "",
+        selection: "write",
+      },
+    }
+  )
   return {
     intent: input.intent,
+    primaryRelayTargets,
+    broadcastRelayTargets,
     primaryRelayUrls,
     primaryCandidateRelayUrls: primaryKept,
     ...(requestedMaxPrimaryRelays > 0

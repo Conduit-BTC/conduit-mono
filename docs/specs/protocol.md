@@ -103,6 +103,18 @@ or deletion from independent partitions.
 
 ### Relay Read Authentication
 
+The optional Event Market organizer-stock extension uses the same unsigned
+rumor/seal/gift-wrap construction, not detached signed order rumors or a new
+public event kind. Its private kind-14 `conduit-event-stock` subject and
+`["conduit", "event-stock", "1"]` marker are machine-only, including malformed
+or unknown versions. The Merchant's existing signed assignment may commit the
+exact private grant rumor ID with the namespaced `conduit_stock_pool` tag.
+Private JSON is not authenticated without the verified envelope or that exact
+signed commitment. Neither relay delivery nor the commitment proves payment,
+handout or complete stock reconciliation. The bounded grant, journal, closing
+and cold-recovery rules are in `event-markets.md`; no guest signer, account-key
+sharing or service-custody authority is added.
+
 NIP-42 is used only for an explicitly protected relay operation. The first
 protected operation is the active principal reading their own `kind:1059` gift
 wraps with filters constrained to `#p` equal to the active account pubkey.
@@ -158,7 +170,8 @@ generation, storage, or access to a user's Nostr account key.
 
 Guest external-wallet checkout may create a per-order browser-generated key to
 sign the outbound private order and any external-payment report delivered to the
-merchant. This key is an order-scoped sender identity, not a Nostr inbox,
+merchant, and seal the bounded router recovery messages described below. This
+key is an order-scoped sender identity, not a Nostr inbox,
 account authentication, durable account-key or server-side custody, merchant
 signing, product publishing, wallet custody, or public zap signing.
 
@@ -183,6 +196,85 @@ The exception is constrained as follows:
   restricted to those events. Its review link must target the Merchant
   deployment paired with the Market deployment that created it; production,
   preview, signet, and supported local environments must not cross-link.
+- For a version-3, version-4 or version-5 settled-allocation Spark router plan, a separate constrained
+  wrapping capability may seal the machine-only `checkout_spark_recovery`
+  and `checkout_spark_recovery_progress` rumors for that same order and
+  merchant. Version-five organizer-handoff plans may additionally seal the
+  separately typed organizer recovery/progress package only for the organizer
+  frozen in the exact event binding and Merchant stock grant. This is not
+  permission to author stock records, generic messages or another order. The
+  canonical payload, plan, recipient role, sender, and preparation
+  time must agree with the active guest identity before encryption or signing.
+  The capability must reject legacy router plans, generic messages, direct
+  rumor signatures, other recipients or roles, and new signing after the existing
+  24-hour guest deadline. It reuses the guest key; it does not create another
+  account, key registry, or signer lifetime.
+- Router recovery uses separate recipient-bound NIP-59/NIP-44 envelopes and
+  the merchant's current signed `kind:10050` inbox declaration, never the
+  compatibility order lane or a buyer self-copy. Persist the exact encrypted
+  wrap before publication; require a recipient relay acknowledgement before
+  exposing funding. Later progress must reference that acknowledged initial
+  handoff and carry no wallet secret. Neither plaintext recovery nor the
+  recovery rumor belongs in generic Messages, order history, or diagnostics.
+  An event organizer package requires its own signed inbox and exact durable
+  acknowledgement before funding; the Merchant envelope is never forwarded.
+  Machine-only commercial hashes and checkout identifiers do not disclose
+  contacts, shipping addresses or the full Merchant order, and establish no
+  payment or handout fact without independent verification.
+  The initial `checkout_spark_organizer_recovery` schema-four payload binds the
+  Merchant initial handoff, exact version-five plan, original signed sources,
+  this checkout wallet and opaque original-order identity/terms hashes.
+  Buyer-authored `checkout_spark_organizer_recovery_progress` schema five carries
+  the same plan/state, both initial handoff references and the paired Merchant
+  progress reference, without another wallet credential. Each exact Merchant/
+  organizer ciphertext pair is atomically retained before either publish;
+  both recipient acknowledgements precede use of the prepared payout state.
+  After takeover, `checkout_spark_organizer_execution` schema one is sealed by
+  the designated organizer, not falsely attributed to the Merchant. Its strict
+  kind-16 payload binds both initial handoffs, exact state, original order
+  hashes and the complete reserved-pool/writer/quantity manifest. Separate
+  Merchant and organizer-self wraps are atomically retained and acknowledged
+  before provider invocation. A retry uses those identical wraps. These
+  machine messages remain outside conversations, search and notifications;
+  neither an acknowledgement nor a saved paid label establishes settlement.
+  Merchant financial continuation of that same organizer-handoff checkout
+  retains its original self-progress wrap plus a separately Merchant-sealed
+  `checkout_spark_merchant_event_progress` schema-one companion addressed only
+  to the frozen organizer. The companion contains canonical payment state,
+  the original Merchant and derived Organizer initial-handoff IDs, and opaque
+  original-order hashes, never another wallet credential, full order or contact
+  data. Both exact ciphertexts are atomically retained before publication and
+  both recipient acknowledgements precede Merchant provider dispatch. Partial
+  delivery retries the identical wraps, not a new signature or payment intent.
+  Recovery authenticates the original author and merges only compatible
+  monotonic state before fresh exact provider/recipient verification. This
+  preserves all three financial actors without transferring stock-writer or
+  physical-handout authority. Ordinary historical progress bytes are unchanged.
+  A zero-commerce, zero-organizer-fee purchase creates no financial plan, wallet
+  or invoice. Its separate `event_market_free_purchase` packet contains only the
+  exact zero-price quote, signed event/source graph, original order hashes and
+  bound parties/claim references. A guest may seal only that one canonical
+  packet to its frozen authorized organizer within the existing same-order
+  guest lifetime. This is not permission to sign stock records, decrypt replies,
+  author arbitrary kind-16 messages or create a guest inbox. Physical release
+  still requires the designated stock writer, complete once-only reservation
+  and bound claim; packet receipt is not a paid-order shortcut.
+- Guest-key expiry ends new guest signing, not the merchant's recovery
+  authority. Already encrypted recovery records and exact-wrap delivery retry
+  state must not be pruned with the guest key. Merchant continuation still
+  requires the exact plan, order, objective takeover boundary, and current
+  settlement evidence; no new retention window is introduced. The guest
+  Nostr key is not used as a wallet seed or shared with the merchant.
+- New normal router plans freeze a two-minute shopper-to-Merchant takeover
+  deadline at preparation, separately from the fifteen-minute funding invoice.
+  Imported plans retain their saved deadline. Handoff does not invalidate an
+  admitted attempt or authorize replay; both actors reconcile the exact saved
+  invoice and transfer identity before any continuation.
+  It ends new buyer outgoing admission, not the original funding invoice's
+  presentation or payment lifetime. That exact invoice remains usable until
+  signed expiry under the same active buyer/order approval, acknowledged
+  recovery handoff and durable funding reservation. Merchant recovery handles
+  exact late credit; this never renews buyer outgoing authority.
 - Conduit clients must not project canonical advisory rumors carrying the exact
   versioned `["conduit", "order-companion", "1", "<kind-16-id>"]` marker, the
   `subject=conduit-order-notification` marker, and one non-empty `order` and `p`
@@ -203,22 +295,156 @@ The exception is constrained as follows:
   durable order history.
 - Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
   outbound-only and use the structured recovery channel required by the exact
-  checkout flow for invoices, fulfillment updates, and other follow-up. New
-  guest orders require both email and phone; shipping additionally requires its
-  address contract. Historical pickup orders with one contact method remain
-  readable but do not define the new-order requirement.
-- Same-session recovery means local invoice/payment-report continuity only. It
-  does not promise merchant status recovery, a private conversation, or durable
-  order history.
+  checkout flow for invoices, fulfillment updates, and other follow-up. Ordinary
+  new guest pickup orders require both email and phone; shipping additionally
+  requires its address contract. Eligible Event Market pickup may instead use
+  the contact-free receipt/claim path defined in `event-markets.md`, without a
+  separate Merchant opt-in or a guest reply inbox. Historical pickup orders
+  with one contact method remain readable but do not define the ordinary
+  new-order requirement.
+- Contact-free receipt presentation may use an on-screen code or readable
+  private export. The existing v1 receipt commitment and original JSON import
+  remain unchanged. Possession of the matching code does not establish payment,
+  permit a refund, or bypass the exact stock/handout authority checks.
+- Same-session recovery means local invoice/payment-report and bounded router
+  continuity only. It does not promise merchant status recovery, a private
+  conversation, or durable order history. Merchant router recovery is a
+  separate encrypted capability, not a guest inbox.
 - This exception does not replace NIP-07/NIP-46 for signed-in buyers and does
   not broaden the Anon Conduit Shopper public zap signer exception.
 - Converting, claiming, or recovering a guest order into a durable identity is
   outside this exception and outside the current client flow.
 
+### Settled Router Recovery and Credential Trust
+
+The initial recovery envelope conveys the raw credential of an isolated
+checkout wallet to the Merchant. Client handoff and allocation guards are not
+cryptographic spending restrictions on that credential. It does not convey the
+buyer's source-wallet credential or Nostr account key. Conforming clients must
+still enforce exact attribution, dispatch boundaries and replay protection;
+deliberate spending outside them by a credential holder is outside this trust
+model. Preparation failures retain a surviving exact encrypted envelope and its
+original order draft for same-wrap repair and retry, rather than replacing its
+wallet or invoice. Only positively verified pristine, unexposed state permits
+revision-checked abandonment. See the wallet contract for these recovery gates.
+
+The optional pricing attestation is private, versioned economic evidence,
+separate from the order signature. Exact signed listing/variation/shipping
+revisions and original provider-confirmed funding creation time bind its use.
+Restoration never substitutes a current rate or treats the shopper's plan time
+as independent pricing authority. Existing plans without this field retain
+their original digest; unsupported or unverifiable fiat evidence pauses.
+
+New positive-commerce plans carry the explicit digest-bound
+`conduitFeePolicy: "percentage-only-v1"` discriminator. This changes only the
+newly approved Conduit allocation, not the recipient, reserve, source authority
+or delivery format. Omission retains the historical floor-bearing economics
+and canonical digest; never add the field during recovery. Unknown values or a
+policy/digest mismatch reject. Historical signed organizer minimum/expiry terms
+remain independently verifiable after new percentage-only authoring is enabled.
+
+Exact Lightning intents may retain a portable, mode-qualified receiver binding.
+Its canonical endpoint/metadata/verifier facts are untrusted lookup hints until
+independently checked against trusted deployment qualification and the exact
+invoice. Receiver settlement and native Spark payment/debit evidence remain
+separate hard gates. New V1 commerce uses ordinary private metadata-hash
+invoice association. Public requests or receipts in retained historical attempts
+are not receiving-account proof. No provider-brand adapter, buyer progress or
+aggregate balance supplies missing authority. See the wallet and
+universal-router contracts.
+
+### Settled Router Closed-Attempt Renewal
+
+Closed-attempt renewal is a Conduit private recovery extension, not a new Nostr
+payment standard or receiving-account proof. It retains the version-three
+frozen plan and original buyer-to-Merchant recovery/progress formats, order
+witness and acknowledged initial handoff. The guest-key exception and its
+signing lifetime are unchanged; Merchant renewal does not mint buyer progress.
+
+Only a positively verified complete, spendable return of the exact unpaid
+outgoing attempt permits the first Merchant-only replacement. The wallet
+contract defines the zero-historical-net-debit requirement and unsupported
+states. Expiry, missing history, imported preparation state and a signed
+closure summary alone never authorize a replacement invoice or payment.
+
+Renewed reconciliation and Merchant-authored progress must use new explicit
+versions, carry an append-only prior-attempt history, and remain bound to the
+same plan and initial handoff. Generation-zero identifiers stay unchanged;
+the successor uses its deterministic generation-one identifier and a fresh
+invoice obtained from the frozen endpoint. Reject forks, truncated histories,
+rollback and contradictory payment evidence. Existing clients must reject
+unsupported renewed state rather than project it as an ordinary legacy intent.
+
+Merchant progress remains a machine-only, Merchant-to-self NIP-59/NIP-44 v2
+record delivered through the Merchant's signed kind-10050 inbox. Persist the
+exact encrypted snapshot before publication and require relay acknowledgement
+before replacement dispatch. Neither acknowledgement nor Merchant-authored
+closure metadata replaces fresh operator/payment history and spendable-return
+verification. Recovery secrets do not enter progress, generic Messages,
+diagnostics or public events. Retired receipt summaries retain the winning
+attempt identity; the retirement tombstone remains a replay barrier.
+
+### Settled router native treasury extension
+
+The optional native final-allocation rail uses frozen plan version four and
+reconciliation version five. The initial buyer recovery envelope remains
+version two and buyer progress remains version three, with strictly validated
+nested native state. Merchant-authored progress uses version three and its own
+digest domain. Local provider-attributed settlement records use version two;
+retained settlement summaries use version three. Unsupported clients reject
+these versions rather than infer a Lightning intent or omit the final leg.
+
+The final native sidecar contains one frozen sender-restricted canonical
+invoice request and deterministic UUID, then a saved exact accounting intent,
+possible-send status and actual provider identifier learned from history.
+The UUID is not a fabricated provider transfer identifier. Commerce rows keep
+their Lightning intent and append-only closed-generation journal. Restoration
+and merging reject unknown fields, a changed request, divergent accounting,
+identifier substitution, rollback, contradictory receipts and omitted history.
+
+Signed recovery state and relay acknowledgement are transport evidence only.
+Both buyer and Merchant execution independently re-prove exact funding, all
+winning commerce payments, recipient association and any complete old returns
+before freezing or sending the final amount. No balance-only sweep is allowed.
+An uncertain native transfer stays attached to that exact request; no invoice
+renewal or new identifier is inferred from absent or unavailable history.
+Fresh exact claimed-transfer evidence records the native receipt without a
+Lightning invoice or preimage. The wallet contract specifies residual ownership,
+approval, zero-fee capability, completion and retirement restrictions.
+
+Pre-provider cancellation retry authority is local execution evidence, not a
+new recovery wire field or a transferable signed assertion. The current adapter
+requires durable exact terminal cancellation plus a non-serializable capability
+bound to the live executor and committed revision. Restored/imported failure
+labels and missing provider history remain query-only. Completed queue cleanup
+preserves encrypted recovery/progress evidence and the terminal replay barrier;
+it does not change envelope versions or delete wallet credentials.
+
+The guest exception retains its existing order scope and lifetime. Native
+recovery adds no account credential, signer permission, generic message,
+public event, diagnostic payload or service-operated wallet executor.
+
+### Service Signer Exception: Checkout Pricing Attestations
+
+The separate pricing-only Worker may sign bounded live-rate snapshots derived
+from the existing feeds. Its dedicated runtime-secret key must not be reused
+for account signing, anonymous zaps, orders, messages or payment execution.
+This is not a Nostr identity or a custodial wallet. Public verification keys,
+including retained historical keys, belong to shared managed deployment policy;
+the private key never enters client configuration, tracked files or diagnostics.
+
+Requests contain currency codes only, under exact approved origins, bounded
+request/response/deadline limits and a mandatory native rate limiter. No cart,
+order, invoice, identity, recipient or recovery material is accepted or logged.
+The standalone entry/configuration is dormant until explicitly provisioned and
+activated; it does not change the anonymous-zap Worker's existing purpose,
+route or secret. Code availability is not authorization to generate/deploy a
+key or enable a live service.
+
 ### Service Signer Exception: Anon Public Zaps
 
-The Anon Conduit Shopper public zap signer is the only approved server-side
-private-key exception in this repository. It exists to sign NIP-57 zap request
+The Anon Conduit Shopper public zap signer is the bounded public-zap server-side
+private-key exception. It exists to sign NIP-57 zap request
 events (`kind:9734`) for checkout flows where a merchant explicitly allows
 public anonymous zaps, and for the Conduit.Market project tip described below.
 
@@ -250,6 +476,9 @@ This exception is constrained as follows:
 - For checkout, the trusted server boundary derives the anonymous zap amount from current,
   signed product listings and a fresh server-owned conversion quote when fiat
   pricing is present. Browser-provided totals are not authorization evidence.
+- Quantum Router V1 does not issue routed public signing authorization or
+  public-zap invoices. Ordinary non-routed checkout and project-tip purposes
+  remain unchanged; this does not disable a provider's global zap capability.
 - Anonymous checkout request content is server-owned and limited to copy such as
   `Zapped out 1 item at https://shop.conduit.market/` or
   `Zapped out 4 items at https://shop.conduit.market/`, using the actual summed
@@ -395,6 +624,14 @@ Checkout privacy behavior:
   contents, shipping details, contact data, invoices, payment request strings,
   product names, product identifiers, or other private checkout data unless the
   shopper writes a custom public comment.
+
+New settled router plans use only ordinary private payments, regardless of a
+listing's public-zap policy. V1 exposes no public routed options, public-zap
+invoice requests or anonymous public signing authorization. Existing listing
+policy tags retain their meaning for non-routed zaps. Historical funded public
+policies/intents retain their original authority and exact no-replay safeguards;
+never convert them into a new private payout. Public routed zaps are deferred,
+not a V1 receiving-service API or acceptance dependency.
 
 ## Client Hydration And Relay Hints
 

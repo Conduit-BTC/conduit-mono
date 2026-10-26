@@ -89,6 +89,7 @@ type OptimisticDirectMessageSend = {
 type BuyerOrderReplySend = {
   accountPubkey: string
   authGeneration: number
+  conversationId: string
   content: string
   merchantPubkey: string
   orderId: string
@@ -140,12 +141,13 @@ function MerchantThreadRow({
   const latestMessage = messages[messages.length - 1]
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
       data-thread-id={conversation.id}
       className={[
-        "w-full rounded-[1.1rem] border px-3 py-3 text-left transition-[border-color,background-color]",
+        "w-full rounded-[var(--radius-md)] border px-3 py-3 text-left transition-[border-color,background-color]",
         active
           ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]",
@@ -209,12 +211,13 @@ function DmThreadRow({
   const name = getMerchantDisplayName(profile, conversation.counterpartyPubkey)
 
   return (
+    // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
     <button
       type="button"
       onClick={onClick}
       data-dm-id={conversation.counterpartyPubkey}
       className={[
-        "w-full rounded-[1.1rem] border px-3 py-3 text-left transition-[border-color,background-color]",
+        "w-full rounded-[var(--radius-md)] border px-3 py-3 text-left transition-[border-color,background-color]",
         active
           ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)]"
           : "border-[var(--border)] bg-[var(--surface)] hover:border-[var(--text-secondary)]",
@@ -234,7 +237,7 @@ function DmThreadRow({
                 <Badge variant="secondary">Legacy</Badge>
               )}
               {conversation.unreadFromCounterparty > 0 && (
-                <Badge className="bg-fuchsia-500 text-white">
+                <Badge className="bg-primary-500 text-white">
                   {conversation.unreadFromCounterparty}
                 </Badge>
               )}
@@ -472,7 +475,7 @@ function MessagesWorkspace() {
   useEffect(() => {
     if (!search.thread) return
     const element = document.querySelector<HTMLElement>(
-      `[data-thread-id="${search.thread}"]`
+      `[data-thread-id="${CSS.escape(search.thread)}"]`
     )
     element?.scrollIntoView({ block: "nearest", inline: "nearest" })
   }, [search.thread])
@@ -593,7 +596,7 @@ function MessagesWorkspace() {
       const current = orderReplyContextRef.current
       if (
         current.accountPubkey !== input.accountPubkey ||
-        current.conversationId !== input.orderId ||
+        current.conversationId !== input.conversationId ||
         current.merchantPubkey !== input.merchantPubkey
       )
         return
@@ -972,6 +975,7 @@ function MessagesWorkspace() {
               ["merchants", "Merchants"],
             ] as const
           ).map(([tab, label]) => (
+            // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
             <button
               key={tab}
               type="button"
@@ -986,9 +990,9 @@ function MessagesWorkspace() {
                 })
               }
               className={[
-                "relative -mb-px inline-flex h-11 items-center border-b-2 text-sm font-medium transition-colors after:absolute after:-bottom-px after:left-0 after:h-0.5 after:w-full after:rounded-full after:bg-fuchsia-500 after:transition-opacity",
+                "relative -mb-px inline-flex h-11 items-center border-b-2 text-sm font-medium transition-colors after:absolute after:-bottom-px after:left-0 after:h-0.5 after:w-full after:rounded-full after:bg-primary-500 after:transition-opacity",
                 activeTab === tab
-                  ? "border-fuchsia-500 text-[var(--text-primary)] after:opacity-100"
+                  ? "border-primary-500 text-[var(--text-primary)] after:opacity-100"
                   : "border-transparent text-[var(--text-secondary)] after:opacity-0 hover:text-[var(--text-primary)]",
               ].join(" ")}
             >
@@ -1000,8 +1004,8 @@ function MessagesWorkspace() {
 
       {activeTab === "dms" ? (
         !hasAccount ? (
-          <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
+          <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
               <MessageCircleMore className="h-7 w-7" />
             </div>
             <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">
@@ -1052,8 +1056,8 @@ function MessagesWorkspace() {
               !selectedDmPubkey &&
               messagingReady &&
               directMessagesReadState === "complete" ? (
-              <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <MessageCircleMore className="h-7 w-7" />
                 </div>
                 <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">
@@ -1066,7 +1070,7 @@ function MessagesWorkspace() {
               </section>
             ) : (
               <div className="grid min-w-0 max-w-full gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
-                <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
+                <aside className="hidden min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
                   <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
                     Conversations
                   </div>
@@ -1099,7 +1103,7 @@ function MessagesWorkspace() {
                         />
                       ))
                     ) : (
-                      <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                      <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                         {directMessageSearchEmptyCopy}
                       </div>
                     )}
@@ -1116,16 +1120,17 @@ function MessagesWorkspace() {
                         Conversations
                       </div>
                       <SheetTrigger asChild>
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"
-                          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                         >
                           <Search className="h-4 w-4" />
                           Search
                         </button>
                       </SheetTrigger>
                     </div>
-                    <section className="min-w-0 max-w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                    <section className="min-w-0 max-w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                       {filteredDmConversations.length > 0 ? (
                         <ConversationCardScroller>
                           {filteredDmConversations.map((conversation) => (
@@ -1155,7 +1160,7 @@ function MessagesWorkspace() {
                           ))}
                         </ConversationCardScroller>
                       ) : (
-                        <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                           {directMessageSearchEmptyCopy}
                         </div>
                       )}
@@ -1175,7 +1180,7 @@ function MessagesWorkspace() {
                       />
                       <div className="mt-4 space-y-2">
                         {filteredDmConversations.length === 0 && (
-                          <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                          <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                             {directMessageSearchEmptyCopy}
                           </div>
                         )}
@@ -1206,7 +1211,7 @@ function MessagesWorkspace() {
                   </Sheet>
                 </div>
 
-                <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] xl:h-full xl:min-h-0">
+                <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] xl:h-full xl:min-h-0">
                   {selectedDmPubkey ? (
                     <>
                       <div className="border-b border-[var(--border)] px-6 py-5">
@@ -1346,7 +1351,7 @@ function MessagesWorkspace() {
                             />
                             {sendDmMutation.error && (
                               <div
-                                className="mt-2 text-xs text-error"
+                                className="mt-2 text-xs text-[var(--error-text)]"
                                 role="alert"
                               >
                                 Message wasn't published. Retry from the message
@@ -1370,8 +1375,8 @@ function MessagesWorkspace() {
       ) : (
         <>
           {!hasAccount && (
-            <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
+            <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                 <Store className="h-7 w-7" />
               </div>
               <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">
@@ -1416,8 +1421,8 @@ function MessagesWorkspace() {
             !messagesQuery.isLoading &&
             conversations.length === 0 &&
             merchantThreadsReadState === "complete" && (
-              <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
+              <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-8 text-center">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-secondary-300">
                   <Store className="h-7 w-7" />
                 </div>
                 <h2 className="mt-5 text-2xl font-semibold text-[var(--text-primary)]">
@@ -1431,7 +1436,7 @@ function MessagesWorkspace() {
 
           {hasAccount && conversations.length > 0 && (
             <div className="grid min-w-0 max-w-full gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[340px_minmax(0,1fr)]">
-              <aside className="hidden min-w-0 rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
+              <aside className="hidden min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:min-h-0 xl:h-full xl:flex-col xl:overflow-hidden">
                 <div className="text-xs uppercase tracking-wide text-[var(--text-secondary)] xl:shrink-0">
                   Conversations
                 </div>
@@ -1465,7 +1470,7 @@ function MessagesWorkspace() {
                       />
                     ))
                   ) : (
-                    <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                       {search.merchant
                         ? "No conversation with this merchant yet."
                         : "No merchant threads match this search."}
@@ -1484,16 +1489,17 @@ function MessagesWorkspace() {
                       Conversations
                     </div>
                     <SheetTrigger asChild>
+                      {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                       <button
                         type="button"
-                        className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
+                        className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm font-medium text-[var(--text-primary)] transition-[border-color,background-color] hover:border-[var(--text-secondary)]"
                       >
                         <Search className="h-4 w-4" />
                         Search
                       </button>
                     </SheetTrigger>
                   </div>
-                  <section className="min-w-0 max-w-full rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-4">
+                  <section className="min-w-0 max-w-full rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
                     {filteredConversations.length > 0 ? (
                       <ConversationCardScroller>
                         {filteredConversations.map((conversation) => (
@@ -1524,7 +1530,7 @@ function MessagesWorkspace() {
                         ))}
                       </ConversationCardScroller>
                     ) : (
-                      <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                      <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                         {search.merchant
                           ? "No conversation with this merchant yet."
                           : "No merchant threads match this search."}
@@ -1546,7 +1552,7 @@ function MessagesWorkspace() {
                     />
                     <div className="mt-4 space-y-2">
                       {filteredConversations.length === 0 && (
-                        <div className="rounded-[1.1rem] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
+                        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 py-5 text-sm text-[var(--text-secondary)]">
                           {search.merchant
                             ? "No conversation with this merchant yet."
                             : "No merchant threads match this search."}
@@ -1578,7 +1584,7 @@ function MessagesWorkspace() {
                 </Sheet>
               </div>
 
-              <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] xl:h-full xl:min-h-0">
+              <section className="flex min-h-[36rem] min-w-0 flex-col overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] xl:h-full xl:min-h-0">
                 {selectedConversation ? (
                   <>
                     <div className="border-b border-[var(--border)] px-6 py-5">
@@ -1624,7 +1630,10 @@ function MessagesWorkspace() {
                         </div>
                         <Link
                           to="/orders"
-                          search={{ order: selectedConversation.orderId }}
+                          search={{
+                            order: selectedConversation.orderId,
+                            counterparty: selectedConversation.merchantPubkey,
+                          }}
                           className="shrink-0 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-elevated)]"
                         >
                           View order
@@ -1645,11 +1654,12 @@ function MessagesWorkspace() {
 
                     <div className="border-t border-[var(--border)] px-6 py-4">
                       <div className="flex flex-col gap-3 sm:flex-row">
+                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <input
                           value={replyText}
                           onChange={(event) => setReplyText(event.target.value)}
                           placeholder="Send a message to the merchant"
-                          className="h-11 flex-1 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
+                          className="h-11 flex-1 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-4 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]"
                           aria-label="Reply to merchant"
                         />
                         <Button
@@ -1664,6 +1674,7 @@ function MessagesWorkspace() {
                             replyMutation.mutate({
                               accountPubkey,
                               authGeneration,
+                              conversationId: selectedConversation.id,
                               content: replyText.trim(),
                               merchantPubkey:
                                 selectedConversation.merchantPubkey,
@@ -1677,7 +1688,7 @@ function MessagesWorkspace() {
                         </Button>
                       </div>
                       {replyMutation.error && (
-                        <div className="mt-2 text-xs text-error">
+                        <div className="mt-2 text-xs text-[var(--error-text)]">
                           {replyMutation.error instanceof Error
                             ? replyMutation.error.message
                             : "Failed to send message"}
@@ -1686,8 +1697,8 @@ function MessagesWorkspace() {
                       {replyMutation.data &&
                         replyMutation.variables?.accountPubkey ===
                           accountPubkey &&
-                        replyMutation.variables.orderId ===
-                          selectedConversation.orderId &&
+                        replyMutation.variables.conversationId ===
+                          selectedConversation.id &&
                         replyMutation.variables.merchantPubkey ===
                           selectedConversation.merchantPubkey && (
                           <PrivateSendNotice

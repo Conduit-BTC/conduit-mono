@@ -52,9 +52,9 @@ import {
 import { attachEventSourceRelayUrl } from "@conduit/core/protocol/relay-reader"
 import { admitFixture } from "./helpers/public-event"
 
-const INBOX_OWNER_SECRET = new Uint8Array(32).fill(11)
-const INBOX_PEER_SECRET = new Uint8Array(32).fill(12)
-const INBOX_OTHER_SECRET = new Uint8Array(32).fill(13)
+const INBOX_OWNER_SECRET = generateSecretKey()
+const INBOX_PEER_SECRET = generateSecretKey()
+const INBOX_OTHER_SECRET = generateSecretKey()
 const INBOX_OWNER = getPublicKey(INBOX_OWNER_SECRET)
 const INBOX_PEER = getPublicKey(INBOX_PEER_SECRET)
 const SHARED_INBOX_RELAY = sharedInboxDiscoveryRelayUrls()[0]!
@@ -90,6 +90,31 @@ async function signedInboxDeclaration(
       secretKey
     )
   )
+}
+
+async function inboxEvidenceRepository(
+  declarations: readonly {
+    secretKey: Uint8Array
+    relayUrls: readonly string[]
+  }[]
+): Promise<InboxDeclarationEvidenceRepository> {
+  const repository = createInMemoryInboxDeclarationEvidenceRepository()
+  for (const entry of declarations) {
+    const signedEvent = await signedInboxDeclaration(
+      entry.secretKey,
+      entry.relayUrls
+    )
+    await mergeInboxDeclarationEvidence(
+      {
+        pubkey: getPublicKey(entry.secretKey),
+        signedEvent,
+        sourceRelayUrls: [SHARED_INBOX_RELAY],
+        sharedSourceRelayUrls: [SHARED_INBOX_RELAY],
+      },
+      repository
+    )
+  }
+  return repository
 }
 
 const signer = plainTestSigner({
@@ -449,35 +474,45 @@ describe("unwrapGiftWrap", () => {
     })
   })
 
-  it("defers a machine-only checkout recovery wrap without exposing its rumor", async () => {
-    const recoveryMaterial = crypto.randomUUID()
-    const giftUnwrap: GiftUnwrapFn = async () =>
-      rumor(EVENT_KINDS.ORDER, {
-        tags: [
-          [
-            "p",
-            "0202020202020202020202020202020202020202020202020202020202020202",
+  it.each([
+    "checkout_spark_recovery",
+    "checkout_spark_recovery_progress",
+    "checkout_spark_merchant_progress",
+  ])(
+    "defers machine-only %s without exposing its rumor",
+    async (messageType) => {
+      const recoveryMaterial = crypto.randomUUID()
+      const giftUnwrap: GiftUnwrapFn = async () =>
+        rumor(EVENT_KINDS.ORDER, {
+          tags: [
+            [
+              "p",
+              "0202020202020202020202020202020202020202020202020202020202020202",
+            ],
+            ["type", messageType],
+            ["order", "order-1"],
+            ["checkout", "checkout-1"],
+            ["handoff", "a".repeat(64)],
           ],
-          ["type", "checkout_spark_recovery"],
-          ["order", "order-1"],
-          ["checkout", "checkout-1"],
-          ["handoff", "a".repeat(64)],
-        ],
-        content: JSON.stringify({ mnemonic: recoveryMaterial }),
+          content: JSON.stringify({ mnemonic: recoveryMaterial }),
+        })
+      const outcome = await unwrapGiftWrap(wrap("w-recovery"), signer, {
+        giftUnwrap,
       })
-    const outcome = await unwrapGiftWrap(wrap("w-recovery"), signer, {
-      giftUnwrap,
-    })
+      expect(outcome).toEqual({
+        status: "deferred_machine",
+        wrapId: "w-recovery",
+        kind: EVENT_KINDS.ORDER,
+      })
+      expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
+    }
+  )
 
-    expect(outcome).toEqual({
-      status: "deferred_machine",
-      wrapId: "w-recovery",
-      kind: EVENT_KINDS.ORDER,
-    })
-    expect(JSON.stringify(outcome)).not.toContain(recoveryMaterial)
-  })
-
-  it("does not defer an incomplete checkout recovery envelope", async () => {
+  it.each([
+    "checkout_spark_recovery",
+    "checkout_spark_recovery_progress",
+    "checkout_spark_merchant_progress",
+  ])("quarantines an incomplete %s envelope", async (messageType) => {
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
         tags: [
@@ -485,11 +520,10 @@ describe("unwrapGiftWrap", () => {
             "p",
             "0202020202020202020202020202020202020202020202020202020202020202",
           ],
-          ["type", "checkout_spark_recovery"],
+          ["type", messageType],
         ],
         content: "{}",
       })
-
     expect(
       await unwrapGiftWrap(wrap("w-incomplete-recovery"), signer, {
         giftUnwrap,
@@ -501,7 +535,11 @@ describe("unwrapGiftWrap", () => {
     })
   })
 
-  it("rejects a recovery marker mixed into ordinary order type tags", async () => {
+  it.each([
+    "checkout_spark_recovery",
+    "checkout_spark_recovery_progress",
+    "checkout_spark_merchant_progress",
+  ])("quarantines %s mixed into ordinary order tags", async (messageType) => {
     const recoveryMaterial = crypto.randomUUID()
     const giftUnwrap: GiftUnwrapFn = async () =>
       rumor(EVENT_KINDS.ORDER, {
@@ -511,12 +549,11 @@ describe("unwrapGiftWrap", () => {
             "0202020202020202020202020202020202020202020202020202020202020202",
           ],
           ["type", "order"],
-          ["type", "checkout_spark_recovery"],
+          ["type", messageType],
           ["order", "order-1"],
         ],
         content: JSON.stringify({ mnemonic: recoveryMaterial }),
       })
-
     const outcome = await unwrapGiftWrap(wrap("w-mixed-recovery"), signer, {
       giftUnwrap,
     })
@@ -1478,6 +1515,13 @@ describe("publishPrivateMessage", () => {
         committedAt: 100,
       })
     )
+    const inboxRepository = await inboxEvidenceRepository([
+      { secretKey: INBOX_OWNER_SECRET, relayUrls: [eligibleRelayUrl] },
+      {
+        secretKey: INBOX_PEER_SECRET,
+        relayUrls: [excludedRelayUrl, eligibleRelayUrl],
+      },
+    ])
     let publishOptions: Parameters<
       NonNullable<Parameters<typeof publishPrivateMessage>[0]["publishFn"]>
     >[1]
@@ -1490,7 +1534,9 @@ describe("publishPrivateMessage", () => {
       senderPubkey: INBOX_OWNER,
       recipientPubkey: INBOX_PEER,
       accountPubkey: INBOX_OWNER,
+      authenticatedPubkey: INBOX_OWNER,
       accountNetworkLocalStateRepository: repository,
+      inboxDeclarationEvidenceRepository: inboxRepository,
       signer: plainTestSigner({
         user: async () => ({ pubkey: INBOX_OWNER }),
       } as unknown as NDKSigner),
@@ -1499,7 +1545,10 @@ describe("publishPrivateMessage", () => {
       recipientInboxRelays: [excludedRelayUrl, eligibleRelayUrl],
       inspectOwnInboxReadiness: async () => ({
         state: "ready",
-        eventId: "a".repeat(64),
+        eventId: (await getInboxDeclarationEvidence(
+          INBOX_OWNER,
+          inboxRepository
+        ))!.current.signedEvent.id,
         relayUrls: [eligibleRelayUrl],
         stale: false,
         distributionRepairable: false,
@@ -1624,14 +1673,6 @@ describe("publishPrivateMessage", () => {
   it("blocks kind-14 sends for every non-ready sender state before wrapping", async () => {
     const eventId = "a".repeat(64)
     const blockedReadiness: OwnPrivateMessageRelayReadiness[] = [
-      {
-        state: "distribution_pending",
-        eventId,
-        relayUrls: ["wss://sender.inbox.example"],
-        retainedRelayUrls: [],
-        stale: true,
-        distributionRepairable: false,
-      },
       {
         state: "signed_empty",
         eventId,
@@ -1959,6 +2000,13 @@ describe("publishPrivateMessage", () => {
       authenticatedPubkey: INBOX_OWNER,
       accountNetworkLocalStateRepository:
         createInMemoryAccountNetworkLocalStateRepository(),
+      inboxDeclarationEvidenceRepository: await inboxEvidenceRepository([
+        {
+          secretKey: INBOX_OWNER_SECRET,
+          relayUrls: ["wss://sender.inbox.conduit.market"],
+        },
+        { secretKey: INBOX_PEER_SECRET, relayUrls: ["wss://auth.nostr1.com"] },
+      ]),
       signer,
       signerInteraction: "external",
       relayAuthMethod: "nip07",
@@ -2166,12 +2214,19 @@ describe("publishPrivateMessage", () => {
   })
 
   it("authorizes owner ws only for the sender self-copy leg", async () => {
-    const senderPubkey = "a".repeat(64)
-    const recipientPubkey = "b".repeat(64)
+    const senderPubkey = INBOX_OWNER
+    const recipientPubkey = INBOX_PEER
     const ownerWs = "ws://owner-inbox.example"
     const remoteWs = "ws://recipient-inbox.example"
     const accountNetworkLocalStateRepository =
       createInMemoryAccountNetworkLocalStateRepository()
+    const inboxRepository = await inboxEvidenceRepository([
+      { secretKey: INBOX_OWNER_SECRET, relayUrls: [ownerWs] },
+      {
+        secretKey: INBOX_PEER_SECRET,
+        relayUrls: [remoteWs, "wss://recipient.inbox.conduit.market"],
+      },
+    ])
     const publishes: Array<{
       recipient: string
       relays: readonly string[]
@@ -2189,6 +2244,7 @@ describe("publishPrivateMessage", () => {
       accountPubkey: senderPubkey,
       authenticatedPubkey: senderPubkey,
       accountNetworkLocalStateRepository,
+      inboxDeclarationEvidenceRepository: inboxRepository,
       recipientPubkey,
       signer: plainTestSigner({
         user: async () => ({ pubkey: senderPubkey }),
@@ -2240,13 +2296,17 @@ describe("publishPrivateMessage", () => {
   })
 
   it("does not infer owner ws authority from the sender, rumor, or account", async () => {
-    const senderPubkey = "a".repeat(64)
-    const recipientPubkey = "b".repeat(64)
+    const senderPubkey = INBOX_OWNER
+    const recipientPubkey = INBOX_PEER
     const ownerWs = "ws://owner-inbox.example"
     const ownerWss = "wss://owner.inbox.conduit.market"
     const recipientWss = "wss://recipient.inbox.conduit.market"
     const accountNetworkLocalStateRepository =
       createInMemoryAccountNetworkLocalStateRepository()
+    const inboxRepository = await inboxEvidenceRepository([
+      { secretKey: INBOX_OWNER_SECRET, relayUrls: [ownerWs, ownerWss] },
+      { secretKey: INBOX_PEER_SECRET, relayUrls: [recipientWss] },
+    ])
 
     for (const authenticatedPubkey of [undefined, recipientPubkey]) {
       const publishes: Array<{
@@ -2257,7 +2317,7 @@ describe("publishPrivateMessage", () => {
         authenticatedPubkey: string | null | undefined
       }> = []
 
-      await publishPrivateMessage({
+      const result = await publishPrivateMessage({
         rumor: rumor(EVENT_KINDS.DIRECT_MESSAGE, {
           pubkey: senderPubkey,
           tags: [["p", recipientPubkey]],
@@ -2266,6 +2326,7 @@ describe("publishPrivateMessage", () => {
         accountPubkey: senderPubkey,
         authenticatedPubkey,
         accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository: inboxRepository,
         recipientPubkey,
         signer: plainTestSigner({
           user: async () => ({ pubkey: senderPubkey }),
@@ -2274,7 +2335,10 @@ describe("publishPrivateMessage", () => {
         recipientInboxRelays: [recipientWss],
         inspectOwnInboxReadiness: async () => ({
           state: "ready",
-          eventId: "c".repeat(64),
+          eventId: (await getInboxDeclarationEvidence(
+            senderPubkey,
+            inboxRepository
+          ))!.current.signedEvent.id,
           relayUrls: [ownerWs, ownerWss],
           stale: false,
           distributionRepairable: false,
@@ -2297,23 +2361,18 @@ describe("publishPrivateMessage", () => {
           } as never
         }) as never,
       })
-
-      expect(publishes).toEqual([
-        {
-          recipient: recipientPubkey,
-          relays: [recipientWss],
-          ownerSelectedRelayUrls: [],
-          accountPubkey: senderPubkey,
-          authenticatedPubkey: null,
-        },
-        {
-          recipient: senderPubkey,
-          relays: [ownerWss],
-          ownerSelectedRelayUrls: [],
-          accountPubkey: senderPubkey,
-          authenticatedPubkey: null,
-        },
+      expect(result.selfDeliveryStatus).toBe("full_success")
+      expect(
+        publishes.map(({ recipient, relays }) => ({ recipient, relays }))
+      ).toEqual([
+        { recipient: recipientPubkey, relays: [recipientWss] },
+        { recipient: senderPubkey, relays: [ownerWss] },
       ])
+      expect(
+        publishes.every(
+          (publish) => publish.ownerSelectedRelayUrls.length === 0
+        )
+      ).toBe(true)
     }
   })
 
@@ -3322,7 +3381,7 @@ describe("publishPrivateMessage", () => {
 
   it("retains the approved compatibility plan and non-ACK outcome for exact retry", async () => {
     const approvedRelays = [
-      "wss://conduit-congee.fly.dev",
+      "wss://relay.conduit.market",
       "wss://recipient-write.example",
     ] as const
     const wrapped = new NDKEvent()
@@ -3963,7 +4022,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     })
   })
 
-  it("does not promote owner-local provenance during an ordinary resolve", async () => {
+  it("does not promote owner-local provenance when signed inbox evidence is ready", async () => {
     __resetInboxRelayCache()
     const evidenceRepository =
       createInMemoryInboxDeclarationEvidenceRepository()
@@ -4004,13 +4063,16 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     )
 
     expect(readiness).toEqual({
-      state: "distribution_pending",
+      state: "ready",
       eventId: declaration.id,
       relayUrls: ["wss://inbox.example"],
-      retainedRelayUrls: [],
       stale: true,
       distributionRepairable: false,
     })
+    expect(
+      (await getInboxDeclarationEvidence(INBOX_OWNER, evidenceRepository))
+        ?.current.sharedSourceRelayUrls
+    ).toEqual([])
   })
 
   it("performs the send-time readiness check from durable evidence without relay traffic", async () => {
@@ -4189,13 +4251,10 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     ).toMatchObject({ state: "ready", eventId: declaration.id })
   })
 
-  it("preserves durable shared proof while refusing new proof after a write failure", async () => {
+  it("keeps valid signed inbox evidence ready without promoting shared provenance after a write failure", async () => {
     const cases = [
       { previouslyConfirmed: true, expectedState: "ready" as const },
-      {
-        previouslyConfirmed: false,
-        expectedState: "distribution_pending" as const,
-      },
+      { previouslyConfirmed: false, expectedState: "ready" as const },
     ]
 
     for (const testCase of cases) {
@@ -4325,7 +4384,7 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
     })
   })
 
-  it("never reports an unconfirmed retained declaration ready after empty shared reads", async () => {
+  it("retains valid signed current evidence after empty shared reads", async () => {
     const sharedRelayUrls = sharedInboxDiscoveryRelayUrls().slice(0, 2)
     for (const coverage of ["partial", "complete"] as const) {
       __resetInboxRelayCache()
@@ -4361,10 +4420,9 @@ describe("inspectOwnPrivateMessageRelayReadiness", () => {
       )
 
       expect(readiness).toEqual({
-        state: "distribution_pending",
+        state: "ready",
         eventId: declaration.id,
         relayUrls: ["wss://inbox.example"],
-        retainedRelayUrls: [],
         stale: true,
         distributionRepairable: coverage === "complete",
       })

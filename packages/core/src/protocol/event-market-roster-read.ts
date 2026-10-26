@@ -1,10 +1,23 @@
+import { isValidSignedPublicNostrEvent } from "./signed-event"
+import {
+  observeEventMarketWriteScope,
+  type EventMarketWriteObservation,
+} from "./event-market-write-readiness"
 import type { Filter } from "nostr-tools"
 import {
   readEventMarketAuthorization,
   type EventMarketAuthorizationReadResult,
 } from "./event-market-authorization-read"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
-import { db, type CachedEventMarketRosterEvidence } from "../db"
+import {
+  computeEventMarketAssignmentDTag,
+  parseEventMarketAssignmentEvent,
+  type ParsedEventMarketAssignment,
+} from "./event-market-assignment"
+import {
+  eventMarketEvidenceStore,
+  type EventMarketEvidenceRetention,
+} from "./event-market-evidence-store"
 import {
   orderEventMarketPickupFulfillmentSchema,
   type OrderEventMarketPickupFulfillmentSchema,
@@ -13,6 +26,7 @@ import {
 import {
   decodeEventMarketReference,
   getEventMarketReadPlan,
+  getEventMarketDiscoveryReadPlan,
   isEventMarketAddressableRevisionDeleted,
   parseAddressableCoordinate,
   type EventMarketReadPlan,
@@ -28,6 +42,11 @@ import {
 } from "./event-market-roster"
 import { EVENT_KINDS } from "./kinds"
 import {
+  scanEventMarketCandidates,
+  getEventMarketDiscoveryScope,
+  type EventMarketDiscoveryContinuation,
+} from "./event-market-candidates"
+import {
   resolveEventMarketOccurrence,
   resolveEventMarketSeries,
   type EventMarketSchedule,
@@ -35,6 +54,7 @@ import {
 import { parseProductEvent } from "./products"
 import {
   fetchSignedEventsFanoutDetailed,
+  verifySignedEventBatches,
   type PublicRelayReadOptions,
 } from "./relay-reader"
 import {
@@ -44,7 +64,6 @@ import {
 import {
   admitPublicEvent,
   isVerifiedNostrEvent,
-  verifySignedEvents,
   type VerifiedNostrEvent,
 } from "./verified-public-event"
 
@@ -52,14 +71,7 @@ async function admitRows(
   rows: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ): Promise<VerifiedNostrEvent[]> {
-  const verified: VerifiedNostrEvent[] = []
-  for (let offset = 0; offset < rows.length; offset += 64) {
-    const batch = await verifySignedEvents(rows.slice(offset, offset + 64), {
-      signal,
-    })
-    verified.push(...batch.events)
-  }
-  return verified
+  return verifySignedEventBatches(rows, { signal, batchSize: 64 })
 }
 
 async function admitFanout(
@@ -85,6 +97,8 @@ export interface EventMarketRosterReadResult {
   calendarCoverage?: EventMarketRosterReadCoverage
   schedule?: EventMarketSchedule
   scheduleCoverage?: EventMarketRosterReadCoverage
+  writeObservation?: EventMarketWriteObservation
+  calendarWriteObservation?: EventMarketWriteObservation
 }
 
 export interface EventMarketProductReadResult {
@@ -94,6 +108,8 @@ export interface EventMarketProductReadResult {
   retained: boolean
   actionable: boolean
   authorization?: EventMarketAuthorizationReadResult
+  assignment?: ParsedEventMarketAssignment
+  parentProductEvent?: SignedPublicNostrEvent
 }
 
 /** Signed display evidence only; the selected product still needs an action-time read. */
@@ -180,10 +196,16 @@ export function createEventMarketPickupSnapshot(input: {
     market.state !== "current" ||
     market.market.state !== "open" ||
     !calendar ||
+    !calendar.signedEvent ||
+    calendar.coordinate !== input.selectedOccurrenceCoordinate ||
+    calendar.end <= Date.now() ||
+    (calendar.kind === EVENT_KINDS.CALENDAR_TIME &&
+      !calendar.signedEvent.tags.some((tag) => tag[0] === "end")) ||
     (schedule?.kind === "series" &&
       (!hasCurrentSignedEvidence(input.marketRead.calendarCoverage) ||
         calendar.end <= Date.now())) ||
     product.state !== "eligible" ||
+    product.assignment.occurrenceCoordinate !== calendar.coordinate ||
     (product.merchant.pubkey === market.market.organizerPubkey &&
       product.merchant.mode === "organizer_handoff") ||
     authorization?.state !== "active" ||
@@ -227,6 +249,22 @@ export function createEventMarketPickupSnapshot(input: {
       createdAt: product.revision.created_at * 1_000,
       signedEvent: product.revision,
     },
+    ...(input.productRead.parentProductEvent && product.product.parentProductId
+      ? {
+          parentProduct: {
+            coordinate: product.product.parentProductId,
+            eventId: input.productRead.parentProductEvent.id,
+            createdAt: input.productRead.parentProductEvent.created_at * 1_000,
+            signedEvent: input.productRead.parentProductEvent,
+          },
+        }
+      : {}),
+    occurrenceAssignment: {
+      coordinate: product.assignment.coordinate,
+      eventId: product.assignment.eventId,
+      createdAt: product.assignment.createdAt * 1_000,
+      signedEvent: product.assignment.signedEvent,
+    },
     grant: {
       kind: EVENT_KINDS.EVENT_MARKET_AUTH,
       pubkey: market.market.organizerPubkey,
@@ -252,6 +290,7 @@ export function createEventMarketPickupSnapshot(input: {
 }
 
 interface SignedFanoutResult {
+  admittedRelayUrls?: string[]
   events: SignedPublicNostrEvent[]
   relays: Array<{ relayUrl: string; status: "success" | "partial" | "failed" }>
 }
@@ -265,30 +304,22 @@ interface RosterReadDependencies {
   load: (coordinate: string) => Promise<SignedPublicNostrEvent[]>
   retain: (
     coordinate: string,
-    events: readonly SignedPublicNostrEvent[]
+    events: readonly SignedPublicNostrEvent[],
+    retention?: EventMarketEvidenceRetention
   ) => Promise<void>
   authorization?: typeof readEventMarketAuthorization
 }
-
-const MAX_RETAINED_MARKET_RECORDS = 2_048
 
 async function fetchSigned(
   filter: Filter,
   options: PublicRelayReadOptions
 ): Promise<SignedFanoutResult> {
   const result = await fetchSignedEventsFanoutDetailed(filter, options)
-  return { events: result.events, relays: result.relays }
+  return result
 }
 
-async function loadRetained(
-  coordinate: string
-): Promise<SignedPublicNostrEvent[]> {
-  const rows = await db.eventMarketRosterEvidence
-    .where("marketCoordinate")
-    .equals(coordinate)
-    .toArray()
-  return admitRows(rows.map((row) => row.signedEvent))
-}
+const loadRetained = eventMarketEvidenceStore.load
+const retainSigned = eventMarketEvidenceStore.retain
 
 /** Exact saved public records for interrupted organizer publication. */
 export async function loadRetainedSignedEventMarketEvidence(
@@ -299,35 +330,6 @@ export async function loadRetainedSignedEventMarketEvidence(
   ])
   if (!coordinate || coordinate.coordinate !== marketCoordinate) return []
   return loadRetained(marketCoordinate)
-}
-
-async function retainSigned(
-  coordinate: string,
-  events: readonly SignedPublicNostrEvent[]
-): Promise<void> {
-  if (events.length === 0) return
-  const rows: CachedEventMarketRosterEvidence[] = [
-    ...new Map(events.map((event) => [event.id, event])).values(),
-  ].map((event) => ({
-    id: `${coordinate}:${event.id}`,
-    marketCoordinate: coordinate,
-    signedEvent: event,
-    cachedAt: Date.now(),
-  }))
-  await db.transaction("rw", db.eventMarketRosterEvidence, async () => {
-    const existing = await db.eventMarketRosterEvidence
-      .where("marketCoordinate")
-      .equals(coordinate)
-      .count()
-    const alreadyStored = await db.eventMarketRosterEvidence.bulkGet(
-      rows.map((row) => row.id)
-    )
-    const newRows = alreadyStored.filter((row) => !row).length
-    if (existing + newRows > MAX_RETAINED_MARKET_RECORDS) {
-      throw new Error("Event Market evidence retention is at capacity.")
-    }
-    await db.eventMarketRosterEvidence.bulkPut(rows)
-  })
 }
 
 /** Persist a signed market, calendar, or authorization event before first relay I/O. */
@@ -355,36 +357,75 @@ export async function retainSignedEventMarketEvidence(
   await retainSigned(market.coordinate, [admitted.event])
 }
 
+/** Retain exact signed commerce projections and authority for offline acceptance. */
+export async function retainEventMarketCommerceEvidence(
+  marketCoordinate: string,
+  events: readonly SignedPublicNostrEvent[]
+): Promise<void> {
+  const market = parseAddressableCoordinate(marketCoordinate, [
+    EVENT_KINDS.EVENT_MARKET,
+  ])
+  if (!market || market.coordinate !== marketCoordinate || events.length > 128)
+    throw new Error("Event Market commerce evidence scope is invalid.")
+  const assignments = events
+    .map((event) =>
+      event.kind === 30410 ? parseEventMarketAssignmentEvent(event) : null
+    )
+    .filter((value) => value !== null)
+  const productAuthors = new Set(
+    assignments.map((assignment) => assignment.merchantPubkey)
+  )
+  if (
+    events.some(
+      (event) =>
+        !isValidSignedPublicNostrEvent(event) ||
+        ![
+          EVENT_KINDS.EVENT_MARKET,
+          EVENT_KINDS.CALENDAR_DATE,
+          EVENT_KINDS.CALENDAR_TIME,
+          EVENT_KINDS.CALENDAR,
+          EVENT_KINDS.EVENT_MARKET_AUTH,
+          EVENT_KINDS.PRODUCT,
+          EVENT_KINDS.DELETION,
+          30410,
+        ].includes(event.kind as never) ||
+        (event.kind === 30410 &&
+          !assignments.some(
+            (assignment) =>
+              assignment.eventId === event.id &&
+              assignment.marketCoordinate === marketCoordinate
+          )) ||
+        (event.kind === EVENT_KINDS.PRODUCT &&
+          !productAuthors.has(event.pubkey)) ||
+        (![EVENT_KINDS.PRODUCT, 30410, EVENT_KINDS.DELETION].includes(
+          event.kind as never
+        ) &&
+          event.pubkey !== market.authorPubkey)
+    )
+  )
+    throw new Error("Signed Event Market commerce evidence is invalid.")
+  await retainSigned(marketCoordinate, events)
+}
+
 const defaultDependencies: RosterReadDependencies & {
   loadDiscovered: (
-    authors: readonly string[]
+    authors: readonly string[] | undefined
   ) => Promise<SignedPublicNostrEvent[]>
+  planDiscovery: typeof getEventMarketDiscoveryReadPlan
 } = {
   plan: getEventMarketReadPlan,
+  planDiscovery: getEventMarketDiscoveryReadPlan,
   fetch: fetchSigned,
   load: loadRetained,
   retain: retainSigned,
   authorization: readEventMarketAuthorization,
-  loadDiscovered: async (authors: readonly string[]) => {
-    const rows = (
-      await Promise.all(
-        authors.map((author) =>
-          db.eventMarketRosterEvidence
-            .where("marketCoordinate")
-            .startsWith(`30409:${author}:`)
-            .filter((row) => row.signedEvent.kind === EVENT_KINDS.EVENT_MARKET)
-            .limit(128)
-            .toArray()
-        )
-      )
-    ).flat()
-    return admitRows(rows.map((row) => row.signedEvent))
-  },
+  loadDiscovered: eventMarketEvidenceStore.loadDiscovered,
 }
 
 function fanoutOptions(
   plan: EventMarketReadPlan,
   input: {
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -392,13 +433,10 @@ function fanoutOptions(
 ): PublicRelayReadOptions {
   return {
     relayUrls: plan.candidateRelayUrls,
+    relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,
-    accountPubkey: input.authenticatedPubkey,
+    accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls,
-    appRelayUrls: plan.appRelayUrls,
-    personalRelayUrls: plan.personalRelayUrls,
-    independentRelayUrls: plan.independentRelayUrls,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
   }
@@ -495,6 +533,7 @@ function scopedProductEvidence(
 export async function readEventMarketRoster(
   input: {
     reference: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -542,6 +581,7 @@ export async function readEventMarketRoster(
     plan = await dependencies.plan({
       organizerPubkey: decoded.authorPubkey,
       relayHints: decoded.relayHints,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,
@@ -673,6 +713,18 @@ export async function readEventMarketRoster(
           idDeletions.events.length >= 64
         ? "partial"
         : "complete"
+  const writeObservation = observeEventMarketWriteScope({
+    selectedLive:
+      resolution.state === "current" &&
+      rosterRead.events.some((event) => event.id === resolution.market.eventId),
+    limited:
+      !!plan.relayHintTruncated ||
+      knownRevisions.length > 32 ||
+      rosterRead.events.length >= 64 ||
+      coordinateDeletions.events.length >= 64 ||
+      idDeletions.events.length >= 64,
+    reads,
+  })
   if (resolution.state !== "current") {
     return {
       coordinate,
@@ -681,6 +733,7 @@ export async function readEventMarketRoster(
       retained,
       observedRelayUrls,
       observedEvidence: all,
+      writeObservation,
     }
   }
   const linkedCoordinate = parseAddressableCoordinate(
@@ -768,6 +821,20 @@ export async function readEventMarketRoster(
               masterIdDeletions.events.length >= 64
             ? "partial"
             : "complete"
+    const calendarWriteObservation = observeEventMarketWriteScope({
+      selectedLive:
+        seriesResolution.state === "current" &&
+        masterRead.events.some(
+          (event) => event.id === seriesResolution.series.eventId
+        ),
+      limited:
+        !!plan.relayHintTruncated ||
+        knownMaster.length > 32 ||
+        masterRead.events.length >= 64 ||
+        masterCoordinateDeletions.events.length >= 64 ||
+        masterIdDeletions.events.length >= 64,
+      reads: masterReads,
+    })
     if (seriesResolution.state !== "current") {
       return {
         coordinate,
@@ -779,6 +846,8 @@ export async function readEventMarketRoster(
         calendar: null,
         calendarCoverage: masterCoverage,
         scheduleCoverage: masterCoverage,
+        writeObservation,
+        calendarWriteObservation,
       }
     }
     const members = seriesResolution.series.memberCoordinates.map((value) =>
@@ -932,6 +1001,8 @@ export async function readEventMarketRoster(
       calendarCoverage: masterCoverage,
       schedule,
       scheduleCoverage,
+      writeObservation,
+      calendarWriteObservation,
     }
   }
   const calendarCoordinate = parseAddressableCoordinate(
@@ -1054,6 +1125,18 @@ export async function readEventMarketRoster(
           calendarIdDeletions.events.length >= 64
         ? "partial"
         : "complete"
+  const calendarWriteObservation = observeEventMarketWriteScope({
+    selectedLive:
+      !!calendar &&
+      calendarRead.events.some((event) => event.id === calendar.eventId),
+    limited:
+      !!plan.relayHintTruncated ||
+      calendarRevisionIds.size > 32 ||
+      calendarRead.events.length >= 64 ||
+      calendarCoordinateDeletions.events.length >= 64 ||
+      calendarIdDeletions.events.length >= 64,
+    reads: calendarReads,
+  })
   return {
     coordinate,
     resolution,
@@ -1071,6 +1154,8 @@ export async function readEventMarketRoster(
       (event) => event.id === calendar?.eventId
     ),
     calendarCoverage,
+    writeObservation,
+    calendarWriteObservation,
     ...(calendar?.signedEvent
       ? {
           schedule: {
@@ -1085,11 +1170,322 @@ export async function readEventMarketRoster(
   }
 }
 
+/** The strongest observed signed assignment is authoritative for this tuple. */
+export async function readEventMarketAssignment(
+  input: {
+    marketCoordinate: string
+    occurrenceCoordinate: string
+    productCoordinate: string
+    authenticatedPubkey?: string | null
+    shouldContinue?: () => boolean
+    signal?: AbortSignal
+  },
+  dependencies: RosterReadDependencies = defaultDependencies
+): Promise<{
+  assignment?: ParsedEventMarketAssignment
+  state:
+    | "active"
+    | "removed"
+    | "missing"
+    | "malformed"
+    | "deleted"
+    | "conflicting"
+    | "incomplete"
+  coverage: EventMarketRosterReadCoverage
+  retained: boolean
+}> {
+  const product = parseAddressableCoordinate(input.productCoordinate, [
+    EVENT_KINDS.PRODUCT,
+  ])
+  if (!product)
+    return { state: "malformed", coverage: "unavailable", retained: false }
+  let dTag: string
+  try {
+    dTag = computeEventMarketAssignmentDTag(input)
+  } catch {
+    return { state: "malformed", coverage: "unavailable", retained: false }
+  }
+  const coordinate = `30410:${product.authorPubkey}:${dTag}`
+  let retained = true
+  let cached: SignedPublicNostrEvent[] = []
+  try {
+    cached = await admitRows(
+      await dependencies.load(input.marketCoordinate),
+      input.signal
+    )
+  } catch {
+    retained = false
+  }
+  const scoped = (events: readonly SignedPublicNostrEvent[]) => {
+    const revisions = events.filter(
+      (event) =>
+        event.kind === 30410 &&
+        event.pubkey === product.authorPubkey &&
+        event.tags.some((tag) => tag[0] === "d" && tag[1] === dTag) &&
+        isValidSignedPublicNostrEvent(event)
+    )
+    const ids = new Set(revisions.map((event) => event.id))
+    return events.filter(
+      (event) =>
+        isValidSignedPublicNostrEvent(event) &&
+        event.pubkey === product.authorPubkey &&
+        (ids.has(event.id) ||
+          (event.kind === EVENT_KINDS.DELETION &&
+            event.tags.some(
+              (tag) =>
+                (tag[0] === "a" && tag[1] === coordinate) ||
+                (tag[0] === "e" && ids.has(tag[1] ?? ""))
+            )))
+    )
+  }
+  let live: SignedPublicNostrEvent[] = []
+  let relayStates: SignedFanoutResult["relays"] = []
+  let truncated = false
+  try {
+    const plan = await dependencies.plan({
+      organizerPubkey: product.authorPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      shouldContinue: input.shouldContinue,
+      signal: input.signal,
+    })
+    const options = fanoutOptions(plan, input)
+    const safeFetch = async (filter: Filter): Promise<SignedFanoutResult> => {
+      try {
+        return await admitFanout(
+          await dependencies.fetch(filter, options),
+          input.signal
+        )
+      } catch (error) {
+        if (input.signal?.aborted || input.shouldContinue?.() === false)
+          throw error
+        return { events: [], relays: [] }
+      }
+    }
+    const [revisions, coordinateDeletions] = await Promise.all([
+      safeFetch({
+        kinds: [30410],
+        authors: [product.authorPubkey],
+        "#d": [dTag],
+        limit: 64,
+      }),
+      safeFetch({
+        kinds: [EVENT_KINDS.DELETION],
+        authors: [product.authorPubkey],
+        "#a": [coordinate],
+        limit: 64,
+      }),
+    ])
+    const revisionIds = [
+      ...new Set(
+        [...scoped(cached), ...scoped(revisions.events)]
+          .filter((event) => event.kind === 30410)
+          .map((event) => event.id)
+      ),
+    ].slice(0, 32)
+    const idDeletions = revisionIds.length
+      ? await safeFetch({
+          kinds: [EVENT_KINDS.DELETION],
+          authors: [product.authorPubkey],
+          "#e": revisionIds,
+          limit: 64,
+        })
+      : { events: [], relays: [] }
+    const knownParents = new Map(
+      [...cached, ...revisions.events]
+        .filter(
+          (event) =>
+            event.kind === 30410 && isValidSignedPublicNostrEvent(event)
+        )
+        .map((event) => [event.id, event])
+    )
+    const parentReads: SignedFanoutResult[] = []
+    for (let round = 0; round < 32; round++) {
+      const missing = [...knownParents.values()]
+        .map(parseEventMarketAssignmentEvent)
+        .filter(
+          (assignment) =>
+            assignment?.previousEventId &&
+            !knownParents.has(assignment.previousEventId)
+        )
+        .map((assignment) => assignment!.previousEventId!)
+      if (!missing.length) break
+      const parentRead = await safeFetch({
+        kinds: [30410],
+        authors: [product.authorPubkey],
+        ids: [...new Set(missing)].slice(0, 32),
+        limit: 32,
+      })
+      parentReads.push(parentRead)
+      let added = 0
+      for (const event of parentRead.events) {
+        if (
+          event.kind === 30410 &&
+          event.pubkey === product.authorPubkey &&
+          isValidSignedPublicNostrEvent(event) &&
+          !knownParents.has(event.id)
+        ) {
+          knownParents.set(event.id, event)
+          added++
+        }
+      }
+      if (!added) break
+    }
+    live = [
+      ...revisions.events,
+      ...coordinateDeletions.events,
+      ...idDeletions.events,
+      ...parentReads.flatMap((read) => read.events),
+    ].filter(
+      (event) =>
+        isValidSignedPublicNostrEvent(event) &&
+        event.pubkey === product.authorPubkey &&
+        (event.kind === 30410 || event.kind === EVENT_KINDS.DELETION)
+    )
+    relayStates = [
+      ...revisions.relays,
+      ...coordinateDeletions.relays,
+      ...idDeletions.relays,
+      ...parentReads.flatMap((read) => read.relays),
+    ]
+    truncated =
+      plan.relayHintTruncated ||
+      revisionIds.length >= 32 ||
+      [revisions, coordinateDeletions, idDeletions].some(
+        (read) => read.events.length >= 64
+      ) ||
+      parentReads.some((read) => read.events.length >= 32)
+    const liveIds = new Set(live.map((event) => event.id))
+    await dependencies.retain(
+      input.marketCoordinate,
+      scoped([...cached, ...live]).filter((event) => liveIds.has(event.id))
+    )
+  } catch (error) {
+    if (input.signal?.aborted || input.shouldContinue?.() === false) throw error
+    retained = false
+  }
+  const known = [
+    ...new Map(
+      scoped([...cached, ...live]).map((event) => [event.id, event])
+    ).values(),
+  ]
+  const revisions = known
+    .filter((event) => event.kind === 30410)
+    .sort(
+      (left, right) =>
+        -compareReplaceableEventFrontiers(
+          { createdAt: left.created_at, eventId: left.id },
+          { createdAt: right.created_at, eventId: right.id }
+        )
+    )
+  const winner = revisions[0]
+  let coverage: EventMarketRosterReadCoverage =
+    relayStates.length === 0 ||
+    relayStates.every((relay) => relay.status === "failed")
+      ? "unavailable"
+      : !retained ||
+          truncated ||
+          relayStates.some((relay) => relay.status !== "success")
+        ? "partial"
+        : "complete"
+  if (!winner) return { state: "missing", coverage, retained }
+  if (!live.some((event) => event.id === winner.id)) coverage = "stale"
+  if (
+    isEventMarketAddressableRevisionDeleted(
+      { coordinate, eventId: winner.id, createdAt: winner.created_at * 1_000 },
+      known.filter((event) => event.kind === EVENT_KINDS.DELETION)
+    )
+  )
+    return { state: "deleted", coverage, retained }
+  const assignment = parseEventMarketAssignmentEvent(winner)
+  if (
+    !assignment ||
+    assignment.coordinate !== coordinate ||
+    assignment.marketCoordinate !== input.marketCoordinate ||
+    assignment.occurrenceCoordinate !== input.occurrenceCoordinate ||
+    assignment.productCoordinate !== input.productCoordinate
+  )
+    return { state: "malformed", coverage, retained }
+  const parsed = revisions
+    .map(parseEventMarketAssignmentEvent)
+    .filter((value) => value !== null)
+  const byId = new Map(parsed.map((value) => [value.eventId, value]))
+  for (const revision of parsed) {
+    if (!revision.previousEventId) continue
+    const parent = byId.get(revision.previousEventId)
+    if (!parent) {
+      const foreign = [...cached, ...live].find(
+        (event) => event.id === revision.previousEventId
+      )
+      if (
+        foreign &&
+        (!parseEventMarketAssignmentEvent(foreign) ||
+          parseEventMarketAssignmentEvent(foreign)?.coordinate !==
+            revision.coordinate)
+      )
+        return { state: "malformed", coverage, retained }
+      // NIP-01 relays may discard superseded addressable revisions. A valid
+      // current signed assertion does not require an archive of its parents.
+      // Any material divergence we actually observed is still checked below.
+      continue
+    }
+    if (
+      parent.coordinate !== revision.coordinate ||
+      parent.merchantPubkey !== revision.merchantPubkey ||
+      parent.eventId === revision.eventId
+    )
+      return { state: "malformed", coverage, retained }
+  }
+  const referenced = new Set(
+    parsed.flatMap((value) =>
+      value.previousEventId ? [value.previousEventId] : []
+    )
+  )
+  const tips = parsed.filter((value) => !referenced.has(value.eventId))
+  const material = (value: ParsedEventMarketAssignment) =>
+    JSON.stringify([
+      value.state,
+      value.inventory,
+      [...value.fulfillmentMethods].sort(),
+      value.stockPool,
+    ])
+  if (new Set(tips.map(material)).size > 1) {
+    const paths = tips.map((tip) => {
+      const ids = new Set<string>()
+      let cursor: ParsedEventMarketAssignment | undefined = tip
+      while (cursor && !ids.has(cursor.eventId)) {
+        ids.add(cursor.eventId)
+        if (!cursor.previousEventId) return { ids, root: cursor.eventId }
+        const parent = byId.get(cursor.previousEventId)
+        if (!parent) {
+          ids.add(cursor.previousEventId)
+          return { ids, root: undefined }
+        }
+        cursor = parent
+      }
+      return { ids, root: undefined }
+    })
+    for (let left = 0; left < tips.length; left++) {
+      for (let right = left + 1; right < tips.length; right++) {
+        if (material(tips[left]!) === material(tips[right]!)) continue
+        const a = paths[left]!
+        const b = paths[right]!
+        // Distinct known roots or branches from a common observed parent prove
+        // a fork. A missing intermediate alone does not prove divergence.
+        if ((a.root && b.root) || [...a.ids].some((id) => b.ids.has(id)))
+          return { state: "conflicting", coverage, retained }
+      }
+    }
+  }
+  return { state: assignment.state, assignment, coverage, retained }
+}
+
 /** Exact product authority for selected purchase actions and direct product links. */
 export async function readEventMarketProduct(
   input: {
     marketRead: EventMarketRosterReadResult
     productCoordinate: string
+    selectedOccurrenceCoordinate?: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1132,6 +1528,7 @@ export async function readEventMarketProduct(
   const authorization = await readAuthorization({
     marketCoordinate: market.market.coordinate,
     merchantPubkey: product.authorPubkey,
+    accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     shouldContinue: input.shouldContinue,
     signal: input.signal,
@@ -1146,6 +1543,38 @@ export async function readEventMarketProduct(
       authorization,
     }
   }
+  const selectedOccurrence = input.selectedOccurrenceCoordinate
+  const occurrence =
+    input.marketRead.schedule?.kind === "series"
+      ? input.marketRead.schedule.occurrences.find(
+          (entry) =>
+            entry.occurrence.coordinate === selectedOccurrence &&
+            hasCurrentSignedEvidence(entry.coverage)
+        )?.occurrence
+      : input.marketRead.calendar?.coordinate === selectedOccurrence
+        ? input.marketRead.calendar
+        : undefined
+  const occurrenceUsable =
+    !!occurrence?.signedEvent &&
+    occurrence.end > Date.now() &&
+    (occurrence.kind !== EVENT_KINDS.CALENDAR_TIME ||
+      occurrence.signedEvent.tags.some((tag) => tag[0] === "end")) &&
+    !occurrence.signedEvent.tags.some(
+      (tag) => tag[0] === "event_occurrence" && tag[2] === "cancelled"
+    )
+  const assignmentRead = occurrenceUsable
+    ? await readEventMarketAssignment(
+        {
+          marketCoordinate: market.market.coordinate,
+          occurrenceCoordinate: selectedOccurrence!,
+          productCoordinate: product.coordinate,
+          authenticatedPubkey: input.authenticatedPubkey,
+          shouldContinue: input.shouldContinue,
+          signal: input.signal,
+        },
+        dependencies
+      )
+    : undefined
   let retained = input.marketRead.retained
   let loaded: SignedPublicNostrEvent[] = []
   try {
@@ -1176,6 +1605,7 @@ export async function readEventMarketProduct(
   try {
     plan = await dependencies.plan({
       organizerPubkey: product.authorPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,
@@ -1188,6 +1618,8 @@ export async function readEventMarketProduct(
       revisions: cached.filter((event) => event.kind === EVENT_KINDS.PRODUCT),
       deletions: cached.filter((event) => event.kind === EVENT_KINDS.DELETION),
       authorization: authorization.resolution,
+      assignment:
+        assignmentRead?.state === "active" ? assignmentRead.assignment : null,
     })
     return {
       productCoordinate: product.coordinate,
@@ -1267,12 +1699,112 @@ export async function readEventMarketProduct(
   const all = [
     ...new Map([...cached, ...live].map((event) => [event.id, event])).values(),
   ]
+  let parentProduct: ProductSchema | undefined
+  let parentProductEvent: SignedPublicNostrEvent | undefined
+  try {
+    const selected =
+      knownRevisions[0] &&
+      parseProductEvent(
+        (await verifySignedEventBatches([knownRevisions[0]]))[0]!
+      )
+    if (selected?.type === "variation" && selected.parentProductId) {
+      const parent = parseAddressableCoordinate(selected.parentProductId, [
+        EVENT_KINDS.PRODUCT,
+      ])
+      if (parent?.authorPubkey === product.authorPubkey) {
+        const parentRead = await safeFetch({
+          kinds: [EVENT_KINDS.PRODUCT],
+          authors: [parent.authorPubkey],
+          "#d": [parent.dTag],
+          limit: 64,
+        })
+        const parentRevisions = [...loaded, ...parentRead.events]
+          .filter(
+            (event) =>
+              event.kind === EVENT_KINDS.PRODUCT &&
+              event.pubkey === parent.authorPubkey &&
+              event.tags.some(
+                (tag) => tag[0] === "d" && tag[1] === parent.dTag
+              ) &&
+              isValidSignedPublicNostrEvent(event)
+          )
+          .sort(
+            (left, right) =>
+              -compareReplaceableEventFrontiers(
+                { createdAt: left.created_at, eventId: left.id },
+                { createdAt: right.created_at, eventId: right.id }
+              )
+          )
+        const parentWinner = parentRevisions[0]
+        const parentIds = new Set(parentRevisions.map((event) => event.id))
+        const [parentDeletions, parentIdDeletions] = await Promise.all([
+          safeFetch({
+            kinds: [EVENT_KINDS.DELETION],
+            authors: [parent.authorPubkey],
+            "#a": [parent.coordinate],
+            limit: 64,
+          }),
+          parentIds.size > 0
+            ? safeFetch({
+                kinds: [EVENT_KINDS.DELETION],
+                authors: [parent.authorPubkey],
+                "#e": [...parentIds].slice(0, 64),
+                limit: 64,
+              })
+            : Promise.resolve({ events: [], relays: [] }),
+        ])
+        reads.push(parentRead, parentDeletions, parentIdDeletions)
+        const parentEvidence = scopedProductEvidence(
+          parent.coordinate,
+          parent.authorPubkey,
+          [
+            ...parentRead.events,
+            ...parentDeletions.events,
+            ...parentIdDeletions.events,
+          ],
+          parentIds
+        )
+        try {
+          await dependencies.retain(market.market.coordinate, parentEvidence)
+        } catch {
+          retained = false
+        }
+        if (
+          parentWinner &&
+          parentRead.events.some((event) => event.id === parentWinner.id)
+        ) {
+          if (
+            !isEventMarketAddressableRevisionDeleted(
+              {
+                coordinate: parent.coordinate,
+                eventId: parentWinner.id,
+                createdAt: parentWinner.created_at * 1_000,
+              },
+              [...loaded, ...parentEvidence].filter(
+                (event) => event.kind === EVENT_KINDS.DELETION
+              )
+            )
+          ) {
+            parentProduct = parseProductEvent(
+              (await verifySignedEventBatches([parentWinner]))[0]!
+            )
+            parentProductEvent = parentWinner
+          }
+        }
+      }
+    }
+  } catch {
+    // An unresolved variation parent cannot establish purchase authority.
+  }
   const resolution = resolveEventMarketProduct({
     market: market.market,
     productCoordinate: product.coordinate,
     revisions: all.filter((event) => event.kind === EVENT_KINDS.PRODUCT),
     deletions: all.filter((event) => event.kind === EVENT_KINDS.DELETION),
     authorization: authorization.resolution,
+    assignment:
+      assignmentRead?.state === "active" ? assignmentRead.assignment : null,
+    parentProduct,
   })
   const liveIds = new Set(live.map((event) => event.id))
   const stale = knownRevisions[0] && !liveIds.has(knownRevisions[0].id)
@@ -1298,8 +1830,16 @@ export async function readEventMarketProduct(
     coverage,
     retained,
     authorization,
+    ...(assignmentRead?.assignment
+      ? { assignment: assignmentRead.assignment }
+      : {}),
+    ...(parentProductEvent ? { parentProductEvent } : {}),
     actionable:
       resolution.state === "eligible" &&
+      occurrenceUsable &&
+      assignmentRead?.state === "active" &&
+      assignmentRead.retained &&
+      hasCurrentSignedEvidence(assignmentRead.coverage) &&
       authorization.actionable &&
       market.market.state === "open" &&
       retained &&
@@ -1351,11 +1891,14 @@ function catalogCandidates(input: {
   marketRead: EventMarketRosterReadResult
   live: readonly SignedPublicNostrEvent[]
   cached: readonly SignedPublicNostrEvent[]
+  selectedOccurrenceCoordinate?: string
   limit: number
   incomplete: boolean
   search?: string
 }): EventMarketCatalogReadResult {
   const { marketRead, live, cached, limit } = input
+  const selectedOccurrenceCoordinate =
+    input.selectedOccurrenceCoordinate ?? marketRead.calendar?.coordinate
   const market = marketRead.resolution
   const products: EventMarketCatalogCandidate[] = []
   if (market.state !== "current") {
@@ -1415,10 +1958,64 @@ function catalogCandidates(input: {
   }
   const newest = new Map<string, VerifiedNostrEvent>()
   const coordinates = new Set<string>()
+  const retainedAssignmentCoordinates = new Set<string>()
+  const assignmentRevisions = new Map<string, SignedPublicNostrEvent>()
   const liveIds = new Set(live.map((event) => event.id))
+  let retainedAssignment = false
   // Live relay order leads. Cache fills gaps, but its newer withdrawals and
   // tombstones also dominate an older live search result.
   const evidence = [...live, ...cached]
+  for (const event of evidence) {
+    if (
+      event.kind !== 30410 ||
+      !merchants.has(event.pubkey) ||
+      !isValidSignedPublicNostrEvent(event)
+    )
+      continue
+    const dTag = event.tags.find((tag) => tag[0] === "d")?.[1]
+    if (!dTag || !/^[0-9a-f]{64}$/.test(dTag)) continue
+    const coordinate = `30410:${event.pubkey}:${dTag}`
+    const prior = assignmentRevisions.get(coordinate)
+    if (
+      !prior ||
+      compareReplaceableEventFrontiers(
+        { createdAt: event.created_at, eventId: event.id },
+        { createdAt: prior.created_at, eventId: prior.id }
+      ) > 0
+    )
+      assignmentRevisions.set(coordinate, event)
+  }
+  const deletions = evidence.filter(
+    (event) => event.kind === EVENT_KINDS.DELETION
+  )
+  for (const [coordinate, revision] of assignmentRevisions) {
+    if (
+      isEventMarketAddressableRevisionDeleted(
+        {
+          coordinate,
+          eventId: revision.id,
+          createdAt: revision.created_at * 1_000,
+        },
+        deletions
+      )
+    )
+      continue
+    const assignment = parseEventMarketAssignmentEvent(revision)
+    if (
+      !assignment ||
+      assignment.state !== "active" ||
+      assignment.marketCoordinate !== market.market.coordinate ||
+      assignment.occurrenceCoordinate !== selectedOccurrenceCoordinate ||
+      !assignment.fulfillmentMethods.includes("pickup") ||
+      (assignment.inventory.mode === "tracked" &&
+        assignment.inventory.quantity < 1)
+    )
+      continue
+    coordinates.add(assignment.productCoordinate)
+    retainedAssignment ||= !liveIds.has(revision.id)
+    if (!liveIds.has(revision.id))
+      retainedAssignmentCoordinates.add(assignment.productCoordinate)
+  }
   for (const event of evidence) {
     if (
       event.kind !== EVENT_KINDS.PRODUCT ||
@@ -1441,25 +2038,19 @@ function catalogCandidates(input: {
       ) > 0
     )
       newest.set(coordinate, event)
-    if (
-      event.tags.some(
-        (tag) => tag[0] === "a" && tag[1] === market.market.coordinate
-      )
-    )
-      coordinates.add(coordinate)
   }
-  const deletions = evidence.filter(
-    (event) => event.kind === EVENT_KINDS.DELETION
-  )
-  let stale = [...newest.values()].some((event) => !liveIds.has(event.id))
+  let stale =
+    retainedAssignment ||
+    [...newest.values()].some((event) => !liveIds.has(event.id))
   for (const productCoordinate of coordinates) {
-    const revision = newest.get(productCoordinate)!
+    const revision = newest.get(productCoordinate)
+    if (!revision) {
+      stale = true
+      continue
+    }
     if (
       suppressedMerchants.has(revision.pubkey) ||
       revision.tags.filter((tag) => tag[0] === "d").length !== 1 ||
-      revision.tags.filter(
-        (tag) => tag[0] === "a" && tag[1] === market.market.coordinate
-      ).length !== 1 ||
       isEventMarketAddressableRevisionDeleted(
         {
           coordinate: productCoordinate,
@@ -1478,12 +2069,16 @@ function catalogCandidates(input: {
         product.priceEvidenceMalformed
       )
         continue
-      const currentLive = liveIds.has(revision.id)
+      const currentLive =
+        liveIds.has(revision.id) &&
+        !retainedAssignmentCoordinates.has(productCoordinate)
       const needle = input.search?.trim().toLocaleLowerCase()
       if (
-        !currentLive &&
         needle &&
-        !revision.content.toLocaleLowerCase().includes(needle)
+        ![product.title, revision.content]
+          .join(" ")
+          .toLocaleLowerCase()
+          .includes(needle)
       )
         continue
       stale ||= !currentLive
@@ -1522,9 +2117,11 @@ function catalogCandidates(input: {
 export async function readEventMarketCatalog(
   input: {
     reference: string
+    selectedOccurrenceCoordinate?: string
     limit?: number
     search?: string
     onProgress?: (result: EventMarketCatalogReadResult) => void
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -1578,6 +2175,7 @@ export async function readEventMarketCatalog(
         limit,
         incomplete: true,
         search: input.search,
+        selectedOccurrenceCoordinate: input.selectedOccurrenceCoordinate,
       })
     )
   assertCurrent()
@@ -1603,19 +2201,18 @@ export async function readEventMarketCatalog(
       discoveryPlan = await plan({
         organizerPubkey: decoded.authorPubkey,
         relayHints: decoded.relayHints,
+        accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         shouldContinue: input.shouldContinue,
         signal: input.signal,
       })
       assertCurrent()
-      const search = input.search?.trim()
       const result = await dependencies.fetch(
         {
-          kinds: [EVENT_KINDS.PRODUCT],
+          kinds: [30410],
           authors,
           "#a": [decoded.coordinate],
           limit,
-          ...(search ? { search } : {}),
         },
         fanoutOptions(discoveryPlan, input)
       )
@@ -1634,6 +2231,66 @@ export async function readEventMarketCatalog(
     discovery.events.length >= limit ||
     (authors.length > 0 && discovery.relays.length === 0) ||
     discovery.relays.some((relay) => relay.status !== "success")
+  const selectedOccurrenceCoordinate =
+    input.selectedOccurrenceCoordinate ?? marketRead.calendar?.coordinate
+  const assignmentProducts = [
+    ...new Set(
+      [...live, ...cached]
+        .map((event) => parseEventMarketAssignmentEvent(event))
+        .filter(
+          (assignment) =>
+            assignment?.state === "active" &&
+            assignment.marketCoordinate === decoded.coordinate &&
+            assignment.occurrenceCoordinate === selectedOccurrenceCoordinate
+        )
+        .map((assignment) => assignment!.productCoordinate)
+    ),
+  ]
+  const productRefs = assignmentProducts
+    .map((coordinate) =>
+      parseAddressableCoordinate(coordinate, [EVENT_KINDS.PRODUCT])
+    )
+    .filter((reference) => reference !== null)
+  let exactProducts: SignedPublicNostrEvent[] = []
+  if (productRefs.length && discoveryPlan) {
+    try {
+      const productRead = await admitFanout(
+        await dependencies.fetch(
+          {
+            kinds: [EVENT_KINDS.PRODUCT],
+            authors: [
+              ...new Set(
+                productRefs.map((reference) => reference.authorPubkey)
+              ),
+            ],
+            "#d": [...new Set(productRefs.map((reference) => reference.dTag))],
+            limit: 256,
+          },
+          fanoutOptions(discoveryPlan, input)
+        ),
+        input.signal
+      )
+      exactProducts = productRead.events.filter((event) =>
+        productRefs.some(
+          (reference) =>
+            reference.authorPubkey === event.pubkey &&
+            event.tags.some(
+              (tag) => tag[0] === "d" && tag[1] === reference.dTag
+            )
+        )
+      )
+      if (
+        productRead.relays.some((relay) => relay.status !== "success") ||
+        productRead.events.length >= 256
+      )
+        incomplete = true
+    } catch (error) {
+      if (input.signal?.aborted || input.shouldContinue?.() === false)
+        throw error
+      incomplete = true
+    }
+  }
+  live.push(...exactProducts)
   // Reload local evidence after the network wait: an observed newer withdrawal
   // or deletion must suppress the old candidate before publishing progress.
   try {
@@ -1655,6 +2312,7 @@ export async function readEventMarketCatalog(
     limit,
     incomplete,
     search: input.search,
+    selectedOccurrenceCoordinate: input.selectedOccurrenceCoordinate,
   })
   input.onProgress?.(result)
   assertCurrent()
@@ -1669,7 +2327,7 @@ export async function readEventMarketCatalog(
       decoded.coordinate,
       live.filter(
         (event) =>
-          event.kind === EVENT_KINDS.PRODUCT &&
+          (event.kind === EVENT_KINDS.PRODUCT || event.kind === 30410) &&
           approved.has(event.pubkey) &&
           isVerifiedNostrEvent(event)
       )
@@ -1697,6 +2355,7 @@ export async function readEventMarketCatalog(
     limit,
     incomplete,
     search: input.search,
+    selectedOccurrenceCoordinate: input.selectedOccurrenceCoordinate,
   })
   input.onProgress?.(result)
   return result
@@ -1705,41 +2364,52 @@ export async function readEventMarketCatalog(
 export interface FutureEventMarketDiscoveryResult {
   markets: EventMarketRosterReadResult[]
   coverage: EventMarketRosterReadCoverage
+  continuation?: EventMarketDiscoveryContinuation
 }
 
-/** Bounded organizer discovery; each exact signed result can paint independently. */
+/** Discover signed candidates in author batches, then hydrate only known coordinates. */
 export async function discoverFutureEventMarkets(
   input: {
-    organizerPubkeys: readonly string[]
+    /** Undefined browses public relays; an empty list discovers no organizers. */
+    organizerPubkeys?: readonly string[]
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
+    continuation?: EventMarketDiscoveryContinuation
     shouldContinue?: () => boolean
     signal?: AbortSignal
     onProgress?: (result: FutureEventMarketDiscoveryResult) => void
   },
   dependencies: RosterReadDependencies & {
+    planDiscovery?: typeof getEventMarketDiscoveryReadPlan
     loadDiscovered?: (
-      authors: readonly string[]
+      authors: readonly string[] | undefined
     ) => Promise<SignedPublicNostrEvent[]>
   } = defaultDependencies
 ): Promise<FutureEventMarketDiscoveryResult> {
-  const requestedAuthors = [
-    ...new Set(
-      input.organizerPubkeys.filter((value) => /^[0-9a-f]{64}$/.test(value))
-    ),
-  ]
-  const authors = requestedAuthors.slice(0, 64)
-  const authorSet = new Set(authors)
+  const authors =
+    input.organizerPubkeys === undefined
+      ? undefined
+      : [
+          ...new Set(
+            input.organizerPubkeys.filter((value) =>
+              /^[0-9a-f]{64}$/.test(value)
+            )
+          ),
+        ].sort()
+  const authorSet = authors === undefined ? undefined : new Set(authors)
   const results = new Map<string, EventMarketRosterReadResult>()
   const scheduled = new Map<string, Promise<void>>()
+  const pending = new Set<string>()
   const liveCompleted = new Set<string>()
-  const broadObserved = new Set<string>()
   const coordinateGenerations = new Map<string, number>()
-  const plans = new Map<string, EventMarketReadPlan>()
+  const hints = new Map<string, Set<string>>()
+  const observedIds = new Set<string>()
   let incomplete =
-    requestedAuthors.length > 64 ||
-    input.organizerPubkeys.some((author) => !/^[0-9a-f]{64}$/.test(author))
-  let availableSources = 0
+    input.organizerPubkeys?.some((author) => !/^[0-9a-f]{64}$/.test(author)) ??
+    false
+  let availableSources = false
   let finished = false
+  let continuation: EventMarketDiscoveryContinuation | undefined
   function assertCurrent(): void {
     if (input.signal?.aborted || input.shouldContinue?.() === false)
       throw new DOMException(
@@ -1754,50 +2424,61 @@ export async function discoverFutureEventMarkets(
       left.coordinate.localeCompare(right.coordinate)
     ),
     coverage,
+    ...(continuation ? { continuation } : {}),
   })
   function emit(): void {
     assertCurrent()
     if (!finished && results.size) input.onProgress?.(snapshot("partial"))
   }
-  // Bound both organizer plans and exact roster pipelines. Queued reads do not
-  // postpone a completed organizer behind an unrelated held organizer.
-  function limiter(limit: number) {
-    let active = 0
-    const queue: Array<() => void> = []
-    return async (task: () => Promise<void>) => {
-      if (active >= limit)
-        await new Promise<void>((resolve) => queue.push(resolve))
-      else active++
-      try {
-        assertCurrent()
-        await task()
-      } finally {
-        const next = queue.shift()
-        if (next) next()
-        else active--
-      }
+  let active = 0
+  const queue: Array<() => void> = []
+  async function exactLimit(task: () => Promise<void>): Promise<void> {
+    if (active >= 4) await new Promise<void>((resolve) => queue.push(resolve))
+    else active++
+    try {
+      assertCurrent()
+      await task()
+    } finally {
+      const next = queue.shift()
+      if (next) next()
+      else active--
     }
   }
-  const exactLimit = limiter(4)
   function coordinateFor(event: SignedPublicNostrEvent): string | null {
     if (
       event.kind !== EVENT_KINDS.EVENT_MARKET ||
-      !authorSet.has(event.pubkey) ||
+      (authorSet && !authorSet.has(event.pubkey)) ||
       !isVerifiedNostrEvent(event)
     )
       return null
     const dTags = event.tags.filter((tag) => tag[0] === "d")
     return dTags.length === 1 && dTags[0]?.[1]
-      ? `${EVENT_KINDS.EVENT_MARKET}:${event.pubkey}:${dTags[0][1]}`
+      ? (parseAddressableCoordinate(
+          `30409:${event.pubkey}:${dTags[0][1]}`,
+          [30409]
+        )?.coordinate ?? null)
       : null
   }
-  function scheduleExact(coordinate: string, refresh = false): Promise<void> {
+  const discoveryDependencies: RosterReadDependencies = {
+    ...dependencies,
+    retain: (coordinate, events) =>
+      dependencies.retain(coordinate, events, "discovery"),
+  }
+  function scheduleExact(
+    coordinate: string,
+    refresh = false,
+    evidence: readonly SignedPublicNostrEvent[] = []
+  ): Promise<void> {
+    const parsed = parseAddressableCoordinate(coordinate, [30409])
+    if (!parsed || (authorSet && !authorSet.has(parsed.authorPubkey)))
+      return Promise.resolve()
     const prior = scheduled.get(coordinate)
     if (prior && !refresh) return prior
     if (!prior && scheduled.size >= 128) {
-      incomplete = true
+      pending.add(coordinate)
       return Promise.resolve()
     }
+    pending.delete(coordinate)
     const generation = (coordinateGenerations.get(coordinate) ?? 0) + 1
     coordinateGenerations.set(coordinate, generation)
     const execute = () =>
@@ -1805,14 +2486,21 @@ export async function discoverFutureEventMarkets(
         const result = await readEventMarketRoster(
           {
             reference: coordinate,
+            accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             shouldContinue: input.shouldContinue,
             signal: input.signal,
           },
           {
-            ...dependencies,
-            plan: async (options) =>
-              plans.get(options.organizerPubkey) ?? dependencies.plan(options),
+            ...discoveryDependencies,
+            plan: (options) =>
+              dependencies.plan({
+                ...options,
+                relayHints: [
+                  ...(hints.get(coordinate) ?? []),
+                  ...(options.relayHints ?? []),
+                ],
+              }),
           }
         )
         assertCurrent()
@@ -1822,17 +2510,26 @@ export async function discoverFutureEventMarkets(
           emit()
         }
       })
-    const read = prior ? prior.then(execute) : execute()
-    // Cancellation/errors are observed when the joined discovery settles.
-    // Attaching immediately prevents an early failing exact read from becoming
-    // an unhandled rejection while a sibling organizer is still pending.
+    const read = (async () => {
+      // Admission is reserved synchronously. Retain new evidence immediately,
+      // even while an older read is held; only network hydration is sequenced.
+      try {
+        await discoveryDependencies.retain(coordinate, evidence)
+      } catch {
+        incomplete = true
+      }
+      assertCurrent()
+      if (prior) await prior
+      await execute()
+    })()
     void read.catch(() => {})
     scheduled.set(coordinate, read)
     return read
   }
   assertCurrent()
   const cached = (async () => {
-    if (!dependencies.loadDiscovered) return
+    // Continuations spend their hydration budget on the remaining coordinates.
+    if (!dependencies.loadDiscovered || input.continuation) return
     let events: SignedPublicNostrEvent[]
     try {
       events = await admitRows(
@@ -1845,19 +2542,18 @@ export async function discoverFutureEventMarkets(
       return
     }
     assertCurrent()
-    const cachedCoordinates = [
+    const coordinates = [
       ...new Set(
         events.map(coordinateFor).filter((value): value is string => !!value)
       ),
     ]
-    if (cachedCoordinates.length >= 128) incomplete = true
-    const coordinates = cachedCoordinates.slice(0, 128)
     for (const coordinate of coordinates) {
       assertCurrent()
-      if (!liveCompleted.has(coordinate) && !broadObserved.has(coordinate)) {
+      if (!liveCompleted.has(coordinate)) {
         const preview = await readEventMarketRoster(
           {
             reference: coordinate,
+            accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             shouldContinue: input.shouldContinue,
             signal: input.signal,
@@ -1867,6 +2563,7 @@ export async function discoverFutureEventMarkets(
             plan: async () => ({
               relayUrls: [],
               candidateRelayUrls: [],
+              relayTargets: [],
               ownerSelectedRelayUrls: [],
               appRelayUrls: [],
               personalRelayUrls: [],
@@ -1879,8 +2576,7 @@ export async function discoverFutureEventMarkets(
           }
         )
         assertCurrent()
-        // A cache load finishing after a live deletion never resurrects it.
-        if (!liveCompleted.has(coordinate) && !broadObserved.has(coordinate)) {
+        if (!liveCompleted.has(coordinate)) {
           results.set(coordinate, preview)
           emit()
         }
@@ -1888,69 +2584,78 @@ export async function discoverFutureEventMarkets(
       void scheduleExact(coordinate)
     }
   })()
-  const authorLimit = limiter(4)
-  const live = Promise.all(
-    authors.map((author) =>
-      authorLimit(async () => {
-        let plan: EventMarketReadPlan
-        try {
-          plan = await dependencies.plan({
-            organizerPubkey: author,
-            authenticatedPubkey: input.authenticatedPubkey,
-            shouldContinue: input.shouldContinue,
-            signal: input.signal,
-          })
-          assertCurrent()
-          plans.set(author, plan)
-          const broad = await dependencies.fetch(
-            {
-              kinds: [EVENT_KINDS.EVENT_MARKET],
-              authors: [author],
-              limit: 128,
-            },
-            fanoutOptions(plan, input)
-          )
-          broad.events = await admitRows(broad.events, input.signal)
-          assertCurrent()
-          if (broad.relays.some((relay) => relay.status !== "failed"))
-            availableSources++
-          if (
-            plan.relayHintTruncated ||
-            broad.events.length >= 128 ||
-            !broad.relays.length ||
-            broad.relays.some((relay) => relay.status !== "success")
-          )
+  // Observe both branches immediately so cancellation never leaks a rejection.
+  const live = (async () => {
+    const plan = await (
+      dependencies.planDiscovery ?? getEventMarketDiscoveryReadPlan
+    )(input)
+    assertCurrent()
+    const scope = getEventMarketDiscoveryScope({
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      authors,
+      plan,
+    })
+    if (input.continuation?.scope === scope)
+      for (const pending of input.continuation.pendingCoordinates) {
+        hints.set(pending.coordinate, new Set(pending.relayHints))
+        void scheduleExact(pending.coordinate)
+      }
+    const scan = await scanEventMarketCandidates({
+      authors,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
+      authenticatedPubkey: input.authenticatedPubkey,
+      plan,
+      options: fanoutOptions(plan, input),
+      continuation: input.continuation,
+      fetch: dependencies.fetch,
+      assertCurrent,
+      observe: async (events, relayUrl) => {
+        const records = new Map<string, SignedPublicNostrEvent[]>()
+        for (const event of events) {
+          const coordinate = coordinateFor(event)
+          if (!coordinate) {
             incomplete = true
-          const records = new Map<string, SignedPublicNostrEvent[]>()
-          for (const event of broad.events) {
-            const coordinate = coordinateFor(event)
-            if (!coordinate) continue
-            records.set(coordinate, [...(records.get(coordinate) ?? []), event])
+            continue
           }
-          for (const [coordinate, evidence] of records) {
-            try {
-              await dependencies.retain(coordinate, evidence)
-            } catch {
-              incomplete = true
-            }
-            assertCurrent()
-            broadObserved.add(coordinate)
-            void scheduleExact(coordinate, true)
-          }
-        } catch {
-          assertCurrent()
-          incomplete = true
+          records.set(coordinate, [...(records.get(coordinate) ?? []), event])
         }
-      })
-    )
-  )
+        for (const [coordinate, evidence] of records) {
+          assertCurrent()
+          const sources = hints.get(coordinate) ?? new Set<string>()
+          const changed =
+            !sources.has(relayUrl) ||
+            evidence.some((event) => !observedIds.has(event.id))
+          sources.add(relayUrl)
+          hints.set(coordinate, sources)
+          evidence.forEach((event) => observedIds.add(event.id))
+          // Exact hydration depends on both signed revisions and observed sources.
+          void scheduleExact(coordinate, changed, evidence)
+        }
+      },
+    })
+    incomplete ||= scan.incomplete
+    availableSources = scan.available
+    return scan
+  })()
   try {
-    await Promise.all([cached, live])
+    const [, scan] = await Promise.all([cached, live])
     await Promise.all(scheduled.values())
     assertCurrent()
+    if (scan.pages.length || pending.size)
+      continuation = {
+        scope: scan.scope,
+        pages: scan.pages,
+        admittedRelayUrls: scan.admittedRelayUrls,
+        pendingCoordinates: [...pending].map((coordinate) => ({
+          coordinate,
+          relayHints: [...(hints.get(coordinate) ?? [])],
+        })),
+      }
     finished = true
     const coverage =
       incomplete ||
+      continuation ||
       [...results.values()].some((read) => read.coverage !== "complete")
         ? availableSources || results.size
           ? "partial"
@@ -1968,6 +2673,7 @@ export async function readEventMarketOrderEvidenceByIds(
     marketCoordinate: string
     merchantPubkey: string
     eventIds: readonly string[]
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -2013,6 +2719,7 @@ export async function readEventMarketOrderEvidenceByIds(
     try {
       const plan = await dependencies.plan({
         organizerPubkey: author,
+        accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
         authenticatedPubkey: input.authenticatedPubkey,
         shouldContinue: input.shouldContinue,
         signal: input.signal,
@@ -2073,6 +2780,7 @@ export async function previewEventMarketMerchantProducts(
   input: {
     marketCoordinate: string
     merchantPubkey: string
+    accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
     signal?: AbortSignal
@@ -2104,6 +2812,7 @@ export async function previewEventMarketMerchantProducts(
   try {
     plan = await dependencies.plan({
       organizerPubkey: input.merchantPubkey,
+      accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
       signal: input.signal,

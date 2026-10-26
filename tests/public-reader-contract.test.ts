@@ -28,7 +28,9 @@ import {
 import {
   __resetInboxDeclarationCache,
   resolveInboxDeclaration,
+  sharedInboxDiscoveryRelayUrls,
 } from "../packages/core/src/protocol/private-message-routing"
+import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 import {
   __resetFollowListTestState,
   readLatestFollowLists,
@@ -36,6 +38,8 @@ import {
 import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
 import { getRelayHealth } from "../packages/core/src/protocol/relay-health"
 import { WebSocketCommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
+import { config } from "../packages/core/src/config"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 
 // Optional unchanged-main reference. The same wire fixture and normalized
 // comparison run in a separate process; main is not the ground-truth oracle.
@@ -198,6 +202,129 @@ for (const injected of [[B], B, 42, { relay: B }]) {
     ])
   })
 }
+
+it("account grants authorize candidates without widening the requested read scope", async () => {
+  install((socket, id) => socket.emit(["EOSE", id]))
+  const accountOptions = {
+    ...options(),
+    accountPubkey: "a".repeat(64),
+    relayTargets: relayTargetsFromUrls([A, B], {
+      kind: "public_hint",
+      operation: "read",
+    }),
+    accountNetworkLocalStateRepository: { get: async () => undefined },
+  }
+  const none = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    { ...accountOptions, relayUrls: [] }
+  )
+  expect(none.attemptedRelayUrls).toEqual([])
+  expect(sockets).toHaveLength(0)
+  const bounded = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    { ...accountOptions, relayUrls: [B] }
+  )
+  expect(bounded.attemptedRelayUrls).toEqual([B])
+  expect(sockets.map((socket) => socket.url)).toEqual([B])
+})
+
+it("drains every selected relay with one worker instead of dropping additive coverage", async () => {
+  install((socket, id) => socket.emit(["EOSE", id]))
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    { ...options([A, B, C]), maxRelayAttempts: 1 }
+  )
+  expect(result.attemptedRelayUrls).toEqual([A, B, C])
+  expect(result.readCoverage).toBe("complete")
+})
+
+it("queued reads recheck app-off and exclusions while retaining a duplicate independent grant", async () => {
+  const [appA, appB] = config.appReadRelayUrls
+  const owner = "a".repeat(64)
+  const state = emptyAccountNetworkLocalState(owner)
+  install((socket, id) => {
+    if (socket.url === A) {
+      state.routingPolicy.appRelaysEnabled = false
+      state.exclusions = [
+        {
+          relayUrl: C,
+          committedAt: Date.now(),
+          relayListFrontier: { eventId: null, createdAt: null },
+          inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        },
+      ]
+    }
+    socket.emit(["EOSE", id])
+  })
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    {
+      ...options([A, appA!, appB!, C, B]),
+      maxRelayAttempts: 1,
+      accountPubkey: owner,
+      authenticatedPubkey: owner,
+      accountNetworkLocalStateRepository: {
+        get: async () => structuredClone(state),
+      },
+      relayTargets: [
+        ...relayTargetsFromUrls([appA!, appB!], {
+          kind: "app",
+          operation: "read",
+          bucket: "general_read",
+        }),
+        ...relayTargetsFromUrls([A, appB!, C, B], {
+          kind: "public_hint",
+          operation: "read",
+        }),
+      ],
+    }
+  )
+  expect(result.attemptedRelayUrls).toEqual([A, appB!, B])
+  expect(sockets.map((socket) => socket.url)).toEqual([A, appB!, B])
+})
+
+it("queued reads stop after an account switch", async () => {
+  let current = true
+  install((socket, id) => {
+    current = false
+    socket.emit(["EOSE", id])
+  })
+  await expect(
+    fetchSignedEventsFanoutDetailed(
+      { kinds: [0] },
+      {
+        ...options([A, B, C]),
+        maxRelayAttempts: 1,
+        shouldContinue: () => current,
+      }
+    )
+  ).rejects.toThrow()
+  expect(sockets.map((socket) => socket.url)).toEqual([A])
+})
+
+it("a slow relay cannot prevent the other worker from draining remaining targets", async () => {
+  const started: string[] = []
+  install((socket, id) => {
+    started.push(socket.url)
+    if (socket.url !== A) socket.emit(["EOSE", id])
+  })
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0] },
+    {
+      ...options([A, B, C]),
+      maxRelayAttempts: 2,
+      fetchTimeoutMs: 30,
+    }
+  )
+  expect(started).toEqual([A, B, C])
+  expect(result.readCoverage).toBe("partial")
+  expect(result.relays.find((relay) => relay.relayUrl === A)?.outcome).toBe(
+    "timeout"
+  )
+  expect(
+    result.relays.filter((relay) => relay.status === "success")
+  ).toHaveLength(2)
+})
 
 it("CON-02 duplicate/cache deliveries never borrow forged or previous-read provenance", async () => {
   install((socket, id) => {
@@ -408,39 +535,45 @@ if (!reference) {
   })
 
   it("CON-08 declaration owners cannot confirm an event on an empty successful source", async () => {
-    let declaration = sign(220, 10002, [["r", A]])
+    const [sharedA, sharedB] = sharedInboxDiscoveryRelayUrls()
+    expect(sharedA).toBeDefined()
+    expect(sharedB).toBeDefined()
+    let declaration = sign(220, 10002, [["r", sharedA!]])
+    let deliveredCopies = 3
     install((socket, id) => {
-      if (socket.url === A)
-        for (let index = 0; index < 3; index++)
+      if (socket.url === sharedA)
+        for (let index = 0; index < deliveredCopies; index++)
           socket.emit([
             "EVENT",
             id,
             {
               ...declaration,
-              __conduitSourceRelayUrls: [B],
+              __conduitSourceRelayUrls: [sharedB],
               rawEvent: "hostile",
             },
           ])
       socket.emit(["EOSE", id])
     })
     const owner = await resolveOwnerRelayList(declaration.pubkey, {
-      relayUrls: [A, B],
+      relayUrls: [sharedA!, sharedB!],
       evidenceRepository: createInMemoryOwnerRelayListEvidenceRepository(),
     })
     expect(owner.observation.coverage).toBe("complete")
-    expect(owner.observation.eventSourceRelayUrls).toEqual([A])
-    expect(owner.current?.sourceRelayUrls).toEqual([A])
-    declaration = sign(230, 10050, [["relay", A]])
+    expect(owner.observation.eventSourceRelayUrls).toEqual([sharedA])
+    expect(owner.current?.sourceRelayUrls).toEqual([sharedA])
+    declaration = sign(230, 10050, [["relay", sharedA!]])
+    deliveredCopies = 257
     const inbox = await resolveInboxDeclaration(declaration.pubkey, {
-      relayUrls: [A, B],
-      sharedConfirmationRelayUrls: [A, B],
+      relayUrls: [sharedA!, sharedB!],
+      sharedConfirmationRelayUrls: [sharedA!, sharedB!],
       evidenceRepository: createInMemoryInboxDeclarationEvidenceRepository(),
     })
-    expect(inbox.observation?.coverage).toBe("complete")
-    expect(inbox.observation?.eventSourceRelayUrls).toEqual([A])
-    expect(inbox.sourceRelayUrls).toEqual([A])
-    // These fixture sources are outside the canonical shared-confirmation set.
-    expect(inbox.sharedSourceRelayUrls).toEqual([])
+    // Duplicate deliveries exceed the kind-10050 raw observation budget of
+    // 256 on this source; the complete empty sibling cannot confirm the event.
+    expect(inbox.observation?.coverage).toBe("partial")
+    expect(inbox.observation?.eventSourceRelayUrls).toEqual([sharedA])
+    expect(inbox.sourceRelayUrls).toEqual([sharedA])
+    expect(inbox.sharedSourceRelayUrls).toEqual([sharedA])
   })
 
   it("CON-08 canonical delivery reaches product/deletion cache consumers with only observed provenance", async () => {
@@ -1084,62 +1217,59 @@ if (!reference) {
     }
   }
 
-  for (const phase of ["planning", "admission"] as const) {
-    it(`CON-06 retirement abandons blocked ${phase} policy reads and permits sibling work`, async () => {
-      install((socket, id) => socket.emit(["EOSE", id]))
-      const entered = barrier(),
-        released = barrier()
-      let gets = 0
-      const urls = Array.from(
-        { length: 8 },
-        (_, i) => `wss://policy-${i}.example`
-      )
-      const scope = { createWebSocket: (url: string) => new Socket(url) }
-      const pending = read(
-        { kinds: [0] },
-        {
-          ...options(urls),
-          socketScope: scope,
-          accountPubkey: first.pubkey,
-          accountNetworkLocalStateRepository: {
-            get: async () => {
-              gets++
-              if (phase === "admission" && gets === 1) return undefined
-              if (gets === (phase === "planning" ? 1 : 9)) entered.release()
-              await released.promise
-              return undefined
-            },
+  it("CON-06 retirement abandons blocked admission policy reads and permits sibling work", async () => {
+    install((socket, id) => socket.emit(["EOSE", id]))
+    const entered = barrier(),
+      released = barrier()
+    const urls = Array.from(
+      { length: 8 },
+      (_, i) => `wss://policy-${i}.example`
+    )
+    const scope = { createWebSocket: (url: string) => new Socket(url) }
+    const pending = read(
+      { kinds: [0] },
+      {
+        ...options(urls),
+        relayTargets: relayTargetsFromUrls(urls, {
+          kind: "public_hint",
+          operation: "read",
+        }),
+        socketScope: scope,
+        accountPubkey: first.pubkey,
+        accountNetworkLocalStateRepository: {
+          get: async () => {
+            // Planning is pure; block the actual live admission boundary.
+            entered.release()
+            await released.promise
+            return undefined
           },
-        }
-      ).then(
-        () => null,
-        (error: unknown) => error
-      )
-      await entered.promise
-      try {
-        closePublicRelayConnections(scope)
-        const result = await Promise.race([
-          pending,
-          new Promise((resolve) =>
-            setTimeout(
-              () => resolve("policy still owns retired operation"),
-              100
-            )
-          ),
-        ])
-        expect(result).toMatchObject({ name: "AbortError" })
-        expect((await read({ kinds: [0] }, options([B]))).readCoverage).toBe(
-          "complete"
-        )
-        expect(sockets.every((socket) => socket.url === B)).toBe(true)
-      } finally {
-        released.release()
-        await pending
+        },
       }
-      await Promise.resolve()
+    ).then(
+      () => null,
+      (error: unknown) => error
+    )
+    await entered.promise
+    try {
+      closePublicRelayConnections(scope)
+      const result = await Promise.race([
+        pending,
+        new Promise((resolve) =>
+          setTimeout(() => resolve("policy still owns retired operation"), 100)
+        ),
+      ])
+      expect(result).toMatchObject({ name: "AbortError" })
+      expect((await read({ kinds: [0] }, options([B]))).readCoverage).toBe(
+        "complete"
+      )
       expect(sockets.every((socket) => socket.url === B)).toBe(true)
-    })
-  }
+    } finally {
+      released.release()
+      await pending
+    }
+    await Promise.resolve()
+    expect(sockets.every((socket) => socket.url === B)).toBe(true)
+  })
 }
 
 it("CON-03 multi-filter comparison keeps main truncation separate from fixture selection truth", async () => {

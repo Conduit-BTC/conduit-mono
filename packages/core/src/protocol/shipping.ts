@@ -15,7 +15,9 @@ import {
 import {
   canonicalizeShippingCost,
   getShippingCostSats,
+  isSupportedCommercePriceCurrency,
   normalizeCurrencyCode,
+  normalizeCurrencyIdentity,
   type CommerceShippingCostLike,
   type PricingRateInput,
 } from "../pricing"
@@ -25,11 +27,13 @@ import {
   fetchPublicEvents,
   fetchSignedEventsFanoutDetailed,
   getEventSourceRelayUrls,
+  verifySignedEventBatches,
   mergeEventSourceRelayUrls,
   type PublicRelayReadOptions,
   type PublicRelayReadResult,
 } from "./relay-reader"
-import { filterEligibleAccountRelayUrls } from "./account-network-local-state"
+import { filterEligibleAccountRelayTargets } from "./account-network-local-state"
+import type { RelayTarget } from "./relay-authority"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
@@ -41,14 +45,13 @@ import {
   admitPublicEvent,
   isVerifiedNostrEvent,
   sameSignedPublicEvent,
-  verifySignedEvents,
   type VerifiedNostrEvent,
 } from "./verified-public-event"
 
 import {
   MERCHANT_SHIPPING_POLICY_D_TAG,
   SHIPPING_POLICY_EXTENSION_TAG,
-  parseShippingPolicyEventTags,
+  parsePrivateOrderShippingPolicyTags,
   shippingMinorUnitsToAmount,
   type ShippingPolicy,
   type ShippingPolicyQuote,
@@ -211,6 +214,9 @@ export function compileProductFulfillmentIntent(input: {
 
   const currency = normalizeCurrencyCode(input.currency)
   if (!currency) throw new Error("Fixed shipping currency is required")
+  if (!isSupportedCommercePriceCurrency(currency)) {
+    throw new Error("Fixed shipping currency is not supported for new commerce")
+  }
 
   const countries = Array.from(
     new Set(
@@ -257,6 +263,9 @@ export function buildFixedShippingOptionEventDraft(input: {
   intent: Extract<ProductFulfillmentIntent, { kind: "fixed_standard" }>
   clientAppId?: ConduitAppId
 }): ShippingOptionEventDraft {
+  if (!isSupportedCommercePriceCurrency(input.intent.currency)) {
+    throw new Error("Fixed shipping currency is not supported for new commerce")
+  }
   let tags: string[][] = [
     ["d", getProductShippingOptionDTag(input.productDTag)],
     ["title", "Standard Shipping"],
@@ -380,6 +389,8 @@ export interface ShippingConfig {
 /** Parsed representation of a kind-30406 event */
 export interface ParsedShippingOption {
   eventId: string
+  /** Exact validated revision selected by the authoritative coordinate read. */
+  sourceEvent?: SignedPublicNostrEvent
   /** Addressable id: "30406:<pubkey>:<d>" */
   id: string
   pubkey: string
@@ -541,12 +552,20 @@ export function parseShippingOptionEvent(
     event.kind !== EVENT_KINDS.SHIPPING_OPTION
   )
     return null
+  return parseShippingOptionFieldsForPrivateOrder(event)
+}
+
+/** Internal historical terms only, after the private owner's signature check. */
+export function parseShippingOptionFieldsForPrivateOrder(
+  event: SignedPublicNostrEvent
+): ParsedShippingOption | null {
+  if (event.kind !== EVENT_KINDS.SHIPPING_OPTION) return null
   const tags = event.tags
   const hasPolicyMarker = tags.some(
     (tag) => tag[0] === SHIPPING_POLICY_EXTENSION_TAG
   )
   const shippingPolicy = hasPolicyMarker
-    ? parseShippingPolicyEventTags(event)
+    ? parsePrivateOrderShippingPolicyTags(event.tags)
     : undefined
   if (hasPolicyMarker && !shippingPolicy) return null
 
@@ -736,16 +755,7 @@ async function admitShippingEvents(
   events: readonly SignedPublicNostrEvent[],
   signal?: AbortSignal
 ): Promise<VerifiedNostrEvent[]> {
-  const admitted: VerifiedNostrEvent[] = []
-  for (let start = 0; start < events.length; start += 512) {
-    const batch = await verifySignedEvents(events.slice(start, start + 512), {
-      signal,
-    })
-    if (batch.truncated)
-      throw new Error("Shipping read exceeded verification bound")
-    admitted.push(...batch.events)
-  }
-  return admitted
+  return verifySignedEventBatches(events, { signal })
 }
 
 function validateCachedShippingOptionFrontier(
@@ -1725,27 +1735,22 @@ function shippingOwnerSelectedRelayUrls(
 }
 
 async function getEligibleShippingReadRelayUrls(
-  relayUrls: readonly string[],
-  ownerSelectedRelayUrls: readonly string[],
-  appRelayUrls: readonly string[],
-  personalRelayUrls: readonly string[],
-  independentRelayUrls: readonly string[],
+  relayTargets: readonly RelayTarget[],
   options: ShippingOptionReadOptions
 ): Promise<string[]> {
   const accountPubkey = options.accountPubkey ?? options.authenticatedPubkey
   if (accountPubkey === undefined || accountPubkey === null) {
-    return [...relayUrls]
+    return relayTargets.map((target) => target.url)
   }
-  return await filterEligibleAccountRelayUrls({
-    accountPubkey,
-    authenticatedPubkey: options.authenticatedPubkey,
-    candidateRelayUrls: relayUrls,
-    ownerSelectedRelayUrls,
-    appRelayUrls,
-    personalRelayUrls,
-    independentRelayUrls,
-    repository: options.accountNetworkLocalStateRepository,
-  })
+  return (
+    await filterEligibleAccountRelayTargets({
+      accountPubkey,
+      authenticatedPubkey: options.authenticatedPubkey,
+      targets: relayTargets,
+      operation: "read",
+      repository: options.accountNetworkLocalStateRepository,
+    })
+  ).map((target) => target.url)
 }
 
 // ---------------------------------------------------------------------------
@@ -1778,6 +1783,7 @@ export async function getShippingOptions(
     ...(relayListReadPlan
       ? {
           relayUrls: relayListReadPlan.candidateRelayUrls,
+          relayTargets: relayListReadPlan.relayTargets,
           maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
           appRelayUrls: relayListReadPlan.appRelayUrls,
           personalRelayUrls: relayListReadPlan.personalRelayUrls,
@@ -1804,29 +1810,13 @@ export async function getShippingOptions(
       ownerRelayAuthority?.signedRelayListAuthoritative,
   })
   const relayUrls = await getEligibleShippingReadRelayUrls(
-    readPlan.candidateRelayUrls,
-    readPlan.ownerSelectedRelayUrls ?? [],
-    readPlan.appRelayUrls ?? [],
-    readPlan.personalRelayUrls ?? [],
-    readPlan.independentRelayUrls ?? [],
+    readPlan.relayTargets,
     options
   )
-  if (readPlan.maxRelayAttempts) {
-    relayUrls.splice(readPlan.maxRelayAttempts)
-  }
   const executableRelayUrls = new Set(relayUrls)
-  const executableOwnerSelectedRelayUrls = (
-    readPlan.ownerSelectedRelayUrls ?? []
-  ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-  const executableAppRelayUrls = (readPlan.appRelayUrls ?? []).filter(
-    (relayUrl) => executableRelayUrls.has(relayUrl)
+  const executableRelayTargets = readPlan.relayTargets.filter((target) =>
+    executableRelayUrls.has(target.url)
   )
-  const executablePersonalRelayUrls = (readPlan.personalRelayUrls ?? []).filter(
-    (relayUrl) => executableRelayUrls.has(relayUrl)
-  )
-  const executableIndependentRelayUrls = (
-    readPlan.independentRelayUrls ?? []
-  ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
   const filter: Filter = {
     kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
     authors: [merchantPubkey],
@@ -1834,12 +1824,10 @@ export async function getShippingOptions(
 
   const events = await runShippingFetchEventsFanout(filter, {
     relayUrls,
+    maxRelayAttempts: readPlan.maxRelayAttempts,
+    relayTargets: executableRelayTargets,
     accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
     authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-    ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-    appRelayUrls: executableAppRelayUrls,
-    personalRelayUrls: executablePersonalRelayUrls,
-    independentRelayUrls: executableIndependentRelayUrls,
     accountNetworkLocalStateRepository:
       options.accountNetworkLocalStateRepository,
     shouldContinue: options.shouldContinue,
@@ -2145,6 +2133,7 @@ async function readShippingOptionsByCoordinates(
     ...(relayListReadPlan
       ? {
           relayUrls: relayListReadPlan.candidateRelayUrls,
+          relayTargets: relayListReadPlan.relayTargets,
           maxRelayAttempts: relayListReadPlan.maxRelayAttempts,
           appRelayUrls: relayListReadPlan.appRelayUrls,
           personalRelayUrls: relayListReadPlan.personalRelayUrls,
@@ -2180,29 +2169,13 @@ async function readShippingOptionsByCoordinates(
           ownerRelayAuthority?.signedRelayListAuthoritative,
       })
       const relayUrls = await getEligibleShippingReadRelayUrls(
-        readPlan.candidateRelayUrls,
-        readPlan.ownerSelectedRelayUrls ?? [],
-        readPlan.appRelayUrls ?? [],
-        readPlan.personalRelayUrls ?? [],
-        readPlan.independentRelayUrls ?? [],
+        readPlan.relayTargets,
         options
       )
-      if (readPlan.maxRelayAttempts) {
-        relayUrls.splice(readPlan.maxRelayAttempts)
-      }
       const executableRelayUrls = new Set(relayUrls)
-      const executableOwnerSelectedRelayUrls = (
-        readPlan.ownerSelectedRelayUrls ?? []
-      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-      const executableAppRelayUrls = (readPlan.appRelayUrls ?? []).filter(
-        (relayUrl) => executableRelayUrls.has(relayUrl)
+      const executableRelayTargets = readPlan.relayTargets.filter((target) =>
+        executableRelayUrls.has(target.url)
       )
-      const executablePersonalRelayUrls = (
-        readPlan.personalRelayUrls ?? []
-      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
-      const executableIndependentRelayUrls = (
-        readPlan.independentRelayUrls ?? []
-      ).filter((relayUrl) => executableRelayUrls.has(relayUrl))
       const optionRead = await runShippingFetchEventsFanoutDetailed(
         {
           kinds: [EVENT_KINDS.SHIPPING_OPTION as number],
@@ -2212,12 +2185,10 @@ async function readShippingOptionsByCoordinates(
         },
         {
           relayUrls,
+          maxRelayAttempts: readPlan.maxRelayAttempts,
+          relayTargets: executableRelayTargets,
           accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
           authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-          appRelayUrls: executableAppRelayUrls,
-          personalRelayUrls: executablePersonalRelayUrls,
-          independentRelayUrls: executableIndependentRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           shouldContinue: options.shouldContinue,
@@ -2255,12 +2226,9 @@ async function readShippingOptionsByCoordinates(
         },
         {
           relayUrls,
+          relayTargets: executableRelayTargets,
           accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
           authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-          ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-          appRelayUrls: executableAppRelayUrls,
-          personalRelayUrls: executablePersonalRelayUrls,
-          independentRelayUrls: executableIndependentRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           shouldContinue: options.shouldContinue,
@@ -2293,12 +2261,9 @@ async function readShippingOptionsByCoordinates(
           },
           {
             relayUrls,
+            relayTargets: executableRelayTargets,
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             authenticatedPubkey: ownerRelayAuthority?.authenticatedPubkey,
-            ownerSelectedRelayUrls: executableOwnerSelectedRelayUrls,
-            appRelayUrls: executableAppRelayUrls,
-            personalRelayUrls: executablePersonalRelayUrls,
-            independentRelayUrls: executableIndependentRelayUrls,
             accountNetworkLocalStateRepository:
               options.accountNetworkLocalStateRepository,
             shouldContinue: options.shouldContinue,
@@ -2336,20 +2301,27 @@ async function readShippingOptionsByCoordinates(
   ])
   const deletionEvents =
     await getMergedShippingDeletionEvidence(deletionTargetIds)
+  const sources = new Map(shippingEvents.map((event) => [event.id, event]))
   return {
     options: selectLatestShippingOptions(
       shippingEvents.filter(isVerifiedNostrEvent),
       deletionEvents.filter(isVerifiedNostrEvent)
     )
       .filter((option) => requested.has(option.id))
-      .map((option) => ({
-        ...option,
-        readSource: observedIds.has(option.eventId)
-          ? ("relay" as const)
-          : ("retained" as const),
-        readCoverage: coverage,
-        optionReadSaturated: saturatedCoordinates.has(option.id),
-      })),
+      .map((option) => {
+        const event = sources.get(option.eventId)
+        return {
+          ...option,
+          readSource: observedIds.has(option.eventId)
+            ? ("relay" as const)
+            : ("retained" as const),
+          readCoverage: coverage,
+          optionReadSaturated: saturatedCoordinates.has(option.id),
+          ...(event && isVerifiedNostrEvent(event)
+            ? { sourceEvent: cloneSignedEvent(event) }
+            : {}),
+        }
+      }),
     coverage,
     signedEvents: shippingEvents,
     deletionEvents,
@@ -2449,14 +2421,14 @@ export function resolveProductFulfillment(
     }
   }
 
-  const productCurrency = normalizeCurrencyCode(
+  const productCurrency = normalizeCurrencyIdentity(
     product.sourcePrice?.normalizedCurrency ??
       product.sourcePrice?.currency ??
       product.currency
   )
   if (
     (!option.shippingPolicy || option.shippingPolicy.version === 1) &&
-    option.currency !== productCurrency
+    normalizeCurrencyIdentity(option.currency) !== productCurrency
   ) {
     return {
       intent: "fixed_standard",
@@ -2571,9 +2543,11 @@ export type ShippingDestinationEligibility =
   | { eligible: false; reason: "country_unsupported" | "postal_restricted" }
   | { eligible: null; reason: "unknown" }
 
-export function getShippingDestinationEligibility(
+export function getShippingDestinationEligibility<
+  T extends Pick<ParsedShippingOption, "countryRules">,
+>(
   destination: { country: string; postalCode: string },
-  shippingOptions: ParsedShippingOption[]
+  shippingOptions: readonly T[]
 ): ShippingDestinationEligibility {
   if (shippingOptions.length === 0) {
     return { eligible: null, reason: "unknown" }

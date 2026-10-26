@@ -4,8 +4,10 @@ import {
   applyE2eRelayIsolation,
   config,
   normalizeRelaySettingsState,
+  planPublicEventReadbackTargets,
   planRelayReads,
   planRelayWrites,
+  relayTargetsFromUrls,
   recordRelayFailure,
   type RelayList,
   type RelaySettingsEntry,
@@ -412,7 +414,7 @@ describe("planRelayReads", () => {
     expect(plan.parkedRelayUrls).toEqual([])
   })
 
-  it("caps fanout to maxRelays", () => {
+  it("keeps app and personal targets while bounding concurrency", () => {
     const state = settings([
       entry("wss://r1.conduit.market"),
       entry("wss://r2.conduit.market"),
@@ -423,16 +425,15 @@ describe("planRelayReads", () => {
       settings: state,
       maxRelays: 2,
     })
-    expect(plan.relayUrls.length).toBe(2)
+    expect(plan.relayUrls.length).toBe(3 + config.appReadRelayUrls.length)
     expect(plan.relayUrls).toEqual([
       "wss://r1.conduit.market",
+      config.appReadRelayUrls[0]!,
       "wss://r2.conduit.market",
-    ])
-    expect(plan.candidateRelayUrls.slice(0, 3)).toEqual([
-      "wss://r1.conduit.market",
-      "wss://r2.conduit.market",
+      config.appReadRelayUrls[1]!,
       "wss://r3.conduit.market",
     ])
+    expect(plan.candidateRelayUrls).toEqual(plan.relayUrls)
     expect(plan.maxRelayAttempts).toBe(2)
     expect(plan.personalRelayUrls).toEqual(
       expect.arrayContaining(["wss://r3.conduit.market"])
@@ -455,7 +456,7 @@ describe("planRelayReads", () => {
   })
 
   it("tracks remote signed hints independently when relay URLs overlap local sources", () => {
-    const appOverlap = "wss://conduit-congee.fly.dev"
+    const appOverlap = config.appReadRelayUrls[0]!
     const personalOverlap = "wss://relay.nostr.band"
     const lists = new Map<string, RelayList>([
       [
@@ -484,7 +485,7 @@ describe("planRelayReads", () => {
   })
 
   it("tracks remote recipient hints independently across write-layer overlaps", () => {
-    const appOverlap = "wss://conduit-congee.fly.dev"
+    const appOverlap = config.appWriteRelayUrls[0]!
     const personalOverlap = "wss://relay.nostr.band"
     const lists = new Map<string, RelayList>([
       [
@@ -540,12 +541,64 @@ describe("planRelayReads", () => {
       settings: state,
     })
 
-    expect(plan.relayUrls.slice(0, 3)).toEqual([
+    expect(plan.relayUrls.slice(0, 5)).toEqual([
       "wss://merchant-write.conduit.market",
+      config.appReadRelayUrls[0]!,
       "wss://shopper-write.conduit.market",
+      config.appReadRelayUrls[1]!,
       "wss://shopper-read.conduit.market",
     ])
     expect(plan.relayUrls).toContain("wss://public.conduit.market")
+  })
+})
+
+describe("planPublicEventReadbackTargets", () => {
+  it("maps acknowledged public write grants to matching readback authority", () => {
+    const owner = "a".repeat(64)
+    const targets = [
+      ...relayTargetsFromUrls(["wss://owner.example"], {
+        kind: "owner_nip65",
+        operation: "write",
+        ownerPubkey: owner,
+        selection: "write",
+      }),
+      ...relayTargetsFromUrls(["wss://app.example"], {
+        kind: "app",
+        operation: "write",
+        bucket: "general_write",
+      }),
+      ...relayTargetsFromUrls(["wss://source.example"], {
+        kind: "source_delivery",
+        operation: "write",
+      }),
+      ...relayTargetsFromUrls(["wss://recipient.example"], {
+        kind: "recipient_nip17",
+        operation: "write",
+        recipientPubkey: "b".repeat(64),
+      }),
+    ]
+
+    expect(planPublicEventReadbackTargets(targets)).toEqual([
+      {
+        url: "wss://owner.example",
+        grants: [
+          {
+            kind: "owner_nip65",
+            operation: "read",
+            ownerPubkey: owner,
+            selection: "write",
+          },
+        ],
+      },
+      {
+        url: "wss://app.example",
+        grants: [{ kind: "app", operation: "read", bucket: "author_readback" }],
+      },
+      {
+        url: "wss://source.example",
+        grants: [{ kind: "public_hint", operation: "read" }],
+      },
+    ])
   })
 })
 
@@ -584,6 +637,12 @@ describe("planRelayWrites", () => {
       })
     ).toEqual({
       intent: "author_products",
+      relayTargets: [
+        {
+          url: isolatedRelayUrl,
+          grants: [{ kind: "app", operation: "read", bucket: "general_read" }],
+        },
+      ],
       relayUrls: [isolatedRelayUrl],
       candidateRelayUrls: [isolatedRelayUrl],
       maxRelayAttempts: 1,
@@ -604,6 +663,15 @@ describe("planRelayWrites", () => {
       })
     ).toEqual({
       intent: "author_event",
+      primaryRelayTargets: [
+        {
+          url: isolatedRelayUrl,
+          grants: [
+            { kind: "app", operation: "write", bucket: "general_write" },
+          ],
+        },
+      ],
+      broadcastRelayTargets: [],
       primaryRelayUrls: [isolatedRelayUrl],
       primaryCandidateRelayUrls: [isolatedRelayUrl],
       maxPrimaryRelayAttempts: 1,
@@ -790,7 +858,10 @@ describe("planRelayWrites", () => {
       maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(["wss://bob-inbox.conduit.market"])
-    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
+    expect(plan.broadcastRelayUrls).toEqual([
+      "wss://outbox.conduit.market",
+      ...config.appWriteRelayUrls,
+    ])
   })
 
   it("treats third-party recipient NIP-65 lists with only insecure relays as missing", () => {
@@ -856,7 +927,10 @@ describe("planRelayWrites", () => {
       maxBroadcastRelays: 1,
     })
     expect(plan.primaryRelayUrls).toEqual(["ws://umbrel.local:4848"])
-    expect(plan.broadcastRelayUrls).toEqual(["wss://outbox.conduit.market"])
+    expect(plan.broadcastRelayUrls).toEqual([
+      "wss://outbox.conduit.market",
+      ...config.appWriteRelayUrls,
+    ])
     expect(plan.personalRelayUrls).toEqual([
       "ws://umbrel.local:4848",
       "wss://outbox.conduit.market",
@@ -960,7 +1034,7 @@ describe("planRelayWrites", () => {
     ])
   })
 
-  it("respects fanout caps", () => {
+  it("bounds write concurrency without dropping app or personal targets", () => {
     const state = settings([
       entry("wss://w1.conduit.market", {
         writeEnabled: true,
@@ -998,10 +1072,14 @@ describe("planRelayWrites", () => {
       settings: state,
       maxPrimaryRelays: 2,
     })
-    expect(plan.primaryRelayUrls.length).toBe(2)
-    expect(plan.primaryCandidateRelayUrls?.slice(0, 3)).toEqual([
+    expect(plan.primaryRelayUrls.length).toBe(
+      3 + config.appWriteRelayUrls.length
+    )
+    expect(plan.primaryCandidateRelayUrls).toEqual([
       "wss://w1.conduit.market",
+      config.appWriteRelayUrls[0]!,
       "wss://w2.conduit.market",
+      config.appWriteRelayUrls[1]!,
       "wss://w3.conduit.market",
     ])
     expect(plan.maxPrimaryRelayAttempts).toBe(2)

@@ -1,5 +1,24 @@
-import { expect, test } from "@playwright/test"
-import { installTestSigner, TEST_BUYER_PUBKEY } from "./helpers/auth"
+import { expect, test, type Page } from "@playwright/test"
+import {
+  installLockedTestSigner,
+  installTestSigner,
+  seedStoredAuth,
+  TEST_BUYER_PUBKEY,
+  TEST_LOCKED_SIGNER_PUBKEY,
+  unlockTestSigner,
+} from "./helpers/auth"
+
+async function expectBackgroundPlaying(page: Page) {
+  const video = page.locator(".network-not-found video")
+  await expect(video).toHaveCount(1)
+  // A mounted element is not yet playback. Exercise preference changes from
+  // the playing state; pending-download cancellation has separate coverage.
+  await expect
+    .poll(() =>
+      video.evaluate((element: HTMLVideoElement) => element.currentTime)
+    )
+    .toBeGreaterThan(0)
+}
 
 for (const app of ["market", "merchant"] as const) {
   const port =
@@ -94,9 +113,63 @@ for (const app of ["market", "merchant"] as const) {
       )
       .toBeGreaterThan(0)
     await page.emulateMedia({ reducedMotion: "no-preference" })
-    await expect(page.locator(".network-not-found video")).toHaveCount(1)
+    await expectBackgroundPlaying(page)
     await page.emulateMedia({ reducedMotion: "reduce" })
     await expect(page.locator(".network-not-found video")).toHaveCount(0)
+  })
+
+  test(`${app} reduced motion cancels a pending video download and can resume @${app}`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" })
+    let releaseDownload!: () => void
+    const held = new Promise<void>((resolve) => {
+      releaseDownload = resolve
+    })
+    const videoStarted = page.waitForRequest((request) =>
+      request.url().includes("space-loop")
+    )
+    await page.addInitScript(() => {
+      const originalFetch = window.fetch.bind(window)
+      window.fetch = (resource, options) => {
+        if (String(resource).includes("space-loop")) {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              document.documentElement.dataset.videoDownloadAborted = "true"
+            },
+            { once: true }
+          )
+        }
+        return originalFetch(resource, options)
+      }
+    })
+    await page.route("**/*space-loop*", async (route) => {
+      await held
+      await route.continue()
+    })
+    try {
+      await page.goto(url)
+      await expect(
+        page.getByRole("heading", {
+          name: "You have left the network.",
+        })
+      ).toBeVisible()
+      await page.emulateMedia({ reducedMotion: "no-preference" })
+      await videoStarted
+      await page.emulateMedia({ reducedMotion: "reduce" })
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-video-download-aborted",
+        "true"
+      )
+      releaseDownload()
+      await expect(page.locator(".network-not-found video")).toHaveCount(0)
+    } finally {
+      releaseDownload()
+      await page.unrouteAll({ behavior: "wait" })
+    }
+    await page.emulateMedia({ reducedMotion: "no-preference" })
+    await expectBackgroundPlaying(page)
   })
 
   test(`${app} data saver avoids downloads and responds to preference changes @${app}`, async ({
@@ -124,7 +197,7 @@ for (const app of ["market", "merchant"] as const) {
     await page.evaluate(() =>
       window.dispatchEvent(new Event("test:toggle-data-saver"))
     )
-    await expect(page.locator(".network-not-found video")).toHaveCount(1)
+    await expectBackgroundPlaying(page)
     await page.evaluate(() =>
       window.dispatchEvent(new Event("test:toggle-data-saver"))
     )
@@ -132,7 +205,7 @@ for (const app of ["market", "merchant"] as const) {
     await page.evaluate(() =>
       window.dispatchEvent(new Event("test:toggle-data-saver"))
     )
-    await expect(page.locator(".network-not-found video")).toHaveCount(1)
+    await expectBackgroundPlaying(page)
   })
 
   test(`${app} failed media keeps the poster and recovery link @${app}`, async ({
@@ -189,4 +262,32 @@ test("merchant signed-in missing page keeps workspace navigation @merchant", asy
   await expect(
     page.getByRole("heading", { name: "Sign in to Conduit" })
   ).toHaveCount(0)
+})
+
+test("merchant missing page waits for signer restoration before loading media @merchant", async ({
+  page,
+}) => {
+  await installLockedTestSigner(page)
+  await seedStoredAuth(page, TEST_LOCKED_SIGNER_PUBKEY)
+  const videoRequests: string[] = []
+  page.on("request", (request) => {
+    if (request.url().includes("space-loop")) videoRequests.push(request.url())
+  })
+  await page.goto(
+    `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}/potato`
+  )
+  await expect(
+    page.getByText("Restoring signer", { exact: true })
+  ).toBeVisible()
+  await expect(page.locator(".network-not-found")).toHaveCount(0)
+  expect(videoRequests).toEqual([])
+  await unlockTestSigner(page, TEST_LOCKED_SIGNER_PUBKEY)
+  await expect(page.locator("[data-merchant-main-scroll]")).toBeVisible()
+  await expect(page.getByLabel("Open merchant account menu")).toBeVisible()
+  const video = page.locator(".network-not-found video")
+  await expect
+    .poll(() =>
+      video.evaluate((element: HTMLVideoElement) => element.currentTime)
+    )
+    .toBeGreaterThan(0)
 })

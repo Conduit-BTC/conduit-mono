@@ -335,17 +335,16 @@ async function expectMobilePurchaseTabLayout(tab: Locator): Promise<void> {
         (avatar.top + avatar.bottom) / 2 - (count.top + count.bottom) / 2
       ),
       countHeight: count.height,
-      countRadius: parseFloat(
-        getComputedStyle(
-          element.querySelector("[data-testid='purchase-tab-count']")!
-        ).borderTopLeftRadius
-      ),
+      countWidth: count.width,
+      countScrollWidth: element.querySelector(
+        "[data-testid='purchase-tab-count']"
+      )!.scrollWidth,
     }
   })
   expect(boxes.avatarRight).toBeLessThanOrEqual(boxes.countLeft)
   expect(boxes.verticalOffset).toBeLessThanOrEqual(2)
   expect(boxes.countHeight).toBeGreaterThanOrEqual(20)
-  expect(boxes.countRadius).toBeGreaterThanOrEqual(12)
+  expect(boxes.countScrollWidth).toBeLessThanOrEqual(boxes.countWidth)
 }
 
 async function expectInsideHud(page: Page): Promise<void> {

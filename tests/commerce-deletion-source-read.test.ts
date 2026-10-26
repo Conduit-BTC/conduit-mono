@@ -193,7 +193,7 @@ describe("product deletion reads retain source-relay provenance", () => {
     ).toBe(true)
     expect(
       deletionRelayAttempts.some((relayUrls) =>
-        relayUrls.includes("wss://conduit-congee.fly.dev")
+        relayUrls.includes("wss://relay.conduit.market")
       )
     ).toBe(true)
     expect(

@@ -34,12 +34,12 @@ describe("Market verified zero-cost pickup route contract", () => {
     expect(eventRoute).toContain(
       "decodeEventMarketReference(collectionRef, [30409])"
     )
-    expect(eventPage).toContain(
-      'allowZeroPrice={choice === "event_market_pickup" && canPurchase}'
-    )
+    expect(eventPage).toContain("allowZeroPrice={canPurchase}")
     expect(eventPage).toContain("cartActionDisabled={checking || !canAdd}")
+    expect(eventPage).toContain("const canAdd = canPurchase")
+    expect(eventPage).not.toContain("hasEventShippingChoice")
     expect(eventPage).toContain(
-      'choice === "shipping" ? hasEventShippingChoice(product) : canPurchase'
+      "if (!market || !shouldContinue() || !canPurchase) return"
     )
     expect(eventPage).toContain('productRead.resolution.state !== "eligible"')
     expect(eventPage).toContain("!productRead.actionable")
@@ -63,6 +63,23 @@ describe("Market verified zero-cost pickup route contract", () => {
 
   it("routes signed-in and guest free pickup through merchant-only order-first", async () => {
     const checkout = await source("apps/market/src/routes/checkout.tsx")
+    const routerAdmission = checkout.slice(
+      checkout.indexOf("const routerAdmission ="),
+      checkout.indexOf("const paymentRequired =")
+    )
+    expect(routerAdmission).toContain("isQuantumRouterEnabled()")
+    expect(routerAdmission).toContain("assessCheckoutSparkCheckoutAdmission({")
+    expect(routerAdmission).toContain(
+      "freeOrderVerified: verifiedZeroCostPickup"
+    )
+    expect(routerAdmission).toContain("items: rawCheckoutItems")
+    expect(routerAdmission).toContain(
+      "fulfillment: preparedFulfillment.resolutions"
+    )
+    expect(routerAdmission).toContain('routerAdmission.mode === "router"')
+    expect(checkout.indexOf("const verifiedZeroCostPickup =")).toBeLessThan(
+      checkout.indexOf("const routerBranchTargetCheckout =")
+    )
     const placeOrderStart = checkout.indexOf(
       "async function placeOrder(): Promise<void>"
     )

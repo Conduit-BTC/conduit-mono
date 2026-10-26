@@ -1,3 +1,16 @@
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+  type RelayTarget,
+} from "./relay-authority"
+import {
+  compareAccountNetworkRevisions,
+  mergeAccountNetworkLookup,
+  NETWORK_PREFERENCE_READBACK_STATUSES,
+  interpretAccountNetworkRead,
+  interpretAccountNetworkPreference,
+  reconcileAccountNetworkReadDiagnostics,
+} from "./account-network-evidence"
 import { config } from "../config"
 import {
   db,
@@ -64,6 +77,7 @@ export interface ReconcileOwnerRelayListEvidenceInput {
     coverage: OwnerRelayListLookupCoverage
     hadEvent: boolean
     eventId?: string
+    sources?: import("./account-network-evidence").AccountNetworkReadEvidence["sources"]
   }
   cachedAt?: number
 }
@@ -107,6 +121,7 @@ export type OwnerRelayListResolutionState =
   | "lookup_unavailable"
 
 export interface OwnerRelayListObservation {
+  sources?: import("./account-network-evidence").AccountNetworkReadEvidence["sources"]
   coverage: OwnerRelayListLookupCoverage
   attemptedRelayUrls: string[]
   successfulRelayUrls: string[]
@@ -132,6 +147,7 @@ export interface OwnerRelayListResolution {
 
 export interface ResolveOwnerRelayListOptions {
   relayUrls?: readonly string[]
+  relayTargets?: readonly RelayTarget[]
   fetchEventsWithDiagnostics?: typeof fetchPublicEventsWithDiagnostics
   evidenceRepository?: OwnerRelayListEvidenceRepository
   /** Account on whose behalf this discovery I/O is admitted. */
@@ -150,6 +166,7 @@ export interface ResolveOwnerRelayListOptions {
 
 export interface ReadRetainedOwnerRelayListOptions {
   evidenceRepository?: OwnerRelayListEvidenceRepository
+  durableEvidenceRepository?: Pick<OwnerRelayListEvidenceRepository, "get">
   /** Bypass process fallback when the caller needs destructive-state proof. */
   durableOnly?: boolean
 }
@@ -283,12 +300,7 @@ function normalizeRelayOutcomes(
     "policy_blocked",
     "error",
   ])
-  const readbackStatuses = new Set([
-    "pending",
-    "observed",
-    "absent",
-    "timed_out",
-  ])
+  const readbackStatuses = new Set(NETWORK_PREFERENCE_READBACK_STATUSES)
   return outcomes.map((outcome, index) => {
     const normalized = tryNormalizeRelayUrl(outcome.relayUrl)
     const relayUrl = normalized.ok ? normalized.url : undefined
@@ -464,16 +476,6 @@ function eventEvidenceFromObservation(
   }
 }
 
-function compareReplaceableFrontier(
-  candidate: SignedPublicNostrEvent,
-  current: SignedPublicNostrEvent
-): -1 | 0 | 1 {
-  if (candidate.created_at > current.created_at) return 1
-  if (candidate.created_at < current.created_at) return -1
-  if (candidate.id === current.id) return 0
-  return candidate.id < current.id ? 1 : -1
-}
-
 function mergeSameEvent(
   current: OwnerRelayListEventEvidence,
   candidate: OwnerRelayListEventEvidence
@@ -501,7 +503,7 @@ function mergeEventEvidence(
   candidate: OwnerRelayListEventEvidence
 ): OwnerRelayListEventEvidence {
   if (!current) return cloneOwnerEventEvidence(candidate)
-  const comparison = compareReplaceableFrontier(
+  const comparison = compareAccountNetworkRevisions(
     candidate.signedEvent,
     current.signedEvent
   )
@@ -538,42 +540,6 @@ function createLookupEvidence(
     )
   }
   return { ...input, observedAt }
-}
-
-function mergeLookupEvidence(
-  current: OwnerRelayListLookupEvidence | undefined,
-  candidate: OwnerRelayListLookupEvidence,
-  currentEventId: string | undefined
-): OwnerRelayListLookupEvidence {
-  if (!current) return { ...candidate }
-  if (candidate.observedAt > current.observedAt) return { ...candidate }
-  if (candidate.observedAt < current.observedAt) return { ...current }
-
-  const confirmsCurrent = (lookup: OwnerRelayListLookupEvidence): boolean =>
-    lookup.coverage === "complete" &&
-    lookup.hadEvent &&
-    lookup.eventId === currentEventId
-  const currentConfirms = confirmsCurrent(current)
-  const candidateConfirms = confirmsCurrent(candidate)
-  if (currentConfirms !== candidateConfirms) {
-    return currentConfirms ? { ...candidate } : { ...current }
-  }
-  const rank: Record<OwnerRelayListLookupCoverage, number> = {
-    complete: 0,
-    partial: 1,
-    unavailable: 2,
-  }
-  if (rank[candidate.coverage] !== rank[current.coverage]) {
-    return rank[candidate.coverage] > rank[current.coverage]
-      ? { ...candidate }
-      : { ...current }
-  }
-  if (candidate.hadEvent !== current.hadEvent) {
-    return candidate.hadEvent ? { ...current } : { ...candidate }
-  }
-  return (candidate.eventId ?? "") < (current.eventId ?? "")
-    ? { ...candidate }
-    : { ...current }
 }
 
 function validateRetainedRecord(
@@ -614,7 +580,10 @@ function validateRetainedRecord(
   if (
     current &&
     lastUsable &&
-    compareReplaceableFrontier(lastUsable.signedEvent, current.signedEvent) > 0
+    compareAccountNetworkRevisions(
+      lastUsable.signedEvent,
+      current.signedEvent
+    ) > 0
   ) {
     throw new Error("Owner relay-list last usable evidence cannot be newer")
   }
@@ -683,7 +652,7 @@ export function applyOwnerRelayListEvidenceReconciliation(
   ) {
     current.signedEvent = pendingDistribution.signedEvent
   }
-  const latestLookup = mergeLookupEvidence(
+  const latestLookup = mergeAccountNetworkLookup(
     retained?.latestLookup,
     lookup,
     current?.signedEvent.id
@@ -1111,45 +1080,6 @@ export function accountNetworkDiscoveryRelayUrls(): string[] {
   ]).slice(0, MAX_OWNER_NETWORK_DISCOVERY_RELAYS)
 }
 
-function normalizeDiagnostics(
-  result: PublicRelayReadDiagnosticsResult,
-  plannedRelayUrls: readonly string[]
-): PublicRelayReadDiagnosticsResult {
-  // The plan was authority-filtered before final I/O. Preserve an admitted
-  // owner-selected ws:// target while discarding any unplanned diagnostics.
-  const planned = normalizeOwnerSelectedRelayUrls(plannedRelayUrls)
-  const plannedSet = new Set(planned)
-  const attemptedSet = new Set(
-    normalizeOwnerSelectedRelayUrls([
-      ...result.attemptedRelayUrls,
-      ...result.successfulRelayUrls,
-      ...result.failedRelayUrls,
-    ]).filter((url) => plannedSet.has(url))
-  )
-  const successfulSet = new Set(
-    normalizeOwnerSelectedRelayUrls(result.successfulRelayUrls).filter((url) =>
-      plannedSet.has(url)
-    )
-  )
-  const failedSet = new Set(
-    normalizeOwnerSelectedRelayUrls(result.failedRelayUrls).filter((url) =>
-      plannedSet.has(url)
-    )
-  )
-  for (const relayUrl of planned) {
-    if (!attemptedSet.has(relayUrl)) failedSet.add(relayUrl)
-  }
-  return {
-    events: result.events,
-    attemptedRelayUrls: planned.filter((url) => attemptedSet.has(url)),
-    successfulRelayUrls: planned.filter((url) => successfulSet.has(url)),
-    failedRelayUrls: planned.filter((url) => failedSet.has(url)),
-    cappedRelayUrls: normalizeOwnerSelectedRelayUrls(
-      result.cappedRelayUrls ?? []
-    ).filter((url) => plannedSet.has(url)),
-  }
-}
-
 function ownerAuthorizedLookupRelayPlan(input: {
   ownerPubkey: NormalizedOwnerRelayListPubkey
   requestingAccountPubkey?: string | null
@@ -1198,22 +1128,6 @@ function ownerAuthorizedLookupRelayPlan(input: {
   }
 }
 
-function deriveCoverage(
-  result: PublicRelayReadDiagnosticsResult,
-  plannedRelayUrls: readonly string[]
-): OwnerRelayListLookupCoverage {
-  if (result.successfulRelayUrls.length === 0) return "unavailable"
-  const successful = new Set(result.successfulRelayUrls)
-  const failed = new Set(result.failedRelayUrls)
-  const capped = new Set(result.cappedRelayUrls ?? [])
-  return plannedRelayUrls.length > 0 &&
-    plannedRelayUrls.every(
-      (url) => successful.has(url) && !failed.has(url) && !capped.has(url)
-    )
-    ? "complete"
-    : "partial"
-}
-
 function toSignedOwnerRelayListEvent(
   event: VerifiedNostrEvent,
   pubkey: NormalizedOwnerRelayListPubkey
@@ -1236,10 +1150,9 @@ function toSignedOwnerRelayListEvent(
 function newestEvent(
   events: readonly SignedPublicNostrEvent[]
 ): SignedPublicNostrEvent | undefined {
-  return [...events].sort((left, right) => {
-    const createdAt = right.created_at - left.created_at
-    return createdAt !== 0 ? createdAt : left.id.localeCompare(right.id)
-  })[0]
+  return [...events].sort(
+    (left, right) => -compareAccountNetworkRevisions(left, right)
+  )[0]
 }
 
 function eventSourceRelayUrls(
@@ -1257,19 +1170,16 @@ function resolutionFromRecord(
   observation: OwnerRelayListObservation
 ): OwnerRelayListResolution {
   const current = record.current
-  const confirmsCurrent = Boolean(
-    current &&
-    record.latestLookup.coverage === "complete" &&
-    record.latestLookup.hadEvent &&
-    record.latestLookup.eventId === current.signedEvent.id
-  )
-  const state: OwnerRelayListResolutionState = current
-    ? current.state
-    : record.latestLookup.coverage === "complete"
-      ? "not_observed"
-      : record.latestLookup.coverage === "partial"
-        ? "lookup_partial"
-        : "lookup_unavailable"
+  const facts = interpretAccountNetworkPreference({
+    current: current && {
+      eventId: current.signedEvent.id,
+      state: current.state,
+      completeObservedAt: current.completeObservedAt,
+    },
+    lastUsableEventId: record.lastUsable?.signedEvent.id,
+    pendingEventId: record.pendingDistribution?.signedEvent.id,
+    lookup: record.latestLookup,
+  })
   const usable =
     current?.state === "declared"
       ? current
@@ -1278,11 +1188,9 @@ function resolutionFromRecord(
         : undefined
   return {
     pubkey: record.pubkey,
-    state,
+    state: facts.state,
     preferences: usable ? structuredClone(usable.preferences) : [],
-    stale: Boolean(
-      current && (!confirmsCurrent || current.state === "malformed")
-    ),
+    stale: facts.stale,
     current: current ? cloneOwnerEventEvidence(current) : undefined,
     lastUsable: record.lastUsable
       ? cloneOwnerEventEvidence(record.lastUsable)
@@ -1304,9 +1212,18 @@ export async function readRetainedOwnerRelayList(
   if (!normalized) return null
   const repository =
     options.evidenceRepository ?? dexieOwnerRelayListEvidenceRepository
-  const retained = options.durableOnly
-    ? await repository.get(normalized)
-    : await getOwnerRelayListEvidence(normalized, repository)
+  let retained: OwnerRelayListEvidenceRecord | null | undefined
+  try {
+    retained = options.durableOnly
+      ? await (options.durableEvidenceRepository ?? repository).get(normalized)
+      : await getOwnerRelayListEvidence(normalized, repository)
+  } catch (error) {
+    // Only an unreadable durable source may use already-admitted process
+    // evidence. A readable signed-empty or newer frontier stays authoritative.
+    const process = processEvidence.get(normalized)
+    if (!process) throw error
+    retained = process
+  }
   const record = retained
     ? validateRetainedRecord(retained, normalized, Date.now)
     : undefined
@@ -1366,9 +1283,23 @@ export async function resolveOwnerRelayList(
         },
         {
           relayUrls,
+          relayTargets:
+            options.relayTargets ??
+            mergeRelayTargets(
+              relayTargetsFromUrls(relayUrls, {
+                kind: "discovery",
+                operation: "read",
+                registry: "owner_10002",
+              }),
+              relayTargetsFromUrls(lookupPlan.ownerSelectedRelayUrls, {
+                kind: "owner_nip65",
+                operation: "read",
+                ownerPubkey: normalized,
+                selection: "read",
+              })
+            ),
           accountPubkey: lookupPlan.accountPubkey,
           authenticatedPubkey: lookupPlan.authenticatedPubkey,
-          ownerSelectedRelayUrls: lookupPlan.ownerSelectedRelayUrls,
           accountNetworkLocalStateRepository:
             options.accountNetworkLocalStateRepository,
           signal: options.signal,
@@ -1391,8 +1322,8 @@ export async function resolveOwnerRelayList(
       }
     }
   }
-  result = normalizeDiagnostics(result, relayUrls)
-  const coverage = deriveCoverage(result, relayUrls)
+  result = reconcileAccountNetworkReadDiagnostics(result, relayUrls)
+  const coverage = interpretAccountNetworkRead(relayUrls, result).coverage
   const signedById = new Map<string, SignedPublicNostrEvent>()
   const sourceRelayUrlsById = new Map<string, string[]>()
   for (const event of result.events) {
@@ -1432,6 +1363,7 @@ export async function resolveOwnerRelayList(
         lookup: {
           observedAt,
           coverage,
+          sources: interpretAccountNetworkRead(relayUrls, result).sources,
           hadEvent: Boolean(newest),
           eventId: newest?.id,
         },
@@ -1446,6 +1378,7 @@ export async function resolveOwnerRelayList(
     // Inconclusive admission cannot authorize replacing the durable checkpoint.
     return resolutionFromRecord(
       {
+        ...processEvidence.get(normalized),
         pubkey: normalized,
         latestLookup: { observedAt, coverage: "unavailable", hadEvent: false },
         cachedAt: observedAt,
@@ -1462,6 +1395,7 @@ export async function resolveOwnerRelayList(
   }
   const observation: OwnerRelayListObservation = {
     coverage,
+    sources: interpretAccountNetworkRead(relayUrls, result).sources,
     attemptedRelayUrls: [...result.attemptedRelayUrls],
     successfulRelayUrls: [...result.successfulRelayUrls],
     failedRelayUrls: [...result.failedRelayUrls],

@@ -37,7 +37,6 @@ export type EventMarketOrganizerInboxResolution =
       reason:
         | "invalid_organizer"
         | "not_observed"
-        | "distribution_pending"
         | "signed_empty"
         | "malformed"
         | "lookup_partial"

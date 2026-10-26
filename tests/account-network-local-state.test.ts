@@ -11,7 +11,7 @@ import {
   applyAuthoritativeAccountNetworkReadds,
   createInMemoryAccountNetworkLocalStateRepository,
   emptyAccountNetworkLocalState,
-  filterEligibleAccountRelayUrls,
+  filterEligibleAccountRelayTargets,
   normalizeAccountNetworkLocalState,
   orderEquivalentAccountRelayOperations,
   replaceAccountNetworkPreferredRelayOrder,
@@ -25,6 +25,12 @@ import {
 } from "@conduit/core/protocol/account-network-routing-policy"
 import { deriveRelayScanResult } from "@conduit/core/protocol/relay-settings"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
+import { createInMemoryOwnerRelayListEvidenceRepository } from "@conduit/core/protocol/owner-relay-list-evidence"
+import {
+  mergeRelayTargets,
+  relayTargetsFromUrls,
+} from "@conduit/core/protocol/relay-authority"
+import { config } from "@conduit/core/config"
 
 const OWNER_SECRET = generateSecretKey()
 const OTHER_SECRET = generateSecretKey()
@@ -227,7 +233,7 @@ describe("account network local state", () => {
     ).rejects.toThrow("requires a valid hex pubkey")
   })
 
-  it("re-reads local policy on every eligibility call and fails closed", async () => {
+  it("re-reads local policy on every target admission and fails closed", async () => {
     let calls = 0
     let stored: AccountNetworkLocalState | undefined
     const repository = {
@@ -236,34 +242,33 @@ describe("account network local state", () => {
         return stored ? structuredClone(stored) : undefined
       },
     }
-
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_A],
-        repository,
-      })
-    ).toEqual([RELAY_A, RELAY_B])
-
+    const targets = relayTargetsFromUrls([RELAY_A, RELAY_B, RELAY_A], {
+      kind: "public_hint",
+      operation: "read",
+    })
+    const eligible = async () =>
+      (
+        await filterEligibleAccountRelayTargets({
+          accountPubkey: OWNER,
+          targets,
+          operation: "read",
+          repository,
+        })
+      ).map((target) => target.url)
+    expect(await eligible()).toEqual([RELAY_A, RELAY_B])
     stored = excludeRelay(
       emptyAccountNetworkLocalState(OWNER, () => 1),
       {
         committedAt: 2,
       }
     )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A, RELAY_B],
-        repository,
-      })
-    ).toEqual([RELAY_B])
+    expect(await eligible()).toEqual([RELAY_B])
     expect(calls).toBe(2)
-
     expect(
-      await filterEligibleAccountRelayUrls({
+      await filterEligibleAccountRelayTargets({
         accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A],
+        targets,
+        operation: "read",
         repository: {
           async get() {
             throw new Error("IndexedDB unavailable")
@@ -272,138 +277,138 @@ describe("account network local state", () => {
       })
     ).toEqual([])
     expect(
-      await filterEligibleAccountRelayUrls({
+      await filterEligibleAccountRelayTargets({
         accountPubkey: "invalid",
-        candidateRelayUrls: [RELAY_A],
+        targets,
+        operation: "read",
         repository,
       })
     ).toEqual([])
   })
 
-  it("admits only the exact owner-selected ws subset at the final I/O seam", async () => {
+  it("requires signed same-account evidence for an owner ws target", async () => {
     const ownerWs = "ws://owner-relay.example"
     const remoteWs = "ws://remote-hint.example"
     const repository = createInMemoryAccountNetworkLocalStateRepository()
-
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        candidateRelayUrls: [ownerWs, remoteWs, RELAY_B],
-        ownerSelectedRelayUrls: [ownerWs],
-        repository,
+    const evidence = createInMemoryOwnerRelayListEvidenceRepository()
+    const selection = await signedEvent({
+      kind: 10002,
+      createdAt: 100,
+      tags: [["r", ownerWs, "read"]],
+    })
+    await evidence.reconcile({
+      pubkey: OWNER,
+      observations: [{ signedEvent: selection }],
+      lookup: {
+        observedAt: 100,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: selection.id,
+      },
+    })
+    const targets = mergeRelayTargets(
+      relayTargetsFromUrls([ownerWs, remoteWs], {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: OWNER,
+        selection: "read",
+      }),
+      relayTargetsFromUrls([RELAY_B], {
+        kind: "public_hint",
+        operation: "read",
       })
-    ).toEqual([ownerWs, RELAY_B])
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OTHER,
-        candidateRelayUrls: [ownerWs, RELAY_B],
-        ownerSelectedRelayUrls: [ownerWs],
-        repository,
-      })
-    ).toEqual([RELAY_B])
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [ownerWs, remoteWs],
-        repository,
-      })
-    ).toEqual([])
-
+    )
+    const eligible = async (authenticatedPubkey?: string) =>
+      (
+        await filterEligibleAccountRelayTargets({
+          accountPubkey: OWNER,
+          authenticatedPubkey,
+          targets,
+          operation: "read",
+          repository,
+          ownerRelayListEvidenceRepository: evidence,
+        })
+      ).map((target) => target.url)
+    expect(await eligible(OWNER)).toEqual([ownerWs, RELAY_B])
+    expect(await eligible(OTHER)).toEqual([RELAY_B])
+    expect(await eligible()).toEqual([RELAY_B])
     await repository.update(OWNER, (state) =>
       excludeRelay(state, { relayUrl: ownerWs, committedAt: 200 })
     )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        authenticatedPubkey: OWNER,
-        candidateRelayUrls: [ownerWs],
-        ownerSelectedRelayUrls: [ownerWs],
-        repository,
-      })
-    ).toEqual([])
+    expect(await eligible(OWNER)).toEqual([RELAY_B])
   })
 
-  it("enforces app and personal provenance switches at the final I/O seam", async () => {
+  it("preserves overlap grants through independent App and personal switches", async () => {
+    const appRelay = config.appReadRelayUrls[0]!
+    const personalRelay = RELAY_B
     const repository = createInMemoryAccountNetworkLocalStateRepository()
-
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_C],
-        appRelayUrls: [RELAY_A],
-        personalRelayUrls: [RELAY_B],
-        repository,
-      })
-    ).toEqual([RELAY_A, RELAY_B, RELAY_C])
-
-    await repository.updateRoutingPolicy(OWNER, (policy) =>
-      reconcileAccountNetworkRoutingPolicy(policy, {
-        state: "absent_within_scope",
-        observedAt: 10,
+    const evidence = createInMemoryOwnerRelayListEvidenceRepository()
+    const selection = await signedEvent({
+      kind: 10002,
+      createdAt: 100,
+      tags: [
+        ["r", appRelay, "read"],
+        ["r", personalRelay, "read"],
+      ],
+    })
+    await evidence.reconcile({
+      pubkey: OWNER,
+      observations: [{ signedEvent: selection }],
+      lookup: {
+        observedAt: 100,
+        coverage: "complete",
+        hadEvent: true,
+        eventId: selection.id,
+      },
+    })
+    const targets = mergeRelayTargets(
+      relayTargetsFromUrls([appRelay], {
+        kind: "app",
+        operation: "read",
+        bucket: "general_read",
+      }),
+      relayTargetsFromUrls([appRelay, personalRelay], {
+        kind: "owner_nip65",
+        operation: "read",
+        ownerPubkey: OWNER,
+        selection: "read",
       })
     )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_C],
-        appRelayUrls: [RELAY_A],
-        personalRelayUrls: [RELAY_B],
-        repository,
-      })
-    ).toEqual([RELAY_A, RELAY_C])
-
+    const eligible = async () =>
+      (
+        await filterEligibleAccountRelayTargets({
+          accountPubkey: OWNER,
+          authenticatedPubkey: OWNER,
+          targets,
+          operation: "read",
+          repository,
+          ownerRelayListEvidenceRepository: evidence,
+        })
+      ).map((target) => target.url)
+    expect(await eligible()).toEqual([appRelay, personalRelay])
+    await repository.updateRoutingPolicy(OWNER, (policy) =>
+      setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
+    )
+    expect(await eligible()).toEqual([appRelay])
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "personal", true)
     )
     await repository.updateRoutingPolicy(OWNER, (policy) =>
       setAccountNetworkRoutingSourceEnabled(policy, "app", false)
     )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A, RELAY_B, RELAY_C],
-        appRelayUrls: [RELAY_A, RELAY_B],
-        personalRelayUrls: [RELAY_A, RELAY_B],
-        repository,
-      })
-    ).toEqual([RELAY_A, RELAY_B, RELAY_C])
-
+    expect(await eligible()).toEqual([appRelay, personalRelay])
     await repository.update(OWNER, (state) =>
-      excludeRelay(state, { relayUrl: RELAY_A, committedAt: 200 })
+      excludeRelay(state, { relayUrl: appRelay, committedAt: 200 })
     )
+    expect(await eligible()).toEqual([personalRelay])
     expect(
-      await filterEligibleAccountRelayUrls({
+      await filterEligibleAccountRelayTargets({
         accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_A, RELAY_B],
-        appRelayUrls: [RELAY_A, RELAY_B],
-        personalRelayUrls: [RELAY_A, RELAY_B],
-        repository,
-      })
-    ).toEqual([RELAY_B])
-
-    await repository.updateRoutingPolicy(OWNER, (policy) =>
-      setAccountNetworkRoutingSourceEnabled(policy, "personal", false)
-    )
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_B],
-        appRelayUrls: [RELAY_B],
-        personalRelayUrls: [RELAY_B],
+        targets: [{ url: RELAY_C, grants: [] }],
+        operation: "read",
         repository,
       })
     ).toEqual([])
-
-    // Existing callers without provenance retain their pre-policy behavior.
-    expect(
-      await filterEligibleAccountRelayUrls({
-        accountPubkey: OWNER,
-        candidateRelayUrls: [RELAY_B],
-        repository,
-      })
-    ).toEqual([RELAY_B])
   })
 
   it("clears exclusions only for stronger valid own events that explicitly re-add", async () => {

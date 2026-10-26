@@ -1,5 +1,8 @@
+import type { ProtectedReadSessionLifecycle } from "./protected-read-session-lifecycle"
+import type { AuthMethod } from "./auth-session"
 import {
   classifyNostrSignerError,
+  isInvalidNip44CiphertextError,
   NostrSignerError,
   type AccountSigner,
   type AccountSignerCapabilities,
@@ -31,11 +34,40 @@ export class SessionSignerError extends Error {
 // Relay clients are recreated independently of account authority. The auth
 // provider installs and retires this exact owner, never a relay-client signer.
 let activeAccountSigner: SessionSigner | null = null
+const accountSignerListeners = new Set<() => void>()
+export function subscribeToAccountSignerChanges(
+  listener: () => void
+): () => void {
+  accountSignerListeners.add(listener)
+  return () => {
+    accountSignerListeners.delete(listener)
+  }
+}
+function notifyAccountSignerChanges(): void {
+  for (const listener of accountSignerListeners) listener()
+}
 
 export function activateAccountSigner(signer: SessionSigner): void {
   if (!signer.pubkey) throw new NostrSignerError("invalid_response")
   if (activeAccountSigner !== signer) activeAccountSigner?.invalidateLocal()
   activeAccountSigner = signer
+  notifyAccountSignerChanges()
+}
+
+/** Commit the existing account owner only after protected-read installation. */
+export function installAccountSigner(
+  signer: SessionSigner,
+  protectedReads: ProtectedReadSessionLifecycle,
+  hasAuthority: () => boolean
+): void {
+  try {
+    protectedReads.activate(signer, signer.pubkey, hasAuthority)
+    activateAccountSigner(signer)
+  } catch (cause) {
+    protectedReads.deactivate()
+    signer.invalidateLocal(cause)
+    throw cause
+  }
 }
 
 export function retireAccountSigner(signer: SessionSigner): void {
@@ -58,7 +90,7 @@ export function getAccountSigner(): AccountSigner | undefined {
 export interface SessionSignerOptions {
   expectedPubkey: string
   revision: string
-  authMethod: "nip07" | "nip46"
+  authMethod: AuthMethod
   getCapabilities: () => AccountSignerCapabilities
   operationTimeoutMs?: number
   maxQueuedOperations?: number
@@ -97,7 +129,7 @@ export class SessionSigner implements AccountSigner {
   private readonly hasAuthority: SessionSignerOptions["hasAuthority"]
   private readonly onInvalidated?: SessionSignerOptions["onInvalidated"]
   readonly revision: string
-  readonly authMethod: "nip07" | "nip46"
+  readonly authMethod: AuthMethod
   private readonly getCapabilities: () => AccountSignerCapabilities
   private readonly operationTimeoutMs: number
   private readonly maxQueuedOperations: number
@@ -139,6 +171,7 @@ export class SessionSigner implements AccountSigner {
     this.invalidated = true
     this.cancellation.abort(classifyNostrSignerError(cause))
     this.rejectQueued(classifyNostrSignerError(cause))
+    notifyAccountSignerChanges()
   }
 
   /** A deliberate retry may resume history decryption after a declined prompt. */
@@ -168,7 +201,10 @@ export class SessionSigner implements AccountSigner {
     }
   }
 
-  async signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent> {
+  async signEvent(
+    event: UnsignedNostrEvent,
+    options: { priority?: "foreground" | "background" } = {}
+  ): Promise<SignedNostrEvent> {
     // Snapshot before queueing: neither caller nor provider may change consent.
     try {
       if (
@@ -197,33 +233,37 @@ export class SessionSigner implements AccountSigner {
       }
       this.assertAuthority()
       this.assertExpectedPubkey(expected.pubkey)
-      return await this.runOperation("signEvent", async () => {
-        const draft = {
-          ...expected,
-          tags: expected.tags.map((tag) => [...tag]),
-        }
-        const signed = await this.signer.signEvent(draft)
-        this.assertAuthority()
-        if (!isValidSignedPublicNostrEvent(signed)) {
-          this.reject(
-            "invalid_response",
-            "The signer returned an invalid signature. Reconnect the intended account and try again."
-          )
-        }
-        if (
-          signed.pubkey !== expected.pubkey ||
-          signed.kind !== expected.kind ||
-          signed.created_at !== expected.created_at ||
-          signed.content !== expected.content ||
-          JSON.stringify(signed.tags) !== JSON.stringify(expected.tags)
-        ) {
-          this.reject(
-            "invalid_response",
-            "The signer changed the event. Reconnect the intended account and try again."
-          )
-        }
-        return { ...expected, id: signed.id, sig: signed.sig }
-      })
+      return await this.runOperation(
+        "signEvent",
+        async () => {
+          const draft = {
+            ...expected,
+            tags: expected.tags.map((tag) => [...tag]),
+          }
+          const signed = await this.signer.signEvent(draft)
+          this.assertAuthority()
+          if (!isValidSignedPublicNostrEvent(signed)) {
+            this.reject(
+              "invalid_response",
+              "The signer returned an invalid signature. Reconnect the intended account and try again."
+            )
+          }
+          if (
+            signed.pubkey !== expected.pubkey ||
+            signed.kind !== expected.kind ||
+            signed.created_at !== expected.created_at ||
+            signed.content !== expected.content ||
+            JSON.stringify(signed.tags) !== JSON.stringify(expected.tags)
+          ) {
+            this.reject(
+              "invalid_response",
+              "The signer changed the event. Reconnect the intended account and try again."
+            )
+          }
+          return { ...expected, id: signed.id, sig: signed.sig }
+        },
+        options.priority ?? "foreground"
+      )
     } catch (error) {
       throw publicSignerFailure(error)
     }
@@ -231,9 +271,16 @@ export class SessionSigner implements AccountSigner {
 
   async encryptNip44(
     recipientPubkey: string,
-    plaintext: string
+    plaintext: string,
+    options: { priority?: "foreground" | "background" } = {}
   ): Promise<string> {
-    return this.runKeyOperation("encrypt", recipientPubkey, plaintext, "nip44")
+    return this.runKeyOperation(
+      "encrypt",
+      recipientPubkey,
+      plaintext,
+      "nip44",
+      options.priority ?? "foreground"
+    )
   }
 
   async decryptNip44(
@@ -276,12 +323,24 @@ export class SessionSigner implements AccountSigner {
     const peer = normalizePubkey(peerPubkey)
     const result = await this.runOperation(
       scheme === "nip04" ? "nip04Decrypt" : "nip44",
-      () =>
-        operation === "encrypt"
-          ? this.signer.encryptNip44(peer, value)
-          : scheme === "nip44"
-            ? this.signer.decryptNip44(peer, value)
-            : this.signer.decryptLegacy(peer, value),
+      async () => {
+        try {
+          return await (operation === "encrypt"
+            ? this.signer.encryptNip44(peer, value)
+            : scheme === "nip44"
+              ? this.signer.decryptNip44(peer, value)
+              : this.signer.decryptLegacy(peer, value))
+        } catch (error) {
+          this.assertAuthority()
+          if (
+            operation === "decrypt" &&
+            scheme === "nip44" &&
+            isInvalidNip44CiphertextError(error)
+          )
+            throw new NostrSignerError("invalid_ciphertext")
+          throw error
+        }
+      },
       priority
     )
     if (

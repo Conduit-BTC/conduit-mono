@@ -1,4 +1,10 @@
 import {
+  compareAccountNetworkRevisions,
+  NETWORK_PREFERENCE_READBACK_STATUSES,
+  mergeAccountNetworkLookup,
+  interpretAccountNetworkInboxRecovery,
+} from "./account-network-evidence"
+import {
   db,
   type DeclaredInboxDeclarationEventEvidence,
   type InboxDeclarationEventEvidence,
@@ -68,6 +74,7 @@ export interface MergeInboxDeclarationEvidenceInput {
     coverage: InboxDeclarationLookupCoverage
     hadEvent: boolean
     eventId?: string
+    sources?: import("./account-network-evidence").AccountNetworkReadEvidence["sources"]
   }
 }
 
@@ -347,6 +354,7 @@ function createLookupEvidence(
   return {
     observedAt,
     coverage: input.coverage,
+    sources: input.sources,
     hadEvent: input.hadEvent,
     eventId: input.eventId,
   }
@@ -640,12 +648,7 @@ function normalizeRelayOutcomes(
     "policy_blocked",
     "error",
   ])
-  const readbackStatuses = new Set([
-    "pending",
-    "observed",
-    "absent",
-    "timed_out",
-  ])
+  const readbackStatuses = new Set(NETWORK_PREFERENCE_READBACK_STATUSES)
   return outcomes.map((outcome, index) => {
     const normalizedRelayUrl = tryNormalizeRelayUrl(outcome.relayUrl)
     const relayUrl = normalizedRelayUrl.ok ? normalizedRelayUrl.url : undefined
@@ -670,17 +673,6 @@ function normalizeRelayOutcomes(
     }
     return { ...outcome, relayUrl }
   })
-}
-
-function compareReplaceableFrontier(
-  candidate: SignedPublicNostrEvent,
-  current: SignedPublicNostrEvent
-): -1 | 0 | 1 {
-  if (candidate.created_at > current.created_at) return 1
-  if (candidate.created_at < current.created_at) return -1
-  if (candidate.id === current.id) return 0
-  // NIP-01 retains the lexicographically lowest id at equal timestamps.
-  return candidate.id < current.id ? 1 : -1
 }
 
 function mergeRetainedSourceRelayUrls(
@@ -1278,7 +1270,7 @@ function mergeHistoricalUsableEvidence(
   if (!prior) {
     lastUsable = cloneInboxDeclarationEventEvidence(candidate.current)
   } else {
-    const frontier = compareReplaceableFrontier(
+    const frontier = compareAccountNetworkRevisions(
       candidate.current.signedEvent,
       prior.signedEvent
     )
@@ -1326,7 +1318,7 @@ function applyEventEvidenceMerge(
   candidate: InboxDeclarationEvidenceCandidate
 ): InboxDeclarationEvidenceRecord {
   if (existing) {
-    const frontier = compareReplaceableFrontier(
+    const frontier = compareAccountNetworkRevisions(
       candidate.current.signedEvent,
       existing.current.signedEvent
     )
@@ -1378,39 +1370,9 @@ function mergeLatestLookupEvidence(
   candidate: InboxDeclarationLookupEvidence | undefined,
   currentEventId: string
 ): InboxDeclarationLookupEvidence | undefined {
-  if (!candidate) return existing ? { ...existing } : undefined
-  if (!existing) return { ...candidate }
-  if (candidate.observedAt > existing.observedAt) return { ...candidate }
-  if (candidate.observedAt < existing.observedAt) return { ...existing }
-
-  // Equal wall-clock timestamps can occur across concurrent tabs. Preserve the
-  // more conservative observation so exact evidence is never made fresh by
-  // scheduling order alone.
-  const confirmsCurrent = (lookup: InboxDeclarationLookupEvidence): boolean =>
-    lookup.coverage === "complete" &&
-    lookup.hadEvent &&
-    lookup.eventId === currentEventId
-  const existingConfirms = confirmsCurrent(existing)
-  const candidateConfirms = confirmsCurrent(candidate)
-  if (existingConfirms !== candidateConfirms) {
-    return existingConfirms ? { ...candidate } : { ...existing }
-  }
-  const coverageRank: Record<InboxDeclarationLookupCoverage, number> = {
-    complete: 0,
-    partial: 1,
-    unavailable: 2,
-  }
-  if (coverageRank[candidate.coverage] !== coverageRank[existing.coverage]) {
-    return coverageRank[candidate.coverage] > coverageRank[existing.coverage]
-      ? { ...candidate }
-      : { ...existing }
-  }
-  if (candidate.hadEvent !== existing.hadEvent) {
-    return candidate.hadEvent ? { ...existing } : { ...candidate }
-  }
-  return (candidate.eventId ?? "") < (existing.eventId ?? "")
-    ? { ...candidate }
-    : { ...existing }
+  return candidate
+    ? mergeAccountNetworkLookup(existing, candidate, currentEventId)
+    : existing
 }
 
 function applyEvidenceMerge(
@@ -1766,7 +1728,7 @@ export function applyInboxDeclarationCutoverRecoveryReadback(
   const seen = new Set<string>()
   const observations: Array<{
     relayUrl: string
-    status: "observed" | "absent" | "timed_out"
+    status: NetworkPreferenceReadbackObservation["status"]
   }> = []
   for (const observation of input.readback) {
     const relayUrl = normalizeSecureOrIsolatedE2eRelayUrls([
@@ -1776,7 +1738,7 @@ export function applyInboxDeclarationCutoverRecoveryReadback(
       !relayUrl ||
       policyBlockedRelayUrls.has(relayUrl) ||
       seen.has(relayUrl) ||
-      !["observed", "absent", "timed_out"].includes(observation.status) ||
+      !NETWORK_PREFERENCE_READBACK_STATUSES.includes(observation.status) ||
       !recovery.confirmationAttempts.some((attempt) =>
         attempt.relayUrls.includes(relayUrl)
       )
@@ -1848,12 +1810,8 @@ export function getActiveInboxCutoverRecoveryRelayUrls(
   if (!record) return []
   const recoveries = normalizeCutoverRecoveries(record)
   return normalizeRetainedRelayUrls(
-    recoveries.flatMap((recovery) =>
-      recovery.expiresAt !== undefined && now >= recovery.expiresAt
-        ? []
-        : recovery.relayUrls.filter(
-            (relayUrl) => !recovery.policyBlockedRelayUrls?.includes(relayUrl)
-          )
+    interpretAccountNetworkInboxRecovery(recoveries, now).map(
+      (route) => route.relayUrl
     )
   )
 }

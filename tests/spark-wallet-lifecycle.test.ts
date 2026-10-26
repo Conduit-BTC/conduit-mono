@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import type { WalletDescriptor } from "@conduit/core"
+import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 
 import {
   assertLocalSparkWalletRemovalSafe,
@@ -8,7 +9,7 @@ import {
   openRegisteredSparkWallet,
   runSparkWalletRemoval,
   type SparkWalletOperationRunner,
-} from "../apps/market/src/lib/spark-wallet-lifecycle"
+} from "@conduit/core/wallets/spark-wallet-lifecycle"
 import {
   SparkWalletManager,
   type SparkSdkClient,
@@ -18,7 +19,7 @@ import {
   assertSparkWalletRegistrationSessionAvailable,
   SparkWalletSessionLeaseUnavailableError,
   type SparkWalletSessionLockManager,
-} from "../apps/market/src/lib/spark-wallet-lease"
+} from "@conduit/core/wallets/spark-wallet-lease"
 
 const WALLET: WalletDescriptor = {
   id: "wallet-personal",
@@ -34,6 +35,48 @@ const WALLET: WalletDescriptor = {
 }
 
 describe("Spark wallet lifecycle coordination", () => {
+  it("reuses a native session opened by the caller ahead of it in the operation lock", async () => {
+    const operations = new SerializedWalletOperations()
+    const state = createLifecycleState()
+    const opening = deferred<void>()
+    const finishOpening = deferred<void>()
+    const mnemonic = generateSparkMnemonic()
+    let resolutions = 0
+    const manager = {
+      ...state.manager,
+      isOpen: (walletId: string) => state.openWallets.has(walletId),
+      async openWithMnemonic(input: {
+        walletId: string
+        mnemonic: string
+        accountNumber: number
+      }) {
+        opening.resolve(undefined)
+        await finishOpening.promise
+        await state.manager.openWithMnemonic(input)
+      },
+    }
+    const input = {
+      walletId: WALLET.id,
+      expectedNetwork: WALLET.network,
+      runExclusive: operations.run,
+      listWallets: async () => [WALLET],
+      manager,
+      resolveOpenInput: async () => {
+        resolutions++
+        return { mnemonic, accountNumber: 0 }
+      },
+    }
+    const first = openRegisteredSparkWallet(input)
+    await opening.promise
+    const queued = openRegisteredSparkWallet(input)
+    finishOpening.resolve(undefined)
+    await Promise.all([first, queued])
+    expect(resolutions).toBe(2)
+    expect(state.openCalls).toBe(1)
+    expect(state.closeCalls).toBe(0)
+    expect(manager.isOpen(WALLET.id)).toBe(true)
+  })
+
   it("allows local-only removal when this page has no Spark manager", async () => {
     await expect(
       assertLocalSparkWalletRemovalSafe({ managerInitialized: false })
@@ -207,6 +250,70 @@ describe("Spark wallet lifecycle coordination", () => {
     expect(state.openWallets.has(WALLET.id)).toBe(false)
     expect(state.closeCalls).toBe(1)
   })
+
+  for (const failure of ["open", "refresh", "registration", "none"] as const) {
+    it(`commits staged recovery only after validated opening: ${failure}`, async () => {
+      const state = createLifecycleState()
+      const calls: string[] = []
+      let reads = 0
+      let committed = false
+      const operation = openRegisteredSparkWallet({
+        walletId: WALLET.id,
+        expectedNetwork: "mainnet",
+        runExclusive: async (_walletId, run) => {
+          calls.push("lock")
+          try {
+            return await run()
+          } finally {
+            calls.push("unlock")
+          }
+        },
+        listWallets: async () => {
+          calls.push("registration")
+          if (++reads === 3 && failure === "registration")
+            throw new Error("registration unavailable")
+          return [WALLET]
+        },
+        manager: {
+          ...state.manager,
+          async openWithMnemonic(input) {
+            calls.push("open")
+            if (failure === "open") throw new Error("open failed")
+            await state.manager.openWithMnemonic(input)
+          },
+        },
+        resolveOpenInput: async () => ({
+          mnemonic: generateSparkMnemonic(),
+          accountNumber: 0,
+          commitAfterOpen: async () => {
+            calls.push("commit")
+            committed = true
+          },
+        }),
+        afterOpen: async () => {
+          calls.push("refresh")
+          if (failure === "refresh") throw new Error("refresh failed")
+        },
+      })
+      if (failure === "none") {
+        await operation
+        expect(calls).toEqual([
+          "lock",
+          "registration",
+          "open",
+          "registration",
+          "refresh",
+          "registration",
+          "commit",
+          "unlock",
+        ])
+      } else {
+        await expect(operation).rejects.toThrow()
+        expect(calls).not.toContain("commit")
+      }
+      expect(committed).toBe(failure === "none")
+    })
+  }
 
   it("excludes a second tab until the open wallet session is closed", async () => {
     const operations = new SerializedWalletOperations()

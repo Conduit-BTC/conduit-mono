@@ -48,6 +48,7 @@ import {
 } from "../lib/dashboard-charts"
 import { parseMerchantAuthHandoffSearch } from "../lib/market-links"
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
   getMerchantConversationQueue,
@@ -164,7 +165,7 @@ function StatCard({
     <Link
       to={to}
       search={search}
-      className="block rounded-[1.4rem] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-glass-inset)] hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+      className="block rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4  hover:bg-[var(--surface-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -177,7 +178,7 @@ function StatCard({
         </div>
         <span
           data-dashboard-stat-icon
-          className="inline-flex size-11 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
+          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--text-primary)]"
         >
           <Icon aria-hidden={true} className="size-5" />
         </span>
@@ -200,16 +201,16 @@ function ReadinessRow({
   pending?: boolean
   statusLabel?: string
   statusVariant?: "warning" | "success" | "info" | "error" | "neutral"
-  to: "/" | "/profile" | "/payments" | "/shipping" | "/network"
+  to: "/" | "/profile" | "/wallet" | "/shipping" | "/network"
   icon: ComponentType<{ className?: string; "aria-hidden"?: boolean }>
 }) {
   return (
     <Link
       to={to}
-      className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3 transition-colors hover:bg-[var(--surface)]"
+      className="flex items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-3 transition-colors hover:bg-[var(--surface)]"
     >
       <span className="flex min-w-0 items-center gap-3">
-        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
+        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)]">
           <Icon aria-hidden={true} className="h-4 w-4" />
         </span>
         <span className="truncate text-sm font-medium text-[var(--text-primary)]">
@@ -238,7 +239,7 @@ function MerchantReadinessPanel({
     readiness.setupCheckPending && readiness.missingAreas.length === 0
 
   return (
-    <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+    <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
@@ -279,10 +280,10 @@ function MerchantReadinessPanel({
           icon={UserRound}
         />
         <ReadinessRow
-          label="Payments"
+          label="Wallets"
           complete={readiness.paymentsComplete}
           pending={readiness.paymentsCheckPending}
-          to="/payments"
+          to="/wallet"
           icon={Wallet}
         />
         <ReadinessRow
@@ -304,7 +305,8 @@ function MerchantReadinessPanel({
 }
 
 function DashboardPage() {
-  const { pubkey, status, error, authGeneration } = useAuth()
+  const { pubkey, status, error, authGeneration, isAuthGenerationCurrent } =
+    useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -376,6 +378,14 @@ function DashboardPage() {
       cachedConversationsQuery.data?.data
     )
   }, [signerConnected, conversationsQuery.data, cachedConversationsQuery.data])
+  const { bindings: orderSettlementBindings, getOrderSettlement } =
+    useCheckoutSparkOrderSettlements({
+      enabled: signerConnected,
+      pubkey,
+      authGeneration,
+      isAuthGenerationCurrent,
+      conversations: allConversations,
+    })
   const conversationsMeta = conversationsQuery.data?.meta
   const protectedConversationsReadState = deriveProtectedReadPresentationState({
     visibleCount: allConversations.length,
@@ -395,12 +405,15 @@ function DashboardPage() {
     let verifyPayment = 0
     let paidFulfill = 0
     for (const conversation of allConversations) {
-      const queue = getMerchantConversationQueue(conversation)
+      const queue = getMerchantConversationQueue(
+        conversation,
+        getOrderSettlement(conversation)
+      )
       if (queue === "verify_payment") verifyPayment += 1
       if (queue === "paid_fulfill") paidFulfill += 1
     }
     return { verifyPayment, paidFulfill }
-  }, [allConversations])
+  }, [allConversations, getOrderSettlement])
   const chartData = useMemo<DashboardChartDataByCard>(() => {
     const now = Date.now()
     const cache = new Map<
@@ -413,7 +426,8 @@ function DashboardPage() {
       const data = buildDashboardChartData(
         allConversations,
         btcRateQuery.data ?? null,
-        resolveDashboardPresetRange(preset, now)
+        resolveDashboardPresetRange(preset, now),
+        orderSettlementBindings
       )
       cache.set(preset, data)
       return data
@@ -424,7 +438,12 @@ function DashboardPage() {
       revenue: build(chartRanges.revenue),
       products: build(chartRanges.products),
     }
-  }, [allConversations, btcRateQuery.data, chartRanges])
+  }, [
+    allConversations,
+    btcRateQuery.data,
+    chartRanges,
+    orderSettlementBindings,
+  ])
   const changeChartRange = useCallback(
     (chart: DashboardChartId, range: DashboardRangePreset) => {
       setChartRanges((current) => ({ ...current, [chart]: range }))
@@ -462,13 +481,13 @@ function DashboardPage() {
       </div>
 
       {error && (
-        <div className="rounded-2xl border border-error/30 bg-error/10 p-4 text-sm text-error">
+        <div className="rounded-[var(--radius-md)] border border-error/30 bg-error/10 p-4 text-sm text-[var(--error-text)]">
           {error}
         </div>
       )}
 
       {!signerConnected && (
-        <div className="rounded-[1.5rem] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
+        <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 text-sm text-[var(--text-secondary)]">
           {status === "restoring"
             ? "Restoring your signer before loading this merchant workspace…"
             : "Connect your signer to manage listings and orders from this merchant workspace."}
@@ -528,7 +547,7 @@ function DashboardPage() {
       )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)]">
-        <section className="self-start rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="self-start rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h2 className="text-balance text-2xl font-semibold tracking-tight text-[var(--text-primary)]">
@@ -540,7 +559,7 @@ function DashboardPage() {
           <div className="mt-5 grid gap-3 sm:grid-cols-2">
             <Link
               to="/products"
-              className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
+              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -557,7 +576,7 @@ function DashboardPage() {
 
             <Link
               to="/orders"
-              className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
+              className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors hover:bg-[var(--surface-elevated)]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -574,7 +593,7 @@ function DashboardPage() {
           </div>
         </section>
 
-        <section className="rounded-[1.6rem] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-glass-inset)]">
+        <section className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 ">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-balance text-xl font-semibold text-[var(--text-primary)]">
@@ -610,7 +629,7 @@ function DashboardPage() {
             {!cachedConversationsQuery.isLoading &&
               latestConversations.length === 0 &&
               !conversationReadUncertain && (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
+                <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 text-sm text-[var(--text-secondary)]">
                   No buyer orders cached yet. Once Market sends an order to this
                   merchant, it will appear here and in Orders.
                 </div>
@@ -620,12 +639,16 @@ function DashboardPage() {
               <OrderListItem
                 key={conversation.id}
                 conversation={conversation}
+                settlement={getOrderSettlement(conversation)}
                 buyerProfile={buyerProfilesQuery.data[conversation.buyerPubkey]}
                 active={false}
                 onClick={() =>
                   navigate({
                     to: "/orders",
-                    search: { order: conversation.orderId },
+                    search: {
+                      order: conversation.orderId,
+                      counterparty: conversation.buyerPubkey,
+                    },
                   })
                 }
               />

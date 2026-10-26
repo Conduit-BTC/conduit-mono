@@ -1,4 +1,10 @@
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { expect, test, type Page } from "@playwright/test"
+import {
+  createRuntimeSignerIdentity,
+  disposeRuntimeSignerIdentity,
+  installRealTestSigner,
+} from "./helpers/real-nip07-signer"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -16,6 +22,15 @@ import {
   seedTestRelayIdentity,
   seedStoredAuth,
 } from "./helpers/auth"
+import {
+  installControlledWallet,
+  prepareControlledWallet,
+  saveWalletRecovery,
+} from "./helpers/wallet-fixture"
+
+// Setup-flow cases can handle private shipping, password, and recovery state.
+// Keep browser diagnostics from recording those values on failure.
+test.use({ trace: "off", screenshot: "off", video: "off" })
 
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 const merchantUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`
@@ -108,6 +123,14 @@ async function exerciseNetworkInboxDeclaration(
     pubkey,
     tags: [["relay", TEST_RELAY_URL]],
   })
+}
+
+async function enterWalletsForSetup(page: Page): Promise<void> {
+  await page.getByLabel("Open account menu").click()
+  await page.getByRole("menuitem", { name: "Wallets", exact: true }).click()
+  await expect(
+    page.getByRole("heading", { name: "Wallets", level: 1, exact: true })
+  ).toBeVisible()
 }
 
 type StoredRelayEvent = {
@@ -759,71 +782,6 @@ async function seedCachedMerchantTagCatalog(
   )
 }
 
-async function seedPortableWalletDescriptor(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const randomBase64 = (byteLength: number): string => {
-      const bytes = crypto.getRandomValues(new Uint8Array(byteLength))
-      return btoa(String.fromCharCode(...bytes))
-    }
-
-    return new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open("conduit")
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const database = request.result
-        const transaction = database.transaction(
-          ["wallets", "walletCredentials"],
-          "readwrite"
-        )
-        const timestamp = Date.now()
-        transaction.objectStore("wallets").put({
-          id: "playwright-portable-wallet",
-          kind: "portable",
-          providerId: "spark",
-          label: "QA Portable",
-          network: "mainnet",
-          capabilities: [
-            "pay_invoice",
-            "receive",
-            "balance",
-            "history",
-            "spark_transfer",
-          ],
-          status: "locked",
-          defaultIntents: ["pay_invoice"],
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        transaction.objectStore("walletCredentials").put({
-          walletId: "playwright-portable-wallet",
-          providerId: "spark",
-          credential: JSON.stringify({
-            type: "password",
-            walletId: "playwright-portable-wallet",
-            providerId: "spark",
-            network: "mainnet",
-            accountNumber: 1,
-            recovery: {
-              version: 2,
-              kdf: "PBKDF2-SHA-256",
-              cipher: "AES-GCM",
-              iterations: 100_000,
-              salt: randomBase64(16),
-              iv: randomBase64(12),
-              ciphertext: randomBase64(48),
-            },
-          }),
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        })
-        transaction.oncomplete = () => resolve()
-        transaction.onerror = () => reject(transaction.error)
-        transaction.onabort = () => reject(transaction.error)
-      }
-    })
-  })
-}
-
 test("merchant shipping country combobox supports search and selection @merchant", async ({
   page,
 }) => {
@@ -1370,8 +1328,8 @@ test("merchant product authoring warns about missing Lightning setup without blo
     dialog.getByText("Lightning payments are not set up", { exact: true })
   ).toBeVisible({ timeout: 45_000 })
   await expect(
-    dialog.getByRole("link", { name: "Set up payments", exact: true })
-  ).toHaveAttribute("href", "/payments")
+    dialog.getByRole("link", { name: "Manage in Wallets", exact: true })
+  ).toHaveAttribute("href", "/wallet")
 
   await dialog.getByLabel("Title").fill("Manual payment product")
   await dialog.getByLabel("Price").fill("1")
@@ -2262,7 +2220,7 @@ test("market checkout clears an identity draft after cross-tab auth replacement 
     .toBeNull()
 })
 
-test("market wallets route renders portable and connected wallet groups @market", async ({
+test("market wallets route unifies owned and external wallet setup @market", async ({
   page,
 }) => {
   await installTestSigner(page, TEST_BUYER_PUBKEY)
@@ -2272,24 +2230,19 @@ test("market wallets route renders portable and connected wallet groups @market"
     page.getByRole("heading", { name: "Wallets", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("heading", { name: "Portable", exact: true })
+    page.getByText("Create or import your first wallet.", { exact: true })
   ).toBeVisible()
-  await expect(
-    page.getByRole("heading", { name: "Connected", exact: true })
-  ).toBeVisible()
-  await expect(
-    page.getByText("No Portable Wallets on this device.", { exact: true })
-  ).toBeVisible()
-  await expect(
-    page.getByText("No Connected Wallets on this device.", { exact: true })
-  ).toBeVisible()
-
   const connectWalletButton = page.getByRole("button", {
-    name: "Connect wallet",
+    name: "Add wallet",
+    exact: true,
   })
-  await connectWalletButton.click()
+  await openWalletSetup(page, "Connect wallet")
   await expect(
     page.getByRole("heading", { name: "Connect wallet", exact: true })
+  ).toBeVisible()
+  await expect(page.getByLabel("Wallet label", { exact: true })).toBeVisible()
+  await expect(
+    page.getByLabel("NWC connection string", { exact: true })
   ).toBeVisible()
   const nwcConnection = page.getByPlaceholder("nostr+walletconnect://...")
   await expect(nwcConnection).toBeVisible()
@@ -2298,6 +2251,14 @@ test("market wallets route renders portable and connected wallet groups @market"
   await expect(page.getByRole("alert")).toBeVisible()
   await page.getByRole("button", { name: "Cancel", exact: true }).click()
   await expect(connectWalletButton).toBeFocused()
+
+  await expect(
+    page.getByRole("heading", { name: "Price display", exact: true })
+  ).toHaveCount(0)
+  await page.goto(`${marketUrl}/preferences`)
+  await expect(
+    page.getByRole("heading", { name: "Price display", exact: true })
+  ).toBeVisible()
 
   const displayCurrency = page.getByRole("combobox", {
     name: "Preferred currency",
@@ -2316,38 +2277,38 @@ test("market wallets route renders portable and connected wallet groups @market"
   await expect(satsStandard).toBeChecked()
 })
 
-test("portable wallet restore keeps derivation advanced and device-only fields clear @market", async ({
+test("portable wallet import keeps derivation advanced and clears form state @market", async ({
   page,
 }) => {
-  await page.goto(`${marketUrl}/wallet`)
-  await page.getByRole("button", { name: "Add portable wallet" }).click()
+  await prepareControlledWallet(page)
+  const identity = createRuntimeSignerIdentity()
+  await installRealTestSigner(page, identity, TEST_RELAY_URL)
+  try {
+    await page.goto(`${marketUrl}/products`)
+    await expect(page.getByLabel("Open account menu")).toBeVisible()
+    await installControlledWallet(page)
+    await enterWalletsForSetup(page)
 
-  const dialog = page.getByRole("dialog", { name: "Add a Spark wallet" })
-  await expect(dialog).toBeVisible()
-  const networkContext = dialog.getByText(/^Spark wallet · /)
-  await expect(networkContext).toBeVisible()
-  const networkLabel = await networkContext.textContent()
+    await openWalletSetup(page, "Import wallet")
+    const dialog = page.getByRole("dialog", { name: "Import wallet" })
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByLabel("Recovery phrase")).toBeVisible()
+    const advancedSettings = dialog.locator("details")
+    await expect(advancedSettings).not.toHaveAttribute("open", "")
+    await advancedSettings.locator("summary").click()
+    await expect(dialog.getByLabel("Spark account number")).toHaveValue("1")
+    await expect(dialog.getByLabel("Wallet nickname (optional)")).toHaveCount(0)
+    await expect(dialog.getByLabel("Local wallet password")).toHaveCount(0)
+    await expect(dialog).toContainText("Your Nostr signer opens this wallet.")
 
-  await dialog.getByRole("tab", { name: "Restore" }).click()
-  await expect(dialog.getByLabel("Recovery phrase")).toBeVisible()
-  const advancedSettings = dialog.locator("details")
-  await expect(advancedSettings).not.toHaveAttribute("open", "")
-  await advancedSettings.locator("summary").click()
-  await expect(dialog.getByLabel("Spark account number")).toHaveValue(
-    networkLabel?.endsWith("Regtest") ? "0" : "1"
-  )
-  await expect(dialog.getByLabel("Wallet nickname (optional)")).toBeVisible()
-  await expect(dialog.getByLabel("Local wallet password")).toBeVisible()
-  await expect(
-    dialog.getByText("Use this nickname to identify the wallet in Conduit.", {
-      exact: false,
-    })
-  ).toBeVisible()
-  await expect(
-    dialog.getByText("It is not the source wallet's password", {
-      exact: false,
-    })
-  ).toBeVisible()
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click()
+    await openWalletSetup(page, "Import wallet")
+    const reopened = page.getByRole("dialog", { name: "Import wallet" })
+    await expect(reopened.getByLabel("Recovery phrase")).toHaveValue("")
+    await expect(reopened.getByLabel("Spark account number")).toHaveValue("1")
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
 })
 
 test("market wallet route remains available without a Nostr signer @market", async ({
@@ -2368,73 +2329,91 @@ test("market wallet route remains available without a Nostr signer @market", asy
 test("wallet dialog dismissal clears device-local sensitive state @market", async ({
   page,
 }) => {
-  await page.goto(`${marketUrl}/wallet`)
-  await expect(
-    page.getByRole("heading", { name: "Wallets", exact: true })
-  ).toBeVisible()
-  await seedPortableWalletDescriptor(page)
-  await page.reload()
-
-  await expect(page.getByText("QA Portable", { exact: true })).toBeVisible()
-
-  const unlockButton = page.getByRole("button", {
-    name: "Unlock",
-    exact: true,
-  })
-  await unlockButton.click()
-  const unlockDialog = page.getByRole("dialog", {
-    name: "Unlock QA Portable",
-  })
-  const unlockPassword = unlockDialog.getByLabel("Wallet password")
-  await unlockPassword.evaluate((element) => {
-    if (!(element instanceof HTMLInputElement)) {
-      throw new Error("Expected the wallet password control to be an input.")
-    }
-    const setValue = Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value"
-    )?.set
-    if (!setValue) throw new Error("The input value setter is unavailable.")
-    setValue.call(element, crypto.randomUUID())
-    element.dispatchEvent(new Event("input", { bubbles: true }))
-  })
-  await page.keyboard.press("Escape")
-  await expect(unlockDialog).not.toBeVisible()
-  await expect(unlockButton).toBeFocused()
-
-  await unlockButton.click()
-  expect(
-    await unlockPassword.evaluate(
-      (element) =>
-        element instanceof HTMLInputElement && element.value.length === 0
-    )
-  ).toBe(true)
-  await unlockDialog.getByRole("button", { name: "Cancel" }).click()
-
-  await page
-    .getByRole("button", { name: "Remove from this device", exact: true })
-    .click()
-  const removeDialog = page.getByRole("alertdialog", {
-    name: "Remove from this device?",
-  })
-  const recoveryConfirmation = removeDialog.getByRole("switch", {
-    name: /I have the recovery (phrase and Spark account number|details required to restore this Portable Wallet)/,
-  })
-  await recoveryConfirmation.click()
-  await expect(recoveryConfirmation).toBeChecked()
-  await page.keyboard.press("Escape")
-  await expect(removeDialog).not.toBeVisible()
-
-  await page
-    .getByRole("button", { name: "Remove from this device", exact: true })
-    .click()
-  await expect(recoveryConfirmation).not.toBeChecked()
-  await expect(
-    removeDialog.getByRole("button", {
-      name: "Remove from this device",
-      exact: true,
+  const identity = createRuntimeSignerIdentity()
+  try {
+    await prepareControlledWallet(page)
+    await installRealTestSigner(page, identity, TEST_RELAY_URL)
+    await page.goto(`${marketUrl}/wallet`)
+    await installControlledWallet(page)
+    await openWalletSetup(page, "Create wallet")
+    await saveWalletRecovery(page)
+    const manageButton = page.getByRole("button", {
+      name: /^Manage Conduit Wallet/,
     })
-  ).toBeDisabled()
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+    const recoveryDialog = page.getByRole("dialog", {
+      name: /^Recovery for Conduit Wallet/,
+    })
+    await recoveryDialog
+      .getByRole("button", { name: "Show recovery phrase", exact: true })
+      .click()
+    // Assert presence without copying the recovery material into test output.
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Copy recovery details",
+        exact: true,
+      })
+    ).toBeVisible()
+    await page.keyboard.press("Escape")
+    await expect(recoveryDialog).not.toBeVisible()
+    await expect(manageButton).toBeFocused()
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", { name: "Recovery details", exact: true })
+      .click()
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Show recovery phrase",
+        exact: true,
+      })
+    ).toBeVisible()
+    await expect(
+      recoveryDialog.getByRole("button", {
+        name: "Copy recovery details",
+        exact: true,
+      })
+    ).toHaveCount(0)
+    await recoveryDialog
+      .getByRole("button", { name: "Done", exact: true })
+      .click()
+
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+      .click()
+    const removeDialog = page.getByRole("alertdialog", {
+      name: "Remove wallet from account?",
+    })
+    const recoveryConfirmation = removeDialog.getByRole("switch", {
+      name: "I have the recovery details required to restore this Portable Wallet",
+    })
+    await recoveryConfirmation.click()
+    await expect(recoveryConfirmation).toBeChecked()
+    await page.keyboard.press("Escape")
+    await expect(removeDialog).not.toBeVisible()
+    await manageButton.click()
+    await page
+      .getByRole("menuitem", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+      .click()
+    await expect(recoveryConfirmation).not.toBeChecked()
+    await expect(
+      removeDialog.getByRole("button", {
+        name: "Remove wallet from account",
+        exact: true,
+      })
+    ).toBeDisabled()
+  } finally {
+    disposeRuntimeSignerIdentity(identity)
+  }
 })
 
 test("market shopper preferences remove legacy plaintext and render the complete form @market", async ({
@@ -2561,6 +2540,15 @@ test("market shopper preferences remove legacy plaintext and render the complete
   await expect(
     page.getByRole("heading", { name: "Unlock shipping preset" })
   ).toBeVisible()
+  await expect(
+    page.getByRole("heading", { name: "Price display", exact: true })
+  ).toBeVisible()
+  await expect(
+    page.getByRole("combobox", { name: "Preferred currency" })
+  ).toBeEnabled()
+  await expect(
+    page.getByRole("switch", { name: "Sats the standard" })
+  ).toBeEnabled()
   const unlockPassword = page.getByLabel("Password", { exact: true })
   await expect(unlockPassword).toHaveAttribute("maxlength", "1024")
   await page.getByRole("button", { name: "Replace forgotten preset" }).click()

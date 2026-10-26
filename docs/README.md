@@ -8,6 +8,8 @@ This directory contains public implementation context for the `conduit-mono` cli
 - `docs/OPEN_MARKETS.md`: commerce implementation map, compatibility differences, examples, and experimental proposal status
 - `docs/ARCHITECTURE.md`: system design, protocol boundaries, and data flow
 - `docs/DESIGN.md`: shared design system and theming guidance
+- [UI workbench and authoring guide](../packages/ui/workbench/README.md): executable shared-component review reference
+- [Shared UI baseline](knowledge/shared-ui-baseline.md): Conduit/Ditto/shadcn inventory, shared recipes and review gaps
 - `docs/specs/*`: durable feature, protocol, and product contracts where the repository maintains one
 - `docs/nips/*`: compact Nostr implementation notes linked to canonical public NIPs
 - `docs/knowledge/*`: public-safe implementation notes, research, interoperability references, and reusable agent context
@@ -35,8 +37,16 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### Shared Protocol Boundaries
 
+- `docs/knowledge/central-relay-policy.md`: central relay ownership, installed
+  delivery-plan migration, finite caller ledger and CI enforcement
+
+- `docs/specs/universal-checkout-router.md`: coordinated upfront checkout,
+  frozen payment authority, isolated-wallet Merchant recovery and historical
+  order compatibility
 - `docs/knowledge/public-event-verification.md`: immutable public admission,
   typed parser and restore boundaries, caller inventory, and browser evidence
+- `docs/knowledge/account-network-evidence-and-authority.md`: shared preference
+  evidence, independent relay grants, operation policy, and final I/O ownership
 - `docs/knowledge/commerce-inbox-recovery.md`: account-owned encrypted inbox,
   history recovery, commerce codecs, immutable delivery and runtime evidence
 - `docs/knowledge/signed-event-publication.md`: plain signed-event writer,
@@ -62,6 +72,13 @@ Reviewers may request a durable contract update when the behavior has broad or l
 
 ### QA Runbooks
 
+- `docs/knowledge/event-market-router-acceptance.md`: event router evidence
+  boundaries, organizer stock/recovery and final funded/device acceptance
+
+- `docs/knowledge/checkout-spark-native-treasury.md`: one final native Spark
+  collection, exact residual accounting, recovery and funded-validation boundary
+- `docs/knowledge/quantum-router-deployment.md`: public activation and treasury
+  configuration, frozen destination rotation and current checkout admission scope
 - `docs/knowledge/checkout-with-conduit.md`: public V1 product/cart link format,
   validation limits, relay hints, and checkout authority.
 - `docs/knowledge/product-search-ranking.md`: ranked product search, scoped
@@ -79,8 +96,17 @@ Reviewers may request a durable contract update when the behavior has broad or l
 - `docs/knowledge/mobile-safari-qa-baseline.md`: repeatable mobile browser and
   physical-device matrix for Market, Merchant, Wallet, and booth flows
 
+- `docs/knowledge/breez-lightning-addresses.md`: same-identity hosted address integration, configuration, retry and live enablement evidence.
+
+- `docs/knowledge/address-gateway-release.md`: original request verification, PR-based approved names, provider admission qualification and receiving-preserving release gates.
+
 ### Active Compatibility Exceptions
 
+- `docs/knowledge/checkout-spark-recipient-verification-compat.md`: provider-neutral
+  ordinary receiver qualification, exact invoice association, independent
+  settlement evidence, historical compatibility and live acceptance gates
+- `docs/knowledge/wallet-registry-lifecycle.md`: complete encrypted Portable Wallet
+  records, explicit seed-import cutover and automatic account restoration.
 - `docs/knowledge/commerce-inbox-recovery.md`: bounded authenticated client-seal
   metadata read compatibility, accounting and maintainer activation/removal gates
 - `docs/knowledge/nip17-inbox-bootstrap-migration.md`: temporary validated-order

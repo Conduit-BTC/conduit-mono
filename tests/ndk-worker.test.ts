@@ -1517,6 +1517,9 @@ describe("Plain public reader worker verification", () => {
       { kinds: [EVENT_KINDS.PROFILE] },
       {
         relayUrls,
+        // Saturate the shared admission queue explicitly; normal callers drain
+        // this target set through the bounded default worker pool.
+        maxRelayAttempts: relayUrls.length,
         connectTimeoutMs: 5,
         fetchTimeoutMs: 5,
         reuseRelayConnections: false,

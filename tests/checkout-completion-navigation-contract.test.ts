@@ -9,13 +9,13 @@ describe("checkout completion navigation contracts", () => {
     // Payment checkout asks Orders to put the payment action first.
     const ordersNavigations =
       checkoutRoute.match(
-        /navigate\(\{\s*to: "\/orders",\s*search: \{ order: orderId(?:, focus: "payment")? \},\s*replace: true,?\s*\}\)/g
+        /navigate\(\{\s*to: "\/orders",\s*search: \{\s*order: orderId,\s*counterparty: selectedMerchant(?:,\s*focus: "payment")?,?\s*\},\s*replace: true,?\s*\}\)/g
       ) ?? []
 
     expect(checkoutRoute).toContain("const navigate = useNavigate()")
     expect(ordersNavigations.length).toBeGreaterThanOrEqual(2)
-    expect(checkoutRoute).toContain(
-      'search: { order: orderId, focus: "payment" }'
+    expect(checkoutRoute).toMatch(
+      /search: \{\s*order: orderId,\s*counterparty: selectedMerchant,\s*focus: "payment",?\s*\}/
     )
     expect(checkoutRoute).toContain("publishBuyerOrderMessage(")
     expect(checkoutRoute).toContain("orderLifecycle,")
@@ -71,9 +71,15 @@ describe("checkout completion navigation contracts", () => {
       "apps/market/src/routes/orders.tsx"
     ).text()
 
-    expect(ordersRoute).toContain("if (paymentFocused && selectedFromUrl) {")
-    expect(ordersRoute).toContain(
-      "return orders.some((order) => order.orderId === selectedFromUrl)"
+    expect(ordersRoute).toMatch(
+      /findOrderConversation\(\s*orders,\s*selectedFromUrl,\s*requestedId\s*\)/
+    )
+    expect(ordersRoute).toContain("if (!requested) return null")
+    expect(ordersRoute.indexOf("if (!requested) return null")).toBeLessThan(
+      ordersRoute.indexOf("return filteredOrders[0]?.id ?? null")
+    )
+    expect(ordersRoute).toMatch(
+      /if \(\s*paymentFocused \|\|[\s\S]*?return requested.id/
     )
     expect(ordersRoute).toMatch(
       /lifecyclesQuery\.isPending\s*\|\|\s*\(signerConnected\s*&&\s*\(messagesQuery\.isPending\s*\|\|\s*protectedOrdersReadState === "pending"\)\)/
@@ -282,9 +288,8 @@ describe("checkout completion navigation contracts", () => {
       "void runOrderPayment(serviceCtx)",
       lifecycleIndex
     )
-    const focusedNavigationIndex = payNowSource.indexOf(
-      'search: { order: orderId, focus: "payment" }',
-      lifecycleIndex
+    const focusedNavigationIndex = payNowSource.search(
+      /search: \{\s*order: orderId,\s*counterparty: selectedMerchant,\s*focus: "payment",?\s*\}/
     )
     const ordersRoute = await Bun.file(
       "apps/market/src/routes/orders.tsx"

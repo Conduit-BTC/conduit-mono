@@ -10,6 +10,7 @@ import {
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import type { RelayTarget } from "./relay-authority"
 
 const PAGE_LIMIT = 50
 const BOUNDARY_LIMIT = 512
@@ -53,6 +54,7 @@ export interface VisitProtectedInboxHistoryPageOptions {
   relayUrl: string
   /** Current authorized read plan, including permitted recovery relays. */
   authorizedRelayUrls?: readonly string[]
+  relayTargets?: readonly RelayTarget[]
   /** Owner-selected inbox subset; also the dedicated-consumer history API. */
   declaredRelayUrls?: readonly string[]
   appRelayUrls?: readonly string[]
@@ -66,6 +68,8 @@ export interface VisitProtectedInboxHistoryPageOptions {
     AccountNetworkLocalStateRepository,
     "get"
   >
+  ownerRelayListEvidenceRepository?: ReadProtectedInboxOptions["ownerRelayListEvidenceRepository"]
+  inboxDeclarationEvidenceRepository?: ReadProtectedInboxOptions["inboxDeclarationEvidenceRepository"]
   signal?: AbortSignal
   /** Test seam; production uses the authenticated protected inbox reader. */
   read?: (
@@ -170,7 +174,6 @@ export async function visitProtectedInboxHistoryPage(
   assertCurrent()
   const allowedRelays =
     options.authorizedRelayUrls ?? options.declaredRelayUrls ?? []
-  const declaredRelayUrls = options.declaredRelayUrls ?? []
   if (!allowedRelays.includes(relayUrl)) {
     throw new Error("Protected inbox history relay is not authorized.")
   }
@@ -190,28 +193,77 @@ export async function visitProtectedInboxHistoryPage(
     limit: number,
     since?: number,
     pageUntil?: number
-  ): Promise<ProtectedInboxReadResult> => {
+  ): Promise<{ read: ProtectedInboxReadResult; complete: boolean }> => {
     assertCurrent()
+    const streamed = new Map<string, SignedNostrEvent>()
     const result = await read({
       principalPubkey: principal,
       transport: options.transport,
       relayUrls: [relayUrl],
-      ownerSelectedRelayUrls: declaredRelayUrls,
-      appRelayUrls: options.appRelayUrls ?? [],
-      personalRelayUrls: options.personalRelayUrls,
-      independentRelayUrls: options.independentRelayUrls,
+      relayTargets: options.relayTargets?.filter(
+        (target) => target.url === relayUrl
+      ),
       limit,
       authorization: options.authorization,
       accountNetworkLocalStateRepository:
         options.accountNetworkLocalStateRepository,
+      ownerRelayListEvidenceRepository:
+        options.ownerRelayListEvidenceRepository,
+      inboxDeclarationEvidenceRepository:
+        options.inboxDeclarationEvidenceRepository,
       signal: options.signal,
       connectTimeoutMs: 4_000,
       queryTimeoutMs: 12_000,
       ...(since === undefined ? {} : { since }),
       ...(pageUntil === undefined ? {} : { until: pageUntil }),
+      onEvent: (event) => {
+        assertCurrent()
+        if (
+          streamed.size < limit &&
+          !streamed.has(event.id) &&
+          isValidHistoryEvent(
+            event,
+            principal,
+            options.transport,
+            since,
+            pageUntil
+          )
+        ) {
+          streamed.set(event.id, structuredClone(event))
+        }
+      },
     })
     assertCurrent()
-    return result
+    const complete = isCompleteProtectedInboxRead(
+      result,
+      limit,
+      principal,
+      since,
+      pageUntil,
+      options.transport
+    )
+    if (complete || streamed.size === 0) return { read: result, complete }
+
+    const retained = new Map<string, SignedNostrEvent>()
+    for (const event of [
+      ...result.events.slice(0, limit),
+      ...streamed.values(),
+    ]) {
+      if (retained.size >= limit) break
+      if (
+        isValidHistoryEvent(
+          event,
+          principal,
+          options.transport,
+          since,
+          pageUntil
+        )
+      ) {
+        retained.set(event.id, event)
+      }
+    }
+    // Streamed positives never synthesize EOSE or repair incomplete counters.
+    return { read: { ...result, events: [...retained.values()] }, complete }
   }
 
   // Incomplete coverage prevents cursor advancement, but authenticated positive
@@ -250,20 +302,15 @@ export async function visitProtectedInboxHistoryPage(
     return { status, visitedCount, nextCursor: unchangedCursor, range }
   }
 
-  const page = await readPage(PAGE_LIMIT, undefined, until)
+  const { read: page, complete: pageComplete } = await readPage(
+    PAGE_LIMIT,
+    undefined,
+    until
+  )
   if (page.coverage === "unavailable") {
     return retainIncomplete("unavailable", page.events)
   }
-  if (
-    !isCompleteProtectedInboxRead(
-      page,
-      PAGE_LIMIT,
-      principal,
-      undefined,
-      until,
-      options.transport
-    )
-  ) {
+  if (!pageComplete) {
     return retainIncomplete("partial", page.events)
   }
 
@@ -274,20 +321,15 @@ export async function visitProtectedInboxHistoryPage(
   let nextUntil: number | null = null
   if (range.saturated) {
     const boundaryAt = Math.min(...selected.map((event) => event.created_at))
-    const boundary = await readPage(BOUNDARY_LIMIT, boundaryAt, boundaryAt)
+    const { read: boundary, complete: boundaryComplete } = await readPage(
+      BOUNDARY_LIMIT,
+      boundaryAt,
+      boundaryAt
+    )
     if (boundary.coverage === "unavailable") {
       return retainIncomplete("unavailable", [...selected, ...boundary.events])
     }
-    if (
-      !isCompleteProtectedInboxRead(
-        boundary,
-        BOUNDARY_LIMIT,
-        principal,
-        boundaryAt,
-        boundaryAt,
-        options.transport
-      )
-    ) {
+    if (!boundaryComplete) {
       return retainIncomplete("partial", [...selected, ...boundary.events])
     }
     if (boundary.relayResult.relays[0]!.eventCount >= BOUNDARY_LIMIT) {
