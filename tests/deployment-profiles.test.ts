@@ -470,7 +470,9 @@ describe("deployment profiles", () => {
     const workflow = await Bun.file(".github/workflows/ci.yml").text()
 
     expect(workflow).toContain("public-config-digest:")
-    expect(workflow).toContain("/.well-known/conduit-deployment.json")
+    expect(await Bun.file("scripts/ci/preview_links.mjs").text()).toContain(
+      "/.well-known/conduit-deployment.json"
+    )
     expect(workflow).toContain('manifest.deploymentProfile !== "preview"')
     expect(workflow).toContain("manifest.commitSha !== headSha")
     expect(workflow).toContain(
