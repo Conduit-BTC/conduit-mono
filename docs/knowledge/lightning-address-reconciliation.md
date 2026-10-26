@@ -42,8 +42,8 @@ In-flight registration cancellation remains uncertain and is reconciled by reads
 No activation resumes merely because a component mounts.
 
 Session-only progress distinguishes approval checking, registration confirmation,
-public lookup, and wallet persistence, and profile confirmation, including throttling, invalid responses,
-and exhausted retries. These fields are not written to wallet records. The wallet
+public lookup, wallet persistence, and profile confirmation, including throttling,
+invalid responses, and exhausted retries. These fields are not written to wallet records. The wallet
 does not promote an unverified recovered address to its persisted receiving address
 or offer it as ready to share or as a wallet-generated public-profile suggestion.
 These suggestions use the same public-verification gate as display/copy controls.
@@ -53,8 +53,15 @@ wallet persistence or profile publication is still pending. The workflow exposes
 the verified result before either metadata or checkpoint signing/storage write;
 a failed write remains an error and leaves registration intent resumable. A retry
 rechecks ownership and public receiving without replaying an uncertain registration.
-A fresh profile read recognizes an already
-published address before constructing another update.
+A fresh profile read recognizes an already published address before constructing
+another update.
+
+Accepting verified activation retires older wallet-row receiving observations,
+including an explicit receiving-address Retry. Late default-domain results,
+unavailable results, and errors cannot replace that verified display. The resolver
+also checks observation retirement before queuing address metadata. Retirement
+does not cancel or replay a provider operation; it only prevents stale results
+from being accepted. Later deliberate or runtime-driven observations remain allowed.
 
 The persisted request schema and phase meanings are unchanged. Legacy `activating`,
 `registered`, and `complete` records remain readable; no wallet-event version or

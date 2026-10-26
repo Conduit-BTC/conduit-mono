@@ -803,6 +803,7 @@ function WalletRow({
   const [addressState, setAddressState] = useState<BreezAddressState | null>(
     null
   )
+  const addressObservation = useRef<AbortController | null>(null)
   const menuTrigger = useRef<HTMLButtonElement>(null)
   const isSpark = wallet.providerId === "spark"
   const { state: recoveryState, retry: retryRecovery } = useSparkRecoveryState(
@@ -837,24 +838,46 @@ function WalletRow({
   const dialog = (action: WalletDialogAction) => {
     if (menuTrigger.current) action(wallet, menuTrigger.current)
   }
+  const refreshReceivingAddress = useCallback(
+    async (priority: "foreground" | "background" = "background") => {
+      if (!addressResolver) return
+      addressObservation.current?.abort()
+      const observation = new AbortController()
+      addressObservation.current = observation
+      try {
+        const state = await addressResolver(
+          wallet.id,
+          false,
+          undefined,
+          undefined,
+          { priority, signal: observation.signal }
+        )
+        if (!observation.signal.aborted) setAddressState(state)
+      } catch (error) {
+        if (observation.signal.aborted) return
+        if (priority === "foreground") throw error
+        setAddressState({
+          status: "unavailable",
+          reason: "provider_unavailable",
+        })
+      }
+    },
+    [addressResolver, wallet.id]
+  )
+  const acceptActivatedAddress = useCallback(
+    (state: Extract<BreezAddressState, { status: "registered" }>) => {
+      addressObservation.current?.abort()
+      setAddressState(state)
+    },
+    []
+  )
   useEffect(() => {
     if (!isSpark || !ready || !addressResolver) return
-    let active = true
-    void addressResolver(wallet.id)
-      .then((state) => {
-        if (active) setAddressState(state)
-      })
-      .catch(() => {
-        if (active)
-          setAddressState({
-            status: "unavailable",
-            reason: "provider_unavailable",
-          })
-      })
+    void refreshReceivingAddress()
     return () => {
-      active = false
+      addressObservation.current?.abort()
     }
-  }, [isSpark, ready, addressResolver, wallet.id, runtime])
+  }, [isSpark, ready, addressResolver, refreshReceivingAddress, runtime])
   const receivingAddress = isSpark
     ? ready
       ? addressState?.status === "registered" &&
@@ -1172,11 +1195,11 @@ function WalletRow({
             <div className="min-w-0 border-t border-[var(--border)] pt-6 md:border-l md:border-t-0 md:pl-7 md:pt-0">
               <WalletReceivingAddress
                 state={addressState}
-                setState={setAddressState}
+                onActivated={acceptActivatedAddress}
                 walletId={wallet.id}
                 onPendingChange={setPending}
                 ready={ready}
-                resolve={addressResolver}
+                refresh={() => refreshReceivingAddress("foreground")}
                 requestAddressName={requestAddressName}
                 accountPubkey={accountPubkey}
               />
@@ -1296,20 +1319,20 @@ function WalletReceivingAddress({
   walletId,
   onPendingChange,
   ready,
-  resolve,
+  refresh,
   state,
-  setState,
+  onActivated,
   requestAddressName,
   accountPubkey,
 }: {
   requestAddressName?: UseWalletsReturn["requestAddressName"]
   accountPubkey?: string | null
   state: BreezAddressState | null
-  setState(state: BreezAddressState): void
+  onActivated(state: Extract<BreezAddressState, { status: "registered" }>): void
   walletId: string
   onPendingChange(pending: boolean): void
   ready: boolean
-  resolve: UseWalletsReturn["getSparkLightningAddress"]
+  refresh(): Promise<void>
 }) {
   const [feedback, setFeedback] = useState("")
   return (
@@ -1333,10 +1356,7 @@ function WalletReceivingAddress({
             variant="outline"
             onClick={() => {
               onPendingChange(true)
-              void resolve(walletId, false, undefined, undefined, {
-                priority: "foreground",
-              })
-                .then(setState)
+              void refresh()
                 .catch(() =>
                   setFeedback("Could not refresh the receiving address.")
                 )
@@ -1356,7 +1376,7 @@ function WalletReceivingAddress({
           ownerPubkey={accountPubkey}
           walletId={walletId}
           submit={requestAddressName}
-          onActivated={setState}
+          onActivated={onActivated}
         />
       )}
       {state?.status === "registered" && state.publicLookup !== "verified" && (

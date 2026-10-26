@@ -26,6 +26,7 @@
     "wallet-layout.playwright.ts",
     "wallet-recovery-read.playwright.ts",
     "wallet-profile-address.playwright.ts",
+    "wallet-address-activation-race.playwright.ts",
     "wallet-balances.playwright.ts",
     "wallet-cross-app.playwright.ts",
     "wallet-reload.playwright.ts",

@@ -7,10 +7,13 @@ export async function resolveSparkLightningAddress(input: {
   register?: boolean
   username?: string
   domain?: "breez.tips" | "conduit.cash"
+  /** Retire the observation without cancelling or replaying provider operations. */
+  signal?: AbortSignal
   assertCurrent(): void
   onRegistered(address: string): void
 }) {
   const { manager, walletId, register = false, username, domain } = input
+  input.signal?.throwIfAborted()
   const state = domain
     ? await manager.getLightningAddress(walletId, register, username, domain)
     : await (async () => {
@@ -25,6 +28,7 @@ export async function resolveSparkLightningAddress(input: {
         ])
         return existing.status === "registered" ? existing : breez
       })()
+  input.signal?.throwIfAborted()
   input.assertCurrent()
   if (state.status === "registered" && state.publicLookup === "verified")
     input.onRegistered(state.address)
