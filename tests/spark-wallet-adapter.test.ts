@@ -2440,6 +2440,198 @@ describe("SparkWalletManager", () => {
     expect(sendCalls).toBe(0)
   })
 
+  for (const boundary of [
+    "prepare",
+    "approval",
+    "persist",
+    "beforeSend",
+  ] as const) {
+    for (const interruption of [
+      "close",
+      "replace",
+      "revoke",
+      "quarantine",
+    ] as const) {
+      it(`fences ${interruption} during ${boundary} before the final Spark send`, async () => {
+        const entered = lifecycleDeferred<void>()
+        const resume = lifecycleDeferred<void>()
+        let sends = 0
+        let authorized = true
+        let failDisconnect = false
+        const hold = async () => {
+          entered.resolve()
+          await resume.promise
+        }
+        const client = createSendTestClient({
+          onPrepare: async () => {
+            if (boundary === "prepare") await hold()
+            return {
+              paymentMethod: { type: "bolt11Invoice", lightningFeeSats: 1 },
+              amount: 1_000n,
+            }
+          },
+          onSend: () => {
+            sends++
+            return completedLightningPayment()
+          },
+        })
+        client.disconnect = async () => {
+          if (failDisconnect) throw new Error("cleanup unconfirmed")
+        }
+        const manager = new SparkWalletManager(
+          {
+            network: "mainnet",
+            async open() {
+              return { ...client }
+            },
+          },
+          async () => ({ async release() {} })
+        )
+        const open = () =>
+          manager.openWithMnemonic({
+            walletId: "wallet-personal",
+            mnemonic: "abandon ".repeat(11) + "about",
+            accountNumber: 1,
+            shouldContinue: () => authorized,
+          })
+        await open()
+        const input = {
+          invoice: makeBolt11Fixture({
+            hrp: "lnbc10000n",
+            fields: [
+              {
+                tag: "p",
+                words: bytesToBolt11Words(new Uint8Array(32).fill(3)),
+              },
+            ],
+          }),
+          amountMsats: 1_000_000,
+          idempotencyKey: "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00",
+          approveFee: async () => {
+            if (boundary === "approval") await hold()
+            return true
+          },
+          persistAttempt: async () => {
+            if (boundary === "persist") await hold()
+          },
+          ...(boundary === "beforeSend" ? { beforeSend: hold } : {}),
+        }
+        const pending = manager.payInvoice("wallet-personal", input)
+        await entered.promise
+        if (interruption === "revoke") authorized = false
+        else if (interruption === "quarantine") {
+          failDisconnect = true
+          await expect(manager.close("wallet-personal")).rejects.toThrow(
+            "cleanup unconfirmed"
+          )
+        } else {
+          await manager.close("wallet-personal")
+          if (interruption === "replace") await open()
+        }
+        resume.resolve()
+        expect((await pending).status).toBe("pre_publish_failed")
+        expect(sends).toBe(0)
+        failDisconnect = false
+        await manager.close("wallet-personal")
+        authorized = true
+        await open()
+        expect(
+          (await manager.payInvoice("wallet-personal", input)).status
+        ).toBe("paid")
+        expect(sends).toBe(1)
+        await manager.close("wallet-personal")
+      })
+    }
+  }
+
+  for (const outcome of ["paid", "pending", "thrown"] as const) {
+    it(`retains the original ${outcome} outcome and blocks duplicate dispatch after close/reopen`, async () => {
+      const submitted = lifecycleDeferred<void>()
+      const result = lifecycleDeferred<void>()
+      let sends = 0
+      let persisted: SparkLightningSendAttempt | undefined
+      const manager = new SparkWalletManager(
+        {
+          network: "mainnet",
+          async open() {
+            return createSendTestClient({
+              onSend: async (request) => {
+                sends++
+                expect(request.idempotencyKey).toBe(
+                  "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00"
+                )
+                expect(request.prepareResponse.amount).toBe(1_000n)
+                expect(persisted?.maxFeeSats).toBe(1)
+                submitted.resolve()
+                await result.promise
+                if (outcome === "thrown")
+                  throw new Error("transport outcome unknown")
+                return outcome === "paid"
+                  ? completedLightningPayment()
+                  : {
+                      payment: {
+                        id: "original-pending",
+                        status: "pending",
+                        fees: 1n,
+                      },
+                    }
+              },
+            })
+          },
+        },
+        async () => ({ async release() {} })
+      )
+      const open = () =>
+        manager.openWithMnemonic({
+          walletId: "wallet-personal",
+          mnemonic: "abandon ".repeat(11) + "about",
+          accountNumber: 1,
+        })
+      await open()
+      const input = {
+        invoice: makeBolt11Fixture({
+          hrp: "lnbc10000n",
+          fields: [
+            { tag: "p", words: bytesToBolt11Words(new Uint8Array(32).fill(3)) },
+          ],
+        }),
+        amountMsats: 1_000_000,
+        idempotencyKey: "c7fb0ad2-c85c-4d93-b542-6dc9d10d8c00",
+        approveFee: async (quote: {
+          amountSats: number
+          feeSats: number
+          totalSats: number
+        }) => {
+          expect(quote).toEqual({
+            amountSats: 1_000,
+            feeSats: 1,
+            totalSats: 1_001,
+          })
+          return true
+        },
+        persistAttempt: async (attempt: SparkLightningSendAttempt) => {
+          persisted = attempt
+        },
+      }
+      const pending = manager.payInvoice("wallet-personal", input)
+      await submitted.promise
+      await manager.close("wallet-personal")
+      await open()
+      const duplicate = manager.payInvoice("wallet-personal", input)
+      result.resolve()
+      expect((await pending).status).toBe(
+        outcome === "paid" ? "paid" : "ambiguous"
+      )
+      expect((await duplicate).status).toBe("ambiguous")
+      const after = await manager.payInvoice("wallet-personal", input)
+      expect(after.status).toBe("ambiguous")
+      expect(after).not.toHaveProperty("preimage")
+      expect(sends).toBe(1)
+      expect(persisted?.transferId).toBe(input.idempotencyKey)
+      await manager.close("wallet-personal")
+    })
+  }
+
   it("purges cached Lightning proofs when the wallet is locked", async () => {
     const manager = new SparkWalletManager({
       network: "mainnet",
@@ -2497,8 +2689,9 @@ describe("SparkWalletManager", () => {
     await expect(
       manager.payInvoice("wallet-personal", paymentInput)
     ).resolves.toEqual({
-      status: "pre_publish_failed",
-      reason: "Portable Wallet is locked on this device.",
+      status: "ambiguous",
+      reason:
+        "This Spark payment was already submitted. Check the wallet before retrying.",
     })
   })
 })
@@ -2579,4 +2772,12 @@ function completedLightningPayment(): { payment: SparkSdkPayment } {
       },
     },
   }
+}
+
+function lifecycleDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((finish) => {
+    resolve = finish
+  })
+  return { promise, resolve }
 }
