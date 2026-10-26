@@ -149,7 +149,7 @@ export class PortableWalletSync {
   private queue: Promise<unknown> = Promise.resolve()
   private decoded = new Map<string, PortableWalletRecord>()
   // Provider observations are session-local; restart obtains them from the provider again.
-  private pendingAddresses = new Map<string, string>()
+  private pendingAddresses = new Map<string, { address: string }>()
   private listeners = new Set<() => void>()
   snapshot: WalletSyncSnapshot = {
     status: "idle",
@@ -278,7 +278,7 @@ export class PortableWalletSync {
     const valid = portableWalletRecordSchema.shape.lightningAddress
       .unwrap()
       .parse(address)
-    this.pendingAddresses.set(walletId, valid)
+    this.pendingAddresses.set(walletId, { address: valid })
     this.changed({ status: "pending" })
   }
   async import(
@@ -324,6 +324,7 @@ export class PortableWalletSync {
     patch: PortableWalletPatch,
     options: AccountSignerOperationOptions = {}
   ): Promise<void> {
+    const supersededAddress = this.pendingAddresses.get(walletId)
     return this.run(async () => {
       const account = await this.d.store.load(this.d.signer.pubkey)
       const saved = account.wallets[walletId]
@@ -352,6 +353,13 @@ export class PortableWalletSync {
             next[field] = Math.max(next[field], record[field] + 1)
         }
       await this.write(account, portableWalletRecordSchema.parse(next), options)
+      // A committed explicit address supersedes older queued metadata. Keep
+      // observations received during this update, even with the same value.
+      if (
+        patch.lightningAddress !== undefined &&
+        this.pendingAddresses.get(walletId) === supersededAddress
+      )
+        this.pendingAddresses.delete(walletId)
     })
   }
   private async write(
@@ -360,6 +368,7 @@ export class PortableWalletSync {
     options: AccountSignerOperationOptions
   ) {
     this.current()
+    const pendingAddress = this.pendingAddresses.get(record.walletId)
     const previous = account.wallets[record.walletId]?.event
     const content = await this.d.signer.encryptNip44(
       this.d.signer.pubkey,
@@ -408,7 +417,10 @@ export class PortableWalletSync {
       delete account.pendingNames[record.walletId]
     this.current()
     await this.project(account, options, () => this.d.store.save(account))
-    if (this.pendingAddresses.get(record.walletId) === record.lightningAddress)
+    if (
+      this.pendingAddresses.get(record.walletId) === pendingAddress &&
+      pendingAddress?.address === record.lightningAddress
+    )
       this.pendingAddresses.delete(record.walletId)
     this.changed({ status: "pending" })
   }
@@ -503,7 +515,7 @@ export class PortableWalletSync {
           }
           const name = account.pendingNames?.[id] ?? record.name
           const lightningAddress =
-            this.pendingAddresses.get(id) ?? record.lightningAddress
+            this.pendingAddresses.get(id)?.address ?? record.lightningAddress
           if (
             name === record.name &&
             lightningAddress === record.lightningAddress

@@ -62,6 +62,11 @@ unavailable results, and errors cannot replace that verified display. The resolv
 also checks observation retirement before queuing address metadata. Retirement
 does not cancel or replay a provider operation; it only prevents stale results
 from being accepted. Later deliberate or runtime-driven observations remain allowed.
+If an older observation was already queued after failed background persistence,
+a successful explicit address save retires that captured queue entry within the
+wallet sync coordinator. Failed saves preserve prior pending intent; observations
+received during the save remain queued. This does not automatically retry a refused
+activation write or repeat registration.
 
 The persisted request schema and phase meanings are unchanged. Legacy `activating`,
 `registered`, and `complete` records remain readable; no wallet-event version or

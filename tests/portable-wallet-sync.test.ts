@@ -593,6 +593,51 @@ describe("wallet convergence after interruption", () => {
 })
 
 describe("address progress in the complete wallet", () => {
+  it("keeps queued receiving metadata when an explicit address write is refused", async () => {
+    const f = fixture(),
+      a = f.device(),
+      wallet = await a.service.import(f.bundle(), "Address wallet")
+    a.service.rememberLightningAddress(wallet.walletId, "alice@breez.tips")
+    const encrypt = f.signer.encryptNip44
+    f.signer.encryptNip44 = async () => {
+      throw new NostrSignerError("authorization_denied")
+    }
+    await expect(
+      a.service.update(wallet.walletId, {
+        lightningAddress: "alice@conduit.cash",
+      })
+    ).rejects.toMatchObject({ code: "authorization_denied" })
+    f.signer.encryptNip44 = encrypt
+    await a.service.sync({ priority: "foreground" })
+    expect((await a.service.get(wallet.walletId)).lightningAddress).toBe(
+      "alice@breez.tips"
+    )
+  })
+
+  for (const later of ["alice@breez.tips", "later@conduit.cash"])
+    it(`preserves a newer observation received during explicit persistence: ${later.endsWith("breez.tips") ? "same" : "different"} value`, async () => {
+      const f = fixture(),
+        a = f.device(),
+        wallet = await a.service.import(f.bundle(), "Address wallet")
+      a.service.rememberLightningAddress(wallet.walletId, "alice@breez.tips")
+      const encrypt = f.signer.encryptNip44
+      f.signer.encryptNip44 = async (...args) => {
+        a.service.rememberLightningAddress(wallet.walletId, later)
+        return encrypt(...args)
+      }
+      await a.service.update(wallet.walletId, {
+        lightningAddress: "alice@conduit.cash",
+      })
+      f.signer.encryptNip44 = encrypt
+      expect((await a.service.get(wallet.walletId)).lightningAddress).toBe(
+        "alice@conduit.cash"
+      )
+      await a.service.sync({ priority: "foreground" })
+      expect((await a.service.get(wallet.walletId)).lightningAddress).toBe(
+        later
+      )
+    })
+
   it("restores immutable request evidence and requires fresh gateway approval before activation", async () => {
     const f = fixture(),
       a = f.device(),
@@ -691,6 +736,17 @@ describe("address progress in the complete wallet", () => {
     )
     expect(registrations).toBe(0)
     expect(profiles).toBe(0)
+    // A completed older receiving observation survives a refused background
+    // write. Activation must supersede that queued metadata, not only the UI.
+    b.service.rememberLightningAddress(wallet.walletId, "alice@breez.tips")
+    const encrypt = f.signer.encryptNip44
+    f.signer.encryptNip44 = async () => {
+      throw new NostrSignerError("authorization_denied")
+    }
+    await expect(b.service.sync()).rejects.toMatchObject({
+      code: "authorization_denied",
+    })
+    f.signer.encryptNip44 = encrypt
     approved = true
     await workflow(b.service).activate(wallet.walletId)
     await workflow(b.service).activate(wallet.walletId)
@@ -698,7 +754,14 @@ describe("address progress in the complete wallet", () => {
     expect(profiles).toBe(1)
     expect(bodies.every((body) => body === proof.payload)).toBe(true)
     await b.service.sync()
+    expect((await b.service.get(wallet.walletId)).lightningAddress).toBe(
+      "alice@conduit.cash"
+    )
+    expect(registrations).toBe(1)
     await a.service.sync()
+    expect((await a.service.get(wallet.walletId)).lightningAddress).toBe(
+      "alice@conduit.cash"
+    )
     const restored = (await a.service.get(wallet.walletId)).addressRequest!
     expect(restored.phase).toBe("complete")
     expect(restored.accountProof).toBe(proof.accountProof)
