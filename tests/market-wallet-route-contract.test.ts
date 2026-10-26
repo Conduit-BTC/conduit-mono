@@ -387,8 +387,15 @@ describe("Market wallet route contracts", () => {
     expect(wallet.includes("Use previous password")).toBe(false)
     expect(wallet.includes("Use for new invoices")).toBe(false)
     expect(wallet.includes("Remove from this device")).toBe(true)
-    expect(wallet).toContain("Payment request copied.")
-    expect(wallet).toContain("Copy was blocked. Copy the request manually.")
+    const receiveRequest = await readFile(
+      "packages/ui/src/components/WalletReceiveRequest.tsx",
+      "utf8"
+    )
+    expect(wallet).toContain("<WalletReceiveRequest")
+    expect(receiveRequest).toContain("Payment request copied.")
+    expect(receiveRequest).toContain(
+      "Copy was blocked. Open Payment request to copy it manually."
+    )
     expect(recoveryBundleDetails).toContain(
       "Your clipboard may be readable by other apps or synced between"
     )
@@ -416,9 +423,8 @@ describe("Market wallet route contracts", () => {
     )
     expect(wallet).toContain('aria-describedby="receive-amount-help"')
     expect(wallet).toContain('id="receive-amount-help"')
-    expect(wallet).toContain(
-      "Amount applies to Lightning invoices. Spark addresses are"
-    )
+    expect(wallet).toContain('view === "amount"')
+    expect(wallet).toContain("Leave blank to let the sender choose.")
     expect(wallet).toContain(
       "Payment request cleared. Create a new request for the updated amount."
     )

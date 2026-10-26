@@ -328,3 +328,9 @@ export {
   type CommerceInboxRecoveryProps,
 } from "./CommerceInboxRecovery"
 export { PrivateAttachment } from "./PrivateAttachment"
+
+export {
+  InvoicePayment,
+  type ExternalInvoicePaymentAction,
+  type ExternalInvoicePaymentActionResult,
+} from "./InvoicePayment"

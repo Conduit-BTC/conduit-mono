@@ -5,7 +5,6 @@ import {
   ArrowUpFromLine,
   ArrowRight,
   Check,
-  Copy,
   ExternalLink,
   KeyRound,
   Link2,
@@ -27,6 +26,7 @@ import {
   formatBitcoinBaseUnits,
   type AuthContextValue,
   type BreezAddressState,
+  type BtcUsdRateQuote,
   decodeLightningInvoiceMetadata,
   decodeLightningInvoicePaymentHash,
   getWalletDisplayLabels,
@@ -69,6 +69,9 @@ import type {
   WalletAddressSuggestion,
 } from "@conduit/core/hooks/useWalletAddress"
 import { ProfileLightningAddressEditor } from "./ProfileLightningAddressEditor"
+import { WalletCashAppFunding } from "./WalletCashAppFunding"
+import { CashAppIcon } from "./CashAppIcon"
+import { WalletReceiveRequest } from "./WalletReceiveRequest"
 import { SparkLightningAddress } from "./SparkLightningAddress"
 import { SparkRecoveryBundleDetails } from "./SparkRecoveryBundleDetails"
 import { AddressNameRequestForm } from "./AddressNameRequestForm"
@@ -112,6 +115,7 @@ export function Wallets({
   onSuggestAddress,
   formatSats = (sats: number) => formatBitcoinBaseUnits(sats, "sats"),
   footer,
+  rateQuote = null,
 }: {
   auth: AuthContextValue
   wallets: UseWalletsReturn
@@ -119,6 +123,7 @@ export function Wallets({
   onSuggestAddress(suggestion: WalletAddressSuggestion): void
   formatSats?: (sats: number) => string
   footer?: React.ReactNode
+  rateQuote?: BtcUsdRateQuote | null
 }) {
   const [setupMode, setSetupMode] = useState<PortableWalletMode>("create")
   const [profileReviewOpen, setProfileReviewOpen] = useState(false)
@@ -150,6 +155,9 @@ export function Wallets({
   )
   const [receiveWallet, setReceiveWallet] = useState<WalletDescriptor | null>(
     null
+  )
+  const [receiveMethod, setReceiveMethod] = useState<"lightning" | "cash-app">(
+    "lightning"
   )
   const [sendWallet, setSendWallet] = useState<WalletDescriptor | null>(null)
   const [historyWallet, setHistoryWallet] = useState<WalletDescriptor | null>(
@@ -383,9 +391,14 @@ export function Wallets({
                   onRecovery={(wallet, trigger) =>
                     openWalletDialog(setRecoveryWallet, wallet, trigger)
                   }
-                  onReceive={(wallet, trigger) =>
+                  onReceive={(wallet, trigger) => {
+                    setReceiveMethod("lightning")
                     openWalletDialog(setReceiveWallet, wallet, trigger)
-                  }
+                  }}
+                  onAddFunds={(wallet, trigger) => {
+                    setReceiveMethod("cash-app")
+                    openWalletDialog(setReceiveWallet, wallet, trigger)
+                  }}
                   onSend={(wallet, trigger) =>
                     openWalletDialog(setSendWallet, wallet, trigger)
                   }
@@ -449,6 +462,8 @@ export function Wallets({
         wallets={wallets}
       />
       <ReceiveWalletDialog
+        method={receiveMethod}
+        rateQuote={rateQuote}
         auth={auth}
         key={`receive:${auth.accountPubkey}:${auth.authGeneration}:${receiveWallet?.id ?? "closed"}`}
         wallet={receiveWallet}
@@ -627,6 +642,7 @@ function WalletSection({
   onUnlock,
   onRecovery,
   onReceive,
+  onAddFunds,
   onSend,
   onHistory,
   onRemove,
@@ -655,6 +671,7 @@ function WalletSection({
   onUnlock: WalletDialogAction
   onRecovery: WalletDialogAction
   onReceive: WalletDialogAction
+  onAddFunds: WalletDialogAction
   onSend: WalletDialogAction
   onHistory: WalletDialogAction
   onRemove: WalletDialogAction
@@ -685,6 +702,7 @@ function WalletSection({
       onUnlock={onUnlock}
       onRecovery={onRecovery}
       onReceive={onReceive}
+      onAddFunds={onAddFunds}
       onSend={onSend}
       onHistory={onHistory}
       onRemove={onRemove}
@@ -743,6 +761,7 @@ function WalletRow({
   onUnlock,
   onRecovery,
   onReceive,
+  onAddFunds,
   onSend,
   onHistory,
   onRemove,
@@ -768,6 +787,7 @@ function WalletRow({
   onUnlock: WalletDialogAction
   onRecovery: WalletDialogAction
   onReceive: WalletDialogAction
+  onAddFunds: WalletDialogAction
   onSend: WalletDialogAction
   onHistory: WalletDialogAction
   onRemove: WalletDialogAction
@@ -866,27 +886,30 @@ function WalletRow({
         aria-label={`${displayLabel} wallet`}
         className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 sm:p-7"
       >
-        <div className="flex min-w-0 items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h3
-              aria-label={displayLabel}
-              className="text-balance text-xl font-semibold sm:text-2xl"
+        <div
+          data-wallet-header
+          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 sm:grid-cols-[minmax(0,1fr)_auto_auto]"
+        >
+          <h3
+            aria-label={displayLabel}
+            className="col-start-1 row-start-1 min-w-0 text-lg font-semibold sm:text-2xl"
+          >
+            <Button
+              variant="ghost"
+              className="max-w-full justify-start gap-2 p-0 text-left text-lg font-semibold sm:text-2xl"
+              aria-label={`Rename ${displayLabel}`}
+              disabled={pending}
+              onClick={(event) => onRename(wallet, event.currentTarget)}
             >
-              <Button
-                variant="ghost"
-                className="justify-start gap-2 p-0 text-left text-xl font-semibold sm:text-2xl"
-                aria-label={`Rename ${displayLabel}`}
-                disabled={pending}
-                onClick={(event) => onRename(wallet, event.currentTarget)}
-              >
-                <span className="min-w-0 break-words">{displayLabel}</span>
-                <Pencil
-                  className="size-4 shrink-0 text-[var(--text-secondary)]"
-                  aria-hidden="true"
-                />
-              </Button>
-            </h3>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              <span className="min-w-0 truncate">{displayLabel}</span>
+              <Pencil
+                className="size-4 shrink-0 text-[var(--text-secondary)]"
+                aria-hidden="true"
+              />
+            </Button>
+          </h3>
+          <div className="col-start-1 row-start-2 min-w-0">
+            <p className="text-sm text-[var(--text-secondary)]">
               {isSpark
                 ? "Spark · Self-custodial"
                 : getWalletProviderDescription(wallet)}
@@ -900,7 +923,19 @@ function WalletRow({
               {runtime.status === "ready" ? "Ready" : ""}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          {isSpark && wallet.network === "mainnet" && (
+            <Button
+              variant="outline"
+              className="col-start-2 row-start-2 h-11 justify-self-end gap-2 px-2 sm:row-start-1 sm:px-3"
+              aria-label={`Add funds with Cash App to ${displayLabel}`}
+              disabled={!ready || pending}
+              onClick={(event) => onAddFunds(wallet, event.currentTarget)}
+            >
+              <CashAppIcon className="size-5 shrink-0 text-[var(--cash-app-green)]" />
+              Add funds
+            </Button>
+          )}
+          <div className="col-start-2 row-start-1 flex shrink-0 items-center justify-self-end gap-1 sm:col-start-3">
             {balanceSupported && (
               <Button
                 size="icon"
@@ -2154,11 +2189,15 @@ function useWalletDialogCurrent(
 }
 
 function ReceiveWalletDialog({
+  method,
+  rateQuote,
   auth,
   wallet,
   onOpenChange,
   wallets,
 }: {
+  method: "lightning" | "cash-app"
+  rateQuote: BtcUsdRateQuote | null
   auth: AuthContextValue
   wallet: WalletDescriptor | null
   onOpenChange: (open: boolean) => void
@@ -2166,18 +2205,19 @@ function ReceiveWalletDialog({
 }) {
   const current = useWalletDialogCurrent(auth, wallet)
 
+  const [view, setView] = useState<"address" | "amount" | "spark-address">(
+    "address"
+  )
   const [amount, setAmount] = useState("")
   const [addressPending, setAddressPending] = useState(false)
   const [request, setRequest] = useState("")
   const [pendingAction, setPendingAction] = useState<
     "lightning" | "spark-address" | null
   >(null)
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
-    "idle"
-  )
   const [requestAnnouncement, setRequestAnnouncement] = useState("")
   const [error, setError] = useState<string | null>(null)
-  const pending = pendingAction !== null || addressPending
+  const [cashPending, setCashPending] = useState(false)
+  const pending = pendingAction !== null || addressPending || cashPending
 
   const clearRequest = (announceInvalidation = false) => {
     if (announceInvalidation && request) {
@@ -2188,7 +2228,6 @@ function ReceiveWalletDialog({
       setRequestAnnouncement("")
     }
     setRequest("")
-    setCopyStatus("idle")
     setError(null)
   }
 
@@ -2197,7 +2236,6 @@ function ReceiveWalletDialog({
     setAmount("")
     setRequest("")
     setPendingAction(null)
-    setCopyStatus("idle")
     setRequestAnnouncement("")
     setError(null)
     onOpenChange(false)
@@ -2219,7 +2257,7 @@ function ReceiveWalletDialog({
         wallet.id,
         amountSats
       )
-      if (current()) setRequest(nextRequest)
+      if (current()) setRequest(nextRequest.paymentRequest)
     } catch (caught) {
       if (!current()) return
       setError(getErrorMessage(caught, "Could not create invoice."))
@@ -2244,16 +2282,6 @@ function ReceiveWalletDialog({
     }
   }
 
-  const copyRequest = async () => {
-    setCopyStatus("idle")
-    try {
-      await navigator.clipboard.writeText(request)
-      if (current()) setCopyStatus("copied")
-    } catch {
-      if (current()) setCopyStatus("error")
-    }
-  }
-
   return (
     <Dialog
       open={!!wallet}
@@ -2261,118 +2289,141 @@ function ReceiveWalletDialog({
         if (!open && !pending) close()
       }}
     >
-      <DialogContent showCloseButton={!pending}>
-        <DialogHeader>
-          <DialogTitle>Receive to {wallet?.label}</DialogTitle>
-          <DialogDescription>
-            Lightning is the interoperable default. Direct Spark addresses are
-            available as an advanced wallet-to-wallet option.
+      <DialogContent showCloseButton={!pending} className="max-w-[400px]">
+        <DialogHeader className="text-left">
+          <DialogTitle className="pr-8">
+            {method === "cash-app" ? "Add funds with Cash App" : "Receive"}
+          </DialogTitle>
+          <DialogDescription className="break-words text-sm">
+            To {wallet?.label}
           </DialogDescription>
         </DialogHeader>
-        <SparkLightningAddress
-          key={wallet?.id ?? "closed"}
-          walletId={wallet?.id ?? null}
-          resolve={wallets.getSparkLightningAddress}
-          disabled={pendingAction !== null}
-          onPendingChange={setAddressPending}
-        />
-        <div className="grid gap-2">
-          <Label htmlFor="receive-amount">Amount in sats (optional)</Label>
-          <Input
-            id="receive-amount"
-            type="number"
-            min={1}
-            step={1}
-            value={amount}
-            aria-describedby="receive-amount-help"
-            onChange={(event) => {
-              setAmount(event.target.value)
-              clearRequest(true)
-            }}
-            disabled={pending}
-          />
-          <p
-            id="receive-amount-help"
-            className="text-xs leading-5 text-[var(--text-secondary)]"
-          >
-            Amount applies to Lightning invoices. Spark addresses are
-            amountless.
-          </p>
-          <p aria-live="polite" className="sr-only">
-            {requestAnnouncement}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            onClick={() => void createLightningInvoice()}
-            disabled={pending}
-            aria-busy={pendingAction === "lightning"}
-          >
-            {pendingAction === "lightning" && (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )}
-            Create Lightning invoice
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => void createSparkAddress()}
-            disabled={pending}
-            aria-busy={pendingAction === "spark-address"}
-          >
-            {pendingAction === "spark-address" && (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            )}
-            Spark address
-          </Button>
-        </div>
-        {request && (
-          <div className="grid gap-2">
-            <p role="status" className="sr-only">
-              Payment request ready.
-            </p>
-            <Label htmlFor="receive-request">Payment request</Label>
-            <Textarea
-              id="receive-request"
-              value={request}
-              readOnly
-              className="font-mono text-xs"
+        {method === "cash-app" ? (
+          wallet && (
+            <WalletCashAppFunding
+              walletId={wallet.id}
+              wallets={wallets}
+              current={current}
+              ready={wallets.runtime[wallet.id]?.status === "ready"}
+              quote={rateQuote}
+              onPendingChange={setCashPending}
             />
-            <Button
-              variant="outline"
-              onClick={() => void copyRequest()}
-              aria-label={
-                copyStatus === "copied"
-                  ? "Payment request copied"
-                  : "Copy payment request"
-              }
-            >
-              {copyStatus === "copied" ? (
-                <Check className="h-4 w-4" />
-              ) : (
-                <Copy className="h-4 w-4" />
-              )}
-              {copyStatus === "copied" ? "Copied" : "Copy"}
-            </Button>
-            <p aria-live="polite" className="sr-only">
-              {copyStatus === "copied" ? "Payment request copied." : ""}
-            </p>
-            {copyStatus === "error" && (
+          )
+        ) : (
+          <div className="grid min-w-0 gap-3">
+            {view === "address" ? (
+              <>
+                <SparkLightningAddress
+                  key={wallet?.id ?? "closed"}
+                  walletId={wallet?.id ?? null}
+                  resolve={wallets.getSparkLightningAddress}
+                  disabled={pending}
+                  onPendingChange={setAddressPending}
+                />
+                <Button
+                  variant="ghost"
+                  disabled={pending}
+                  onClick={() => setView("amount")}
+                >
+                  Request a specific amount
+                </Button>
+                <details className="text-sm text-[var(--text-secondary)]">
+                  <summary className="cursor-pointer py-3">
+                    Other ways to receive
+                  </summary>
+                  <p className="mb-2">For transfers from a Spark wallet.</p>
+                  <Button
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => {
+                      setView("spark-address")
+                      void createSparkAddress()
+                    }}
+                  >
+                    Spark address
+                  </Button>
+                </details>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="ghost"
+                  className="justify-self-start px-0"
+                  disabled={pending}
+                  onClick={() => {
+                    clearRequest()
+                    setView("address")
+                  }}
+                >
+                  Back to Lightning address
+                </Button>
+                {view === "amount" && (
+                  <>
+                    <div className="grid gap-2">
+                      <Label htmlFor="receive-amount">
+                        Amount in sats (optional)
+                      </Label>
+                      <Input
+                        id="receive-amount"
+                        type="number"
+                        inputMode="numeric"
+                        min={1}
+                        step={1}
+                        value={amount}
+                        aria-describedby="receive-amount-help"
+                        onChange={(event) => {
+                          setAmount(event.target.value)
+                          clearRequest(true)
+                        }}
+                        disabled={pending}
+                      />
+                      <p
+                        id="receive-amount-help"
+                        className="text-sm text-[var(--text-secondary)]"
+                      >
+                        Leave blank to let the sender choose.
+                      </p>
+                      <p aria-live="polite" className="sr-only">
+                        {requestAnnouncement}
+                      </p>
+                    </div>
+                    {!request && (
+                      <Button
+                        onClick={() => void createLightningInvoice()}
+                        disabled={pending}
+                        aria-busy={pendingAction === "lightning"}
+                      >
+                        {pendingAction === "lightning"
+                          ? "Creating…"
+                          : "Create Lightning invoice"}
+                      </Button>
+                    )}
+                  </>
+                )}
+                {request && (
+                  <WalletReceiveRequest
+                    key={request}
+                    request={request}
+                    kind={view === "amount" ? "lightning" : "spark"}
+                    current={current}
+                  />
+                )}
+              </>
+            )}
+            {error && (
               <p role="alert" className="text-sm text-[var(--text-secondary)]">
-                Copy was blocked. Copy the request manually.
+                {error}
               </p>
             )}
           </div>
         )}
-        {error && (
-          <p role="alert" className="text-sm text-[var(--text-secondary)]">
-            {error}
-          </p>
+        {method === "cash-app" && (
+          <DialogFooter>
+            <Button variant="ghost" onClick={close} disabled={pending}>
+              Done
+            </Button>
+          </DialogFooter>
         )}
-        <DialogFooter>
-          <Button variant="ghost" onClick={close} disabled={pending}>
-            Done
-          </Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   )

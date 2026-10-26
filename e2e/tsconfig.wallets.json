@@ -21,6 +21,7 @@
     "jsx": "react-jsx"
   },
   "include": [
+    "wallet-cash-app.playwright.ts",
     "wallet-sign-in.playwright.ts",
     "wallet-layout.playwright.ts",
     "wallet-recovery-read.playwright.ts",
