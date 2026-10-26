@@ -1,13 +1,25 @@
 import type { NostrKeySigner } from "@conduit/core"
+import { createCheckoutRecoveryStorage } from "@conduit/core/protocol/checkout-recovery-storage"
 import {
   createCheckoutSparkRecoveryPayload,
   createCheckoutSparkSettledRecoveryPayload,
+  createCheckoutSparkRecoveryDeliveryRecord,
+  createCheckoutSparkRecoveryDeliveryProgress,
+  buildCheckoutSparkRecoveryRumor,
+  buildCheckoutSparkOrganizerRecoveryRumor,
+  createCheckoutSparkOrganizerRecoveryPayload,
+  createCheckoutSparkOrganizerRecoveryProgressPayload,
+  createCheckoutSparkOrganizerRecoveryDelivery,
+  restoreCheckoutSparkOrganizerRecoveryDelivery,
+  retryCheckoutSparkOrganizerRecovery,
+  preparePrivateMessageRecipientWrap,
   createCheckoutSparkSettledRecoveryProgressPayload,
   deriveCheckoutSparkSettledRecoverySnapshotKey,
   parseCheckoutSparkRecoveryDeliveryProgress,
   parseCheckoutSparkRecoveryDeliveryRecord,
   publishCheckoutSparkRecovery,
   retryCheckoutSparkRecoveryDelivery,
+  publishWithPlanner,
   type CheckoutSparkPlan,
   type CheckoutSparkRecoveryPayload,
   type CheckoutSparkSettledReconciliation,
@@ -18,6 +30,11 @@ import {
   type PublishCheckoutSparkRecoveryResult as CorePublishCheckoutSparkRecoveryResult,
   type RetryCheckoutSparkRecoveryResult,
   type SignedPublicNostrEvent,
+  type OrderSchema,
+  type CheckoutSparkOrganizerRecoveryDelivery,
+  type CheckoutSparkOrganizerRecoveryMessage,
+  type CheckoutSparkSettledRecoveryPayload,
+  type CheckoutSparkSettledRecoveryProgressPayload,
 } from "@conduit/core"
 
 import {
@@ -33,7 +50,7 @@ import { withCheckoutSparkStorageLock } from "./checkout-spark-storage"
 const STORAGE_KEY = "conduit:checkout-spark-recovery-outbox:v1"
 const SNAPSHOT_RETRY_STORAGE_KEY =
   "conduit:checkout-spark-recovery-snapshot-retries:v1"
-// The retry registry is one shared localStorage object, so serialize its
+// The retry registry is one shared durable object, so serialize its
 // read/sign/persist sequence across all checkouts in this browser origin.
 const SNAPSHOT_RETRY_LOCK_NAME =
   "conduit:checkout-spark-recovery-snapshot-retries"
@@ -53,14 +70,27 @@ export function isCheckoutSparkRecoveryPrePersistenceFailure(
   return cause instanceof Error && prePersistenceFailures.has(cause)
 }
 
-type RecoveryStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
+type RecoveryStorage = {
+  getItem(key: string): string | null | Promise<string | null>
+  setItem(key: string, value: string): void | Promise<void>
+  removeItem(key: string): void | Promise<void>
+}
 
-function readSnapshotRetryRegistry(
+// Explicit isolated storage remains a test/server seam. All actual browser
+// recovery data uses IndexedDB, including callers passing localStorage itself.
+function recoveryStorage(storage: RecoveryStorage) {
+  const browser = browserStorage()
+  return browser && storage === browser
+    ? createCheckoutRecoveryStorage(browser)
+    : storage
+}
+
+async function readSnapshotRetryRegistry(
   storage: RecoveryStorage | null
-): Record<string, string> {
+): Promise<Record<string, string>> {
   if (!storage)
     throw new Error("Durable checkout recovery storage is unavailable.")
-  const raw = storage.getItem(SNAPSHOT_RETRY_STORAGE_KEY)
+  const raw = await recoveryStorage(storage).getItem(SNAPSHOT_RETRY_STORAGE_KEY)
   if (!raw) return {}
   let parsed: unknown
   try {
@@ -85,12 +115,12 @@ function readSnapshotRetryRegistry(
   return parsed as Record<string, string>
 }
 
-function saveSnapshotRetryMapping(input: {
+async function saveSnapshotRetryMapping(input: {
   key: string
   handoffId: string
   storage: RecoveryStorage | null
-}): void {
-  const registry = readSnapshotRetryRegistry(input.storage)
+}): Promise<void> {
+  const registry = await readSnapshotRetryRegistry(input.storage)
   if (registry[input.key] && registry[input.key] !== input.handoffId) {
     throw new Error(
       "Checkout recovery state already has a different signed wrap."
@@ -100,8 +130,14 @@ function saveSnapshotRetryMapping(input: {
   if (Object.keys(next).length > MAX_STORED_RECOVERY_DELIVERIES) {
     throw new Error("Stored checkout recovery retry registry is full.")
   }
-  input.storage!.setItem(SNAPSHOT_RETRY_STORAGE_KEY, JSON.stringify(next))
-  if (readSnapshotRetryRegistry(input.storage)[input.key] !== input.handoffId) {
+  await recoveryStorage(input.storage!).setItem(
+    SNAPSHOT_RETRY_STORAGE_KEY,
+    JSON.stringify(next)
+  )
+  if (
+    (await readSnapshotRetryRegistry(input.storage))[input.key] !==
+    input.handoffId
+  ) {
     throw new Error("Checkout recovery retry mapping was not durably saved.")
   }
 }
@@ -132,6 +168,10 @@ export interface StoredCheckoutSparkRecoveryDelivery {
   record: CheckoutSparkRecoveryDeliveryRecord
   deliveryProgress: CheckoutSparkRecoveryDeliveryProgress
   savedAt: number
+  /** Separate organizer ciphertext, committed atomically with the initial Merchant wrap. */
+  organizerDelivery?: CheckoutSparkOrganizerRecoveryDelivery
+  /** Content-free exact-state lookup, saved atomically with event progress ciphertext. */
+  snapshotKey?: string
 }
 
 export interface CheckoutSparkCompletedRecoveryScope {
@@ -170,13 +210,13 @@ function sameRecoveryScope(
   )
 }
 
-function readCompletedArchive(
+async function readCompletedArchive(
   scope: CheckoutSparkCompletedRecoveryScope,
   storage: RecoveryStorage | null
-): CompletedCheckoutSparkRecoveryArchive | null {
+): Promise<CompletedCheckoutSparkRecoveryArchive | null> {
   if (!storage)
     throw new Error("Durable checkout recovery storage is unavailable.")
-  const raw = storage.getItem(completedArchiveKey(scope))
+  const raw = await recoveryStorage(storage).getItem(completedArchiveKey(scope))
   if (!raw) return null
   let value: unknown
   try {
@@ -219,11 +259,11 @@ function readCompletedArchive(
 }
 
 /** Device-local Merchant-encrypted evidence, not a new execution queue or relay deletion. */
-export function getArchivedCheckoutSparkRecoveryDeliveries(
+export async function getArchivedCheckoutSparkRecoveryDeliveries(
   scope: CheckoutSparkCompletedRecoveryScope,
   storage: RecoveryStorage | null = browserStorage()
-): StoredCheckoutSparkRecoveryDelivery[] {
-  return readCompletedArchive(scope, storage)?.deliveries ?? []
+): Promise<StoredCheckoutSparkRecoveryDelivery[]> {
+  return (await readCompletedArchive(scope, storage))?.deliveries ?? []
 }
 
 export type CheckoutSparkCompletedRecoveryTransport = Pick<
@@ -238,35 +278,50 @@ export async function retryPendingCompletedCheckoutSparkRecovery(input: {
   assertCurrent?: () => void
   assertTerminalCurrent: () => Promise<void>
   transport?: CheckoutSparkCompletedRecoveryTransport
+  organizerTransport?: CheckoutSparkCompletedRecoveryTransport
 }): Promise<void> {
   const scope = structuredClone(input.scope)
   const transport = { ...input.transport }
+  const organizerTransport = { ...input.organizerTransport }
   input.assertCurrent?.()
-  const matching = readOutbox(input.storage).filter(
+  const matching = (await readOutbox(input.storage)).filter(
     (delivery) => delivery.record.checkoutId === scope.checkoutId
   )
   if (matching.some((delivery) => !sameRecoveryScope(delivery.record, scope)))
     throw new Error("Completed checkout recovery scope changed before retry.")
   const pending = matching
-    .filter(
-      (delivery) => delivery.deliveryProgress.acknowledgedRelayRefs.length === 0
-    )
+    .flatMap((delivery) => [
+      ...(delivery.deliveryProgress.acknowledgedRelayRefs.length === 0
+        ? [{ delivery, recipient: "merchant" as const }]
+        : []),
+      ...(delivery.organizerDelivery?.acknowledgedRelayRefs.length === 0
+        ? [{ delivery, recipient: "organizer" as const }]
+        : []),
+    ])
     .slice(0, MAX_COMPLETED_DELIVERY_RETRIES)
   const deadline = Date.now() + COMPLETED_DELIVERY_RETRY_WINDOW_MS
   let active = true
   try {
-    for (const delivery of pending) {
+    for (const { delivery, recipient } of pending) {
       await input.assertTerminalCurrent()
-      const assertExactCurrent = () => {
+      const assertExactCurrent = async () => {
         input.assertCurrent?.()
-        const current = getCheckoutSparkRecoveryDelivery(
+        const current = await getCheckoutSparkRecoveryDelivery(
           delivery.record.handoffId,
           input.storage
         )
+        input.assertCurrent?.()
         if (
           !current ||
           !sameExactDelivery(current.record, delivery.record) ||
-          !sameRecoveryScope(current.record, scope)
+          !sameRecoveryScope(current.record, scope) ||
+          (delivery.organizerDelivery
+            ? !current.organizerDelivery ||
+              !sameExactDelivery(
+                current.organizerDelivery,
+                delivery.organizerDelivery
+              )
+            : current.organizerDelivery !== undefined)
         )
           throw new Error(
             "Completed checkout recovery ciphertext changed before retry."
@@ -274,20 +329,75 @@ export async function retryPendingCompletedCheckoutSparkRecovery(input: {
       }
       const shouldContinue = () => {
         if (!active || Date.now() >= deadline) return false
-        assertExactCurrent()
+        input.assertCurrent?.()
         return true
       }
+      await assertExactCurrent()
       if (!shouldContinue()) break
+      let checkpointStarted = false
+      const checkpoint = async (
+        progress: CheckoutSparkRecoveryDeliveryProgress,
+        organizer?: CheckoutSparkOrganizerRecoveryDelivery
+      ) => {
+        checkpointStarted = true
+        await input.assertTerminalCurrent()
+        await assertExactCurrent()
+        if (!shouldContinue())
+          throw new Error("Completed checkout recovery retry window ended.")
+        await saveCheckoutSparkRecoveryDelivery(
+          delivery.record,
+          progress,
+          input.storage,
+          Math.max(Date.now(), delivery.savedAt),
+          () => {
+            if (!shouldContinue())
+              throw new Error("Completed checkout recovery retry window ended.")
+          },
+          async () => {
+            await input.assertTerminalCurrent()
+            await assertExactCurrent()
+          },
+          organizer
+        )
+        await assertExactCurrent()
+      }
+      const selectedTransport =
+        recipient === "organizer" ? organizerTransport : transport
+      const publishFn: typeof publishWithPlanner = async (...args) => {
+        await input.assertTerminalCurrent()
+        await assertExactCurrent()
+        if (!shouldContinue())
+          throw new Error("Completed checkout recovery retry window ended.")
+        return (
+          selectedTransport.publishFn ??
+          transport.publishFn ??
+          publishWithPlanner
+        )(...args)
+      }
       let timer: ReturnType<typeof setTimeout> | undefined
-      let result: RetryCheckoutSparkRecoveryResult | null
+      let result: boolean | null
       try {
         result = await Promise.race([
-          retryCheckoutSparkRecoveryDelivery({
-            record: delivery.record,
-            deliveryProgress: delivery.deliveryProgress,
-            ...transport,
-            shouldContinue,
-          }),
+          recipient === "organizer"
+            ? retryCheckoutSparkOrganizerRecovery({
+                record: delivery.organizerDelivery!,
+                // Never substitute the Merchant's inbox for Organizer discovery.
+                recipientInboxRelays: organizerTransport.recipientInboxRelays,
+                publishFn,
+                shouldContinue,
+                persistExactWrap: (organizer) =>
+                  checkpoint(delivery.deliveryProgress, organizer),
+              }).then(() => true)
+            : retryCheckoutSparkRecoveryDelivery({
+                record: delivery.record,
+                deliveryProgress: delivery.deliveryProgress,
+                ...transport,
+                publishFn,
+                shouldContinue,
+              }).then(async (retried) => {
+                await checkpoint(retried.deliveryProgress)
+                return true
+              }),
           new Promise<null>((resolve) => {
             timer = setTimeout(
               () => resolve(null),
@@ -295,31 +405,20 @@ export async function retryPendingCompletedCheckoutSparkRecovery(input: {
             )
           }),
         ])
-      } catch {
+      } catch (cause) {
         // An outage never discharges a delivery obligation. Identity, binding
         // and ciphertext changes still fail closed rather than being swallowed.
         await input.assertTerminalCurrent()
-        assertExactCurrent()
+        await assertExactCurrent()
         if (Date.now() >= deadline) break
+        // Only transport outages are retryable here; a failed durable ACK save
+        // must remain visible rather than being mistaken for relay unavailability.
+        if (checkpointStarted) throw cause
         continue
       } finally {
         if (timer !== undefined) clearTimeout(timer)
       }
       if (!result) break
-      await input.assertTerminalCurrent()
-      if (!shouldContinue()) break
-      await saveCheckoutSparkRecoveryDelivery(
-        delivery.record,
-        result.deliveryProgress,
-        input.storage,
-        Math.max(Date.now(), delivery.savedAt),
-        () => {
-          if (!shouldContinue())
-            throw new Error("Completed checkout recovery retry window ended.")
-        },
-        input.assertTerminalCurrent
-      )
-      assertExactCurrent()
     }
   } finally {
     // A timed-out transport may finish later; it cannot checkpoint its result
@@ -348,8 +447,8 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
       // into archive or queue removal. No storage mutation precedes this read.
       if (input.verifyBeforeCommit) await input.verifyBeforeCommit()
       input.assertCurrent?.()
-      const previous = readCompletedArchive(input.scope, storage)
-      const outbox = readOutbox(storage)
+      const previous = await readCompletedArchive(input.scope, storage)
+      const outbox = await readOutbox(storage)
       const matching = outbox.filter(
         (delivery) => delivery.record.checkoutId === input.scope.checkoutId
       )
@@ -374,6 +473,8 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
           if (!sameExactDelivery(old.record, delivery.record))
             throw new Error("Completed checkout recovery ciphertext changed.")
           deliveries[index] = {
+            ...old,
+            ...delivery,
             record: old.record,
             deliveryProgress: parseCheckoutSparkRecoveryDeliveryProgress(
               {
@@ -404,7 +505,7 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
       const ids = new Set(
         deliveries.map((delivery) => delivery.record.handoffId)
       )
-      const registry = readSnapshotRetryRegistry(storage)
+      const registry = await readSnapshotRetryRegistry(storage)
       const snapshotRetries = {
         ...previous?.snapshotRetries,
         ...Object.fromEntries(
@@ -418,9 +519,14 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
         snapshotRetries,
       }
       input.assertCurrent?.()
-      storage!.setItem(completedArchiveKey(input.scope), JSON.stringify(next))
+      if (input.verifyBeforeCommit) await input.verifyBeforeCommit()
+      input.assertCurrent?.()
+      await recoveryStorage(storage!).setItem(
+        completedArchiveKey(input.scope),
+        JSON.stringify(next)
+      )
       if (
-        JSON.stringify(readCompletedArchive(input.scope, storage)) !==
+        JSON.stringify(await readCompletedArchive(input.scope, storage)) !==
         JSON.stringify(next)
       ) {
         throw new Error(
@@ -432,7 +538,8 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
       if (
         deliveries.some(
           (delivery) =>
-            delivery.deliveryProgress.acknowledgedRelayRefs.length === 0
+            delivery.deliveryProgress.acknowledgedRelayRefs.length === 0 ||
+            delivery.organizerDelivery?.acknowledgedRelayRefs.length === 0
         )
       )
         return "delivery_pending" as const
@@ -440,12 +547,14 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
       const retainedRegistry = Object.fromEntries(
         Object.entries(registry).filter(([, id]) => !ids.has(id))
       )
-      storage!.setItem(
+      if (input.verifyBeforeCommit) await input.verifyBeforeCommit()
+      input.assertCurrent?.()
+      await recoveryStorage(storage!).setItem(
         SNAPSHOT_RETRY_STORAGE_KEY,
         JSON.stringify(retainedRegistry)
       )
       if (
-        JSON.stringify(readSnapshotRetryRegistry(storage)) !==
+        JSON.stringify(await readSnapshotRetryRegistry(storage)) !==
         JSON.stringify(retainedRegistry)
       )
         throw new Error(
@@ -454,10 +563,12 @@ export async function archiveCompletedCheckoutSparkRecovery(input: {
       const retainedOutbox = outbox.filter(
         (delivery) => !ids.has(delivery.record.handoffId)
       )
+      if (input.verifyBeforeCommit) await input.verifyBeforeCommit()
       input.assertCurrent?.()
-      writeOutbox(retainedOutbox, storage)
+      await writeOutbox(retainedOutbox, storage)
       if (
-        JSON.stringify(readOutbox(storage)) !== JSON.stringify(retainedOutbox)
+        JSON.stringify(await readOutbox(storage)) !==
+        JSON.stringify(retainedOutbox)
       )
         throw new Error(
           "Completed checkout recovery cleanup was not durably saved."
@@ -486,7 +597,10 @@ export type PublishCheckoutSparkRecoveryHandoffResult =
     handoffId: string
   }
 
-function browserStorage(): RecoveryStorage | null {
+function browserStorage(): Pick<
+  Storage,
+  "getItem" | "setItem" | "removeItem"
+> | null {
   if (typeof window === "undefined") return null
   try {
     return window.localStorage
@@ -513,16 +627,46 @@ function validateStoredDelivery(
   ) {
     throw new Error("Stored checkout recovery delivery is invalid.")
   }
-  return { record, deliveryProgress, savedAt: candidate.savedAt! }
+  const organizerDelivery =
+    candidate.organizerDelivery === undefined
+      ? undefined
+      : restoreCheckoutSparkOrganizerRecoveryDelivery(
+          candidate.organizerDelivery
+        )
+  if (
+    organizerDelivery &&
+    (organizerDelivery.merchantHandoffId !== record.handoffId ||
+      organizerDelivery.checkoutId !== record.checkoutId ||
+      organizerDelivery.orderId !== record.orderId ||
+      organizerDelivery.planDigest !== record.planDigest ||
+      organizerDelivery.senderPubkey !== record.senderPubkey ||
+      organizerDelivery.merchantPubkey !== record.merchantPubkey ||
+      organizerDelivery.preparedAt !== record.createdAt)
+  ) {
+    throw new Error("Stored organizer recovery belongs to another checkout.")
+  }
+  if (
+    candidate.snapshotKey !== undefined &&
+    !HEX_64.test(candidate.snapshotKey)
+  ) {
+    throw new Error("Stored checkout snapshot lookup is invalid.")
+  }
+  return {
+    record,
+    deliveryProgress,
+    savedAt: candidate.savedAt!,
+    ...(organizerDelivery ? { organizerDelivery } : {}),
+    ...(candidate.snapshotKey ? { snapshotKey: candidate.snapshotKey } : {}),
+  }
 }
 
-function readOutbox(
+async function readOutbox(
   storage: RecoveryStorage | null
-): StoredCheckoutSparkRecoveryDelivery[] {
+): Promise<StoredCheckoutSparkRecoveryDelivery[]> {
   if (!storage) {
     throw new Error("Durable checkout recovery storage is unavailable.")
   }
-  const raw = storage.getItem(STORAGE_KEY)
+  const raw = await recoveryStorage(storage).getItem(STORAGE_KEY)
   if (!raw) return []
   let parsed: unknown
   try {
@@ -546,10 +690,10 @@ function readOutbox(
   return deliveries
 }
 
-function writeOutbox(
+async function writeOutbox(
   deliveries: readonly StoredCheckoutSparkRecoveryDelivery[],
   storage: RecoveryStorage | null
-): void {
+): Promise<void> {
   if (!storage) {
     throw new Error("Durable checkout recovery storage is unavailable.")
   }
@@ -557,15 +701,24 @@ function writeOutbox(
     throw new Error("Stored checkout recovery outbox is full.")
   }
   if (deliveries.length === 0) {
-    storage.removeItem(STORAGE_KEY)
+    await recoveryStorage(storage).removeItem(STORAGE_KEY)
     return
   }
-  storage.setItem(STORAGE_KEY, JSON.stringify(deliveries))
+  await recoveryStorage(storage).setItem(
+    STORAGE_KEY,
+    JSON.stringify(deliveries)
+  )
 }
 
 function sameExactDelivery(
-  left: CheckoutSparkRecoveryDeliveryRecord,
-  right: CheckoutSparkRecoveryDeliveryRecord
+  left: Pick<
+    CheckoutSparkRecoveryDeliveryRecord,
+    "handoffId" | "rumorId" | "signedRecipientWrap"
+  >,
+  right: Pick<
+    CheckoutSparkRecoveryDeliveryRecord,
+    "handoffId" | "rumorId" | "signedRecipientWrap"
+  >
 ): boolean {
   return (
     left.handoffId === right.handoffId &&
@@ -575,18 +728,18 @@ function sameExactDelivery(
   )
 }
 
-export function listCheckoutSparkRecoveryDeliveries(
+export async function listCheckoutSparkRecoveryDeliveries(
   storage: RecoveryStorage | null = browserStorage()
-): StoredCheckoutSparkRecoveryDelivery[] {
+): Promise<StoredCheckoutSparkRecoveryDelivery[]> {
   return readOutbox(storage)
 }
 
-export function getCheckoutSparkRecoveryDelivery(
+export async function getCheckoutSparkRecoveryDelivery(
   handoffId: string,
   storage: RecoveryStorage | null = browserStorage()
-): StoredCheckoutSparkRecoveryDelivery | null {
+): Promise<StoredCheckoutSparkRecoveryDelivery | null> {
   return (
-    readOutbox(storage).find(
+    (await readOutbox(storage)).find(
       (delivery) => delivery.record.handoffId === handoffId
     ) ?? null
   )
@@ -598,9 +751,11 @@ export async function saveCheckoutSparkRecoveryDelivery(
   storage: RecoveryStorage | null = browserStorage(),
   now = Date.now(),
   assertCurrent?: () => void,
-  verifyBeforeCommit?: () => Promise<void>
+  verifyBeforeCommit?: () => Promise<void>,
+  organizerInput?: CheckoutSparkOrganizerRecoveryDelivery,
+  snapshotKey?: string
 ): Promise<StoredCheckoutSparkRecoveryDelivery> {
-  const commit = () => {
+  const commit = async () => {
     assertCurrent?.()
     const record = parseCheckoutSparkRecoveryDeliveryRecord(recordInput)
     const deliveryProgress = parseCheckoutSparkRecoveryDeliveryProgress(
@@ -610,7 +765,8 @@ export async function saveCheckoutSparkRecoveryDelivery(
     if (!Number.isSafeInteger(now) || now < record.createdAt) {
       throw new Error("Checkout recovery persistence time is invalid.")
     }
-    const deliveries = readOutbox(storage)
+    const deliveries = await readOutbox(storage)
+    assertCurrent?.()
     const existingIndex = deliveries.findIndex(
       (delivery) => delivery.record.handoffId === record.handoffId
     )
@@ -623,6 +779,50 @@ export async function saveCheckoutSparkRecoveryDelivery(
       )
     }
     const existing = existingIndex >= 0 ? deliveries[existingIndex]! : null
+    if (
+      (snapshotKey !== undefined && !HEX_64.test(snapshotKey)) ||
+      (existing?.snapshotKey !== undefined &&
+        snapshotKey !== undefined &&
+        existing.snapshotKey !== snapshotKey) ||
+      (snapshotKey &&
+        deliveries.some(
+          (delivery) =>
+            delivery.snapshotKey === snapshotKey &&
+            delivery.record.handoffId !== record.handoffId
+        ))
+    ) {
+      throw new Error(
+        "Checkout snapshot already has different exact ciphertext."
+      )
+    }
+    let organizerDelivery =
+      organizerInput === undefined
+        ? existing?.organizerDelivery
+        : restoreCheckoutSparkOrganizerRecoveryDelivery(organizerInput)
+    if (existing?.organizerDelivery && organizerDelivery) {
+      const previous = existing.organizerDelivery
+      if (
+        previous.handoffId !== organizerDelivery.handoffId ||
+        previous.rumorId !== organizerDelivery.rumorId ||
+        previous.signedRecipientWrap.id !==
+          organizerDelivery.signedRecipientWrap.id ||
+        previous.signedRecipientWrap.sig !==
+          organizerDelivery.signedRecipientWrap.sig
+      ) {
+        throw new Error(
+          "Organizer recovery already has different exact ciphertext."
+        )
+      }
+      organizerDelivery = restoreCheckoutSparkOrganizerRecoveryDelivery({
+        ...organizerDelivery,
+        acknowledgedRelayRefs: [
+          ...new Set([
+            ...previous.acknowledgedRelayRefs,
+            ...organizerDelivery.acknowledgedRelayRefs,
+          ]),
+        ],
+      })
+    }
     const mergedProgress = parseCheckoutSparkRecoveryDeliveryProgress(
       existing
         ? {
@@ -637,20 +837,32 @@ export async function saveCheckoutSparkRecoveryDelivery(
         : deliveryProgress,
       record
     )
-    const stored = {
+    const stored = validateStoredDelivery({
       record,
       deliveryProgress: mergedProgress,
       savedAt: Math.max(existing?.savedAt ?? record.createdAt, now),
-    }
+      ...(organizerDelivery ? { organizerDelivery } : {}),
+      ...((snapshotKey ?? existing?.snapshotKey)
+        ? { snapshotKey: snapshotKey ?? existing?.snapshotKey }
+        : {}),
+    })
     const next = [...deliveries]
     if (existingIndex >= 0) next[existingIndex] = stored
     else next.push(stored)
-    writeOutbox(next, storage)
+    if (verifyBeforeCommit) await verifyBeforeCommit()
+    assertCurrent?.()
+    await writeOutbox(next, storage)
 
-    const readback = readOutbox(storage).find(
+    const readback = (await readOutbox(storage)).find(
       (delivery) => delivery.record.handoffId === record.handoffId
     )
-    if (!readback || !sameExactDelivery(readback.record, record)) {
+    if (
+      !readback ||
+      !sameExactDelivery(readback.record, record) ||
+      JSON.stringify(readback.organizerDelivery) !==
+        JSON.stringify(stored.organizerDelivery) ||
+      readback.snapshotKey !== stored.snapshotKey
+    ) {
       throw new Error("Checkout recovery wrapper was not durably saved.")
     }
     return readback
@@ -662,7 +874,7 @@ export async function saveCheckoutSparkRecoveryDelivery(
     STORAGE_KEY,
     verifyBeforeCommit
       ? async () => {
-          // Only terminal delivery retry supplies this local-storage precommit
+          // Only terminal delivery retry supplies this durable precommit
           // check. It runs after lock acquisition, never inside a Dexie transaction.
           await verifyBeforeCommit()
           return commit()
@@ -675,9 +887,9 @@ export async function deleteCheckoutSparkRecoveryDelivery(
   handoffId: string,
   storage: RecoveryStorage | null = browserStorage()
 ): Promise<void> {
-  return withCheckoutSparkStorageLock(STORAGE_KEY, () => {
-    writeOutbox(
-      readOutbox(storage).filter(
+  return withCheckoutSparkStorageLock(STORAGE_KEY, async () => {
+    await writeOutbox(
+      (await readOutbox(storage)).filter(
         (delivery) => delivery.record.handoffId !== handoffId
       ),
       storage
@@ -693,7 +905,9 @@ function assertGuestSettledRecoveryScope(input: {
 }): void {
   const { identity, plan, preparedAt, now } = input
   if (
-    (plan.schemaVersion !== 3 && plan.schemaVersion !== 4) ||
+    (plan.schemaVersion !== 3 &&
+      plan.schemaVersion !== 4 &&
+      plan.schemaVersion !== 5) ||
     identity.orderId !== plan.orderId ||
     identity.merchantPubkey !== plan.merchantPubkey ||
     !HEX_64.test(identity.pubkey) ||
@@ -814,6 +1028,206 @@ export async function publishCheckoutSparkSettledRecoveryHandoff(input: {
   })
 }
 
+/** Prepare both recipient envelopes, atomically save once, then deliver exact bytes. */
+type CheckoutSparkEventRecoveryHandoffInput = {
+  state: CheckoutSparkSettledReconciliation
+  sourceEvents: readonly SignedPublicNostrEvent[]
+  recovery: SparkRecoveryBundle
+  identity: CheckoutSparkRecoverySigningIdentity
+  order: OrderSchema
+  preparedAt?: number
+  storage?: RecoveryStorage | null
+  transport?: CheckoutSparkRecoveryTransportOptions
+  organizerTransport?: CheckoutSparkRecoveryTransportOptions
+  now?: () => number
+  onPersisted?: (handoffId: string) => void | Promise<void>
+}
+
+export async function publishCheckoutSparkEventRecoveryHandoff(
+  input: CheckoutSparkEventRecoveryHandoffInput
+): Promise<{ handoffId: string; canExposeFundingInvoice: true }> {
+  const now = input.now ?? Date.now
+  const preparedAt = input.preparedAt ?? now()
+  let pairStarted = false
+  try {
+    const mnemonic = assertScopedRecoveryInput({
+      ...input,
+      plan: input.state.plan,
+      preparedAt,
+      now: now(),
+    })
+    const merchantPayload = createCheckoutSparkSettledRecoveryPayload({
+      state: input.state,
+      sourceEvents: input.sourceEvents,
+      senderPubkey: input.identity.pubkey,
+      mnemonic,
+      accountNumber: input.recovery.accountNumber,
+      preparedAt,
+    })
+    const organizerPayload = createCheckoutSparkOrganizerRecoveryPayload({
+      merchantRecovery: merchantPayload,
+      order: input.order,
+    })
+    pairStarted = true
+    return await persistEventRecoveryPayloadPair({
+      ...input,
+      merchantPayload,
+      organizerPayload,
+      now,
+    })
+  } catch (cause) {
+    if (!pairStarted && cause instanceof Error)
+      prePersistenceFailures.add(cause)
+    throw cause
+  }
+}
+
+type EventRecoveryHandoffResult = {
+  handoffId: string
+  canExposeFundingInvoice: true
+  deliveryProgress: CheckoutSparkRecoveryDeliveryProgress
+}
+
+async function persistEventRecoveryPayloadPair(
+  input: Omit<
+    CheckoutSparkEventRecoveryHandoffInput,
+    "state" | "sourceEvents" | "recovery" | "order"
+  > & {
+    merchantPayload:
+      | CheckoutSparkSettledRecoveryPayload
+      | CheckoutSparkSettledRecoveryProgressPayload
+    organizerPayload: CheckoutSparkOrganizerRecoveryMessage
+    snapshotKey?: string
+  }
+): Promise<EventRecoveryHandoffResult> {
+  input = {
+    ...input,
+    transport: input.transport ? { ...input.transport } : undefined,
+    organizerTransport: input.organizerTransport
+      ? { ...input.organizerTransport }
+      : undefined,
+  }
+  const identity = { ...input.identity }
+  const now = input.now ?? Date.now
+  const { merchantPayload, organizerPayload } = input
+  const preparedAt = merchantPayload.preparedAt
+  const storage = input.storage === undefined ? browserStorage() : input.storage
+  const assertCurrent = () => {
+    if (
+      input.transport?.shouldContinue?.() === false ||
+      input.organizerTransport?.shouldContinue?.() === false
+    ) {
+      throw new Error("Event checkout recovery session changed.")
+    }
+    if (
+      identity.pubkey !== merchantPayload.senderPubkey ||
+      organizerPayload.senderPubkey !== identity.pubkey ||
+      now() < preparedAt ||
+      now() >= merchantPayload.plan.takeoverAt
+    ) {
+      throw new Error("Event checkout recovery authority changed.")
+    }
+    if (identity.kind === "guest_ephemeral")
+      assertGuestSettledRecoveryScope({
+        identity,
+        plan: merchantPayload.plan,
+        preparedAt,
+        now: now(),
+      })
+  }
+  let persisted = false
+  let persistenceAttempted = false
+  try {
+    assertCurrent()
+    const merchantSigner =
+      identity.kind === "guest_ephemeral"
+        ? createGuestCheckoutSparkRecoverySigner(identity, { now })
+        : identity.signer
+    const organizerSigner =
+      identity.kind === "guest_ephemeral"
+        ? createGuestCheckoutSparkRecoverySigner(identity, {
+            now,
+            organizerRecovery: {
+              organizerPubkey: organizerPayload.organizerPubkey,
+              checkoutId: organizerPayload.plan.checkoutId,
+              planDigest: organizerPayload.plan.planDigest,
+            },
+          })
+        : identity.signer
+    const merchantWrap = await preparePrivateMessageRecipientWrap({
+      rumor: buildCheckoutSparkRecoveryRumor(merchantPayload),
+      senderPubkey: identity.pubkey,
+      recipientPubkey: merchantPayload.merchantPubkey,
+      signer: merchantSigner,
+      shouldContinue: () => {
+        assertCurrent()
+        return true
+      },
+      giftWrapFn: input.transport?.giftWrapFn,
+    })
+    assertCurrent()
+    const organizerWrap = await preparePrivateMessageRecipientWrap({
+      rumor: buildCheckoutSparkOrganizerRecoveryRumor(organizerPayload),
+      senderPubkey: identity.pubkey,
+      recipientPubkey: organizerPayload.organizerPubkey,
+      signer: organizerSigner,
+      shouldContinue: () => {
+        assertCurrent()
+        return true
+      },
+      giftWrapFn: input.organizerTransport?.giftWrapFn,
+    })
+    assertCurrent()
+    const record = createCheckoutSparkRecoveryDeliveryRecord(
+      merchantPayload,
+      merchantWrap
+    )
+    const organizerDelivery = createCheckoutSparkOrganizerRecoveryDelivery(
+      organizerPayload,
+      organizerWrap.wrappedToRecipient
+    )
+    persistenceAttempted = true
+    await saveCheckoutSparkRecoveryDelivery(
+      record,
+      createCheckoutSparkRecoveryDeliveryProgress(record),
+      storage,
+      now(),
+      assertCurrent,
+      undefined,
+      organizerDelivery,
+      input.snapshotKey
+    )
+    persisted = true
+    await input.onPersisted?.(record.handoffId)
+    const result = await retryStoredCheckoutSparkRecoveryHandoff({
+      handoffId: record.handoffId,
+      storage,
+      now,
+      shouldContinue: () => {
+        assertCurrent()
+        return true
+      },
+      recipientInboxRelays: input.transport?.recipientInboxRelays,
+      resolveInboxRelays: input.transport?.resolveInboxRelays,
+      publishFn: input.transport?.publishFn,
+      organizerTransport: input.organizerTransport,
+    })
+    if (!result.canExposeFundingInvoice)
+      throw new Error(
+        "Event checkout recovery is waiting for both recipient relay acknowledgements."
+      )
+    return {
+      handoffId: record.handoffId,
+      canExposeFundingInvoice: true,
+      deliveryProgress: result.deliveryProgress,
+    }
+  } catch (cause) {
+    if (!persisted && !persistenceAttempted && cause instanceof Error)
+      prePersistenceFailures.add(cause)
+    throw cause
+  }
+}
+
 /**
  * Persist and ACK one buyer-signed, merchant-only progress update without
  * retrieving the checkout wallet phrase from the SDK or browser storage.
@@ -826,6 +1240,7 @@ type CheckoutSparkSettledSnapshotInput = {
   preparedAt?: number
   storage?: RecoveryStorage | null
   transport?: CheckoutSparkRecoveryTransportOptions
+  organizerTransport?: CheckoutSparkRecoveryTransportOptions
   now?: () => number
   onPersisted?: (handoffId: string) => void | Promise<void>
 }
@@ -846,7 +1261,7 @@ async function assertAcknowledgedInitialRecovery(
     }
   }
   assertGuestScope()
-  const initial = getCheckoutSparkRecoveryDelivery(
+  const initial = await getCheckoutSparkRecoveryDelivery(
     input.initialHandoffId,
     storage
   )
@@ -854,6 +1269,11 @@ async function assertAcknowledgedInitialRecovery(
   if (
     !initial ||
     initial.deliveryProgress.acknowledgedRelayRefs.length === 0 ||
+    (plan.schemaVersion === 5 &&
+      plan.eventMarket?.mode === "organizer_handoff" &&
+      (initial.organizerDelivery?.organizerPubkey !==
+        plan.eventMarket.organizerPubkey ||
+        initial.organizerDelivery.acknowledgedRelayRefs.length === 0)) ||
     initial.record.checkoutId !== plan.checkoutId ||
     initial.record.orderId !== plan.orderId ||
     initial.record.planDigest !== plan.planDigest ||
@@ -881,7 +1301,9 @@ async function assertAcknowledgedInitialRecovery(
 
 export async function acknowledgeCheckoutSparkSettledSnapshot(
   input: CheckoutSparkSettledSnapshotInput
-): Promise<PublishCheckoutSparkRecoveryHandoffResult> {
+): Promise<
+  PublishCheckoutSparkRecoveryHandoffResult | EventRecoveryHandoffResult
+> {
   input = {
     ...input,
     identity: { ...input.identity },
@@ -897,6 +1319,33 @@ export async function acknowledgeCheckoutSparkSettledSnapshot(
     senderPubkey: input.identity.pubkey,
     preparedAt,
   })
+  if (
+    payload.plan.schemaVersion === 5 &&
+    payload.plan.eventMarket?.mode === "organizer_handoff"
+  ) {
+    const initial = await getCheckoutSparkRecoveryDelivery(
+      input.initialHandoffId,
+      storage
+    )
+    if (!initial?.organizerDelivery)
+      throw new Error("Initial organizer checkout recovery is unavailable.")
+    const organizerPayload =
+      createCheckoutSparkOrganizerRecoveryProgressPayload({
+        merchantProgress: payload,
+        initialOrganizerHandoffId: initial.organizerDelivery.handoffId,
+      })
+    return persistEventRecoveryPayloadPair({
+      ...input,
+      merchantPayload: payload,
+      organizerPayload,
+      storage,
+      now,
+      snapshotKey: deriveCheckoutSparkSettledRecoverySnapshotKey({
+        initialHandoffId: input.initialHandoffId,
+        state: input.state,
+      }),
+    })
+  }
   return persistAndPublishRecoveryHandoff({
     ...input,
     payload,
@@ -1005,9 +1454,16 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
     initialHandoffId: input.initialHandoffId,
     state: input.state,
   })
-  const existingHandoffId = readSnapshotRetryRegistry(storage)[key]
+  const retained = (await listCheckoutSparkRecoveryDeliveries(storage)).filter(
+    (delivery) => delivery.snapshotKey === key
+  )
+  if (retained.length > 1)
+    throw new Error("Stored checkout progress is ambiguous.")
+  const existingHandoffId =
+    (await readSnapshotRetryRegistry(storage))[key] ??
+    retained[0]?.record.handoffId
   if (existingHandoffId) {
-    const existing = getCheckoutSparkRecoveryDelivery(
+    const existing = await getCheckoutSparkRecoveryDelivery(
       existingHandoffId,
       storage
     )
@@ -1019,11 +1475,21 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       existing.record.walletId !== initial.walletId ||
       existing.record.network !== initial.network ||
       existing.record.senderPubkey !== initial.senderPubkey ||
-      existing.record.merchantPubkey !== initial.merchantPubkey
+      existing.record.merchantPubkey !== initial.merchantPubkey ||
+      (input.state.plan.schemaVersion === 5 &&
+        input.state.plan.eventMarket?.mode === "organizer_handoff" &&
+        existing.snapshotKey !== key)
     ) {
       throw new Error("Stored checkout recovery progress is incomplete.")
     }
-    if (existing.deliveryProgress.acknowledgedRelayRefs.length > 0) {
+    if (
+      existing.deliveryProgress.acknowledgedRelayRefs.length > 0 &&
+      (input.state.plan.schemaVersion !== 5 ||
+        input.state.plan.eventMarket?.mode !== "organizer_handoff" ||
+        (existing.organizerDelivery?.organizerPubkey ===
+          input.state.plan.eventMarket.organizerPubkey &&
+          existing.organizerDelivery.acknowledgedRelayRefs.length > 0))
+    ) {
       assertCurrent()
       return {
         handoffId: existingHandoffId,
@@ -1036,6 +1502,8 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       handoffId: existingHandoffId,
       storage,
       recipientInboxRelays: input.transport?.recipientInboxRelays,
+      resolveInboxRelays: input.transport?.resolveInboxRelays,
+      organizerTransport: input.organizerTransport,
       shouldContinue: () => {
         try {
           assertCurrent()
@@ -1196,27 +1664,84 @@ export async function retryStoredCheckoutSparkRecoveryHandoff(input: {
   handoffId: string
   storage?: RecoveryStorage | null
   recipientInboxRelays?: readonly string[]
+  resolveInboxRelays?: (pubkey: string) => Promise<string[]>
+  organizerTransport?: CheckoutSparkRecoveryTransportOptions
   shouldContinue?: () => boolean
+  /** A selected-order repair, never a new payment or newly encrypted message. */
+  replayAcknowledged?: boolean
   publishFn?: Parameters<
     typeof retryCheckoutSparkRecoveryDelivery
   >[0]["publishFn"]
   now?: () => number
 }): Promise<RetryCheckoutSparkRecoveryResult> {
   const storage = input.storage === undefined ? browserStorage() : input.storage
-  const stored = getCheckoutSparkRecoveryDelivery(input.handoffId, storage)
-  if (!stored) throw new Error("Checkout recovery delivery was not found.")
-  const result = await retryCheckoutSparkRecoveryDelivery({
-    record: stored.record,
-    deliveryProgress: stored.deliveryProgress,
-    recipientInboxRelays: input.recipientInboxRelays,
-    shouldContinue: input.shouldContinue,
-    publishFn: input.publishFn,
-  })
-  await saveCheckoutSparkRecoveryDelivery(
-    stored.record,
-    result.deliveryProgress,
-    storage,
-    (input.now ?? Date.now)()
+  const stored = await getCheckoutSparkRecoveryDelivery(
+    input.handoffId,
+    storage
   )
-  return result
+  if (!stored) throw new Error("Checkout recovery delivery was not found.")
+  const deliverMerchant = async () => {
+    const result = await retryCheckoutSparkRecoveryDelivery({
+      record: stored.record,
+      deliveryProgress: stored.deliveryProgress,
+      recipientInboxRelays: input.recipientInboxRelays,
+      resolveInboxRelays: input.resolveInboxRelays,
+      shouldContinue: input.shouldContinue,
+      publishFn: input.publishFn,
+      replayAcknowledged: input.replayAcknowledged,
+    })
+    await saveCheckoutSparkRecoveryDelivery(
+      stored.record,
+      result.deliveryProgress,
+      storage,
+      (input.now ?? Date.now)()
+    )
+    return result
+  }
+  if (!stored.organizerDelivery) return deliverMerchant()
+
+  const organizerDelivery = stored.organizerDelivery
+  const deliverOrganizer = async () =>
+    retryCheckoutSparkOrganizerRecovery({
+      record: organizerDelivery,
+      shouldContinue: input.shouldContinue,
+      replayAcknowledged: input.replayAcknowledged,
+      recipientInboxRelays: input.organizerTransport?.recipientInboxRelays,
+      resolveInboxRelays: input.organizerTransport?.resolveInboxRelays,
+      publishFn: input.organizerTransport?.publishFn ?? input.publishFn,
+      persistExactWrap: async (organizerRecord) => {
+        const latest = await getCheckoutSparkRecoveryDelivery(
+          input.handoffId,
+          storage
+        )
+        if (!latest) throw new Error("Event recovery bundle disappeared.")
+        await saveCheckoutSparkRecoveryDelivery(
+          latest.record,
+          latest.deliveryProgress,
+          storage,
+          (input.now ?? Date.now)(),
+          undefined,
+          undefined,
+          organizerRecord
+        )
+      },
+    })
+
+  // The exact pair is already durable. Drain both independent sends and ACK
+  // saves, including failures, before releasing the caller's snapshot lock.
+  const [merchant, organizer] = await Promise.allSettled([
+    deliverMerchant(),
+    deliverOrganizer(),
+  ])
+  if (merchant.status === "rejected") throw merchant.reason
+  if (organizer.status === "rejected") throw organizer.reason
+  if (input.shouldContinue?.() === false) {
+    throw new Error("Event checkout recovery session changed.")
+  }
+  return {
+    ...merchant.value,
+    canExposeFundingInvoice:
+      merchant.value.canExposeFundingInvoice &&
+      organizer.value.canExposeFundingInvoice,
+  }
 }

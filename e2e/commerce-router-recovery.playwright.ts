@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto"
+import { createHash } from "node:crypto"
 import { fileURLToPath } from "node:url"
 import {
   expect,
@@ -9,50 +9,36 @@ import {
 } from "@playwright/test"
 import { nip19 } from "nostr-tools"
 import { getEventHash, verifyEvent } from "nostr-tools/pure"
+import { buildEventMarketCalendarDraft } from "../packages/core/src/protocol/event-market"
+import { getFutureMarketClaimRef } from "../packages/core/src/protocol/future-market-handoff"
+import { formatEventMarketPickupClaimCode } from "../packages/core/src/protocol/event-market-handoff"
 import { CANONICAL_COMMERCE_DISCOVERY_RELAYS } from "../packages/core/src/config"
 import {
-  decodeSparkAddress,
-  DefaultSparkSigner,
-  encodeSparkAddress,
-  getNetworkFromSparkAddress,
-  isValidSparkAddress,
-  UUID,
-} from "../apps/market/node_modules/@buildonspark/spark-sdk/dist/index.node.js"
+  decodeLightningInvoicePaymentHash,
+  validateLightningInvoiceForPayment,
+} from "../packages/core/src/protocol/lightning"
 import { openPlaywrightRouterClock } from "../scripts/dev/playwright_router_clock"
 import {
   createRouterSmokeRecorder,
   type RouterSmokePhase,
 } from "../scripts/ci/router_smoke_diagnostic"
 import {
-  bolt11PaymentHashField,
-  bolt11PlainDescriptionField,
-} from "../tests/support/bolt11-fixture"
-import {
-  bolt11PaymentSecretField,
-  makeSignedBolt11Fixture,
-} from "../tests/support/signed-bolt11-fixture"
-import {
   publishTestRelayEvents,
   readTestRelayEvents,
   TEST_RELAY_URL,
 } from "./helpers/auth"
-import {
-  createHermeticLnurlFixture,
-  type HermeticLnurlIssuedInvoice,
-} from "./helpers/hermetic-lnurl"
 import {
   HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS,
   createHermeticCommerceNetworkPolicy,
   installHermeticCommerceNetwork,
   type HermeticNetworkFailureDiagnostic,
 } from "./helpers/hermetic-network"
-import { createHermeticSparkNative } from "./helpers/hermetic-spark-native"
+import { createHermeticRouterProvider } from "./helpers/hermetic-router-provider"
+import { createDeterministicNwcWallet } from "./helpers/deterministic-nwc-wallet"
+import { openWalletSetup } from "./helpers/wallet-fixture"
 import { installPersistenceReloadBarrier } from "./helpers/persistence-reload-barrier"
 import { viteFileModuleUrl } from "./helpers/vite-file-module-url"
-import {
-  createHermeticSparkTransport,
-  installHermeticSparkTransport,
-} from "./helpers/hermetic-spark-transport"
+import { installHermeticSparkTransport } from "./helpers/hermetic-spark-transport"
 import {
   createRuntimeSignerIdentity,
   decryptRuntimeTestPayload,
@@ -188,7 +174,7 @@ async function hasActiveEncryptedRecovery(
       const { listCheckoutSparkRecoveryDeliveries } = await import(
         /* @vite-ignore */ modulePath
       )
-      return listCheckoutSparkRecoveryDeliveries().some(
+      return (await listCheckoutSparkRecoveryDeliveries()).some(
         (saved: {
           record: {
             orderId: string
@@ -346,6 +332,134 @@ async function merchantTerminalReconciliation(
   )
 }
 
+// Diagnose only the exact isolated order after a failed continuation assertion.
+// Hashing the saved state locates its existing signed outbox row; this does not
+// create, sign, store, publish or promote any recovery/payment authority.
+async function merchantRemainingPayoutEvidence(
+  page: Page,
+  orderId: string | null
+) {
+  const moduleUrl = (path: string) =>
+    viteFileModuleUrl(fileURLToPath(new URL(path, import.meta.url)))
+  return page.evaluate(
+    async ({
+      databasePath,
+      progressPath,
+      repositoryPath,
+      discoveryPath,
+      selectionPath,
+      orderId,
+    }) => {
+      const [{ db }, { createCheckoutSparkMerchantProgress }, repository] =
+        await Promise.all([
+          import(/* @vite-ignore */ databasePath),
+          import(/* @vite-ignore */ progressPath),
+          import(/* @vite-ignore */ repositoryPath),
+        ])
+      const matching = (await db.checkoutSparkReconciliations.toArray()).filter(
+        (row: { state: { plan: { orderId: string } } }) =>
+          row.state.plan.orderId === orderId
+      )
+      if (matching.length !== 1) return null
+      const state = matching[0].state
+      const next = state.legs.find(
+        (leg: { status: string }) => leg.status !== "paid"
+      )
+      const binding = await db.checkoutSparkPlanBindings.get(
+        state.plan.checkoutId
+      )
+      const exact = binding?.merchantProgressOutbox?.find(
+        (delivery: {
+          record: { initialHandoffId: string; snapshotId: string }
+        }) =>
+          createCheckoutSparkMerchantProgress({
+            initialHandoffId: delivery.record.initialHandoffId,
+            state,
+          }).snapshotId === delivery.record.snapshotId
+      )
+      const stored = exact
+        ? await new repository.DexieMerchantCheckoutSparkProgressRepository().load(
+            state.plan.merchantPubkey,
+            state.plan.checkoutId,
+            state.plan.planDigest,
+            exact.record.snapshotId
+          )
+        : null
+      // A separate bounded read can distinguish a stale mounted discovery
+      // pointer from unavailable signed evidence. It has no wallet/send callback
+      // and does not import or rewrite recovered order state.
+      const [
+        { createMerchantCheckoutSparkRecoveryDiscovery },
+        { selectMerchantCheckoutSparkSignedNextPayout },
+      ] = await Promise.all([
+        import(/* @vite-ignore */ discoveryPath),
+        import(/* @vite-ignore */ selectionPath),
+      ])
+      const fresh = await createMerchantCheckoutSparkRecoveryDiscovery(
+        state.plan.merchantPubkey
+      )
+      let freshMatchesPrepared = false
+      let freshSelectionReady = false
+      try {
+        let page = await fresh.nextPage()
+        for (let count = 0; page.history.hasMore && count < 16; count++)
+          page = await fresh.nextPage()
+        const selected = page.candidates.filter(
+          (candidate: { orderId: string }) => candidate.orderId === orderId
+        )
+        if (
+          !page.history.hasMore &&
+          page.conflictCount === 0 &&
+          selected.length === 1
+        ) {
+          freshMatchesPrepared =
+            stored !== null &&
+            selected[0].merchantProgress?.snapshotId ===
+              stored.record.snapshotId
+          const selection = await selectMerchantCheckoutSparkSignedNextPayout(
+            state.plan.merchantPubkey,
+            selected[0],
+            () => {}
+          )
+          freshSelectionReady = selection.status === "ready"
+        }
+      } finally {
+        fresh.dispose()
+      }
+      return {
+        freshMatchesPrepared,
+        freshSelectionReady,
+        nextUnpaidIsOrganizer:
+          state.plan.recipients.find(
+            (recipient: { legId: string; kind: string }) =>
+              recipient.legId === next?.legId
+          )?.kind === "organizer",
+        nextUnpaidHasIntent: next?.intent != null,
+        exactProgressStaged: stored !== null,
+        exactProgressSelfAccepted:
+          stored !== null &&
+          (stored.record.schemaVersion === 2
+            ? stored.merchantAccepted === true
+            : stored.relayAccepted === true),
+      }
+    },
+    {
+      databasePath: moduleUrl("../packages/core/src/db/index.ts"),
+      progressPath: moduleUrl(
+        "../packages/core/src/protocol/checkout-spark-merchant-progress.ts"
+      ),
+      repositoryPath: moduleUrl(
+        "../packages/core/src/protocol/checkout-spark-merchant-progress-repository.ts"
+      ),
+      discoveryPath: moduleUrl("../packages/core/src/protocol/commerce.ts"),
+      selectionPath: moduleUrl(
+        "../apps/merchant/src/lib/checkout-spark-settled-continuation.ts"
+      ),
+      orderId,
+    }
+  )
+}
+
 // Read only the isolated checkout's frozen clock facts. No invoice, wallet,
 // identity or order content leaves the page, and this helper never alters the
 // saved deadlines or produces payment authority.
@@ -383,6 +497,29 @@ async function frozenRouterTiming(page: Page, orderId: string | null) {
       }
     },
     { dbPath, lightningPath, timingPath, orderId }
+  )
+}
+
+// New app-created checkouts must bind the no-floor policy before funding. This
+// observation never rewrites a saved plan or exposes its private payload.
+async function hasCurrentConduitFeePolicy(page: Page, orderId: string | null) {
+  const dbPath = viteFileModuleUrl(
+    fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))
+  )
+  return page.evaluate(
+    async ({ dbPath, orderId }) => {
+      const { db } = await import(/* @vite-ignore */ dbPath)
+      const rows = await db.checkoutSparkReconciliations.toArray()
+      const matching = rows.filter(
+        (row: { state: { plan: { orderId: string } } }) =>
+          row.state.plan.orderId === orderId
+      )
+      return (
+        matching.length === 1 &&
+        matching[0].state.plan.conduitFeePolicy === "percentage-only-v1"
+      )
+    },
+    { dbPath, orderId }
   )
 }
 
@@ -495,26 +632,6 @@ async function publishSupplierListing(
   await expect(dialog).toBeHidden({ timeout: 10_000 })
 }
 
-function fundingInvoice(amountSats: number, expirySeconds: number): string {
-  const preimage = randomBytes(32)
-  const paymentHash = createHash("sha256").update(preimage).digest()
-  preimage.fill(0)
-  const expiryWords: number[] = []
-  for (let value = expirySeconds; value > 0; value = Math.floor(value / 32)) {
-    expiryWords.unshift(value % 32)
-  }
-  return makeSignedBolt11Fixture({
-    hrp: `lnbcrt${BigInt(amountSats) * 10n}n`,
-    createdAt: Math.floor(Date.now() / 1_000),
-    fields: [
-      bolt11PaymentHashField(paymentHash),
-      bolt11PaymentSecretField(),
-      bolt11PlainDescriptionField("Offline router funding"),
-      { tag: "x", words: expiryWords },
-    ],
-  })
-}
-
 async function rehearseRouter(
   browser: Browser,
   continuation: "buyer" | "cold-merchant" | "partial-cold-merchant" = "buyer",
@@ -615,40 +732,23 @@ async function rehearseRouter(
   let identity: string | undefined
   let grossFundingSats: number | undefined
   let walletInitializations = 0
-  const issued = new Map<string, HermeticLnurlIssuedInvoice>()
-  const native = createHermeticSparkNative({
-    encodeAddress: (identityPublicKey) =>
-      encodeSparkAddress({ identityPublicKey, network: "REGTEST" }),
-    nativeInvoiceCodec: {
-      parseTransferId: (value) => UUID.parse(value),
-      encodeSparkAddress,
-      decodeSparkAddress,
-      isValidSparkAddress,
-      getNetworkFromSparkAddress,
-    },
-    async deriveIdentity(mnemonic, accountNumber) {
+  const {
+    native,
+    transport: nativeTransport,
+    issued,
+    lnurl,
+  } = createHermeticRouterProvider({
+    recipients: [merchantAddress, supplierAddress],
+    nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
+    selectedIdentity: () => identity,
+    onWalletInitialization() {
       walletInitializations += 1
-      // The runner uses the pinned SDK's local derivation primitive. Do not
-      // import browser app modules (or initialize a provider) during discovery.
-      const signer = new DefaultSparkSigner()
-      const seed = await signer.mnemonicToSeed(mnemonic)
-      try {
-        return await signer.createSparkWalletFromSeed(seed, accountNumber)
-      } finally {
-        seed.fill(0)
-      }
     },
-    issueFundingInvoice: async (request) => {
+    onFundingInvoice(request) {
       identity = request.identityPublicKey
       grossFundingSats = request.amountSats
-      // Callback issuance may precede the funding account's creation. Preserve
-      // legitimate provider records; registration itself never pays an invoice.
-      for (const invoice of issued.values())
-        native.control.forIdentity(identity).registerPayout(invoice)
-      return fundingInvoice(request.amountSats, request.expirySeconds)
     },
   })
-  const nativeTransport = createHermeticSparkTransport(native)
   let fundingObservations = 0
   let observationOpenAttempts = 0
   let observationOpenSuccesses = 0
@@ -682,26 +782,6 @@ async function rehearseRouter(
     if (!identity) throw new Error("Isolated checkout wallet was not prepared.")
     return native.control.forIdentity(identity)
   }
-  const lnurl = createHermeticLnurlFixture({
-    recipients: [merchantAddress, supplierAddress].map((lud16) => ({
-      lud16,
-    })),
-    nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
-    // Preparation reserves one sat per commerce leg. A zero final fee proves
-    // the exact two-sat unused reserve is carried into the native treasury leg.
-    feeSats: 0,
-    verification: {
-      isInvoiceSettled: (paymentRequest) =>
-        identity !== undefined &&
-        control().snapshot().outgoingPaymentCount ===
-          control().outgoingInvoices().length &&
-        control().outgoingInvoices().includes(paymentRequest),
-    },
-    onInvoiceIssued: async (invoice) => {
-      issued.set(invoice.paymentRequest, invoice)
-      if (identity !== undefined) control().registerPayout(invoice)
-    },
-  })
   let stage: RouterSmokePhase = "isolated setup"
   let bodyCompleted = false
   const setStage = (next: RouterSmokePhase) => {
@@ -907,11 +987,11 @@ async function rehearseRouter(
     setStage("buyer catalog product visibility")
     const product = page.getByRole("listitem").filter({ hasText: productTitle })
     await expect(product).toBeVisible({ timeout: 30_000 })
-    const catalogPrice = product.getByTitle("₿1,113 (estimated conversion)", {
+    const catalogPrice = product.getByTitle("₿1,023 (estimated conversion)", {
       exact: true,
     })
     await expect(catalogPrice).toBeVisible()
-    await expect(catalogPrice).toHaveText("Estimated conversion: ₿1,113")
+    await expect(catalogPrice).toHaveText("Estimated conversion: ₿1,023")
     await expect(product.getByText(/Estimated total/)).toBeVisible()
     if (buyerMode === "guest") {
       setStage("guest product detail navigation")
@@ -1011,13 +1091,13 @@ async function rehearseRouter(
       checkoutPrice.getByText("Estimated order total", { exact: true })
     ).toBeVisible()
     await expect(
-      checkoutPrice.getByText("₿1,113", { exact: true })
+      checkoutPrice.getByText("₿1,023", { exact: true })
     ).toBeVisible()
     await expect(
       checkoutPrice.getByText("₿1,000", { exact: true })
     ).toBeVisible()
     const approvalNote = page.getByText(
-      "Your fixed total of 1,113 sats includes a best-effort 111 sats Conduit fee estimate and payment reserves; Conduit is paid last, including unused authorized reserves, with no increase to your total.",
+      "Your fixed total of 1,023 sats includes a best-effort 21 sats Conduit fee estimate and payment reserves; Conduit is paid last, including unused authorized reserves, with no increase to your total.",
       { exact: true }
     )
     await expect(approvalNote).toBeVisible()
@@ -1070,8 +1150,10 @@ async function rehearseRouter(
             await page
               .getByText(/Settled router preparation could not be confirmed/)
               .isVisible()
-          )
+          ) {
+            setStage("buyer order preparation rejected")
             throw new Error("Router preparation failed")
+          }
           return page
             .getByRole("heading", { name: "Orders", exact: true })
             .isVisible()
@@ -1079,7 +1161,14 @@ async function rehearseRouter(
         { timeout: 45_000 }
       )
       .toBe(true)
-    expect(grossFundingSats).toBe(1_113)
+    setStage("buyer prepared funding matches the frozen total")
+    expect(grossFundingSats).toBe(1_023)
+    expect(
+      await hasCurrentConduitFeePolicy(
+        page,
+        new URL(page.url()).searchParams.get("order")
+      )
+    ).toBe(true)
     expect(control().snapshot()).toEqual({
       fundingInvoiceCount: 1,
       sendInvocationCount: 0,
@@ -1138,7 +1227,7 @@ async function rehearseRouter(
     await expect(
       paymentPlan.getByText("Order total", { exact: true })
     ).toBeVisible()
-    await expect(paymentPlan.getByText("₿1,113", { exact: true })).toBeVisible()
+    await expect(paymentPlan.getByText("₿1,023", { exact: true })).toBeVisible()
     await expect(
       paymentPlan.getByText("Item subtotal", { exact: true })
     ).toBeVisible()
@@ -1436,12 +1525,15 @@ async function rehearseRouter(
         await expect(recoveredOrder).toBeVisible()
         expect(coldPage.url() === selectedUrl).toBe(true)
       }
-      setStage("cold Merchant respects the frozen shopper handoff")
+      setStage("cold Merchant restores exact saved funding deadlines")
       expect(await frozenRouterTiming(coldPage, orderId)).toEqual(frozenTiming)
+      setStage("cold Merchant respects the frozen shopper handoff")
       const beforeHandoffTime = await coldPage.evaluate(() => Date.now())
       expect(beforeHandoffTime).toBeGreaterThanOrEqual(coldObservationStartedAt)
-      if (!scopedRecovery)
+      if (!scopedRecovery) {
+        setStage("cold Merchant remains before the original shopper cutoff")
         expect(beforeHandoffTime).toBeLessThan(frozenTiming!.takeoverAt)
+      }
       setStage("cold Merchant requests query-only native authentication")
       await expect
         .poll(() => observationOpenAttempts - observationAttemptsBeforeCold, {
@@ -1563,7 +1655,7 @@ async function rehearseRouter(
             )
             .toMatchObject({
               creditVerified: true,
-              creditedSats: 1_113,
+              creditedSats: 1_023,
               paidCommerceCount: 0,
               nativePrincipalSats: null,
             })
@@ -1691,7 +1783,7 @@ async function rehearseRouter(
         fundingInvoiceCount: 1,
         sendInvocationCount: 2,
         outgoingPaymentCount: 2,
-        debitedSats: 1_113,
+        debitedSats: 1_023,
       })
       setStage(
         "cold Merchant observes the exact pending native treasury transfer"
@@ -1703,12 +1795,12 @@ async function rehearseRouter(
           {
             status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
             transferDirection: "OUTGOING",
-            totalValue: 113,
+            totalValue: 23,
             receiverIdentityPublicKey: treasuryIdentityPublicKey,
             receivers: [
               {
                 identityPublicKey: treasuryIdentityPublicKey,
-                amountSats: 113,
+                amountSats: 23,
                 status: "TRANSFER_RECEIVER_STATUS_INITIATED",
               },
             ],
@@ -1783,11 +1875,11 @@ async function rehearseRouter(
         commerceVerified: true,
         feePending: false,
         recipientUnverified: false,
-        creditedSats: 1_113,
+        creditedSats: 1_023,
         paidCommerceCount: 2,
         commerceDebitSats: 1_000,
-        nativePrincipalSats: 113,
-        nativeDebitSats: 113,
+        nativePrincipalSats: 23,
+        nativeDebitSats: 23,
         nativeFeeSats: 0,
       }
       setStage("cold Merchant retains independently verified credit")
@@ -1873,19 +1965,19 @@ async function rehearseRouter(
           {
             status: "TRANSFER_STATUS_COMPLETED",
             transferDirection: "OUTGOING",
-            totalValue: 113,
+            totalValue: 23,
             receiverIdentityPublicKey: treasuryIdentityPublicKey,
             receivers: [
               {
                 identityPublicKey: treasuryIdentityPublicKey,
-                amountSats: 113,
+                amountSats: 23,
                 status: "TRANSFER_RECEIVER_STATUS_COMPLETED",
               },
             ],
           },
         ],
       })
-      expect(control().snapshot().debitedSats).toBe(1_113)
+      expect(control().snapshot().debitedSats).toBe(1_023)
       setStage(
         "Merchant sends only the verified supplier's private notification"
       )
@@ -1924,9 +2016,11 @@ async function rehearseRouter(
       setStage("cold Merchant retained reload does not replay payments")
       expect(control().snapshot()).toEqual(completed)
       expect(completed.sendInvocationCount).toBe(2)
+      setStage("cold Merchant reload preserves recorded accounting")
       expect(
         await merchantRecordedCompletion(coldPage, merchant.pubkey, orderId)
       ).toEqual(completedReceipt)
+      setStage("cold Merchant reload preserves the native send count")
       expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
       if (scopedRecovery) {
         await assertScopedPaymentsComplete()
@@ -1938,7 +2032,9 @@ async function rehearseRouter(
           "retired"
         )
       }
+      setStage("cold Merchant retains one supplier notification")
       expect(await supplierNoticeCount()).toBe(1)
+      setStage("private router keeps public zap history empty")
       expect(
         (await readTestRelayEvents({ kinds: [9_734, 9_735] })).length
       ).toBe(0)
@@ -2042,7 +2138,7 @@ async function rehearseRouter(
         fundingInvoiceCount: 1,
         sendInvocationCount: 2,
         outgoingPaymentCount: 2,
-        debitedSats: 1_113,
+        debitedSats: 1_023,
       })
       setStage("sender-committed exact provider transfer matches")
       const committedNative = control().nativeSnapshot()
@@ -2053,12 +2149,12 @@ async function rehearseRouter(
           {
             status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
             transferDirection: "OUTGOING",
-            totalValue: 113,
+            totalValue: 23,
             receiverIdentityPublicKey: treasuryIdentityPublicKey,
             receivers: [
               {
                 identityPublicKey: treasuryIdentityPublicKey,
-                amountSats: 113,
+                amountSats: 23,
                 status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
               },
             ],
@@ -2145,7 +2241,7 @@ async function rehearseRouter(
       fundingInvoiceCount: 1,
       sendInvocationCount: 2,
       outgoingPaymentCount: 2,
-      debitedSats: 1_113,
+      debitedSats: 1_023,
     })
     expect(control().nativeSnapshot()).toMatchObject({
       nativeSendInvocationCount: 1,
@@ -2154,12 +2250,12 @@ async function rehearseRouter(
         {
           status: "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK",
           transferDirection: "OUTGOING",
-          totalValue: 113,
+          totalValue: 23,
           receiverIdentityPublicKey: treasuryIdentityPublicKey,
           receivers: [
             {
               identityPublicKey: treasuryIdentityPublicKey,
-              amountSats: 113,
+              amountSats: 23,
               status: "TRANSFER_RECEIVER_STATUS_INITIATED",
             },
           ],
@@ -2281,7 +2377,7 @@ async function rehearseRouter(
       fundingInvoiceCount: 1,
       sendInvocationCount: 2,
       outgoingPaymentCount: 2,
-      debitedSats: 1_113,
+      debitedSats: 1_023,
     })
     const expectedPayouts = [
       { lud16: merchantAddress, amountSats: 751, feeSats: 0 },
@@ -2294,12 +2390,12 @@ async function rehearseRouter(
         {
           status: "TRANSFER_STATUS_COMPLETED",
           transferDirection: "OUTGOING",
-          totalValue: 113,
+          totalValue: 23,
           receiverIdentityPublicKey: treasuryIdentityPublicKey,
           receivers: [
             {
               identityPublicKey: treasuryIdentityPublicKey,
-              amountSats: 113,
+              amountSats: 23,
               status: "TRANSFER_RECEIVER_STATUS_COMPLETED",
             },
           ],
@@ -2320,7 +2416,7 @@ async function rehearseRouter(
       }
       await expect(receipt).toBeVisible()
       await expect(
-        receipt.getByText("1,113 sats", { exact: true })
+        receipt.getByText("1,023 sats", { exact: true })
       ).toHaveCount(3)
       await expect(
         receipt.getByText("All checkout payments verified.", { exact: true })
@@ -2335,10 +2431,10 @@ async function rehearseRouter(
       })
       await expect(nativeReceipt).toHaveCount(0)
       for (const [label, amount] of [
-        ["Funding credited", "1,113 sats"],
-        ["Recorded payouts", "1,113 sats"],
+        ["Funding credited", "1,023 sats"],
+        ["Recorded payouts", "1,023 sats"],
         ["Recorded outgoing fees", "0 sats"],
-        ["Recorded total debited", "1,113 sats"],
+        ["Recorded total debited", "1,023 sats"],
         ["Unspent from recorded checkout credit", "0 sats"],
       ] as const) {
         await expect(
@@ -2520,6 +2616,1224 @@ async function rehearseRouter(
 test("native router funding automatically reconciles commerce and the exact native treasury payment without duplicate payouts @commerce", async ({
   browser,
 }) => rehearseRouter(browser))
+
+async function rehearseEventRouter(
+  browser: Browser,
+  continuation:
+    "buyer" | "organizer" | "organizer-merchant" | "organizer-replacement",
+  buyerMode: "signed-in" | "guest" = "signed-in",
+  buyerFunding: "qr" | "nwc" = "qr"
+) {
+  test.setTimeout(300_000)
+  const sharedClock = openPlaywrightRouterClock()
+  sharedClock.reset()
+  const organizer = createRuntimeSignerIdentity()
+  const merchant = createRuntimeSignerIdentity()
+  const supplier = createRuntimeSignerIdentity()
+  const buyer = createRuntimeSignerIdentity()
+  const merchantAddress = "event-merchant@wallet.conduit.market"
+  const supplierAddress = "event-supplier@wallet.conduit.market"
+  const organizerAddress = "event-organizer@wallet.conduit.market"
+  const nwcFunding: {
+    proof: {
+      identityPublicKey: string
+      amountSats: number
+      paymentRequest: string
+      preimage: string
+    } | null
+    authorized: boolean
+  } = { proof: null, authorized: false }
+  const provider = createHermeticRouterProvider({
+    recipients: [merchantAddress, supplierAddress, organizerAddress],
+    nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
+    ...(buyerFunding === "nwc"
+      ? {
+          onFundingInvoiceIssued(issued: NonNullable<typeof nwcFunding.proof>) {
+            if (nwcFunding.proof)
+              throw new Error("Expected one native funding invoice.")
+            nwcFunding.proof = issued
+          },
+        }
+      : {}),
+  })
+  const nwc =
+    buyerFunding === "nwc"
+      ? createDeterministicNwcWallet({
+          relayUrl: TEST_RELAY_URL,
+          network: "regtest",
+          nowSeconds: () => Math.floor(sharedClock.nowMs() / 1_000),
+          methods: ["get_info", "get_balance", "pay_invoice"],
+          authorizeExternalInvoice(request) {
+            const proof = nwcFunding.proof
+            if (
+              !proof ||
+              nwcFunding.authorized ||
+              request.invoice !== proof.paymentRequest ||
+              (request.amount !== undefined &&
+                request.amount !== proof.amountSats * 1_000) ||
+              !validateLightningInvoiceForPayment({
+                invoice: request.invoice,
+                expectedAmountMsats: proof.amountSats * 1_000,
+                expectedNetwork: "regtest",
+                nowSeconds: Math.floor(sharedClock.nowMs() / 1_000),
+              }).ok ||
+              createHash("sha256")
+                .update(proof.preimage, "hex")
+                .digest("hex") !==
+                decodeLightningInvoicePaymentHash(request.invoice)
+            )
+              return null
+            const funding = provider.native.control.forIdentity(
+              proof.identityPublicKey
+            )
+            if (funding.snapshot().fundingInvoiceCount !== 1) return null
+            funding.completeFunding()
+            nwcFunding.authorized = true
+            return { preimage: proof.preimage, fees_paid: 0 }
+          },
+        })
+      : null
+  const closeProviders = async () => {
+    const closed = await Promise.allSettled([
+      provider.transport.close(),
+      nwc?.close() ?? Promise.resolve(),
+    ])
+    const failedClose = closed.find((result) => result.status === "rejected")
+    if (failedClose?.status === "rejected") throw failedClose.reason
+  }
+  const contexts: BrowserContext[] = []
+  const teardowns: Array<() => void> = []
+  let recordedNetworkFailure = false
+  const recordNetworkFailure = (
+    diagnostic: HermeticNetworkFailureDiagnostic
+  ) => {
+    if (recordedNetworkFailure) return
+    recordedNetworkFailure = true
+    test.info().annotations.push(
+      {
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.operation,
+        description: diagnostic.operation,
+      },
+      {
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.source,
+        description: diagnostic.source,
+      },
+      {
+        type: HERMETIC_NETWORK_DIAGNOSTIC_ANNOTATIONS.category,
+        description: diagnostic.category,
+      }
+    )
+  }
+  const recorder = createRouterSmokeRecorder(test.info().annotations)
+  let stage: RouterSmokePhase = "event setup"
+  let bodyCompleted = false
+  let heldOrganizerSend = false
+  let releaseOrganizerSend: () => void = () => undefined
+  const organizerSendResponse = new Promise<void>((resolve) => {
+    releaseOrganizerSend = resolve
+  })
+  const setStage = (next: RouterSmokePhase) => {
+    stage = next
+    recorder.phase(next)
+  }
+  setStage("event setup")
+  const contextFor = async (
+    identity: RuntimeSignerIdentity,
+    appUrl: string
+  ) => {
+    const context = await browser.newContext({
+      serviceWorkers: "block",
+      ...(appUrl === marketUrl && buyerMode === "guest"
+        ? { viewport: { width: 390, height: 844 } }
+        : {}),
+    })
+    contexts.push(context)
+    await context.grantPermissions(["local-network-access"], { origin: appUrl })
+    const network = await installHermeticCommerceNetwork(context, {
+      ...networkOptions,
+      lnurl: provider.lnurl.respond,
+      onLocalFailure: recordNetworkFailure,
+    })
+    teardowns.push(network)
+    await installHermeticSparkTransport(
+      context,
+      {
+        async request(command) {
+          const result = await provider.transport.request(command)
+          if (
+            (continuation === "organizer-merchant" ||
+              continuation === "organizer-replacement") &&
+            identity === organizer &&
+            !heldOrganizerSend &&
+            command.type === "wallet.call" &&
+            command.method === "payLightningInvoice"
+          ) {
+            // Delay only the external provider response. Its payment really
+            // happened; neither actor receives manufactured application proof.
+            heldOrganizerSend = true
+            await organizerSendResponse
+          }
+          return result
+        },
+      },
+      { appUrl }
+    )
+    const page = await context.newPage()
+    if (appUrl !== marketUrl || buyerMode !== "guest")
+      await installRealTestSigner(page, identity, TEST_RELAY_URL)
+    return { page, context }
+  }
+  try {
+    await seedIdentity(organizer, "Isolated Event Organizer", organizerAddress)
+    await seedIdentity(merchant, "Isolated Event Merchant", merchantAddress)
+    await seedIdentity(supplier, "Isolated Event Supplier", supplierAddress)
+    await seedIdentity(buyer, "Isolated Event Buyer")
+    const createdAt = Math.floor(sharedClock.nowMs() / 1_000) - 10
+    const calendar = signRuntimeTestEvent(organizer, {
+      ...buildEventMarketCalendarDraft({
+        kind: 31923,
+        dTag: "native-event-calendar",
+        title: "Isolated Event Fair",
+        start: createdAt + 7_200,
+        end: createdAt + 10_800,
+        locations: ["Public event hall"],
+      }),
+      created_at: createdAt,
+    })
+    const calendarCoordinate = `31923:${organizer.pubkey}:native-event-calendar`
+    const marketCoordinate = `30409:${organizer.pubkey}:native-event-market`
+    const market = signRuntimeTestEvent(organizer, {
+      kind: 30409,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["d", "native-event-market"],
+        ["a", calendarCoordinate],
+        ["event_market", "2", "open"],
+        ["merchant", merchant.pubkey, "organizer_handoff", "Pickup desk"],
+        // Existing organizer terms stay valid; only this new checkout's
+        // independently versioned Conduit policy loses its minimum.
+        ["conduit_event_fee", "1", "active", "250", "10", organizerAddress],
+      ],
+    })
+    const grant = signRuntimeTestEvent(organizer, {
+      kind: 3841,
+      created_at: createdAt,
+      content: "",
+      tags: [
+        ["openmarkets", "event-market-auth", "1"],
+        ["a", marketCoordinate],
+        ["p", merchant.pubkey],
+        ["state", "active"],
+        ["seq", "0"],
+        ["alt", "Open Markets event merchant authorization"],
+      ],
+    })
+    const productTitle = "Isolated Event Mug"
+    const productCoordinate = `30402:${merchant.pubkey}:native-event-product`
+    const listing = signRuntimeTestEvent(merchant, {
+      kind: 30402,
+      created_at: createdAt,
+      content: "Offline event checkout rehearsal.",
+      tags: [
+        ["d", "native-event-product"],
+        ["title", productTitle],
+        ["summary", "Offline event checkout rehearsal."],
+        ["price", "1000", "SATS"],
+        ["type", "simple", "physical"],
+        ["stock", "3"],
+        ["image", imageUrl],
+        ["t", "commerce"],
+        ["t", "hermetic"],
+        ["conduit_supplier_allocation", "1"],
+        ["zap", merchant.pubkey, merchantProfileRelay, "3"],
+        ["zap", supplier.pubkey, supplierProfileRelay, "1"],
+      ],
+    })
+    await publishTestRelayEvents([calendar, market, grant, listing])
+    const eventPath = `/events/${nip19.naddrEncode({ kind: 30409, pubkey: organizer.pubkey, identifier: "native-event-market", relays: [TEST_RELAY_URL] })}`
+    const { page: merchantPage } = await contextFor(merchant, merchantUrl)
+    const organizerSession = await contextFor(organizer, merchantUrl)
+    let organizerPage = organizerSession.page
+    setStage("event occurrence assignment")
+    await merchantPage.goto(
+      `${merchantUrl}/products?eventMarket=${eventPath.split("/").at(-1)}`
+    )
+    const assignments = merchantPage.getByRole("region", {
+      name: "Occurrence assignments",
+      exact: true,
+    })
+    setStage("event occurrence date selection")
+    await assignments
+      .getByRole("combobox", { name: "Event date", exact: true })
+      .click()
+    await merchantPage
+      .getByRole("option", { name: /Isolated Event Fair/ })
+      .click()
+    setStage("event occurrence product selection")
+    await assignments
+      .getByRole("combobox", { name: "Product or variation", exact: true })
+      .click()
+    await merchantPage
+      .getByRole("option", { name: productTitle, exact: true })
+      .click()
+    setStage("event occurrence allocation submission")
+    await assignments
+      .getByRole("textbox", { name: "Pickup allocation", exact: true })
+      .fill("2")
+    await assignments
+      .getByRole("button", { name: "Add to event", exact: true })
+      .click()
+    await expect
+      .poll(
+        async () =>
+          (
+            await readTestRelayEvents({
+              kinds: [30410],
+              authors: [merchant.pubkey],
+            })
+          ).length
+      )
+      .toBe(1)
+    setStage("event organizer device selection")
+    await organizerPage.goto(`${merchantUrl}${eventPath}`)
+    await organizerPage
+      .getByRole("button", {
+        name: "Set up pickup here",
+        exact: true,
+      })
+      .click()
+    await expect(
+      organizerPage.getByText(
+        "Pickup is set up here. Copy the setup code and share it with the seller.",
+        { exact: true }
+      )
+    ).toBeVisible({ timeout: 30_000 })
+    await organizerPage
+      .locator("summary")
+      .filter({ hasText: "Technical pickup details" })
+      .click()
+    const writerId = await organizerPage
+      .getByRole("textbox", { name: "Pickup setup code", exact: true })
+      .inputValue()
+    setStage("event reserved stock Merchant page")
+    await merchantPage.goto(`${merchantUrl}${eventPath}`)
+    setStage("event reserved stock product selector")
+    await merchantPage
+      .getByRole("combobox", {
+        name: "Stock for organizer pickup",
+        exact: true,
+      })
+      .click()
+    setStage("event reserved stock product selection")
+    await merchantPage
+      .getByRole("option", { name: /native-event-product/ })
+      .click()
+    setStage("event reserved stock quantity entry")
+    await merchantPage
+      .getByRole("textbox", { name: "Quantity to reserve", exact: true })
+      .fill("2")
+    setStage("event reserved stock pickup setup entry")
+    await merchantPage
+      .getByRole("textbox", {
+        name: "Pickup setup code from organizer",
+        exact: true,
+      })
+      .fill(writerId)
+    setStage("event reserved stock grant submission")
+    await merchantPage
+      .getByRole("button", {
+        name: "Reserve stock for organizer",
+        exact: true,
+      })
+      .click()
+    setStage("event reserved stock grant saved notice")
+    await expect(
+      merchantPage.getByText(/exact stock reservation is saved/)
+    ).toBeVisible()
+    setStage("event reserved stock Organizer refresh")
+    await organizerPage
+      .getByRole("button", {
+        name: "Check for stock updates",
+        exact: true,
+      })
+      .click()
+    setStage("event reserved stock Organizer acceptance")
+    const stockAcceptanceDeadline = Date.now() + 15_000
+    const stockActionTimeout = () => {
+      const remaining = stockAcceptanceDeadline - Date.now()
+      if (remaining <= 0)
+        throw new Error("Isolated stock acceptance deadline elapsed.")
+      return remaining
+    }
+    const acceptReservedStock = organizerPage.getByRole("button", {
+      name: "Accept reserved stock",
+      exact: true,
+    })
+    // A first discovery page may only inspect retained wrappers. Follow the
+    // advertised next page, not another fresh read or reservation, within the
+    // original acceptance action's total deadline. Empty/unavailable is not
+    // permission to accept, and a disabled wrong-device grant stays blocked.
+    for (let page = 1; page < 32; page++) {
+      let nextAction = "waiting"
+      await expect
+        .poll(
+          async () => {
+            nextAction = await organizerPage
+              .getByRole("button", {
+                name: /^(Accept reserved stock|Check more stock history)$/,
+              })
+              .evaluateAll((buttons) => {
+                const available = buttons.filter(
+                  (button) =>
+                    !button.matches(":disabled") &&
+                    button.getAttribute("aria-disabled") !== "true" &&
+                    button.getClientRects().length > 0 &&
+                    getComputedStyle(button).visibility !== "hidden"
+                )
+                if (
+                  available.some(
+                    (button) =>
+                      button.textContent?.trim() === "Accept reserved stock"
+                  )
+                )
+                  return "accept"
+                return available.length ? "more" : "waiting"
+              })
+            return nextAction !== "waiting"
+          },
+          { timeout: stockActionTimeout() }
+        )
+        .toBe(true)
+      if (nextAction === "accept") break
+      if (
+        await organizerPage
+          .getByText(
+            "Private stock messages are unavailable. Saved stock remains unchanged.",
+            { exact: true }
+          )
+          .isVisible()
+      )
+        throw new Error("Isolated stock discovery is unavailable.")
+      await organizerPage
+        .getByRole("button", {
+          name: "Check more stock history",
+          exact: true,
+        })
+        .click({ timeout: stockActionTimeout() })
+    }
+    await acceptReservedStock.click({ timeout: stockActionTimeout() })
+    setStage("event reserved stock ready notice")
+    await expect(
+      organizerPage.getByText(/Reserved stock is ready for pickup here/)
+    ).toBeVisible()
+    setStage("event buyer checkout")
+    const { page: buyerPage, context: buyerContext } = await contextFor(
+      buyer,
+      marketUrl
+    )
+    if (nwc) {
+      await nwc.start()
+      await buyerPage.goto(`${marketUrl}/wallet`)
+      await nwc.configureMerchantConnection(async (connectionString) => {
+        await openWalletSetup(buyerPage, "Connect wallet")
+        await buyerPage
+          .getByLabel("Wallet label", { exact: true })
+          .fill("Event Buyer NWC")
+        await buyerPage
+          .getByLabel("NWC connection string", { exact: true })
+          .fill(connectionString)
+        await buyerPage
+          .getByRole("button", { name: "Connect", exact: true })
+          .click()
+      })
+      await expect(
+        buyerPage.getByRole("article", {
+          name: "Event Buyer NWC wallet",
+          exact: true,
+        })
+      ).toBeVisible()
+    }
+    await buyerPage.goto(`${marketUrl}${eventPath}`)
+    setStage("event buyer catalog admission")
+    const product = buyerPage
+      .getByRole("listitem")
+      .filter({ hasText: productTitle })
+    setStage("buyer catalog product visibility")
+    await expect(product).toBeVisible({ timeout: 30_000 })
+    setStage("buyer add product to cart")
+    await expect(
+      product.getByRole("button", {
+        name: `Add ${productTitle} to cart`,
+        exact: true,
+      })
+    ).toBeEnabled({ timeout: 30_000 })
+    await product
+      .getByRole("button", { name: `Add ${productTitle} to cart`, exact: true })
+      .click()
+    setStage("event buyer cart checkout")
+    await buyerPage
+      .getByRole("region", { name: "Cart inventory", exact: true })
+      .getByRole("link", { name: "Continue to checkout", exact: true })
+      .click()
+    setStage("event buyer price presentation")
+    if (buyerMode === "guest") {
+      setStage("event guest contact-free fields")
+      await buyerPage
+        .getByRole("checkbox", { name: "Use a name only for handoff" })
+        .check()
+      await buyerPage
+        .getByRole("textbox", { name: "Name or pseudonym for handoff" })
+        .fill("Event visitor")
+      let receiptDownloads = 0
+      buyerPage.on("download", () => {
+        receiptDownloads += 1
+      })
+      await buyerPage
+        .getByRole("button", { name: "Show private receipt", exact: true })
+        .click()
+      await expect(
+        buyerPage.getByRole("region", { name: "Private pickup receipt" })
+      ).toBeVisible()
+      expect(receiptDownloads).toBe(0)
+      await buyerPage
+        .getByRole("checkbox", { name: "I saved my private receipt" })
+        .check()
+      await expect(buyerPage.locator("#ship-email")).toHaveCount(0)
+      await expect(buyerPage.locator("#ship-phone")).toHaveCount(0)
+      await expect(buyerPage.getByLabel(/Street address/i)).toHaveCount(0)
+      setStage("event mobile checkout layout")
+      expect(
+        await buyerPage.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth + 1
+        )
+      ).toBe(true)
+    }
+    const checkoutPrice = buyerPage.getByRole("region", {
+      name: "Order price",
+      exact: true,
+    })
+    setStage("event organizer fee disclosure")
+    await expect(
+      checkoutPrice.getByText("Event organizer fee", { exact: true })
+    ).toBeVisible()
+    await expect(checkoutPrice.getByText("₿25", { exact: true })).toBeVisible()
+    await expect(
+      checkoutPrice.getByText("₿1,048", { exact: true })
+    ).toBeVisible()
+    setStage("event buyer plan preparation")
+    await buyerPage
+      .getByRole("button", { name: "Continue to payment", exact: true })
+      .click()
+    await expect(buyerPage).toHaveURL(/\/orders(?:\?|$)/, { timeout: 45_000 })
+    const orderId = new URL(buyerPage.url()).searchParams.get("order")
+    if (!orderId) throw new Error("Expected event order selection.")
+    const timing = await frozenRouterTiming(buyerPage, orderId)
+    if (!timing) throw new Error("Expected frozen event deadlines.")
+    expect(await hasCurrentConduitFeePolicy(buyerPage, orderId)).toBe(true)
+    expect(await hasActiveEncryptedRecovery(buyerPage, orderId)).toBe(true)
+    expect(provider.control().snapshot()).toMatchObject({
+      fundingInvoiceCount: 1,
+      sendInvocationCount: 0,
+    })
+    setStage("event buyer funding authorization")
+    if (nwc) {
+      provider.control().setNativeCompletion(false)
+      provider.control().setNativeSenderCommitment(true)
+      await buyerPage.getByLabel("Pay with", { exact: true }).click()
+      await buyerPage.getByRole("option", { name: /Event Buyer NWC/ }).click()
+      const pay = buyerPage.getByRole("button", {
+        name: "Pay for order",
+        exact: true,
+      })
+      await expect(pay).toBeEnabled()
+      await pay.click()
+    } else {
+      await buyerPage
+        .getByRole("button", { name: "Show QR code", exact: true })
+        .click()
+      await expect(
+        buyerPage.getByText(/Pay once, then return here to check progress/)
+      ).toBeVisible()
+      if (buyerMode === "guest")
+        expect(
+          await buyerPage.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth + 1
+          )
+        ).toBe(true)
+      provider.control().setNativeCompletion(false)
+      provider.control().setNativeSenderCommitment(true)
+    }
+    if (continuation === "buyer") {
+      setStage("event buyer automatic payment routing")
+      if (!nwc) provider.control().completeFunding()
+      setStage("event buyer payment completion visible")
+      await expect(
+        buyerPage.getByText("Payment recorded", { exact: true })
+      ).toBeVisible({ timeout: 60_000 })
+      setStage("event buyer exact Lightning payments verified")
+      expect(provider.control().snapshot()).toEqual({
+        fundingInvoiceCount: 1,
+        sendInvocationCount: 3,
+        outgoingPaymentCount: 3,
+        debitedSats: 1_048,
+      })
+      setStage("event buyer exact native payment verified")
+      expect(
+        provider.control().nativeSnapshot().nativeSendInvocationCount
+      ).toBe(1)
+      if (nwc) {
+        setStage("event buyer connected funding paid once")
+        await expect(
+          buyerPage.getByText(/active buyer session stopped/)
+        ).toHaveCount(0)
+        expect(nwcFunding.authorized).toBe(true)
+        expect(nwc.snapshot().counters).toMatchObject({
+          payInvoice: 1,
+          makeInvoice: 0,
+        })
+        expect(nwc.snapshot().invoiceState).toBe("none")
+      }
+    }
+    // Closing never creates another payment. Organizer reconciles the same
+    // exact attempts, whether Buyer already sent them or disappeared before credit.
+    teardowns[2]!()
+    await buyerContext.close()
+    if (continuation !== "buyer") provider.control().completeFunding()
+    setStage("event organizer observes the buyer cutoff")
+    await organizerPage.clock.install({ time: new Date(sharedClock.nowMs()) })
+    await organizerPage
+      .getByRole("button", { name: "Refresh saved event orders", exact: true })
+      .click()
+    await organizerPage
+      .getByRole("button", {
+        name: new RegExp(`Open saved order ${orderId.slice(-8)}$`),
+      })
+      .click()
+    setStage("event exact pickup claim and handout")
+    const handoutItems = organizerPage.getByRole("region", {
+      name: "Items to hand out",
+      exact: true,
+    })
+    await expect(
+      handoutItems.getByText(productTitle, { exact: true })
+    ).toBeVisible()
+    await expect(handoutItems.getByText("Qty 1", { exact: true })).toBeVisible()
+    setStage("event organizer observes the buyer cutoff")
+    const continueOrder = organizerPage.getByRole("button", {
+      name: "Continue this order",
+      exact: true,
+    })
+    await expect(continueOrder).toBeDisabled()
+    const advanceMs = timing.takeoverAt - sharedClock.nowMs() + 1_000
+    expect(advanceMs).toBeGreaterThan(0)
+    sharedClock.advanceBy(advanceMs)
+    await organizerPage.clock.fastForward(advanceMs)
+    await merchantPage.clock.install({ time: new Date(sharedClock.nowMs()) })
+    // The boundary timer must enable the already-open card; no reload or click.
+    await expect(continueOrder).toBeEnabled()
+    setStage("event organizer automatic payment routing")
+    await continueOrder.click()
+    if (
+      continuation === "organizer-merchant" ||
+      continuation === "organizer-replacement"
+    ) {
+      setStage(
+        "buyer disappears after commerce and before the remaining payment"
+      )
+      await expect
+        .poll(() => provider.control().snapshot().outgoingPaymentCount, {
+          timeout: 30_000,
+        })
+        .toBe(1)
+      expect(heldOrganizerSend).toBe(true)
+      setStage("partial execution stop requests buyer pause")
+      await organizerPage
+        .getByRole("button", { name: "Pause this order", exact: true })
+        .click()
+      releaseOrganizerSend()
+      setStage("partial execution stop waits for buyer pause")
+      await expect(
+        organizerPage.getByRole("button", {
+          name: "Pause this order",
+          exact: true,
+        })
+      ).toHaveCount(0, { timeout: 30_000 })
+      await expect(
+        organizerPage.getByRole("button", {
+          name: "Continue this order",
+          exact: true,
+        })
+      ).toBeEnabled()
+      setStage("partial execution stop preserves provider and wallet counters")
+      expect(provider.control().snapshot().sendInvocationCount).toBe(1)
+      if (continuation === "organizer-merchant") {
+        await organizerPage.close()
+        // A fresh Merchant session has neither Organizer stock-writer state nor
+        // Buyer storage. It must authenticate the original order and exact
+        // Organizer progress, independently check that send, then finish once.
+        setStage("cold Merchant discovers the signed recovery")
+        const coldMerchant = await contextFor(merchant, merchantUrl)
+        await coldMerchant.page.clock.install({
+          time: new Date(sharedClock.nowMs()),
+        })
+        await coldMerchant.page.goto(
+          `${merchantUrl}/orders?order=${orderId}&recovery=paused`
+        )
+        const recovery = coldMerchant.page.getByRole("region", {
+          name: "Order payment",
+          exact: true,
+        })
+        await expect(recovery).toBeVisible({ timeout: 45_000 })
+        setStage("cold Merchant retains the exact admitted recovery witness")
+        await expect
+          .poll(() => merchantRecoveryAdmission(coldMerchant.page, orderId), {
+            timeout: 30_000,
+          })
+          .toMatchObject({ uniqueWitness: true, sourcesValidated: true })
+        setStage(
+          "cold Merchant automatically continues after handoff without a prompt"
+        )
+        await recovery
+          .getByRole("button", { name: "Continue this order", exact: true })
+          .click()
+        // Keep the original 60-second bound and final exact count. Separate
+        // no continuation from a remaining-leg stop without exposing payments.
+        const continuationDeadline = Date.now() + 60_000
+        try {
+          setStage("cold Merchant resumes the next Lightning payout")
+          await expect
+            .poll(() => provider.control().snapshot().sendInvocationCount, {
+              timeout: Math.max(1, continuationDeadline - Date.now()),
+            })
+            .toBeGreaterThanOrEqual(2)
+          setStage("cold Merchant completes remaining Lightning payouts")
+          await expect
+            .poll(() => provider.control().snapshot().sendInvocationCount, {
+              timeout: Math.max(1, continuationDeadline - Date.now()),
+            })
+            .toBe(3)
+        } catch (cause) {
+          const failedPayoutStage = stage
+          // Inspect only fixed product copy after the original assertion has
+          // failed. No raw DOM, notices, provider values or error text escapes.
+          for (const [fixedNotice, diagnosticStage] of [
+            [
+              "We need the original order before payment processing can continue. Check again when your order history is available.",
+              "cold Merchant continuation has original order authority",
+            ],
+            [
+              "The payment check could not finish. Your saved progress is kept and checks will retry. Do not request another payment.",
+              "cold Merchant continuation has available payment checks",
+            ],
+            [
+              "The recipient for a saved payment could not be verified. Review the saved payment details before continuing. Do not request another payment.",
+              "cold Merchant continuation has verified recipients",
+            ],
+            [
+              "The saved payout invoice has expired. A replacement is allowed only after the exact previous attempt is closed and its funds are confirmed returned and spendable. Do not request another buyer payment.",
+              "cold Merchant continuation is not awaiting invoice renewal",
+            ],
+            [
+              "Payment processing needs a closer look. Check the saved payment before taking another action.",
+              "cold Merchant continuation needs no payment attention",
+            ],
+            [
+              "Automatic payments are paused. A payment already sent may still finish.",
+              "cold Merchant continuation is not paused",
+            ],
+            [
+              "The coordination fee needs attention. This order remains paid and fulfillment can continue.",
+              "cold Merchant remaining fees need no attention",
+            ],
+            [
+              "Coordination fee processing is paused. This order remains paid.",
+              "cold Merchant remaining fee processing is not paused",
+            ],
+          ] as const) {
+            setStage(diagnosticStage)
+            expect(
+              await recovery.getByText(fixedNotice, { exact: true }).count()
+            ).toBe(0)
+          }
+          setStage(
+            "cold Merchant provider completed the second Lightning payout"
+          )
+          expect(
+            provider.control().snapshot().outgoingPaymentCount
+          ).toBeGreaterThanOrEqual(2)
+          setStage(
+            "cold Merchant saved independently verified commerce payments"
+          )
+          const recorded = await merchantRecordedCompletion(
+            coldMerchant.page,
+            merchant.pubkey,
+            orderId
+          )
+          expect(recorded?.commerceVerified).toBe(true)
+          expect(recorded?.paidCommerceCount).toBeGreaterThanOrEqual(2)
+          setStage("cold Merchant next unpaid recipient is organizer")
+          const remaining = await merchantRemainingPayoutEvidence(
+            coldMerchant.page,
+            orderId
+          )
+          expect(remaining?.nextUnpaidIsOrganizer).toBe(true)
+          setStage("cold Merchant prepared the remaining organizer payout")
+          expect(remaining?.nextUnpaidHasIntent).toBe(true)
+          setStage("cold Merchant staged exact current progress")
+          expect(remaining?.exactProgressStaged).toBe(true)
+          setStage(
+            "cold Merchant exact current progress has a self acknowledgement"
+          )
+          expect(remaining?.exactProgressSelfAccepted).toBe(true)
+          setStage("cold Merchant fresh discovery matches prepared progress")
+          expect(remaining?.freshMatchesPrepared).toBe(true)
+          setStage(
+            "cold Merchant fresh discovery can select the prepared payout"
+          )
+          expect(remaining?.freshSelectionReady).toBe(true)
+          setStage(failedPayoutStage)
+          throw cause
+        }
+        setStage("cold Merchant submits the final native treasury transfer")
+        await expect
+          .poll(
+            () => provider.control().nativeSnapshot().nativeSendInvocationCount,
+            { timeout: 30_000 }
+          )
+          .toBe(1)
+        setStage(
+          "cold Merchant completes payment while retaining checkout recovery"
+        )
+        await expect(
+          recovery.getByText(
+            "Payment complete. The checkout wallet and recovery remain saved with this order.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 60_000 })
+        expect(provider.control().snapshot().sendInvocationCount).toBe(3)
+        expect(
+          provider.control().nativeSnapshot().nativeSendInvocationCount
+        ).toBe(1)
+        teardowns.at(-1)!()
+        await coldMerchant.context.close()
+
+        // Restore the original designated stock device. Merchant financial
+        // completion must be observable without granting it physical handout.
+        setStage("event organizer recovery page reopening")
+        organizerPage = await organizerSession.context.newPage()
+        await installRealTestSigner(organizerPage, organizer, TEST_RELAY_URL)
+        await organizerPage.clock.install({
+          time: new Date(sharedClock.nowMs()),
+        })
+        await organizerPage.goto(`${merchantUrl}${eventPath}`)
+      } else {
+        // Registration is not authority. Only the complete positive transfer
+        // from the quiesced source may activate this independent fresh device.
+        setStage("event replacement device registration")
+        const replacement = await contextFor(organizer, merchantUrl)
+        await replacement.page.clock.install({
+          time: new Date(sharedClock.nowMs()),
+        })
+        await replacement.page.goto(`${merchantUrl}${eventPath}`)
+        await replacement.page
+          .locator("summary")
+          .filter({ hasText: "Move pickup to another device (advanced)" })
+          .click()
+        await replacement.page
+          .getByRole("button", {
+            name: "Prepare replacement device",
+            exact: true,
+          })
+          .click()
+        await expect(
+          replacement.page.getByText(
+            "Replacement device is prepared. Copy its ID to the original device; no stock or payment authority has moved yet.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 30_000 })
+        await replacement.page
+          .locator("summary")
+          .filter({ hasText: "Technical pickup details" })
+          .click()
+        const targetId = await replacement.page
+          .getByRole("textbox", {
+            name: "Replacement device handover ID",
+            exact: true,
+          })
+          .inputValue()
+        setStage("event source device handover")
+        await organizerPage
+          .locator("summary")
+          .filter({ hasText: "Move pickup to another device (advanced)" })
+          .click()
+        await organizerPage
+          .getByRole("textbox", { name: "Replacement device ID", exact: true })
+          .fill(targetId)
+        await organizerPage
+          .getByRole("checkbox", {
+            name: "I understand this stops stock sales and pickup on this device",
+            exact: true,
+          })
+          .check()
+        await organizerPage
+          .getByRole("button", {
+            name: "Freeze this device and send handover",
+            exact: true,
+          })
+          .click()
+        setStage("event retired device cannot continue")
+        await expect(
+          organizerPage.getByText(
+            "Pickup has moved from this browser. Continue on the replacement; do not hand out orders here.",
+            { exact: true }
+          )
+        ).toBeVisible()
+        await expect(
+          organizerPage.getByRole("button", {
+            name: "Continue this order",
+            exact: true,
+          })
+        ).toHaveCount(0)
+        expect(provider.control().snapshot().sendInvocationCount).toBe(1)
+        // Retirement precedes external signing/publication. Its visible fence
+        // is not a relay ACK and cannot promise fresh target discovery yet.
+        setStage("event source device handover")
+        await expect(
+          organizerPage.getByText(
+            "The exact complete handover was sent privately to your account. Verify and restore it on the prepared replacement device.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 45_000 })
+        setStage("event replacement transfer discovery")
+        await replacement.page
+          .getByRole("button", {
+            name: "Check for stock updates",
+            exact: true,
+          })
+          .click()
+        await replacement.page
+          .locator("summary")
+          .filter({ hasText: "Recover saved stock history (advanced)" })
+          .click()
+        const restoreHandover = replacement.page.getByRole("button", {
+          name: "Verify and restore complete handover",
+          exact: true,
+        })
+        // The existing reader first processes retained history, then advertises
+        // bounded continuation. Follow those pages, not an implicit fresh read.
+        const historyCheck = replacement.page.getByRole("button", {
+          name: /^(?:Check for stock updates|Check more stock history)$/,
+        })
+        const moreHistory = replacement.page.getByRole("button", {
+          name: "Check more stock history",
+          exact: true,
+        })
+        for (let page = 0; page < 32; page++) {
+          await expect(historyCheck).toBeEnabled({ timeout: 30_000 })
+          if (await restoreHandover.isVisible()) break
+          if (!(await moreHistory.isVisible())) break
+          await moreHistory.click()
+        }
+        await expect(restoreHandover).toBeVisible({ timeout: 30_000 })
+        setStage("event replacement transfer activation")
+        await restoreHandover.click()
+        setStage("event replacement writer projection")
+        await expect(
+          replacement.page.getByRole("textbox", {
+            name: "Pickup setup code",
+            exact: true,
+          })
+        ).toHaveValue(writerId, { timeout: 30_000 })
+        organizerPage = replacement.page
+      }
+      setStage("event organizer saved orders refresh")
+      await organizerPage
+        .getByRole("button", {
+          name: "Refresh saved event orders",
+          exact: true,
+        })
+        .click()
+      setStage("event organizer saved order selection")
+      await organizerPage
+        .getByRole("button", {
+          name: new RegExp(`Open saved order ${orderId.slice(-8)}$`),
+        })
+        .click()
+      setStage("event organizer restored continuation")
+      await organizerPage
+        .getByRole("button", { name: "Continue this order", exact: true })
+        .click()
+    }
+    setStage("event organizer payment completion observation")
+    await expect
+      .poll(
+        async () => {
+          if (
+            await organizerPage
+              .getByText(/Payment routing is complete/)
+              .isVisible()
+          )
+            return true
+          if (
+            await organizerPage
+              .getByText("Needs attention", { exact: true })
+              .isVisible()
+          ) {
+            if (
+              await organizerPage
+                .getByText(
+                  "Reserve this complete organizer order before routing.",
+                  { exact: true }
+                )
+                .isVisible()
+            )
+              setStage("event organizer stock authority rejected")
+            else if (
+              await organizerPage
+                .getByText(
+                  "Exact organizer checkout recovery requires reconciliation.",
+                  { exact: true }
+                )
+                .isVisible()
+            )
+              setStage("event organizer recovery authority rejected")
+            else if (
+              await organizerPage
+                .getByText("Organizer checkout destination is unavailable.", {
+                  exact: true,
+                })
+                .isVisible()
+            )
+              setStage("event organizer destination rejected")
+            else if (provider.control().snapshot().sendInvocationCount === 0)
+              setStage("event organizer routing stopped before sends")
+            else if (provider.control().snapshot().outgoingPaymentCount < 3)
+              setStage("event organizer routing stopped during commerce")
+            else if (
+              provider.control().nativeSnapshot().nativeSendInvocationCount ===
+              0
+            )
+              setStage("event organizer native submission pending")
+            else setStage("event organizer native verification pending")
+            throw new Error("Organizer routing requires attention.")
+          }
+          return false
+        },
+        { timeout: 60_000 }
+      )
+      .toBe(true)
+    await expect(
+      organizerPage.getByText("Ready for pickup", { exact: true })
+    ).toBeVisible()
+    expect(provider.control().snapshot()).toEqual({
+      fundingInvoiceCount: 1,
+      sendInvocationCount: 3,
+      outgoingPaymentCount: 3,
+      debitedSats: 1_048,
+    })
+    expect(provider.control().nativeSnapshot()).toMatchObject({
+      nativeSendInvocationCount: 1,
+      nativePaymentCount: 1,
+      transfers: [
+        {
+          status: "TRANSFER_STATUS_SENDER_KEY_TWEAKED",
+          receiverIdentityPublicKey: treasuryIdentityPublicKey,
+          totalValue: 24,
+          receivers: [
+            {
+              amountSats: 24,
+              status: "TRANSFER_RECEIVER_STATUS_CLAIM_PENDING",
+            },
+          ],
+        },
+      ],
+    })
+    const payoutFacts = provider
+      .control()
+      .outgoingInvoices()
+      .map((invoice) => {
+        const issued = provider.issued.get(invoice)
+        return (
+          issued && {
+            lud16: issued.lud16,
+            amountSats: issued.amountSats,
+            feeSats: issued.feeSats,
+          }
+        )
+      })
+    expect(payoutFacts).toEqual([
+      { lud16: merchantAddress, amountSats: 751, feeSats: 0 },
+      { lud16: supplierAddress, amountSats: 249, feeSats: 0 },
+      { lud16: organizerAddress, amountSats: 24, feeSats: 0 },
+    ])
+    setStage("event exact pickup claim and handout")
+    const claimCode = formatEventMarketPickupClaimCode(
+      getFutureMarketClaimRef({
+        orderId,
+        merchantPubkey: merchant.pubkey,
+        organizerPubkey: organizer.pubkey,
+        marketCoordinate,
+      })
+    )
+    await organizerPage
+      .getByRole("textbox", { name: "Buyer's pickup code", exact: true })
+      .fill(claimCode)
+    await organizerPage
+      .getByRole("button", {
+        name: "Confirm code and hand out once",
+        exact: true,
+      })
+      .click()
+    await expect(
+      organizerPage.getByText(/Handout recorded/).first()
+    ).toBeVisible()
+    await expect(
+      organizerPage.getByRole("button", {
+        name: "Confirm code and hand out once",
+        exact: true,
+      })
+    ).toHaveCount(0)
+    await organizerPage
+      .getByRole("button", {
+        name: "Stop new sales and close reserved stock",
+        exact: true,
+      })
+      .click()
+    await expect(
+      organizerPage.getByText(/New sales are stopped for this pool/)
+    ).toBeVisible()
+    setStage("event Merchant once-only stock reconciliation")
+    const stockHistoryCheck = merchantPage.getByRole("button", {
+      name: /^(?:Check for stock updates|Check more stock history)$/,
+    })
+    const moreStockHistory = merchantPage.getByRole("button", {
+      name: "Check more stock history",
+      exact: true,
+    })
+    await stockHistoryCheck.click()
+    // Retained acceptance may precede relay handout and closing history. Finish
+    // the advertised pages before the first import, not after a partial import.
+    for (let page = 0; page < 32; page++) {
+      await expect(stockHistoryCheck).toBeEnabled({ timeout: 30_000 })
+      if (!(await moreStockHistory.isVisible())) break
+      await moreStockHistory.click()
+    }
+    await expect(stockHistoryCheck).toBeEnabled({ timeout: 30_000 })
+    await expect(moreStockHistory).toBeHidden()
+    await expect(
+      merchantPage.getByText(
+        "The bounded message check finished. Saved stock remains authoritative; older history may still exist elsewhere.",
+        { exact: true }
+      )
+    ).toBeVisible()
+    await merchantPage
+      .getByRole("button", {
+        name: "Reconcile accepted order stock",
+        exact: true,
+      })
+      .click()
+    await expect(
+      merchantPage.getByText(
+        /exact accepted order and handout are reconciled once/
+      )
+    ).toBeVisible()
+    await merchantPage
+      .getByRole("button", {
+        name: "Reconcile accepted order stock",
+        exact: true,
+      })
+      .click()
+    await expect(merchantPage.getByText(/already reconciled/)).toBeVisible()
+    await merchantPage
+      .getByRole("button", {
+        name: "Review closed stock and release unused quantity",
+        exact: true,
+      })
+      .click()
+    await expect(
+      merchantPage.getByText(/complete closing history is reconciled/)
+    ).toBeVisible()
+    const databasePath = viteFileModuleUrl(
+      fileURLToPath(
+        new URL("../packages/core/src/db/index.ts", import.meta.url)
+      )
+    )
+    expect(
+      await merchantPage.evaluate(
+        async ({ databasePath, productCoordinate, orderId }) => {
+          const { db } = await import(/* @vite-ignore */ databasePath)
+          const product =
+            await db.merchantInventoryProducts.get(productCoordinate)
+          const accepted = await db.merchantInventoryAcceptedOrders.get(orderId)
+          return {
+            stock: product?.stock,
+            accepted: !!accepted?.organizerImport,
+          }
+        },
+        { databasePath, productCoordinate, orderId }
+      )
+    ).toEqual({ stock: 2, accepted: true })
+    expect(provider.control().snapshot().sendInvocationCount).toBe(3)
+    expect(provider.control().nativeSnapshot().nativeSendInvocationCount).toBe(
+      1
+    )
+    expect((await readTestRelayEvents({ kinds: [9734, 9735] })).length).toBe(0)
+    if (nwc)
+      expect(nwc.snapshot().counters).toMatchObject({
+        payInvoice: 1,
+        makeInvoice: 0,
+      })
+    bodyCompleted = true
+  } catch {
+    recorder.failed()
+    throw new Error(`Isolated Event router smoke failed during ${stage}.`)
+  } finally {
+    releaseOrganizerSend()
+    recorder.teardown(bodyCompleted)
+    for (const teardown of teardowns) teardown()
+    await Promise.allSettled(
+      contexts.map(async (context) => {
+        await context.setOffline(true).catch(() => undefined)
+        await context.unrouteAll({ behavior: "wait" }).catch(() => undefined)
+        await context.close()
+      })
+    )
+    sharedClock.reset()
+    try {
+      await closeProviders()
+    } finally {
+      nwcFunding.proof = null
+      for (const identity of [organizer, merchant, supplier, buyer])
+        disposeRuntimeSignerIdentity(identity)
+      recorder.complete()
+    }
+  }
+}
+
+test("native router Event Market checkout hands funded routing to the organizer and reconciles one physical handout @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "organizer"))
+
+test("native router Event Market Buyer completes all payments before organizer pickup without replaying any transfer @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "buyer"))
+
+test("native router Event Market Buyer funds once through its connected NWC wallet and completes all payments before organizer pickup @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "buyer", "signed-in", "nwc"))
+
+test("native router Event Market Merchant finishes an interrupted Organizer payout and returns exact progress for one handout @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "organizer-merchant"))
+
+test("native router Event Market mobile guest pays one external invoice and the Organizer finishes pickup without login or contact fields @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "buyer", "guest"))
+
+test("native router Event Market replacement device resumes a complete transferred journal and exact partial payment without a second handout @commerce", async ({
+  browser,
+}) => rehearseEventRouter(browser, "organizer-replacement"))
 
 test("native router records sender-committed treasury payment while receiver claim remains pending and recovery stays saved @commerce", async ({
   browser,

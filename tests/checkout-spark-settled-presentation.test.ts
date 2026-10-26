@@ -138,11 +138,12 @@ describe("settled router buyer presentation", () => {
     expect(routerSession).toContain("orderId: vm.orderId")
     expect(routerSession).toContain("view: currentViewRef.current")
     expect(routerSession).not.toContain("isBuyerOrderPaid")
-    expect(ordersRoute).toContain(
-      "checkoutSparkSettlement: buyerSettlements.get(orderId)"
+    expect(ordersRoute).toMatch(
+      /const settlement = entry.lifecycle\s*\? buyerSettlements.get\(orderId\)\s*: undefined/
     )
-    expect(ordersRoute).toContain(
-      "checkoutSparkSettlement: buyerSettlements.get(selected.orderId)"
+    expect(ordersRoute).toContain("checkoutSparkSettlement: settlement")
+    expect(ordersRoute).toMatch(
+      /checkoutSparkSettlement: selected.lifecycle\s*\? buyerSettlements.get\(selected.orderId\)\s*: undefined/
     )
   })
 })

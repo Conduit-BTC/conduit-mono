@@ -98,6 +98,7 @@ describe("Playwright smoke area validation", () => {
     for (const step of steps) {
       expect(step).toContain("matrix.job.area == 'commerce'")
       expect(step).toContain("playwright.router.config.ts")
+      expect(step).toContain("PLAYWRIGHT_ROUTER_NATIVE_PROFILE: ordinary")
     }
     expect(steps[0]).toContain("--manifest-output")
     expect(steps[0]).toContain("playwright-router-smoke-manifest.json")
@@ -120,7 +121,9 @@ describe("Playwright smoke area validation", () => {
     expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_RESULT_FILE"')
     expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_PROGRESS_FILE"')
     expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_MANIFEST"')
-    expect(ciWorkflow).toContain("needs: [smoke-changes, e2e-smoke-shard]")
+    expect(ciWorkflow).toContain(
+      "needs: [smoke-changes, e2e-smoke-shard, e2e-event-router]"
+    )
   })
 
   it("requires an exact project-aware multiset across smoke shards", () => {

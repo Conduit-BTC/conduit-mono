@@ -70,7 +70,8 @@ for (const [name, store, schema, row] of [
         const upgraded = new ConduitDB(databaseName, dependencies)
         try {
           await upgraded.open()
-          expect(upgraded.verno).toBe(27)
+          expect(upgraded.verno).toBe(31)
+          expect(upgraded.backendDB().version).toBe(310)
           expect(
             await upgraded
               .table(store)
@@ -90,6 +91,9 @@ for (const [name, store, schema, row] of [
               "commerceInboxRanges",
               "commerceInboxDeliveries",
               "commerceInboxDeletions",
+              "eventMarketOrganizerStockPools",
+              "eventMarketOrganizerStockEntries",
+              "eventMarketOrganizerStockWriters",
             ])
           )
           expect(
@@ -97,6 +101,9 @@ for (const [name, store, schema, row] of [
               (index) => index.name === "createdAt"
             )
           ).toBe(true)
+          expect(await upgraded.eventMarketOrganizerStockWriters.count()).toBe(
+            0
+          )
         } finally {
           await upgraded.delete()
         }

@@ -13,12 +13,63 @@ import {
   getFeeInclusiveListingCardPriceDisplay,
 } from "../apps/market/src/lib/checkout-coordination-pricing"
 import type { CartItem } from "../apps/market/src/lib/cart-model"
+import { groupCartPurchases } from "../apps/market/src/lib/cart-model"
+import { createEventMarketCheckoutFixture } from "./helpers/event-market-checkout-fixture"
 import { buildCheckoutPricingIntent } from "../apps/market/src/lib/checkout-payment"
 import { isCheckoutSparkSettledCart } from "../apps/market/src/lib/checkout-spark-settled-cart"
 
 const preference = { currency: "BITCOIN", bitcoinUnit: "sats" } as const
 
 describe("buyer coordination pricing", () => {
+  it("discloses a separately verified event fee without adding it to Conduit's percentage base", async () => {
+    const event = await createEventMarketCheckoutFixture({ price: 100_000 })
+    const estimate = getCheckoutCoordinationPriceEstimate({
+      itemSubtotalSats: 100_000,
+      shippingSubtotalSats: 0,
+      organizerFeeSats: 2_500,
+    })
+    expect(estimate).toMatchObject({
+      commerceTotalSats: 100_000,
+      organizerFeeSats: 2_500,
+      conduitFeeSats: 2_100,
+      networkAllowanceSats: 154,
+      coordinationFeeSats: 2_254,
+      totalSats: 104_754,
+    })
+    expect(getCartCoordinationEstimate([event.item], null)).toBeNull()
+    const group = groupCartPurchases([event.item])[0]!
+    expect(
+      getCartCoordinationEstimate(
+        [event.item],
+        null,
+        new Map([[group.id, 2_500]])
+      )
+    ).toEqual({
+      totalSats: 104_754,
+      coordinationFeeSats: 2_254,
+      organizerFeeSats: 2_500,
+      shippingPending: false,
+    })
+    expect(
+      getCheckoutCoordinationPriceEstimate({
+        itemSubtotalSats: 0,
+        shippingSubtotalSats: 0,
+        organizerFeeSats: 5,
+      })
+    ).toMatchObject({
+      commerceTotalSats: 0,
+      organizerFeeSats: 5,
+      conduitFeeSats: 111,
+      totalSats: 117,
+    })
+    expect(
+      getCheckoutCoordinationPriceEstimate({
+        itemSubtotalSats: 100,
+        shippingSubtotalSats: 0,
+        organizerFeeSats: -1,
+      })
+    ).toBeNull()
+  })
   it("rolls the minimum and network allowance into one fee without changing the base", () => {
     expect(
       calculateCheckoutSparkBuyerPrice({
@@ -122,7 +173,7 @@ describe("fee-inclusive listing estimates", () => {
         null,
         true
       )
-      expect(display.sats).toBe(1_113)
+      expect(display.sats).toBe(1_023)
       expect(display.feeEstimateIncluded).toBe(true)
       expect(product).toEqual({ price, currency, format: "digital" })
     }
@@ -154,7 +205,7 @@ describe("fee-inclusive listing estimates", () => {
         null,
         true
       )
-      expect(display.sats).toBe(1_113)
+      expect(display.sats).toBe(1_023)
       expect(display.feeEstimateIncluded).toBe(true)
       expect(product.sourcePrice).toBe(sourcePrice)
       expect(product.priceSats).toBe(1_000)
@@ -192,8 +243,8 @@ describe("fee-inclusive listing estimates", () => {
       null,
       true
     )
-    expect(display.sats).toBe(1_113)
-    expect(display.primary).toBe("~ 1,113 sats")
+    expect(display.sats).toBe(1_023)
+    expect(display.primary).toBe("~ 1,023 sats")
     expect(display.feeEstimateIncluded).toBe(true)
     expect(display.approximate).toBe(true)
     expect(product.price).toBe(1_000)
@@ -224,9 +275,9 @@ describe("fee-inclusive listing estimates", () => {
       true,
       { nowMs }
     )
-    expect(display.sats).toBe(1_113)
-    expect(display.primary).toBe("~ $1.11")
-    expect(display.secondary).toBe("1,113 sats")
+    expect(display.sats).toBe(1_023)
+    expect(display.primary).toBe("~ $1.02")
+    expect(display.secondary).toBe("1,023 sats")
     expect(display.feeEstimateIncluded).toBe(true)
   })
 
@@ -322,10 +373,10 @@ describe("fee-inclusive catalog labels", () => {
         true
       )
       expect(card.primary).toEqual({
-        text: "~ 1,113 sats",
-        fullText: "~ 1,113 sats",
+        text: "~ 1,023 sats",
+        fullText: "~ 1,023 sats",
       })
-      expect(card.sats).toBe(1_113)
+      expect(card.sats).toBe(1_023)
       expect(card.feeEstimateIncluded).toBe(true)
       expect(product.sourcePrice).toBe(sourcePrice)
       expect(product.price).toBe(1_000)
@@ -467,21 +518,21 @@ describe("combined cart estimates", () => {
       ])
     ).toBe(false)
   })
-  it("adds one minimum per compatible purchase and never changes cart line prices", () => {
+  it("rounds the fee once per compatible purchase and never changes cart line prices", () => {
     const first = Object.freeze(item())
     const second = Object.freeze(item("a", "other"))
     expect(getCartCoordinationEstimate([first, second], null)).toEqual({
-      totalSats: 2_114,
-      coordinationFeeSats: 114,
+      totalSats: 2_045,
+      coordinationFeeSats: 45,
       shippingPending: false,
     })
     expect(first.priceSats).toBe(1_000)
     expect(second.priceSats).toBe(1_000)
   })
-  it("adds each merchant's separate minimum instead of treating all carts as one order", () => {
+  it("rounds each merchant's separate fee instead of treating all carts as one order", () => {
     expect(getCartCoordinationEstimate([item("a"), item("b")], null)).toEqual({
-      totalSats: 2_226,
-      coordinationFeeSats: 226,
+      totalSats: 2_046,
+      coordinationFeeSats: 46,
       shippingPending: false,
     })
   })
@@ -504,8 +555,8 @@ describe("combined cart estimates", () => {
   it("adds fees only to the routed purchase in a mixed-merchant cart", () => {
     const unsupported = { ...item("b"), familyProductId: "family" }
     expect(getCartCoordinationEstimate([item(), unsupported], null)).toEqual({
-      totalSats: 2_113,
-      coordinationFeeSats: 113,
+      totalSats: 2_023,
+      coordinationFeeSats: 23,
       shippingPending: false,
     })
   })

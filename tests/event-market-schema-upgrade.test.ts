@@ -82,8 +82,8 @@ describe("Event Market schema lineage upgrades", () => {
       const warnings = spyOn(console, "warn").mockImplementation(() => {})
       try {
         await upgraded.open()
-        expect(upgraded.verno).toBe(27)
-        expect(upgraded.backendDB().version).toBe(270)
+        expect(upgraded.verno).toBe(31)
+        expect(upgraded.backendDB().version).toBe(310)
         expect(warnings).not.toHaveBeenCalled()
         for (const [table, rows] of retained) {
           expect(
@@ -115,10 +115,14 @@ describe("Event Market schema lineage upgrades", () => {
           "localProductShippingOutbox",
           "commerceInboxWrappers",
           "sparkRecoveryEvidence",
+          "eventMarketOrganizerStockPools",
+          "eventMarketOrganizerStockEntries",
+          "eventMarketOrganizerStockWriters",
         ])
           expect(
             upgraded.tables.some((candidate) => candidate.name === table)
           ).toBe(true)
+        expect(await upgraded.eventMarketOrganizerStockWriters.count()).toBe(0)
         const store = createEventMarketEvidenceStore(upgraded)
         const restored = await readEventMarketRoster(
           { reference: record.coordinate },

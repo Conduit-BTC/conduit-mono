@@ -15,6 +15,7 @@ import {
   __resetCommerceTestOverrides,
   __setCommerceTestOverrides,
   buildCheckoutSparkRecoveryRumor,
+  config,
   createCheckoutSparkRecoveryPayload,
   buildCheckoutSparkMerchantProgressRumor,
   createCheckoutSparkMerchantProgress,
@@ -53,6 +54,11 @@ import {
 import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const INBOXES = ["wss://ready.example.test", "wss://offline.example.test"]
 const NOW = 1_800_000_000_000
@@ -68,6 +74,25 @@ async function admitMerchantInbox(signer: NDKPrivateKeySigner) {
   })
   await declaration.sign(signer)
   await createInboxDeclarationFixtureEvidence(declaration, { prime: true })
+  // This degradation matrix models exactly two declared sources. Supply the
+  // real local-policy boundary and exclude unmodelled compatibility siblings.
+  let state = emptyAccountNetworkLocalState(declaration.pubkey, () => NOW)
+  for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+    if (INBOXES.includes(relayUrl)) continue
+    state = applyAccountNetworkRelayExclusion(state, {
+      relayUrl,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: {
+        eventId: declaration.id,
+        createdAt: declaration.created_at!,
+      },
+      committedAt: NOW,
+    })
+  }
+  __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository:
+      createInMemoryAccountNetworkLocalStateRepository([state]),
+  })
 }
 
 function fixtureOwner(

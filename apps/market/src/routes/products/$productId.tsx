@@ -1,11 +1,3 @@
-import {
-  EventFulfillmentChoice,
-  type EventFulfillmentSelection,
-} from "@conduit/ui"
-import {
-  hasEventShippingChoice,
-  readEventShippingProduct,
-} from "../../lib/event-fulfillment-choice"
 import { ChevronDown, SearchX, ShoppingCart, Store } from "lucide-react"
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
@@ -180,6 +172,7 @@ function ProductPage() {
       const productRead = await readEventMarketProduct({
         marketRead,
         productCoordinate: product!.id,
+        selectedOccurrenceCoordinate: marketRead.calendar.coordinate,
         authenticatedPubkey,
         signal,
       })
@@ -202,6 +195,7 @@ function ProductPage() {
     queryKey: [
       "product-event-market",
       eventMarketReference,
+      selectedOccurrence,
       selectedProduct?.id,
       session.relayScope,
       authenticatedPubkey,
@@ -215,6 +209,11 @@ function ProductPage() {
       const productRead = await readEventMarketProduct({
         marketRead,
         productCoordinate: selectedProduct!.id,
+        selectedOccurrenceCoordinate:
+          selectedOccurrence ??
+          (marketRead.schedule?.kind === "series"
+            ? undefined
+            : marketRead.calendar?.coordinate),
         authenticatedPubkey,
         signal,
       })
@@ -224,14 +223,16 @@ function ProductPage() {
       !!eventMarketReference && !!selectedProduct && session.relaySettingsReady,
     retry: false,
   })
-  const [eventFulfillmentChoice, setEventFulfillmentChoice] =
-    useState<EventFulfillmentSelection>("event_market_pickup")
   const eventMarketFulfillment = (() => {
     if (!eventMarketReference || !eventMarketQuery.data) return null
     try {
       return createEventMarketPickupSnapshot({
         ...eventMarketQuery.data,
-        selectedOccurrenceCoordinate: selectedOccurrence,
+        selectedOccurrenceCoordinate:
+          selectedOccurrence ??
+          (eventMarketQuery.data.marketRead.schedule?.kind === "series"
+            ? undefined
+            : eventMarketQuery.data.marketRead.calendar?.coordinate),
       })
     } catch {
       return null
@@ -314,36 +315,20 @@ function ProductPage() {
       : null
   const productCartCandidate =
     eventMarketReference && selectedProduct
-      ? eventFulfillmentChoice === "shipping" &&
-        hasEventShippingChoice(selectedProduct)
-        ? {
-            ...cartItemInputFromProductSelection(product!, selectedProduct, {
-              type: "shipping",
-            }),
-            eventMarketContext: eventMarketFulfillment
-              ? {
-                  marketCoordinate: eventMarketFulfillment.market.coordinate,
-                  calendarCoordinate:
-                    eventMarketFulfillment.calendar.coordinate,
-                }
-              : undefined,
-          }
-        : eventMarketFulfillment
-          ? cartItemInputFromProductSelection(
-              product!,
-              selectedProduct,
-              eventMarketFulfillment
-            )
-          : null
+      ? eventMarketFulfillment
+        ? cartItemInputFromProductSelection(
+            product!,
+            selectedProduct,
+            eventMarketFulfillment
+          )
+        : null
       : ordinaryProductCartCandidate
   const cartItem = productCartCandidate
     ? selectCartLine(cart.items, productCartCandidate)
     : undefined
   const productCartBlocked =
     (eventMarketReference
-      ? eventFulfillmentChoice === "shipping"
-        ? !selectedProduct || !hasEventShippingChoice(selectedProduct)
-        : eventMarketQuery.isFetching || !eventMarketFulfillment
+      ? eventMarketQuery.isFetching || !eventMarketFulfillment
       : productCartFulfillment.isChecking) || !productCartCandidate
   const productEventNaddr = eventMarketReference
   const productFulfillmentNotice = eventMarketReference
@@ -364,7 +349,6 @@ function ProductPage() {
     selectedProduct?.sourceEventId,
     eventMarketReference,
     selectedOccurrence,
-    eventFulfillmentChoice,
     quantity,
     session.relayScope,
     authGeneration,
@@ -553,25 +537,7 @@ function ProductPage() {
         : isAuthGenerationCurrent(authGeneration))
     try {
       let candidate = productCartCandidate
-      if (eventMarketReference && eventFulfillmentChoice === "shipping") {
-        if (!candidate.productEventId)
-          throw new Error(
-            "Current shipping terms could not be verified. Refresh the listing and try again."
-          )
-        const currentProduct = await readEventShippingProduct({
-          productId: selectedProduct.id,
-          merchantPubkey: selectedProduct.pubkey,
-          authenticatedPubkey,
-          expectedEventId: candidate.productEventId,
-          shouldContinue,
-        })
-        candidate = {
-          ...cartItemInputFromProductSelection(product, currentProduct, {
-            type: "shipping",
-          }),
-          eventMarketContext: candidate.eventMarketContext,
-        }
-      } else if (eventMarketReference) {
+      if (eventMarketReference) {
         const marketRead = await readEventMarketRoster({
           reference: eventMarketReference,
           authenticatedPubkey,
@@ -581,6 +547,11 @@ function ProductPage() {
         const productRead = await readEventMarketProduct({
           marketRead,
           productCoordinate: selectedProduct.id,
+          selectedOccurrenceCoordinate:
+            selectedOccurrence ??
+            (marketRead.schedule?.kind === "series"
+              ? undefined
+              : marketRead.calendar?.coordinate),
           authenticatedPubkey,
           shouldContinue,
         })
@@ -599,7 +570,11 @@ function ProductPage() {
         const fulfillment = createEventMarketPickupSnapshot({
           marketRead,
           productRead,
-          selectedOccurrenceCoordinate: selectedOccurrence,
+          selectedOccurrenceCoordinate:
+            selectedOccurrence ??
+            (marketRead.schedule?.kind === "series"
+              ? undefined
+              : marketRead.calendar?.coordinate),
         })
         const current = cartItemInputFromProductSelection(
           product,
@@ -621,9 +596,13 @@ function ProductPage() {
         candidate = current
       }
       if (!shouldContinue()) return
-      if (cartItem)
-        await cart.refreshAndIncrementItem(cartItem, candidate, quantity)
-      else await cart.addItem(candidate, quantity)
+      const added = cartItem
+        ? await cart.refreshAndIncrementItem(cartItem, candidate, quantity)
+        : await cart.addItem(candidate, quantity)
+      if (!added)
+        throw new Error(
+          "Selected quantity exceeds current availability. Review the item and try again."
+        )
       recordProductDetailAction("add_to_cart")
     } catch (cause) {
       if (shouldContinue()) {
@@ -981,11 +960,9 @@ function ProductPage() {
 
                 {eventMarketReference &&
                 selectedProduct?.format === "physical" ? (
-                  <EventFulfillmentChoice
-                    value={eventFulfillmentChoice}
-                    onChange={setEventFulfillmentChoice}
-                    shippingAvailable={hasEventShippingChoice(selectedProduct)}
-                  />
+                  <p className="text-sm text-[var(--text-secondary)]">
+                    Take it at the event
+                  </p>
                 ) : null}
                 <LivePresenceIndicator
                   count={productPresenceCount}
@@ -1015,9 +992,11 @@ function ProductPage() {
                     </div>
                   )}
                   <div className="mt-3 text-xs text-[var(--text-secondary)]">
-                    {priceDisplay?.feeEstimateIncluded
-                      ? "Estimated order total; shipping, if needed, is added at checkout. Combining items may lower the fee per item."
-                      : "Payment and shipping are finalized with the merchant during the order flow."}
+                    {eventMarketReference
+                      ? "Pickup at this event. Review the full total at checkout."
+                      : priceDisplay?.feeEstimateIncluded
+                        ? "Estimated order total; shipping, if needed, is added at checkout. Combining items may lower the fee per item."
+                        : "Payment and shipping are finalized with the merchant during the order flow."}
                   </div>
                 </div>
 

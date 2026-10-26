@@ -16,7 +16,7 @@ fixtures are retired; the corresponding user outcomes use current signed data.
 | AC-EM-07   | EV-EM-07 | Exact encrypted retries survive reload and do not duplicate release                         | `event-market-handoff`, `future-market-private-read-cancellation`, composed private handoff browser journey               | Interrupted live delivery and fresh-device recovery        |
 | AC-EM-08   | EV-EM-08 | Private receipt contents remain minimal; merchant retains payment authority                 | `event-market-handoff`, `event-market-order-evidence`, `event-market-e2e-privacy`                                         | Inspect organizer and buyer UI without collecting payloads |
 | AC-EM-09   | EV-EM-09 | Known revocation blocks release; authenticated acknowledgement supports merchant completion | `merchant-order-phase`, `merchant-order-action-view`, composed handoff browser journey                                    | Physical handout and completion                            |
-| AC-EM-10   | EV-EM-10 | Signed-in and guest contact pickup remain; immediate contact-free pickup is opt-in          | `buyer-checkout`, `event-contact-free`, `market-event-fulfillment`                                                        | Mobile guest receipt retention and recovery                |
+| AC-EM-10   | EV-EM-10 | Assignment pickup permits contact-free checkout; historical immediate pickup retains opt-in | `buyer-checkout`, `event-contact-free`, `market-event-fulfillment`                                                        | Mobile guest receipt retention and recovery                |
 | AC-EM-11   | EV-EM-11 | Host, merchant, buyer and organizer flows work together                                     | `e2e/event-market.playwright.ts` in both app areas                                                                        | Candidate preview with independent real accounts           |
 | AC-EM-12   | EV-EM-12 | Ordinary shipping, digital products and non-event collections still work                    | `buyer-checkout`, `cart-model`, `commerce-gateway`, `merchant-product-publishing`                                         | Ordinary nonzero purchase and wallet settlement            |
 | AC-EM-13   | EV-EM-13 | Finite recurrence and shipping/pickup choices retain exact selected date                    | `event-market-schedule`, `event-fulfillment-choice`, `future-event-market-timeline`, composed browser cases               | Timezone and device checks                                 |
@@ -69,14 +69,17 @@ roster and revoked grant before handing out the paid order; no exact approval
 relay reads occur. `future-market-merchandise` also rejects fabricated or
 mismatched approval evidence before reads, signing or persistence.
 
-Single-date commerce remains controlled by the signed market open/closed state.
-Series purchases require a current or future selected occurrence.
-`event-market-checkout-authorization` locks both rules at snapshot creation and
-submit; expiration of one series occurrence does not close other valid dates.
+Signed market open/closed state and occurrence expiry are separate gates.
+New assignment purchases require an unended concrete occurrence, including a
+single-date market; series also require verified selected-date membership.
+`event-market-checkout-authorization` and assignment admission cover snapshot
+creation and submit. One occurrence ending does not close the whole market or
+reinterpret historical accepted orders.
 
-Catalog discovery resolves the signed roster before querying kind `30402` by
-its bounded merchant author set and exact market tag. An empty roster sends no
-product query. Cached signed cards still appear before the network wait;
+Catalog discovery resolves the signed roster before querying kind `30410` by
+its bounded merchant author set and exact market/occurrence, then resolving the
+ordinary product coordinates. An empty roster sends no assignment query. Product
+discovery tags establish no assignment authority. Cached signed cards still appear before the network wait;
 candidate display adds no per-merchant grant reads or purchase authority.
 `event-market-roster` covers 48 and 256 newer unapproved listings ahead of an
 approved product, including partial relay coverage and saturated responses.
@@ -111,10 +114,154 @@ where available, with a serialized runtime queue as fallback. This coordinates
 the asynchronous decrypt/merge window with compaction across browser tabs;
 environments without Web Locks only have runtime-local serialization.
 
-Contact-free checkout checks the current date and merchant-signed opt-in before
-creating an order. Historical decoding checks the claimed creation-time terms;
+New assignment checkout permits contact-free pickup without a product opt-in
+until the selected occurrence ends. Historical pre-assignment immediate pickup
+retains its currently-occurring date and merchant-signed opt-in checks. Historical decoding checks the claimed creation-time terms;
 buyer-authored payload and rumor timestamps do not independently prove when a
 merchant observed the order. Receiver time cannot distinguish backdating from
 delayed delivery or another device's recovery. `event-contact-free` preserves
 receipt verification after the date has ended. Decoding and bearer receipt
 possession establish neither payment nor fulfillment authorization.
+
+## Occurrence writer integration evidence
+
+`merchant-inventory-product-write` composes actual signed acceptance, the existing
+`commitLocalProductWrite` owner and listing delivery adapter. It covers atomic
+ordinary edits, allocation floors, rollback, failed publication, repeated orders,
+subsequent acceptance and preservation of newer ordinary product metadata.
+`merchant-inventory-schema-upgrade` uses the exact main-v26, discovery-v26 and
+assignment-v25 histories, commits real stock/allocation/order records, upgrades,
+accepts concurrent repeated orders, rejects oversell, and reloads retained signed
+retry work without another debit or signature. The installed assignment-v25
+state is created with its frozen v25 writer before the current writer runs on
+the upgraded database. Structural union preservation in
+`event-market-schema-upgrade` remains a separate check.
+
+These are synthetic cryptographic/database integration tests. They do not prove
+external signer compatibility, independent-device reconciliation, live relay
+convergence, funded settlement or physical handout. Same-event rescheduling
+retains original order terms and updates unused allocation deadlines. Atomic
+rollover remains incomplete. Current organizer checkout, stock and recovery
+integration has separate coverage in the
+[router acceptance map](event-market-router-acceptance.md); historical organizer
+receipts are not a substitute for it.
+
+## Organizer stock handover foundation
+
+`event-market-stock-authority` checks the Conduit-private grant, consumption and
+closing grammar with real NIP-59/NIP-44 encryption. It separates structural
+parsing from authenticated envelope evidence. `event-market-organizer-stock-marker`
+checks the public assignment commitment, material forks and cold-recovery denial
+when private stock authority is unresolved. Unknown extensions do not erase the
+signed catalog record or become new financial authority.
+
+`merchant-inventory-organizer-hold` and `merchant-inventory-product-write` cover
+the shared stock owner: ordinary availability, seller pickup exclusion,
+concurrent sales, assignment removal, expiry/cancellation, tracking-mode edits,
+rollback and preservation of the entrusted quantity.
+
+`event-market-stock-journal` composes a saved Merchant reservation, its signed
+assignment successor and an explicitly designated organizer's local journal.
+It covers atomic acceptance/claim uniqueness, exact replay, closing races,
+chronology, input mutation, reload, external signing refusal, session changes
+and durable exact recipient/owner envelope retries. No test publishes to public
+relays or transfers funds. `event-market-stock-schema` preserves populated
+installed v25/v26/v26.1/v27/v28 histories through additive v29 and proves that
+normal cache clearing/pruning retains inventory and private journals.
+
+`event-market-stock-import` also exercises a second finite grant on the intact
+original organizer writer after Merchant reconciliation. Receiving the new grant
+requires the separately retained, exact Merchant-signed closed projection and
+the complete local closing prefix. The original journal and delivery evidence
+remain intact; this is neither a consumption reset nor cold read-only recovery.
+Missing or mismatched closure evidence must leave both pool installation and
+the previous frontier unchanged.
+
+`event-market-stock-handover-ui` exercises the same device-receive composition
+used by the stock panel when an installation aborts after its local attempt
+marker is saved. A retry keeps that marker and requires the same active v2
+device registration, its complete authenticated journal and an unchanged
+atomic installation frontier. A grant already recorded as installed cannot be
+reinstalled after journal loss. Missing, retired, legacy-ambiguous or changed
+authority, incomplete history and unrelated extra markers remain blocked.
+Grant authentication compares canonical event fields, not object-property order.
+
+The current extension composes authenticated Merchant import/closing,
+checkout routing and claims, plus complete cooperative fresh-device writer
+handover. The [router acceptance map](event-market-router-acceptance.md) identifies
+the matching shared integration suites and actual-screen browser journeys,
+including interrupted Organizer-to-Merchant continuation and replacement-device
+recovery. Ordinary suitability remains gated for an active or invalid stock
+commitment. These controlled tests do not establish live delivery, funded
+handout, external signer compatibility or physical-device acceptance. An
+unavailable original device without a complete positive handover still requires
+reconciliation; an empty inbox never grants a replacement writer.
+
+## Order continuity regression coverage
+
+`merchant-occurrence-regressions` composes signed products, actual checkout
+pricing, existing local product writes, reopened inventory and acceptance. It
+covers order source-currency consistency, original quotes after later listing
+price edits, prior stock decisions and shortfalls,
+pending pre-assignment orders, concurrent material product edits, retained
+variation-parent withdrawal evidence, and cold/warm assignment reads with
+missing superseded history and known-fork controls. Both ordinary product
+edits and existing order stock actions honor a retained postponement before
+any assignment-panel read. `merchant-order-publish`
+verifies immutable acceptance notification identity after interruption.
+
+The `@occurrence-orders` cases in `e2e/event-market.playwright.ts` run in the
+Chromium, mobile Chromium and mobile WebKit smoke projects. They exercise the
+direct assignment and order flow, prepaid first confirmation before/after a
+same-event reschedule, paid pickup and original receipt continuity after the old
+end, revised unused-allocation deadlines in both directions, publication retry
+after payment, selected-order resolution beyond the product-search cap, and
+reload of off-graph assigned events in Selling At without product association
+tags. The selected-order case holds the requested order while another saved
+conversation is available: no acceptance action may target that other order,
+and release commits exactly one acceptance for the requested order.
+Browser payment reports, merchant confirmations and signer/relay interactions
+are synthetic; these checks establish client behavior, not funded settlement.
+
+Saved inventory acceptance is bound to the original order identity and complete
+terms. Merchant display and fulfillment recheck that binding; another valid,
+same-ID payload cannot inherit acceptance or unlock zero-cost completion.
+Explicit merchant acceptance and payment confirmation retain the original quote
+after a later listing-price edit. The current signed listing remains the stock
+projection baseline, and concurrent material edits still reject the whole debit.
+The composed browser controls cover both the conflicting-order rejection and
+first confirmation at the original price after a published listing edit.
+
+The legacy stock-credit browser case interrupts notification signing before
+transport staging, then reloads and retries against the same saved acceptance.
+A reload during an in-flight private send retains its delivery claim until
+release or expiry; an immediate successful retry is not guaranteed during that
+lease. Tests must establish their interruption boundary without bypassing the
+shared delivery owner's claim or increasing assertion timeouts.
+The first-payment controls hold the recipient ACK to distinguish observed
+publication bytes from a completed confirmation, then wait for the completed
+confirmation before reload and inventory-publication retry.
+
+Ordinary acceptance must preserve the product editor's tracking-mode controls
+when there are no incompatible active assignments. Composed shared-writer tests
+cover both mode changes after acceptance and publication, with active-assignment
+rejection controls. Checkout evidence retains the complete supported signed
+authorization history; the shared encrypted transport-size limit bounds the
+whole message rather than imposing a smaller recovery-event count. The signed
+61-event ancestry control retains all 65 required evidence events.
+
+Acceptance privacy regression coverage verifies encrypted raw rows, original
+terms after reopening, conflicting identity/terms, concurrent exactly-once stock,
+account revocation, ciphertext tampering, and resumable legacy-record repair.
+Signed product duplicates are resolved by the NIP-01 frontier regardless of input
+order, including equal timestamps, sold-out/hidden revisions and unrelated or
+invalid events. The browser acceptance helper waits for the durable replay
+control, not a temporary publication notice; a synthetic signer interruption
+reproduces replacement of that notice while the acceptance remains committed.
+
+Organizer stock import coverage also inspects raw acceptance, imported-entry and
+checkpoint rows for private notes; it restores the same exact order on a fresh
+device with a new encryption key. Legacy repair retains immutable checkpoint
+rumor and envelope identities. Stock closing, whole-order manifests, concurrent
+import, handout provenance and publication retry run with the encrypted records.
+Signed organizer identity and terms commitments remain byte-compatible.

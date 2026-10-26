@@ -50,7 +50,7 @@ for (const choice of ["untouched", "manual", "profile"] as const) {
       const conversations = ["first", "second"].map((name) => {
         const orderId = `source-${name}`
         return {
-          id: orderId,
+          id: JSON.stringify([orderId, buyer.pubkey, merchant.pubkey]),
           orderId,
           buyerPubkey: buyer.pubkey,
           merchantPubkey: merchant.pubkey,

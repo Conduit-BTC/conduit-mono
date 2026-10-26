@@ -103,6 +103,18 @@ or deletion from independent partitions.
 
 ### Relay Read Authentication
 
+The optional Event Market organizer-stock extension uses the same unsigned
+rumor/seal/gift-wrap construction, not detached signed order rumors or a new
+public event kind. Its private kind-14 `conduit-event-stock` subject and
+`["conduit", "event-stock", "1"]` marker are machine-only, including malformed
+or unknown versions. The Merchant's existing signed assignment may commit the
+exact private grant rumor ID with the namespaced `conduit_stock_pool` tag.
+Private JSON is not authenticated without the verified envelope or that exact
+signed commitment. Neither relay delivery nor the commitment proves payment,
+handout or complete stock reconciliation. The bounded grant, journal, closing
+and cold-recovery rules are in `event-markets.md`; no guest signer, account-key
+sharing or service-custody authority is added.
+
 NIP-42 is used only for an explicitly protected relay operation. The first
 protected operation is the active principal reading their own `kind:1059` gift
 wraps with filters constrained to `#p` equal to the active account pubkey.
@@ -184,22 +196,69 @@ The exception is constrained as follows:
   restricted to those events. Its review link must target the Merchant
   deployment paired with the Market deployment that created it; production,
   preview, signet, and supported local environments must not cross-link.
-- For a version-3 or version-4 settled-allocation Spark router plan, a separate constrained
+- For a version-3, version-4 or version-5 settled-allocation Spark router plan, a separate constrained
   wrapping capability may seal the machine-only `checkout_spark_recovery`
   and `checkout_spark_recovery_progress` rumors for that same order and
-  merchant. The canonical payload, plan, recipient, sender, and preparation
+  merchant. Version-five organizer-handoff plans may additionally seal the
+  separately typed organizer recovery/progress package only for the organizer
+  frozen in the exact event binding and Merchant stock grant. This is not
+  permission to author stock records, generic messages or another order. The
+  canonical payload, plan, recipient role, sender, and preparation
   time must agree with the active guest identity before encryption or signing.
   The capability must reject legacy router plans, generic messages, direct
-  rumor signatures, other recipients, and new signing after the existing
+  rumor signatures, other recipients or roles, and new signing after the existing
   24-hour guest deadline. It reuses the guest key; it does not create another
   account, key registry, or signer lifetime.
-- Router recovery uses the existing merchant-only NIP-59/NIP-44 envelope and
+- Router recovery uses separate recipient-bound NIP-59/NIP-44 envelopes and
   the merchant's current signed `kind:10050` inbox declaration, never the
   compatibility order lane or a buyer self-copy. Persist the exact encrypted
   wrap before publication; require a recipient relay acknowledgement before
   exposing funding. Later progress must reference that acknowledged initial
   handoff and carry no wallet secret. Neither plaintext recovery nor the
   recovery rumor belongs in generic Messages, order history, or diagnostics.
+  An event organizer package requires its own signed inbox and exact durable
+  acknowledgement before funding; the Merchant envelope is never forwarded.
+  Machine-only commercial hashes and checkout identifiers do not disclose
+  contacts, shipping addresses or the full Merchant order, and establish no
+  payment or handout fact without independent verification.
+  The initial `checkout_spark_organizer_recovery` schema-four payload binds the
+  Merchant initial handoff, exact version-five plan, original signed sources,
+  this checkout wallet and opaque original-order identity/terms hashes.
+  Buyer-authored `checkout_spark_organizer_recovery_progress` schema five carries
+  the same plan/state, both initial handoff references and the paired Merchant
+  progress reference, without another wallet credential. Each exact Merchant/
+  organizer ciphertext pair is atomically retained before either publish;
+  both recipient acknowledgements precede use of the prepared payout state.
+  After takeover, `checkout_spark_organizer_execution` schema one is sealed by
+  the designated organizer, not falsely attributed to the Merchant. Its strict
+  kind-16 payload binds both initial handoffs, exact state, original order
+  hashes and the complete reserved-pool/writer/quantity manifest. Separate
+  Merchant and organizer-self wraps are atomically retained and acknowledged
+  before provider invocation. A retry uses those identical wraps. These
+  machine messages remain outside conversations, search and notifications;
+  neither an acknowledgement nor a saved paid label establishes settlement.
+  Merchant financial continuation of that same organizer-handoff checkout
+  retains its original self-progress wrap plus a separately Merchant-sealed
+  `checkout_spark_merchant_event_progress` schema-one companion addressed only
+  to the frozen organizer. The companion contains canonical payment state,
+  the original Merchant and derived Organizer initial-handoff IDs, and opaque
+  original-order hashes, never another wallet credential, full order or contact
+  data. Both exact ciphertexts are atomically retained before publication and
+  both recipient acknowledgements precede Merchant provider dispatch. Partial
+  delivery retries the identical wraps, not a new signature or payment intent.
+  Recovery authenticates the original author and merges only compatible
+  monotonic state before fresh exact provider/recipient verification. This
+  preserves all three financial actors without transferring stock-writer or
+  physical-handout authority. Ordinary historical progress bytes are unchanged.
+  A zero-commerce, zero-organizer-fee purchase creates no financial plan, wallet
+  or invoice. Its separate `event_market_free_purchase` packet contains only the
+  exact zero-price quote, signed event/source graph, original order hashes and
+  bound parties/claim references. A guest may seal only that one canonical
+  packet to its frozen authorized organizer within the existing same-order
+  guest lifetime. This is not permission to sign stock records, decrypt replies,
+  author arbitrary kind-16 messages or create a guest inbox. Physical release
+  still requires the designated stock writer, complete once-only reservation
+  and bound claim; packet receipt is not a paid-order shortcut.
 - Guest-key expiry ends new guest signing, not the merchant's recovery
   authority. Already encrypted recovery records and exact-wrap delivery retry
   state must not be pruned with the guest key. Merchant continuation still
@@ -236,10 +295,17 @@ The exception is constrained as follows:
   durable order history.
 - Merchant clients must treat `buyerIdentityKind: "guest_ephemeral"` as
   outbound-only and use the structured recovery channel required by the exact
-  checkout flow for invoices, fulfillment updates, and other follow-up. New
-  guest orders require both email and phone; shipping additionally requires its
-  address contract. Historical pickup orders with one contact method remain
-  readable but do not define the new-order requirement.
+  checkout flow for invoices, fulfillment updates, and other follow-up. Ordinary
+  new guest pickup orders require both email and phone; shipping additionally
+  requires its address contract. Eligible Event Market pickup may instead use
+  the contact-free receipt/claim path defined in `event-markets.md`, without a
+  separate Merchant opt-in or a guest reply inbox. Historical pickup orders
+  with one contact method remain readable but do not define the ordinary
+  new-order requirement.
+- Contact-free receipt presentation may use an on-screen code or readable
+  private export. The existing v1 receipt commitment and original JSON import
+  remain unchanged. Possession of the matching code does not establish payment,
+  permit a refund, or bypass the exact stock/handout authority checks.
 - Same-session recovery means local invoice/payment-report and bounded router
   continuity only. It does not promise merchant status recovery, a private
   conversation, or durable order history. Merchant router recovery is a
@@ -268,6 +334,14 @@ revisions and original provider-confirmed funding creation time bind its use.
 Restoration never substitutes a current rate or treats the shopper's plan time
 as independent pricing authority. Existing plans without this field retain
 their original digest; unsupported or unverifiable fiat evidence pauses.
+
+New positive-commerce plans carry the explicit digest-bound
+`conduitFeePolicy: "percentage-only-v1"` discriminator. This changes only the
+newly approved Conduit allocation, not the recipient, reserve, source authority
+or delivery format. Omission retains the historical floor-bearing economics
+and canonical digest; never add the field during recovery. Unknown values or a
+policy/digest mismatch reject. Historical signed organizer minimum/expiry terms
+remain independently verifiable after new percentage-only authoring is enabled.
 
 Exact Lightning intents may retain a portable, mode-qualified receiver binding.
 Its canonical endpoint/metadata/verifier facts are untrusted lookup hints until

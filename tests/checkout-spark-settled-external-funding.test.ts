@@ -237,7 +237,7 @@ function fixture() {
         _observedAt,
         assertCurrent
       ) => {
-        assertCurrent?.()
+        expect(assertCurrent?.()).toBeUndefined()
         expect(savedPlan.planDigest).toBe(plan.planDigest)
         expect(proof.transferId).toBe("offline-exact-credit")
         creditRecords += 1
@@ -354,6 +354,41 @@ function fixture() {
 }
 
 describe("settled external funding disclosure", () => {
+  it.each(["sender_changed", "session_revoked"] as const)(
+    "waits for asynchronous recovery authority and stops when %s",
+    async (change) => {
+      const test = fixture()
+      const entered = deferred()
+      const released = deferred()
+      test.dependencies.verifyBuyerAuthority = async () => {
+        entered.resolve()
+        await released.promise
+        return change !== "sender_changed"
+      }
+      const pending = test.run()
+      const failure = pending.then(
+        () => null,
+        (error: unknown) => error
+      )
+      try {
+        await entered.promise
+        expect(test.events).toEqual(["funding_lock", "authorization"])
+        expect(test.metadata().fundingSubmissionState).toBe("not_started")
+        expect(test.counts().payerCalls).toBe(0)
+        if (change === "session_revoked") test.setActive(false)
+        released.resolve()
+        const error = await failure
+        expect(error).toBeInstanceOf(Error)
+        expect((error as Error).message).toContain("buyer session")
+        expect(test.metadata().fundingSubmissionState).toBe("not_started")
+        expect(test.counts().creditRecords).toBe(0)
+        expect(test.counts().payerCalls).toBe(0)
+      } finally {
+        released.resolve()
+      }
+    }
+  )
+
   it.each(["nwc", "spark"] as const)(
     "keeps ambiguous guest %s funding reserved across session loss without giving the rail account authority",
     async (providerId) => {

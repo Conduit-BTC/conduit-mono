@@ -18,6 +18,161 @@ import {
 } from "../scripts/ci/router_smoke_diagnostic"
 
 describe("runner-owned router phase evidence", () => {
+  it("distinguishes Event Buyer completion checks without transaction data", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event buyer payment completion visible",
+      "event buyer exact Lightning payments verified",
+      "event buyer exact native payment verified",
+      "event buyer connected funding paid once",
+    ] as const) {
+      // Parsing the runtime evidence also guards the finite output allowlist.
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+        })?.phase
+      ).toBe(phase)
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)?.phase).toBe(
+        phase
+      )
+    }
+    recorder.phase("event buyer automatic payment routing")
+    expect(routerSmokeDiagnosticFromAnnotations(annotations)?.phase).toBe(
+      "event buyer automatic payment routing"
+    )
+  })
+
+  it("distinguishes fixed stock setup waits without locator or grant data", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event reserved stock Merchant page",
+      "event reserved stock product selector",
+      "event reserved stock product selection",
+      "event reserved stock quantity entry",
+      "event reserved stock pickup setup entry",
+      "event reserved stock grant submission",
+      "event reserved stock grant saved notice",
+      "event reserved stock Organizer refresh",
+      "event reserved stock Organizer acceptance",
+      "event reserved stock ready notice",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)?.phase).toBe(
+        phase
+      )
+    }
+  })
+
+  it("classifies bounded continuation checkpoints without dynamic payment data", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const [phase, expected, category] of [
+      [
+        "cold Merchant resumes the next Lightning payout",
+        "next-lightning-send",
+        "provider-observation",
+      ],
+      [
+        "cold Merchant completes remaining Lightning payouts",
+        "three-lightning-sends",
+        "provider-observation",
+      ],
+      [
+        "cold Merchant provider completed the second Lightning payout",
+        "second-lightning-completed",
+        "provider-observation",
+      ],
+      [
+        "cold Merchant saved independently verified commerce payments",
+        "two-commerce-payments-verified",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant next unpaid recipient is organizer",
+        "next-unpaid-organizer",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant prepared the remaining organizer payout",
+        "remaining-organizer-intent-prepared",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant staged exact current progress",
+        "current-progress-staged",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant exact current progress has a self acknowledgement",
+        "current-progress-self-acknowledged",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant fresh discovery matches prepared progress",
+        "fresh-discovery-matches-prepared-progress",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant fresh discovery can select the prepared payout",
+        "fresh-discovery-selects-prepared-payout",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant continuation has available payment checks",
+        "payment-check-available",
+        "app-readiness",
+      ],
+      [
+        "cold Merchant continuation is not paused",
+        "automatic-payment-not-paused",
+        "app-readiness",
+      ],
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        expected,
+        category,
+        lifecycle: "body",
+        body: "running",
+      })
+    }
+    expect(
+      parseRouterSmokeDiagnostic({
+        phase: "cold Merchant completes remaining Lightning payouts",
+        expected: "three-lightning-sends",
+        category: "provider-observation",
+        lifecycle: "body",
+        body: "failed",
+        payment: "unexpected",
+      })
+    ).toBeUndefined()
+  })
+
+  it("distinguishes ordinary preparation and reload checks without payment content", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "buyer order preparation rejected",
+      "buyer prepared funding matches the frozen total",
+      "cold Merchant restores exact saved funding deadlines",
+      "cold Merchant remains before the original shopper cutoff",
+      "cold Merchant reload preserves recorded accounting",
+      "cold Merchant reload preserves the native send count",
+      "cold Merchant retains one supplier notification",
+      "private router keeps public zap history empty",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)?.phase).toBe(
+        phase
+      )
+    }
+  })
   it("runs both isolated lanes independently and retains separate SHA-bound artifacts", () => {
     const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8")
     for (const [step, prerequisite] of [
@@ -67,6 +222,35 @@ describe("runner-owned router phase evidence", () => {
     })
   })
 
+  it("records replacement-device boundaries without journal or identity content", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event replacement device registration",
+      "event source device handover",
+      "event retired device cannot continue",
+      "event replacement journal restoration",
+      "event replacement transfer discovery",
+      "event replacement transfer activation",
+      "event replacement writer projection",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        lifecycle: "body",
+        body: "running",
+      })
+    }
+    expect(
+      parseRouterSmokeDiagnostic({
+        phase: "event replacement journal restoration",
+        lifecycle: "body",
+        body: "running",
+        deviceId: "unexpected",
+      })
+    ).toBeUndefined()
+  })
+
   it("retains the remaining offline completion checkpoints", () => {
     const annotations: Array<{ type: string; description?: string }> = []
     const recorder = createRouterSmokeRecorder(annotations)
@@ -106,6 +290,48 @@ describe("runner-owned router phase evidence", () => {
         invoice: "private value",
       })
     ).toBeUndefined()
+  })
+
+  it("retains only fixed Event checkout and organizer handout stages", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event setup",
+      "event occurrence assignment",
+      "event occurrence date selection",
+      "event occurrence product selection",
+      "event occurrence allocation submission",
+      "event organizer device selection",
+      "event reserved stock grant",
+      "event buyer checkout",
+      "event buyer catalog admission",
+      "event buyer cart checkout",
+      "event buyer price presentation",
+      "event guest contact-free fields",
+      "event mobile checkout layout",
+      "event organizer fee disclosure",
+      "event buyer plan preparation",
+      "event buyer funding authorization",
+      "event buyer automatic payment routing",
+      "event organizer observes the buyer cutoff",
+      "event organizer automatic payment routing",
+      "event organizer stock authority rejected",
+      "event organizer recovery authority rejected",
+      "event organizer destination rejected",
+      "event organizer routing stopped before sends",
+      "event organizer routing stopped during commerce",
+      "event organizer native submission pending",
+      "event organizer native verification pending",
+      "event exact pickup claim and handout",
+      "event Merchant once-only stock reconciliation",
+    ] as const) {
+      recorder.phase(phase)
+      const diagnostic = routerSmokeDiagnosticFromAnnotations(annotations)
+      expect(diagnostic).toEqual({ phase, lifecycle: "body", body: "running" })
+      expect(
+        parseRouterSmokeDiagnostic({ ...diagnostic, orderId: "untrusted" })
+      ).toBeUndefined()
+    }
   })
 
   it("binds sender-commit checkpoints to fixed expected conditions and categories", () => {

@@ -12,6 +12,7 @@ import {
   normalizeLightningInvoice,
 } from "../protocol/lightning"
 import type { CheckoutSparkNativeRetirementReader } from "../protocol/checkout-spark-native-retirement"
+import type { CheckoutSparkNativeTreasurySdkSendResult } from "../protocol/checkout-spark-treasury-sdk"
 import type {
   CheckoutSparkNativeTreasuryPlan,
   CheckoutSparkNativeTreasuryObservation,
@@ -125,9 +126,8 @@ export interface SparkCheckoutTreasurySendInput extends SparkCheckoutTreasuryInp
 }
 
 /** Neither a fulfill response nor an empty history query is settlement proof. */
-export type SparkCheckoutTreasurySendResult = {
-  readonly status: "submitted" | "ambiguous" | "not_sent"
-}
+export type SparkCheckoutTreasurySendResult =
+  CheckoutSparkNativeTreasurySdkSendResult
 
 export interface SparkCheckoutRetirementTarget {
   network: SparkWalletNetwork
@@ -287,6 +287,7 @@ export interface SparkSdkClient {
     requestId?: string
   ): Promise<NwcLookupInvoiceResult>
 
+  getAddressIdentity?(): Promise<string>
   lookupBreezAddress?(domain?: string): Promise<BreezAddressState>
   ensureBreezAddress?(
     username?: string,
@@ -564,6 +565,19 @@ export class SparkWalletManager {
     )
       return { status: "unavailable", reason: "locked" }
     return result
+  }
+
+  async getAddressIdentity(walletId: string): Promise<string> {
+    const client = this.#getClient(walletId)
+    if (!client.getAddressIdentity)
+      throw new Error("Wallet identity is unavailable.")
+    const identity = await client.getAddressIdentity()
+    if (
+      this.#clients.get(walletId) !== client ||
+      this.#quarantinedWallets.has(walletId)
+    )
+      throw new Error("Your wallet session changed.")
+    return identity
   }
 
   async signAddressNameRequest(

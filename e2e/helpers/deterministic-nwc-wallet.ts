@@ -9,6 +9,7 @@ import {
   type Nip47LookupInvoiceRequest,
   type Nip47MakeInvoiceRequest,
   type Nip47PayInvoiceRequest,
+  type Nip47PayResponse,
   type Nip47Transaction,
 } from "@getalby/sdk/nwc"
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure"
@@ -82,12 +83,16 @@ export type DeterministicNwcWallet = {
 
 export type DeterministicNwcWalletOptions = {
   relayUrl: string
-  network?: "mainnet" | "testnet"
+  network?: "mainnet" | "testnet" | "regtest"
   lud16?: string
   nowSeconds?: () => number
   claimUnissuedSettled?: boolean
   methods?: Nip47GetInfoResponse["methods"]
   getBalanceMsats?(): Promise<number> | number
+  /** Runner-held proof for an exact invoice issued by another test provider. */
+  authorizeExternalInvoice?(
+    request: Readonly<Nip47PayInvoiceRequest>
+  ): Promise<Nip47PayResponse | null> | Nip47PayResponse | null
 }
 
 function runtimeNwcKeyPair(): { pubkey: string; secret: string } {
@@ -175,7 +180,7 @@ function buildConnectionUri(input: {
 
 function invoiceHrp(
   amountMsats: number,
-  network: "mainnet" | "testnet"
+  network: "mainnet" | "testnet" | "regtest"
 ): string {
   if (
     !Number.isSafeInteger(amountMsats) ||
@@ -184,7 +189,9 @@ function invoiceHrp(
   ) {
     throw new Error("Deterministic NWC invoice amount must be positive msats.")
   }
-  return `${network === "mainnet" ? "lnbc" : "lntb"}${amountMsats * 10}p`
+  const prefix =
+    network === "mainnet" ? "lnbc" : network === "regtest" ? "lnbcrt" : "lntb"
+  return `${prefix}${amountMsats * 10}p`
 }
 
 function requestMatchesInvoice(
@@ -368,6 +375,10 @@ export function createDeterministicNwcWallet(
     async payInvoice(request: Nip47PayInvoiceRequest) {
       counters.payInvoice += 1
       if (!invoice || request.invoice !== invoice.invoice) {
+        if (options.authorizeExternalInvoice) {
+          const external = await options.authorizeExternalInvoice(request)
+          if (external) return { result: external, error: undefined }
+        }
         return {
           result: undefined,
           error: { code: "NOT_FOUND", message: "Invoice was not issued." },

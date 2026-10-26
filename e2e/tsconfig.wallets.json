@@ -22,13 +22,10 @@
   },
   "include": [
     "wallet-sign-in.playwright.ts",
-    "wallet-recovery-repair.playwright.ts",
     "wallet-layout.playwright.ts",
     "wallet-balances.playwright.ts",
-    "wallet-addy-bootstrap.playwright.ts",
     "wallet-cross-app.playwright.ts",
     "wallet-reload.playwright.ts",
-    "wallet-registry-removal.playwright.ts",
     "wallet-lifecycle.playwright.ts",
     "shared-ui-composition.playwright.ts",
     "shared-ui-populated-audit.playwright.ts",
@@ -36,6 +33,7 @@
     "merchant-invoice-source.playwright.ts",
     "commerce.playwright.ts",
     "commerce-inbox.playwright.ts",
-    "merchant-product-image-preview.playwright.ts"
+    "merchant-product-image-preview.playwright.ts",
+    "wallet-runtime-races.playwright.ts"
   ]
 }

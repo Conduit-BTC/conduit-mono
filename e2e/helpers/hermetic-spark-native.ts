@@ -452,7 +452,15 @@ function createHermeticWalletNative(input: {
         if (nativeLostResponse)
           throw new Error("Synthetic native response lost")
         // A completed response is still not a receipt; adapters must query exact history.
-        return { sats: [structuredClone(transfer)] }
+        return {
+          satsTransactionSuccess: [
+            { invoice, transferResponse: structuredClone(transfer) },
+          ],
+          satsTransactionErrors: [],
+          tokenTransactionSuccess: [],
+          tokenTransactionErrors: [],
+          invalidInvoices: [],
+        }
       },
       async getTransfer(id) {
         assertOpen()

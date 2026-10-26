@@ -13,6 +13,7 @@ import {
   CHECKOUT_SPARK_ROUTER_ORDER_TAG,
   calculateCheckoutSparkSettledGrossFundingSats,
   calculateConduitCheckoutFeeSats,
+  config,
   createCheckoutSparkSettledReconciliation,
   createMerchantCheckoutSparkRecoveryDiscovery,
   deriveCheckoutSparkSignedCommerceObligations,
@@ -66,6 +67,11 @@ import {
 } from "./support/signed-bolt11-fixture"
 import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import {
+  applyAccountNetworkRelayExclusion,
+  createInMemoryAccountNetworkLocalStateRepository,
+  emptyAccountNetworkLocalState,
+} from "../packages/core/src/protocol/account-network-local-state"
 
 const INBOX = "wss://merchant.inbox.relay.dev"
 const MNEMONIC = createRuntimeMnemonic()
@@ -155,6 +161,23 @@ describe("offline cold Merchant guest supplier recovery", () => {
         declaration,
         { prime: true }
       )
+      // The fixture relay owns this declared-source lifecycle. Exclude other
+      // configured inbox sources through account policy, leaving writes unchanged.
+      let networkState = emptyAccountNetworkLocalState(fixture.merchantPubkey)
+      for (const relayUrl of new Set(config.commerceDmFallbackRelayUrls)) {
+        if (relayUrl === INBOX) continue
+        networkState = applyAccountNetworkRelayExclusion(networkState, {
+          relayUrl,
+          relayListFrontier: { eventId: null, createdAt: null },
+          inboxDeclarationFrontier: {
+            eventId: declaration.id,
+            createdAt: declaration.created_at!,
+          },
+          committedAt: Date.now(),
+        })
+      }
+      const networkRepository =
+        createInMemoryAccountNetworkLocalStateRepository([networkState])
       const session = new MemoryStorage()
       const buyerStorage = new MemoryStorage()
       const guest = createSessionGuestOrderSigningIdentity(
@@ -293,8 +316,10 @@ describe("offline cold Merchant guest supplier recovery", () => {
           },
         })
         expect(
-          getCheckoutSparkRecoveryDelivery(handoff.handoffId, buyerStorage)!
-            .deliveryProgress.acknowledgedRelayRefs
+          (await getCheckoutSparkRecoveryDelivery(
+            handoff.handoffId,
+            buyerStorage
+          ))!.deliveryProgress.acknowledgedRelayRefs
         ).toHaveLength(1)
         const order = orderSchema.parse({
           id: plan.orderId,
@@ -370,6 +395,7 @@ describe("offline cold Merchant guest supplier recovery", () => {
           new CommerceInboxStore(authorization, database)
         )
         __setCommerceTestOverrides({
+          accountNetworkLocalStateRepository: networkRepository,
           getAccountSigner: () => merchantSigner,
           getCommerceInbox: () => inboxOwner!,
           now: () => now,

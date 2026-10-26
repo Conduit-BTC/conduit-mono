@@ -326,8 +326,9 @@ describe("future Event Market organizer updates", () => {
       secret
     )
     let retriedOld = false
-    await expect(
-      retryEventMarketRosterDelivery(
+    let supersededError: unknown
+    try {
+      await retryEventMarketRosterDelivery(
         {
           signedEvent: result.signedEvent,
           authenticatedPubkey: organizer,
@@ -349,7 +350,11 @@ describe("future Event Market organizer updates", () => {
           },
         }
       )
-    ).rejects.toThrow("superseded")
+    } catch (error) {
+      supersededError = error
+    }
+    expect(supersededError).toBeInstanceOf(Error)
+    expect((supersededError as Error).message).toContain("superseded")
     expect(retriedOld).toBe(false)
   })
 

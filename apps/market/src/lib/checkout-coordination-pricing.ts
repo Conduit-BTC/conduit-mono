@@ -1,5 +1,7 @@
 import {
   calculateCheckoutSparkBuyerPrice,
+  calculateCheckoutSparkEventBuyerPrice,
+  checkoutSparkConduitFeePolicyForNewPlan,
   isQuantumRouterEnabled,
   isSupportedCommercePriceCurrency,
   getShopperCardPriceDisplay,
@@ -51,22 +53,37 @@ export function canEstimateCheckoutCoordinationListing(
 export function getCheckoutCoordinationPriceEstimate(input: {
   itemSubtotalSats: number
   shippingSubtotalSats: number
-}): CheckoutSparkBuyerPrice | null {
+  /** Explicit fee from verified signed event terms; never add it to the Conduit base. */
+  organizerFeeSats?: number
+}): (CheckoutSparkBuyerPrice & { readonly organizerFeeSats?: number }) | null {
   try {
-    return calculateCheckoutSparkBuyerPrice(input)
+    const conduitFeePolicy = checkoutSparkConduitFeePolicyForNewPlan(
+      input.itemSubtotalSats + input.shippingSubtotalSats,
+      input.organizerFeeSats
+    )
+    return input.organizerFeeSats === undefined
+      ? calculateCheckoutSparkBuyerPrice({ ...input, conduitFeePolicy })
+      : calculateCheckoutSparkEventBuyerPrice({
+          ...input,
+          organizerFeeSats: input.organizerFeeSats,
+          conduitFeePolicy,
+        })
   } catch {
     return null
   }
 }
 
-/** One minimum per actual compatible purchase, including known shipping. */
+/** One rounded percentage per actual compatible purchase, including known shipping. */
 export function getCartCoordinationEstimate(
   items: CartItem[],
-  quote: PricingRateInput
+  quote: PricingRateInput,
+  /** Exact already-verified fee per purchase ID; absent event evidence has no fee estimate. */
+  eventOrganizerFees?: ReadonlyMap<string, number>
 ): {
   totalSats: number
   coordinationFeeSats: number
   shippingPending: boolean
+  organizerFeeSats?: number
 } | null {
   const groups = groupCartPurchases(items)
   if (
@@ -78,12 +95,20 @@ export function getCartCoordinationEstimate(
   let coordinationFeeSats = 0
   let shippingPending = false
   let hasRoutedPurchase = false
+  let organizerFeeSats = 0
+  let hasEventPurchase = false
   try {
     for (const group of groups) {
       const pricing = buildCheckoutPricingIntent(group.items, quote)
       if (pricing.status !== "ok") return null
+      const isEvent = group.items.some(
+        (item) => item.fulfillment?.type === "event_market_pickup"
+      )
+      if (isEvent && !eventOrganizerFees?.has(group.id)) return null
+      const organizerFee = isEvent ? eventOrganizerFees!.get(group.id)! : 0
+      if (!Number.isSafeInteger(organizerFee) || organizerFee < 0) return null
       if (
-        !pricing.paymentRequired ||
+        (!pricing.paymentRequired && organizerFee === 0) ||
         !isCheckoutSparkSettledCart(group.items)
       ) {
         totalSats += pricing.totalSats
@@ -91,18 +116,36 @@ export function getCartCoordinationEstimate(
         continue
       }
       hasRoutedPurchase = true
-      const price = calculateCheckoutSparkBuyerPrice({
+      const priceInput = {
         itemSubtotalSats: pricing.itemSubtotalSats,
         shippingSubtotalSats: pricing.shippingCost.totalSats,
-      })
+        conduitFeePolicy: checkoutSparkConduitFeePolicyForNewPlan(
+          pricing.itemSubtotalSats + pricing.shippingCost.totalSats,
+          organizerFee
+        ),
+      }
+      const price = isEvent
+        ? calculateCheckoutSparkEventBuyerPrice({
+            ...priceInput,
+            organizerFeeSats: organizerFee,
+          })
+        : calculateCheckoutSparkBuyerPrice(priceInput)
       totalSats += price.totalSats
       coordinationFeeSats += price.coordinationFeeSats
+      organizerFeeSats += organizerFee
+      hasEventPurchase ||= isEvent
       shippingPending ||= pricing.shippingCost.status === "manual"
     }
     return hasRoutedPurchase &&
       Number.isSafeInteger(totalSats) &&
+      Number.isSafeInteger(organizerFeeSats) &&
       Number.isSafeInteger(coordinationFeeSats)
-      ? { totalSats, coordinationFeeSats, shippingPending }
+      ? {
+          totalSats,
+          coordinationFeeSats,
+          shippingPending,
+          ...(hasEventPurchase ? { organizerFeeSats } : {}),
+        }
       : null
   } catch {
     return null
@@ -131,6 +174,7 @@ export function getFeeInclusiveListingPriceDisplay(
     const total = calculateCheckoutSparkBuyerPrice({
       itemSubtotalSats: base.sats,
       shippingSubtotalSats: 0,
+      conduitFeePolicy: checkoutSparkConduitFeePolicyForNewPlan(base.sats),
     })
     const display = getShopperSatsDisplay(
       total.totalSats,

@@ -14,6 +14,7 @@ import {
 import { assessCheckoutSparkSettledOrderControl } from "./checkout-spark-settled-order-control"
 import { getCheckoutSparkSettledPreparation } from "./checkout-spark-settled-preparation"
 import { getCheckoutSparkRecoveryDelivery } from "./checkout-spark-recovery-handoff"
+import { CheckoutSparkPreparationAckUnavailableError } from "./checkout-spark-settled-leg-preparation"
 import type { CheckoutSparkExternalFundingInvoice } from "./checkout-spark-settled-funding"
 import { getSparkConfiguration, getSparkWalletManager } from "./spark-sdk"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
@@ -240,8 +241,9 @@ export function createCheckoutSparkSettledShopperRunner(
       assertCurrent()
       const preparation = readPreparation(input.checkoutId)
       const initialRecovery = preparation?.recoveryHandoffId
-        ? readInitialRecovery(preparation.recoveryHandoffId)
+        ? await readInitialRecovery(preparation.recoveryHandoffId)
         : null
+      assertCurrent()
       const configuration = sparkConfiguration()
       if (
         configuration.status !== "ready" ||
@@ -337,10 +339,13 @@ export function createCheckoutSparkSettledShopperRunner(
         assertCurrent()
         if (error instanceof CheckoutSparkBuyerPreparationAuthorityEndedError)
           throw new RoutingPaused("authority_transferred")
-        // Only this finite, pre-invoice metadata transport classification may
+        // Only bounded metadata transport or an exact saved recovery ACK may
         // re-enter preparation. Unknown, validation, authority and storage
         // failures stay fail-closed; every retry reloads the frozen plan.
-        if (error instanceof CheckoutSparkLnurlMetadataUnavailableError)
+        if (
+          error instanceof CheckoutSparkLnurlMetadataUnavailableError ||
+          error instanceof CheckoutSparkPreparationAckUnavailableError
+        )
           return null
         throw error
       })
@@ -385,6 +390,10 @@ export function createCheckoutSparkSettledShopperRunner(
         result.step.reason === "recovery_handoff_unavailable" ||
         result.step.reason === "fee_unavailable" ||
         result.step.reason === "prior_possible_send" ||
+        result.step.reason === "native_provider_unavailable" ||
+        result.step.reason === "native_provider_request" ||
+        result.step.reason === "native_provider_error" ||
+        result.step.reason === "native_unrecognized_result" ||
         (result.step.outcome === "send_ambiguous" && !result.step.reason)
       ) {
         if (await waitForPendingObservation()) continue

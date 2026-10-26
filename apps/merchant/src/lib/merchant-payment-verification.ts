@@ -243,7 +243,7 @@ export function getMerchantPaymentVerificationCandidates(
       }
       const invoice = message.payload.invoice.trim().toLowerCase()
       const orders = invoiceOrders.get(invoice) ?? new Set<string>()
-      orders.add(conversation.orderId)
+      orders.add(conversation.id)
       invoiceOrders.set(invoice, orders)
     }
   }

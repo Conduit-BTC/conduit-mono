@@ -10,8 +10,14 @@ import { createCartItemFromProduct } from "../../apps/market/src/lib/cart-model"
 import { createEventMarketOrderFixture } from "./event-market-order-fixture"
 
 /** Actual signed current authority reads composed with checkout authorization. */
-export async function createEventMarketCheckoutFixture() {
-  const fixture = createEventMarketOrderFixture()
+export async function createEventMarketCheckoutFixture(
+  options: Parameters<typeof createEventMarketOrderFixture>[0] = {}
+) {
+  const fixture = createEventMarketOrderFixture({
+    mode: "merchant_present",
+    newAssignment: true,
+    ...options,
+  })
   const dependencies: NonNullable<Parameters<typeof readEventMarketRoster>[1]> =
     {
       plan: async () => ({
@@ -44,10 +50,12 @@ export async function createEventMarketCheckoutFixture() {
   const productRead = await readProduct({
     marketRead,
     productCoordinate: fixture.fulfillment.product.coordinate,
+    selectedOccurrenceCoordinate: fixture.fulfillment.calendar.coordinate,
   })
   const fulfillment = createEventMarketPickupSnapshot({
     marketRead,
     productRead,
+    selectedOccurrenceCoordinate: fixture.fulfillment.calendar.coordinate,
   })
   const productEvent = fixture.events.find((event) => event.kind === 30402)!
   const product = {

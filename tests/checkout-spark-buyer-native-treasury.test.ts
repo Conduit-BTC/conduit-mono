@@ -168,6 +168,7 @@ async function fixture(
     ) => void
     beforeNativeQuery?: () => void
     beforeNativeFulfill?: () => Promise<void>
+    transformNativeFulfillment?: (response: unknown) => unknown
     hideNativeQueries?: boolean
   } = {}
   let now = AT + 100
@@ -214,7 +215,10 @@ async function fixture(
               },
               async fulfillSparkInvoice(invoices) {
                 await hooks.beforeNativeFulfill?.()
-                return wallet.fulfillSparkInvoice!(invoices)
+                const response = await wallet.fulfillSparkInvoice!(invoices)
+                return hooks.transformNativeFulfillment
+                  ? hooks.transformNativeFulfillment(response)
+                  : response
               },
               async queryHTLC(request) {
                 reads.closed++
@@ -747,6 +751,118 @@ function holdNativeSenderCommitment(f: Awaited<ReturnType<typeof fixture>>) {
 
 describe("Market native treasury composed provider evidence", () => {
   it(
+    "retains only the validated native reference after Pause while the original account session remains current",
+    async () =>
+      runForeground(async (f) => {
+        let entered!: () => void
+        let release!: () => void
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve
+        })
+        const completion = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        f.hooks.beforeNativeFulfill = async () => {
+          entered()
+          await completion
+        }
+        let queries = 0
+        f.hooks.beforeNativeQuery = () => {
+          queries++
+        }
+        const { runner, input, acknowledged } = await createForegroundRunner(f)
+        const running = runner.run({
+          ...input,
+          shouldRetainSubmittedReference: () => true,
+        })
+        let pausing: Promise<void> | undefined
+        try {
+          await admission
+          const admitted = structuredClone((await f.loadState()).state)
+          const queriesAtPause = queries
+          const acknowledgementsAtPause = acknowledged.length
+          pausing = runner.pause()
+          release()
+          expect(await running).toEqual({ status: "paused", reason: "paused" })
+          await pausing
+          const retained = (await f.loadState()).state
+          const actual = f.control.nativeSnapshot().transfers[0]!.id
+          expect(retained.treasuryFinalization!.status).toBe("submitted")
+          expect(
+            retained.treasuryFinalization!.providerTransferId === actual
+          ).toBe(true)
+          expect(
+            JSON.stringify(retained.treasuryFinalization!.intent) ===
+              JSON.stringify(admitted.treasuryFinalization!.intent)
+          ).toBe(true)
+          expect(retained.treasuryFinalization!.finalFeeSats).toBeNull()
+          expect(retained.treasuryFinalization!.finalDebitSats).toBeNull()
+          expect(
+            JSON.stringify(retained.credit) === JSON.stringify(admitted.credit)
+          ).toBe(true)
+          expect(
+            JSON.stringify(retained.legs.slice(0, -1)) ===
+              JSON.stringify(admitted.legs.slice(0, -1))
+          ).toBe(true)
+          expect(queries).toBe(queriesAtPause)
+          expect(acknowledged.length).toBe(acknowledgementsAtPause)
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+        } finally {
+          release()
+          await running
+          await pausing
+        }
+      }),
+    15_000
+  )
+  it.each(["no callback", "revoked account"] as const)(
+    "does not retain a late native reference after Pause with %s authority",
+    async (authority) =>
+      runForeground(async (f) => {
+        let entered!: () => void
+        let release!: () => void
+        let accountCurrent = true
+        const admission = new Promise<void>((resolve) => {
+          entered = resolve
+        })
+        const completion = new Promise<void>((resolve) => {
+          release = resolve
+        })
+        f.hooks.beforeNativeFulfill = async () => {
+          entered()
+          await completion
+        }
+        const { runner, input } = await createForegroundRunner(f)
+        const running = runner.run({
+          ...input,
+          ...(authority === "revoked account"
+            ? { shouldRetainSubmittedReference: () => accountCurrent }
+            : {}),
+        })
+        let pausing: Promise<void> | undefined
+        try {
+          await admission
+          accountCurrent = false
+          pausing = runner.pause()
+          release()
+          expect(await running).toMatchObject({ status: "paused" })
+          await pausing
+          const retained = (await f.loadState()).state.treasuryFinalization!
+          expect(retained.status).toBe("submitted")
+          expect(retained.providerTransferId).toBeNull()
+          expect(retained.finalFeeSats).toBeNull()
+          expect(retained.finalDebitSats).toBeNull()
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
+          expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
+        } finally {
+          release()
+          await running
+          await pausing
+        }
+      }),
+    15_000
+  )
+  it(
     "finishes routing on exact sender commitment while the native receiver remains offline, retaining recovery",
     async () =>
       runForeground(async (f) => {
@@ -1239,6 +1355,106 @@ describe("Market native treasury composed provider evidence", () => {
         expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(1)
         expect(f.control.nativeSnapshot().nativePaymentCount).toBe(1)
       }, 120_000),
+    15_000
+  )
+  it(
+    "automatically reconciles an unrecognized native success response through exact pending to paid without Resume",
+    async () =>
+      runForeground(async (f) => {
+        holdNativeSenderCommitment(f)
+        let admittedIntent: CheckoutSparkSettledReconciliation["treasuryFinalization"]
+        f.hooks.beforeNativeFulfill = async () => {
+          admittedIntent = structuredClone(
+            (await f.loadState()).state.treasuryFinalization
+          )
+          expect(admittedIntent!.status).toBe("submitted")
+        }
+        f.hooks.transformNativeFulfillment = (response) => {
+          // The facade executes its one native transfer normally. Only the
+          // returned success projection is unfamiliar; strict binding must not
+          // promote it to a receipt or create authority to send again.
+          const batch = response as {
+            satsTransactionSuccess: Array<{
+              transferResponse: Record<string, unknown>
+            }>
+          }
+          const success = batch.satsTransactionSuccess[0]
+          if (!success) throw new Error("Missing synthetic SDK success")
+          return {
+            ...batch,
+            satsTransactionSuccess: [
+              {
+                ...success,
+                transferResponse: {
+                  ...success.transferResponse,
+                  status: "TRANSFER_STATUS_FUTURE",
+                },
+              },
+            ],
+          }
+        }
+        f.hooks.beforeNativeQuery = () => {
+          if (f.control.nativeSnapshot().nativeSendInvocationCount > 0)
+            f.hooks.hideNativeQueries = true
+        }
+        let waits = 0
+        const exactStatuses: string[] = []
+        const { runner, input, acknowledged } = await createForegroundRunner(
+          f,
+          {
+            wait: async (milliseconds) => {
+              f.setNow(f.now() + milliseconds)
+              const saved = (await f.loadState()).state.treasuryFinalization!
+              expect(saved.intent).toEqual(admittedIntent!.intent)
+              expect(saved.finalFeeSats).toBeNull()
+              expect(saved.finalDebitSats).toBeNull()
+              expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(
+                1
+              )
+              if (++waits === 1) {
+                expect(saved.status).toBe("submitted")
+                expect(saved.providerTransferId).toBeNull()
+                f.hooks.hideNativeQueries = false
+                f.hooks.beforeNativeQuery = () => {
+                  exactStatuses.push(
+                    f.control.nativeSnapshot().transfers[0]!.status
+                  )
+                }
+              } else {
+                expect(saved.status).toBe("ambiguous")
+                expect(saved.providerTransferId).toBe(
+                  f.control.nativeSnapshot().transfers[0]!.id
+                )
+                f.control.setNativeCompletion(true)
+              }
+            },
+          }
+        )
+        const result = await runner.run(input)
+        const native = f.control.nativeSnapshot()
+        expect(native.nativeSendInvocationCount).toBe(1)
+        expect(native.nativePaymentCount).toBe(1)
+        expect(f.control.snapshot().sendInvocationCount).toBe(1)
+        expect(result).toEqual({ status: "complete" })
+        const final = (await f.loadState()).state.treasuryFinalization!
+        expect(waits).toBe(2)
+        expect(exactStatuses).toContain(
+          "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK"
+        )
+        expect(exactStatuses).toContain("TRANSFER_STATUS_COMPLETED")
+        expect(final.intent).toEqual(admittedIntent!.intent)
+        expect(final).toMatchObject({
+          status: "paid",
+          providerTransferId: native.transfers[0]!.id,
+          finalFeeSats: 0,
+          finalDebitSats: admittedIntent!.intent!.authorizedDebitSats,
+        })
+        expect(native.transfers[0]!.sparkInvoice).toBe(
+          f.plan.nativeTreasury!.invoiceRequest
+        )
+        expect(acknowledged).toEqual(["prepared", "submitted"])
+        expect(f.now()).toBeLessThan(f.plan.takeoverAt)
+      }),
     15_000
   )
   it.each(["pending", "unknown"] as const)(
