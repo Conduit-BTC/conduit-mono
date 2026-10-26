@@ -142,6 +142,8 @@ class AddressError extends Error {
 export interface BreezAddressOperationOptions {
   /** Retain resumable intent under the wallet lock, immediately before mutation. */
   beforeRegister?(): Promise<void | (() => Promise<void>)>
+  /** A retained intent may retry only an exact, positively unsubmitted checkpoint. */
+  retryKnownNonSubmissionOnly?: boolean
   signal?: AbortSignal
 }
 
@@ -271,6 +273,13 @@ export class BreezLightningAddressClient {
         ) {
           throw new AddressError("storage_unavailable")
         }
+        if (
+          options?.retryKnownNonSubmissionOnly &&
+          (!explicitCustomName ||
+            checkpoint?.username !== selected ||
+            checkpoint?.phase !== "selected")
+        )
+          throw new AddressError("registration_pending")
         if (selected && checkpoint?.username !== selected) {
           // Recovery of this exact name resolves a completed submission;
           // a different pending name may still commit and must stay pinned.
@@ -350,7 +359,6 @@ export class BreezLightningAddressClient {
               assertAuthorized || undefined
             )
           } catch (error) {
-            options?.signal?.throwIfAborted()
             // Clear only this fresh attempt's uncertainty, before recovery can fail.
             // A definite rejection cannot disprove an earlier ambiguous submission.
             if (
@@ -359,6 +367,7 @@ export class BreezLightningAddressClient {
               !error.registrationMayHaveCommitted
             )
               await this.#save(scope, pending)
+            options?.signal?.throwIfAborted()
             // A conflict may be a collision, replay, or another device's success.
             // Resolve identity ownership before making any decision to change name.
             const recovered = await this.#recover(identity, options?.signal)

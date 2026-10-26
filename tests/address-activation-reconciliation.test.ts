@@ -41,6 +41,10 @@ function fixture(failure: "throttled" | "delayed" | "none") {
     converge = true,
     failProfile = false
   let duringWait: (() => void) | undefined
+  let refuseRegistration = false
+  let registrationFailure: "rejected" | "lost" | undefined
+  let registrationAttempts = 0
+  let afterRegistrationSigning: (() => void) | undefined
   const assertCurrent = () => {
     if (!active) throw new Error("Authority changed")
   }
@@ -55,7 +59,11 @@ function fixture(failure: "throttled" | "delayed" | "none") {
         signDigest: async (digest) =>
           secp256k1.sign(digest, wallet, { prehash: false, format: "der" }),
       },
-      signAccountProof: async () => "Nostr fixture",
+      signAccountProof: async () => {
+        if (refuseRegistration) throw new Error("Signature refused")
+        afterRegistrationSigning?.()
+        return "Nostr fixture"
+      },
       runExclusive: async (_scope, operation) => operation(),
       store: {
         read: async () => checkpoint,
@@ -84,7 +92,7 @@ function fixture(failure: "throttled" | "delayed" | "none") {
               status: 429,
               headers: { "Retry-After": "60" },
             })
-          return registered
+          return registered && (registrationFailure !== "lost" || ready)
             ? Response.json({
                 username: "alice",
                 lightning_address: "alice@conduit.cash",
@@ -94,8 +102,12 @@ function fixture(failure: "throttled" | "delayed" | "none") {
         }
         if (url.endsWith("/available"))
           return Response.json({ available: true })
+        registrationAttempts++
+        if (registrationFailure === "rejected")
+          return Response.json("rejected", { status: 403 })
         registered = true
         registrations++
+        if (registrationFailure === "lost") throw new Error("Lost response")
         return Response.json({})
       },
     })
@@ -106,7 +118,10 @@ function fixture(failure: "throttled" | "delayed" | "none") {
       authorize: async () => {
         assertCurrent()
         if (!walletActive) throw new Error("Wallet changed")
-        return async () => assertCurrent()
+        return async () => {
+          assertCurrent()
+          if (!walletActive) throw new Error("Wallet changed")
+        }
       },
       load: async () => view,
       save: async (_id, record) =>
@@ -140,6 +155,7 @@ function fixture(failure: "throttled" | "delayed" | "none") {
         register
           ? client().ensure(name, {
               activateApprovedName: true,
+              retryKnownNonSubmissionOnly: register === "retry",
               beforeRegister,
               signal,
             })
@@ -184,7 +200,141 @@ function fixture(failure: "throttled" | "delayed" | "none") {
       duringWait = callback
     },
     saved: () => view,
+    checkpoint: () => checkpoint,
+    replaceCheckpoint: (value: BreezAddressCheckpoint | null) => {
+      checkpoint = value
+    },
+    refuseRegistration: (value: boolean) => {
+      refuseRegistration = value
+    },
+    registrationFailure: (value: typeof registrationFailure) => {
+      registrationFailure = value
+    },
+    registrationAttempts: () => registrationAttempts,
+    afterRegistrationSigning: (callback: () => void) => {
+      afterRegistrationSigning = callback
+    },
   }
+}
+
+for (const failure of ["refused", "rejected"] as const) {
+  it(`deliberately retries a ${failure} registration on the same approved request after restart`, async () => {
+    const f = fixture("none")
+    await f
+      .workflow()
+      .submit("wallet", { desiredName: "alice", token: "fixture" })
+    if (failure === "refused") f.refuseRegistration(true)
+    else f.registrationFailure("rejected")
+    await f.workflow().activate("wallet")
+    const retained = f.saved()!.record
+    expect(retained.phase).toBe("activating")
+    expect(f.checkpoint()?.phase).toBe("selected")
+    expect(f.counts().registrations).toBe(0)
+    expect(f.registrationAttempts()).toBe(failure === "refused" ? 0 : 1)
+    f.refuseRegistration(false)
+    f.registrationFailure(undefined)
+    const result = await f.workflow().activate("wallet")
+    expect(result.record.phase).toBe("complete")
+    expect(result.record.payload).toBe(retained.payload)
+    expect(result.record.accountProof).toBe(retained.accountProof)
+    expect(f.counts().registrations).toBe(1)
+    expect(f.counts().profiles).toBe(1)
+  })
+}
+
+it("keeps absent recovery after a lost submission read-only until ownership and public receiving recover", async () => {
+  const f = fixture("none")
+  f.stopConvergence()
+  f.registrationFailure("lost")
+  await f
+    .workflow()
+    .submit("wallet", { desiredName: "alice", token: "fixture" })
+  await f.workflow().activate("wallet")
+  expect(f.checkpoint()?.phase).toBe("registering")
+  await f.workflow().activate("wallet")
+  expect(f.registrationAttempts()).toBe(1)
+  expect(f.counts().profiles).toBe(0)
+  f.ready()
+  expect((await f.workflow().activate("wallet")).record.phase).toBe("complete")
+  expect(f.registrationAttempts()).toBe(1)
+})
+
+for (const checkpoint of [
+  null,
+  { username: "bob", attempts: 1, phase: "selected" },
+  { username: "alice", attempts: 1, phase: "registering" },
+] as const) {
+  it(`does not infer retry permission from an activating request with ${checkpoint === null ? "no" : checkpoint.username === "bob" ? "a different-name" : "an uncertain"} checkpoint`, async () => {
+    const f = fixture("none")
+    await f
+      .workflow()
+      .submit("wallet", { desiredName: "alice", token: "fixture" })
+    f.refuseRegistration(true)
+    await f.workflow().activate("wallet")
+    f.refuseRegistration(false)
+    f.replaceCheckpoint(checkpoint)
+    expect((await f.workflow().activate("wallet")).record.phase).toBe(
+      "activating"
+    )
+    expect(f.registrationAttempts()).toBe(0)
+    expect(f.counts().profiles).toBe(0)
+    expect(f.checkpoint()).toEqual(checkpoint)
+  })
+}
+
+for (const authority of ["approval", "account", "wallet"] as const) {
+  it(`revalidates ${authority} before retrying a positively unsubmitted registration`, async () => {
+    const f = fixture("none")
+    await f
+      .workflow()
+      .submit("wallet", { desiredName: "alice", token: "fixture" })
+    f.refuseRegistration(true)
+    await f.workflow().activate("wallet")
+    f.refuseRegistration(false)
+    if (authority === "approval") f.approval(false)
+    else if (authority === "account") f.revoke()
+    else f.revokeWallet()
+    await expect(f.workflow().activate("wallet")).rejects.toThrow()
+    expect(f.registrationAttempts()).toBe(0)
+    expect(f.counts().profiles).toBe(0)
+  })
+}
+
+it("retains positive non-submission when cancelled after signing but before dispatch", async () => {
+  const f = fixture("none"),
+    controller = new AbortController()
+  await f
+    .workflow()
+    .submit("wallet", { desiredName: "alice", token: "fixture" })
+  f.afterRegistrationSigning(() => controller.abort())
+  await expect(
+    f.workflow().activate("wallet", { signal: controller.signal })
+  ).rejects.toThrow()
+  expect(f.saved()?.record.phase).toBe("activating")
+  expect(f.checkpoint()?.phase).toBe("selected")
+  expect(f.registrationAttempts()).toBe(0)
+  f.afterRegistrationSigning(() => {})
+  expect((await f.workflow().activate("wallet")).record.phase).toBe("complete")
+  expect(f.registrationAttempts()).toBe(1)
+})
+
+for (const authority of ["account", "wallet"] as const) {
+  it(`fences ${authority} changes during registration signing on a deliberate retry`, async () => {
+    const f = fixture("none")
+    await f
+      .workflow()
+      .submit("wallet", { desiredName: "alice", token: "fixture" })
+    f.refuseRegistration(true)
+    await f.workflow().activate("wallet")
+    f.refuseRegistration(false)
+    f.afterRegistrationSigning(() =>
+      authority === "account" ? f.revoke() : f.revokeWallet()
+    )
+    await expect(f.workflow().activate("wallet")).rejects.toThrow()
+    expect(f.registrationAttempts()).toBe(0)
+    expect(f.checkpoint()?.phase).toBe("selected")
+    expect(f.counts().profiles).toBe(0)
+  })
 }
 
 it("fits a fresh activation in three recoveries with no follow-up display read", async () => {

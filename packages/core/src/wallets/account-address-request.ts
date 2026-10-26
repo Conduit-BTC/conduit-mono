@@ -99,10 +99,14 @@ export function accountAddressRequests(
         await authorize(walletId)
         const state = await manager().getLightningAddress(
           walletId,
-          register,
+          register !== false,
           name,
           "conduit.cash",
-          { beforeRegister, signal }
+          {
+            beforeRegister,
+            signal,
+            retryKnownNonSubmissionOnly: register === "retry",
+          }
         )
         current()
         signal?.throwIfAborted()

@@ -15,9 +15,14 @@ unchanged. Gateway 429 replies advertise a browser-readable `Retry-After`; clien
 also use a conservative minute when an older gateway omits the header.
 
 The existing encrypted `activating` phase is retained immediately before mutation.
-On restart it permits read-only reconciliation, never another registration based
-on an absent or unavailable lookup. A pending custom-name provider checkpoint is
-also pinned across clients. Indefinite ambiguity requires later positive ownership
+On restart it permits read-only reconciliation unless the client, under the same
+wallet/domain lock, finds an exact `selected` checkpoint proving known
+non-submission or definite rejection. Only a deliberate activation action can
+retry that registration, after fresh approval and account/wallet authorization.
+An absent or unavailable lookup never grants retry permission. A missing,
+different-name, or `registering` checkpoint leaves the retained intent read-only.
+A pending custom-name provider checkpoint is pinned across clients.
+Indefinite ambiguity requires later positive ownership
 evidence; availability is not proof that a previous mutation cannot still commit.
 Preflight failures before mutation intent remain retryable through a deliberate
 activation action. There is no automatic registration loop.

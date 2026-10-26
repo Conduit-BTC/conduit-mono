@@ -600,7 +600,11 @@ describe("approved-name gateway", () => {
       }) as typeof fetch,
       address: async (_id, register, name, beforeRegister) =>
         register
-          ? client.ensure(name, { activateApprovedName: true, beforeRegister })
+          ? client.ensure(name, {
+              activateApprovedName: true,
+              beforeRegister,
+              retryKnownNonSubmissionOnly: register === "retry",
+            })
           : client.lookup(),
       publishProfile: async () => "a".repeat(64),
     })

@@ -57,7 +57,7 @@ export interface AddressRequestWorkflowDependencies {
   fetch: typeof fetch
   address(
     walletId: string,
-    register: boolean,
+    register: boolean | "retry",
     name: string,
     beforeRegister?: () => Promise<void | (() => Promise<void>)>,
     signal?: AbortSignal
@@ -244,9 +244,15 @@ export function createAddressRequestWorkflow(
       if ((await send(walletId, view.record, true)) !== "approved")
         throw new Error("Gateway approval could not be confirmed.")
       current()
-      // ensure owns the locked recovery and race check. A retained mutation intent
-      // is read-only on restart: absence cannot disprove an in-flight registration.
-      const register = !["activating", "registered"].includes(view.record.phase)
+      // The client owns the locked recovery/race check. A retained intent may
+      // retry only with an exact checkpoint proving non-submission/rejection.
+      // Missing checkpoints and potentially committed attempts stay read-only.
+      const register =
+        view.record.phase === "registered"
+          ? false
+          : view.record.phase === "activating"
+            ? "retry"
+            : true
       progress({ step: "registration" })
       let address = await d.address(
         walletId,
