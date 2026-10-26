@@ -133,7 +133,8 @@ export function LocalKeyImportForm({
         id={`${id}-help`}
         className="text-sm text-pretty text-[var(--text-secondary)]"
       >
-        Your secret key stays securely on your device. It never reaches Conduit.
+        Your key is saved in this browser so you stay signed in. We don’t send
+        it to our servers. Use a trusted device and keep a backup.
       </p>
       {pasteStatus === "failed" && (
         <p role="alert" className="text-sm text-error-text">

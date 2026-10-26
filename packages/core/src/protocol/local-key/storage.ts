@@ -25,6 +25,16 @@ export function clearRecord(value: unknown): void {
   }
 }
 
+function recordRevision(value: unknown): string | undefined {
+  const revision =
+    value && typeof value === "object" && "revision" in value
+      ? value.revision
+      : undefined
+  return typeof revision === "string" && /^[a-zA-Z0-9-]{1,80}$/.test(revision)
+    ? revision
+    : undefined
+}
+
 function validRecord(value: unknown): value is LocalKeyRecord {
   if (!value || typeof value !== "object") return false
   const record = value as Partial<LocalKeyRecord>
@@ -262,12 +272,34 @@ export class LocalKeyStorage {
   ): Promise<void> {
     return this.#transaction("readwrite", (value, store, candidate) => {
       try {
-        const selectedCandidate =
-          validRecord(candidate) && candidate.revision === revision
+        const candidateRevision = recordRevision(candidate)
+        const storedRevision = recordRevision(value)
+        // Deletion identity must survive a damaged signing schema. An unknown
+        // candidate owner cannot be silently left behind or safely discarded.
+        if (candidate !== undefined && !candidateRevision)
+          throw new NostrSignerError("unavailable")
+        const selectedCandidate = candidateRevision === revision
+        const previousRevision =
+          candidate &&
+          typeof candidate === "object" &&
+          "previousRevision" in candidate
+            ? candidate.previousRevision
+            : undefined
+        const verifiedLineage =
+          previousRevision === null ||
+          (typeof previousRevision === "string" &&
+            /^[a-zA-Z0-9-]{1,80}$/.test(previousRevision))
+        if (
+          selectedCandidate &&
+          value !== undefined &&
+          predecessor !== "preserve" &&
+          (!verifiedLineage || !storedRevision)
+        )
+          throw new NostrSignerError("unavailable")
         const ownsPredecessor =
           selectedCandidate &&
-          validRecord(value) &&
-          candidate.previousRevision === value.revision
+          storedRevision !== undefined &&
+          previousRevision === storedRevision
         // Keep the lineage intact for a durable retry when public selection
         // cannot be read. The caller journals revocation before reaching here.
         if (ownsPredecessor && predecessor === "unverified")
@@ -277,13 +309,8 @@ export class LocalKeyStorage {
         // Preserve every identifiable later revision, including an unknown
         // schema or damaged body. A record without a revision cannot authorize
         // any signer and can be explicitly removed.
-        const storedRevision =
-          value && typeof value === "object" && "revision" in value
-            ? value.revision
-            : undefined
         if (
-          typeof storedRevision !== "string" ||
-          !/^[a-zA-Z0-9-]{1,80}$/.test(storedRevision) ||
+          storedRevision === undefined ||
           storedRevision === revision ||
           (ownsPredecessor &&
             predecessor === "retire" &&

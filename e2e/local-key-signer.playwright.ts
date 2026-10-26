@@ -145,6 +145,12 @@ for (const app of ["market", "merchant"] as const) {
         .getByRole("button", { name: "Sign In", exact: true })
         .first()
         .click()
+    await expect(
+      page.getByText(
+        "Your key is saved in this browser so you stay signed in. We don’t send it to our servers. Use a trusted device and keep a backup.",
+        { exact: true }
+      )
+    ).toBeVisible()
     await importAccount(page)
     await expect.poll(() => hasOwner(page)).toBe(true)
     await expect(page.getByLabel(menu, { exact: true })).toBeVisible()
@@ -251,6 +257,21 @@ for (const app of ["market", "merchant"] as const) {
 
     await page.reload()
     await expect.poll(() => hasOwner(page)).toBe(true)
+    const restoredSignatureValid = await page.evaluate(async (root) => {
+      const owners = await import(`${root}/session-signer.ts`)
+      const signed = await import(`${root}/signed-event.ts`)
+      const signer = owners.getAccountSigner()
+      if (!signer) return false
+      const event = await signer.signEvent({
+        pubkey: signer.pubkey,
+        kind: 1,
+        tags: [],
+        created_at: Math.floor(Date.now() / 1000),
+        content: "synthetic restored signature",
+      })
+      return signed.isValidSignedPublicNostrEvent(event)
+    }, protocol)
+    expect(restoredSignatureValid).toBe(true)
     await page.getByLabel(menu, { exact: true }).click()
     await page
       .getByRole("menuitem", { name: "Sign out and remove key", exact: true })

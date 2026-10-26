@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test"
-import { IDBFactory } from "fake-indexeddb"
+import { IDBFactory, IDBObjectStore as FakeObjectStore } from "fake-indexeddb"
 import { generateSecretKey } from "nostr-tools/pure"
 import { nsecEncode } from "nostr-tools/nip19"
 import {
@@ -325,17 +325,37 @@ test("complete persistence and deletion failure explicitly reports unresolved re
   }
 })
 
-for (const selection of [
-  "candidate",
-  "predecessor",
-  "unreadable",
-  "external",
-] as const) {
-  test(`retirement coordinates staged lineage with ${selection} metadata`, async () => {
+for (const [selection, malformed] of (
+  ["candidate", "predecessor", "unreadable", "external"] as const
+).flatMap((selection) =>
+  [false, true].map((malformed) => [selection, malformed] as const)
+)) {
+  test(`retirement coordinates staged lineage with ${selection} metadata; malformed=${malformed}`, async () => {
     const factory = new IDBFactory()
     const old = await prepare(factory).persist(() => true)
     await old.commit(() => true)
     const candidate = await prepare(factory).persist(() => true)
+    if (malformed) {
+      const db = await new Promise<IDBDatabase>((resolve) => {
+        const request = factory.open("conduit-local-key", 1)
+        request.onsuccess = () => resolve(request.result)
+      })
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction("record", "readwrite")
+          const store = tx.objectStore("record")
+          const read = store.get("candidate")
+          read.onsuccess = () => {
+            store.put({ ...read.result, version: 0 }, "candidate")
+            clearRecord(read.result)
+          }
+          tx.oncomplete = () => resolve()
+          tx.onabort = () => reject(new Error("FIXTURE_CORRUPTION_FAILED"))
+        })
+      } finally {
+        db.close()
+      }
+    }
     const session: LocalKeyAuthSession = {
       version: 1,
       type: "local",
@@ -391,11 +411,13 @@ for (const selection of [
         ).toBe(true)
         // The journal prevents restoration; both records remain available for
         // exact lineage deletion once selection can be verified again.
-        const retained = await new LocalKeyStorage({ factory }).read(
-          session.localKeyRevision
-        )
-        expect(retained?.revision === session.localKeyRevision).toBe(true)
-        clearRecord(retained)
+        if (!malformed) {
+          const retained = await new LocalKeyStorage({ factory }).read(
+            session.localKeyRevision
+          )
+          expect(retained?.revision === session.localKeyRevision).toBe(true)
+          clearRecord(retained)
+        }
       }
       await retire()
       expect(readPendingLocalKeyRemoval(storage)).toBeNull()
@@ -420,5 +442,297 @@ for (const selection of [
       if (descriptor) Object.defineProperty(globalThis, "indexedDB", descriptor)
       else Reflect.deleteProperty(globalThis, "indexedDB")
     }
+  })
+}
+
+async function recordOperation(
+  factory: IDBFactory,
+  slot: "active" | "candidate",
+  apply: (value: unknown, store: IDBObjectStore) => void
+) {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open("conduit-local-key", 1)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(new Error("FIXTURE_OPEN_FAILED"))
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction("record", "readwrite")
+      const store = tx.objectStore("record")
+      const read = store.get(slot)
+      read.onsuccess = () => {
+        try {
+          apply(read.result, store)
+        } finally {
+          clearRecord(read.result)
+        }
+      }
+      tx.oncomplete = () => resolve()
+      tx.onabort = () => reject(new Error("FIXTURE_TRANSACTION_FAILED"))
+    })
+  } finally {
+    db.close()
+  }
+}
+
+async function withFixture(
+  slot: "active" | "candidate",
+  run: (fixture: {
+    factory: IDBFactory
+    session: LocalKeyAuthSession
+    secret: Uint8Array
+    storage: AuthStorage
+    values: Map<string, string>
+    retire: () => ReturnType<typeof retireAuthSession>
+  }) => Promise<void>
+) {
+  const factory = new IDBFactory()
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "indexedDB")
+  Object.defineProperty(globalThis, "indexedDB", {
+    configurable: true,
+    value: factory,
+  })
+  const secret = generateSecretKey()
+  try {
+    const signer = await prepareLocalKeyImport({
+      value: nsecEncode(secret),
+    } as HTMLInputElement).persist(() => true)
+    if (slot === "active") await signer.commit(() => true)
+    const session: LocalKeyAuthSession = {
+      version: 1,
+      type: "local",
+      ...signer.reference,
+    }
+    signer.invalidate()
+    const values = new Map<string, string>()
+    const storage: AuthStorage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => {
+        values.set(key, value)
+      },
+      removeItem: (key) => {
+        values.delete(key)
+      },
+    }
+    expect(writeAuthSession(session, storage)).toBe(true)
+    await run({
+      factory,
+      session,
+      secret,
+      storage,
+      values,
+      retire: () =>
+        retireAuthSession(session, {
+          storage,
+          withLock: async (task) => task(),
+        }),
+    })
+  } finally {
+    secret.fill(0)
+    if (descriptor) Object.defineProperty(globalThis, "indexedDB", descriptor)
+    else Reflect.deleteProperty(globalThis, "indexedDB")
+  }
+}
+
+for (const slot of ["active", "candidate"] as const) {
+  for (const malformed of [false, true]) {
+    test(`retirement erases exact ${slot} bytes before clearing retry metadata; malformed=${malformed}`, async () => {
+      await withFixture(slot, async ({ factory, secret, storage, retire }) => {
+        await recordOperation(factory, slot, (value, store) => {
+          store.put({ ...(value as object), version: malformed ? 0 : 1 }, slot)
+        })
+        await retire()
+        expect(readAuthSession(storage) === null).toBe(true)
+        expect(readPendingLocalKeyRemoval(storage) === null).toBe(true)
+        let absent = false
+        let retained = false
+        await recordOperation(factory, slot, (value) => {
+          absent = value === undefined
+          const bytes = (value as { secret?: Uint8Array } | undefined)?.secret
+          retained =
+            bytes instanceof Uint8Array &&
+            bytes.every((byte, i) => byte === secret[i])
+        })
+        expect(absent).toBe(true)
+        expect(retained).toBe(false)
+      })
+    })
+  }
+
+  test(`stale retirement preserves a different revision with damaged ${slot} schema`, async () => {
+    await withFixture(slot, async ({ factory, session, retire }) => {
+      const replacementRevision = crypto.randomUUID()
+      await recordOperation(factory, slot, (value, store) => {
+        store.put(
+          { ...(value as object), version: 0, revision: replacementRevision },
+          slot
+        )
+      })
+      await retire()
+      let preserved = false
+      await recordOperation(factory, slot, (value) => {
+        preserved =
+          (value as { revision?: string })?.revision === replacementRevision
+      })
+      expect(preserved).toBe(true)
+      expect(session.localKeyRevision === replacementRevision).toBe(false)
+    })
+  })
+}
+
+for (const failure of ["deletion", "metadata"] as const) {
+  test(`malformed candidate ${failure} failure retains journal until restart retry succeeds`, async () => {
+    await withFixture(
+      "candidate",
+      async ({ factory, session, storage, values, retire }) => {
+        await recordOperation(factory, "candidate", (value, store) => {
+          store.put({ ...(value as object), version: 0 }, "candidate")
+        })
+        const originalRemove = storage.removeItem
+        let deletion: ReturnType<typeof spyOn> | undefined
+        try {
+          if (failure === "deletion") {
+            deletion = spyOn(
+              FakeObjectStore.prototype,
+              "delete"
+            ).mockImplementation(() => {
+              throw new Error("SYNTHETIC_DELETE_FAILURE")
+            })
+          } else {
+            storage.removeItem = (key) => {
+              if (key === AUTH_STORAGE_KEY)
+                throw new Error("SYNTHETIC_METADATA_FAILURE")
+              originalRemove(key)
+            }
+          }
+          await expect(retire()).rejects.toThrow(
+            failure === "deletion" ? "removal is incomplete" : "could not erase"
+          )
+          expect(
+            readPendingLocalKeyRemoval(storage)?.localKeyRevision ===
+              session.localKeyRevision
+          ).toBe(true)
+        } finally {
+          deletion?.mockRestore()
+          storage.removeItem = originalRemove
+        }
+        // Fresh public metadata reads model restart recovery, without restore's
+        // candidate reconciliation masking a failed explicit retirement.
+        const restartedStorage: AuthStorage = {
+          getItem: (key) => values.get(key) ?? null,
+          setItem: (key, value) => {
+            values.set(key, value)
+          },
+          removeItem: (key) => {
+            values.delete(key)
+          },
+        }
+        const pending = readPendingLocalKeyRemoval(restartedStorage)
+        expect(pending !== null).toBe(true)
+        await retireAuthSession(pending!, {
+          storage: restartedStorage,
+          withLock: async (task) => task(),
+        })
+        expect(readAuthSession(restartedStorage) === null).toBe(true)
+        expect(readPendingLocalKeyRemoval(restartedStorage) === null).toBe(true)
+        let absent = false
+        await recordOperation(factory, "candidate", (value) => {
+          absent = value === undefined
+        })
+        expect(absent).toBe(true)
+      }
+    )
+  })
+}
+
+test("unidentifiable candidate retains removal journal and visible retry failure", async () => {
+  await withFixture(
+    "candidate",
+    async ({ factory, session, storage, retire }) => {
+      await recordOperation(factory, "candidate", (value, store) => {
+        store.put({ ...(value as object), revision: null }, "candidate")
+      })
+      await expect(retire()).rejects.toThrow("removal is incomplete")
+      expect(
+        readPendingLocalKeyRemoval(storage)?.localKeyRevision ===
+          session.localKeyRevision
+      ).toBe(true)
+      let retained = false
+      await recordOperation(factory, "candidate", (value) => {
+        retained = value !== undefined
+      })
+      expect(retained).toBe(true)
+    }
+  )
+})
+
+for (const missing of ["lineage", "predecessor identity"] as const) {
+  test(`malformed candidate with unknown ${missing} preserves both slots for verified retry`, async () => {
+    await withFixture(
+      "candidate",
+      async ({ factory, session, secret, storage, retire }) => {
+        const predecessorRevision = crypto.randomUUID()
+        await recordOperation(factory, "active", (_value, store) => {
+          store.put(
+            {
+              version: 0,
+              revision:
+                missing === "predecessor identity" ? null : predecessorRevision,
+              secret,
+            },
+            "active"
+          )
+        })
+        await recordOperation(factory, "candidate", (value, store) => {
+          store.put(
+            {
+              ...(value as object),
+              version: 0,
+              previousRevision:
+                missing === "lineage" ? undefined : predecessorRevision,
+            },
+            "candidate"
+          )
+        })
+        await expect(retire()).rejects.toThrow("removal is incomplete")
+        expect(
+          readPendingLocalKeyRemoval(storage)?.localKeyRevision ===
+            session.localKeyRevision
+        ).toBe(true)
+        for (const slot of ["active", "candidate"] as const) {
+          let retained = false
+          await recordOperation(factory, slot, (value) => {
+            retained = value !== undefined
+          })
+          expect(retained).toBe(true)
+        }
+        // Repair only the synthetic damaged public identities, then retry through
+        // the actual journal path; signing-schema validity is still absent.
+        await recordOperation(factory, "active", (value, store) => {
+          store.put(
+            { ...(value as object), revision: predecessorRevision },
+            "active"
+          )
+        })
+        await recordOperation(factory, "candidate", (value, store) => {
+          store.put(
+            { ...(value as object), previousRevision: predecessorRevision },
+            "candidate"
+          )
+        })
+        await retireAuthSession(readPendingLocalKeyRemoval(storage)!, {
+          storage,
+          withLock: async (task) => task(),
+        })
+        for (const slot of ["active", "candidate"] as const) {
+          let absent = false
+          await recordOperation(factory, slot, (value) => {
+            absent = value === undefined
+          })
+          expect(absent).toBe(true)
+        }
+        expect(readPendingLocalKeyRemoval(storage) === null).toBe(true)
+      }
+    )
   })
 }

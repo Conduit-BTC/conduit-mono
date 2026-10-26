@@ -72,7 +72,11 @@ also fences queued work. Missing/unavailable storage stops signing and offers
 retry/removal/reimport. Logout stops live authority immediately, then commits
 exact-revision deletion and public-session retirement. Failed deletion stays a
 visible error and blocks connection until removal succeeds. Stale cleanup must
-preserve a newer import. Malformed unusable records can be explicitly removed.
+preserve a newer import. Exact-revision removal identifies both slots
+independently of signing-schema validity, so damaged records cannot silently retain the selected credential.
+Predecessor lineage is checked separately; unknown candidate ownership or
+unverifiable lineage retains retry metadata instead of reporting success.
+Identifiable different revisions and verified restored predecessors are preserved.
 The shared auth owner verifies a public-only removal journal. If a new journal
 entry cannot persist, it attempts a verified removal marker in the exact existing
 auth record, preserving public retry identity without overwriting another
