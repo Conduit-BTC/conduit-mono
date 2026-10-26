@@ -15,7 +15,7 @@ export default defineConfig({
   define: buildContract.define,
   plugins: [
     createThemeBootstrapPlugin(),
-    TanStackRouterVite(),
+    TanStackRouterVite({ autoCodeSplitting: true }),
     react(),
     createRepositoryContributorsPlugin(),
     buildContract.deploymentManifestPlugin,

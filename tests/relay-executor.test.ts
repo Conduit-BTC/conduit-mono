@@ -36,8 +36,8 @@ import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
 } from "../packages/core/src/protocol/account-network-local-state"
-import { addressRequestsDTag } from "../packages/core/src/wallets/spark-recovery-address"
-import { createSparkRecoveryReader } from "../packages/core/src/wallets/spark-recovery-read"
+import { PORTABLE_WALLET_TAG } from "../packages/core/src/wallets/portable-wallet-record"
+import { createPortableWalletReader } from "../packages/core/src/wallets/portable-wallet-read"
 
 const PRIVATE_KEY_A = new Uint8Array(32).fill(1)
 const PRIVATE_KEY_B = new Uint8Array(32).fill(2)
@@ -2230,29 +2230,13 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       {
         kind: 30078,
         created_at: Math.floor(Date.now() / 1000),
-        tags: [["d", "conduit:spark:primary:v1"]],
+        tags: [
+          ["d", "conduit:portable-wallet:v1:" + "a".repeat(64)],
+          ["t", PORTABLE_WALLET_TAG],
+        ],
         content: "ciphertext-fixture",
       },
       PRIVATE_KEY_A
-    )
-    const coordinates = [
-      "conduit:spark:primary:v1",
-      "conduit:spark:main:v1",
-      ...["mainnet", "testnet", "signet", "regtest"].flatMap((network) => [
-        `conduit:spark:primary:v1:${network}`,
-        `conduit:spark:main:v1:${network}`,
-        `conduit:spark:registry:v1:${network}`,
-        "conduit:wallet-names:v1:mainnet",
-        addressRequestsDTag(
-          network as "mainnet" | "testnet" | "signet" | "regtest"
-        ),
-      ]),
-    ]
-    const events = new Map(
-      coordinates.map((coordinate) => [
-        coordinate,
-        finalizeEvent({ ...event, tags: [["d", coordinate]] }, PRIVATE_KEY_A),
-      ])
     )
     const storageRelay = config.appReadRelayUrls[0]!
     const harness = new FakeRelayHarness().at(storageRelay, {
@@ -2260,12 +2244,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
       onSend: (socket, frame) => {
         if (frame[0] === "AUTH") respondToAuth(socket, frame)
         if (frame[0] === "REQ") {
-          const filter = frame[2] as { "#d"?: string[] }
-          socket.relay([
-            "EVENT",
-            frame[1],
-            events.get(filter["#d"]?.[0] ?? "conduit:spark:primary:v1"),
-          ])
+          socket.relay(["EVENT", frame[1], event])
           socket.relay(["EOSE", frame[1]])
         }
       },
@@ -2275,37 +2254,28 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     const request = {
       relayUrls: [storageRelay],
       operation: "account_recovery_read" as const,
-      filters: [{ kinds: [30078], authors: [PUBKEY_A], limit: 128 }],
+      filters: [
+        {
+          kinds: [30078],
+          authors: [PUBKEY_A],
+          limit: 128,
+          "#t": [PORTABLE_WALLET_TAG],
+        },
+      ],
     }
     const result = await executor.query(request, { authorization })
     expect(result.events.map((event) => event.id)).toEqual([event.id])
     expect(result.status).toBe("success")
-    for (const coordinate of coordinates) {
-      const result = await executor.query(
-        {
-          ...request,
-          filters: [{ ...request.filters[0]!, "#d": [coordinate], limit: 1 }],
-        },
-        { authorization }
-      )
-      expect(result.status).toBe("success")
-      expect(result.events.map((e) => e.id)).toEqual([
-        events.get(coordinate)!.id,
-      ])
-    }
     const repository = createInMemoryAccountNetworkLocalStateRepository()
-    const reader = createSparkRecoveryReader(executor, repository)
+    const reader = createPortableWalletReader(executor, repository)
     const requestRead = await reader(
       storageRelay,
       PUBKEY_A,
       undefined,
-      () => true,
-      addressRequestsDTag("mainnet")
+      () => true
     )
     expect(requestRead.status).toBe("complete")
-    expect(requestRead.events.map((item) => item.id)).toEqual([
-      events.get(addressRequestsDTag("mainnet"))!.id,
-    ])
+    expect(requestRead.events.map((item) => item.id)).toEqual([event.id])
     const socketsBefore = harness.sockets.length
     expect(
       (

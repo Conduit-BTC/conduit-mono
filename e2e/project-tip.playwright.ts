@@ -33,7 +33,8 @@ test("confirmed tip shows mission thank-you once, without a real payment @market
         __projectTipTest?: { prepared: number; paid: number }
       }
       state.__projectTipTest = { prepared: 0, paid: 0 }
-      ReactDOM.createRoot(host).render(
+      // Keep fixture-generated accessible IDs separate from the app root.
+      ReactDOM.createRoot(host, { identifierPrefix: `${host.id}-` }).render(
         React.createElement(ProjectTip, {
           prepare: async (amountSats: number) => {
             state.__projectTipTest!.prepared += 1
@@ -121,7 +122,7 @@ test("narrow tip presets stay readable and stale USD estimates can recover @mark
     host.style.left = "20px"
     host.style.zIndex = "40"
     document.body.append(host)
-    const root = ReactDOM.createRoot(host)
+    const root = ReactDOM.createRoot(host, { identifierPrefix: `${host.id}-` })
     const state = window as typeof window & {
       __projectTipRate?: { refreshes: number }
     }
@@ -222,7 +223,9 @@ test("closing during preparation permits a new tip and ignores stale completion 
         confirmedId: null,
         watchedId: null,
       }
-      const root = ReactDOM.createRoot(host)
+      const root = ReactDOM.createRoot(host, {
+        identifierPrefix: `${host.id}-`,
+      })
       const prepare = (amountSats: number) =>
         new Promise((resolve) => {
           const attempt = state.__projectTipInterrupted!.pending.length + 1
@@ -338,7 +341,7 @@ for (const mode of ["refusal", "prepublish", "timeout"] as const) {
         host.style.left = "20px"
         host.style.zIndex = "40"
         document.body.append(host)
-        ReactDOM.createRoot(host).render(
+        ReactDOM.createRoot(host, { identifierPrefix: `${host.id}-` }).render(
           React.createElement(ProjectTip, {
             prepare: async (amountSats: number) => ({
               invoice,

@@ -31,12 +31,7 @@ import {
   normalizeRelayUrl,
 } from "./relay-settings"
 import { serializeSignerOperation } from "./interactive-signer"
-import {
-  isAddressRequestsDTag,
-  isSparkWalletRegistryDTag,
-  isWalletNamesDTag,
-  parseSparkRecoveryChoiceAddress,
-} from "../wallets/spark-recovery-address"
+import { PORTABLE_WALLET_TAG } from "../wallets/portable-wallet-address"
 
 export interface PlainNostrFilter {
   ids?: string[]
@@ -490,18 +485,14 @@ function assertRequest(
     for (const filter of request.filters) {
       if (
         Object.keys(filter).some(
-          (key) => !["authors", "ids", "kinds", "limit", "#d"].includes(key)
+          (key) => !["authors", "ids", "kinds", "limit", "#t"].includes(key)
         ) ||
         filter.authors?.length !== 1 ||
         filter.authors[0] !== authorization.expectedPubkey ||
         filter.kinds?.length !== 1 ||
         filter.kinds[0] !== 30078 ||
-        (filter["#d"] !== undefined &&
-          (filter["#d"].length !== 1 ||
-            (!parseSparkRecoveryChoiceAddress(filter["#d"][0]) &&
-              !isSparkWalletRegistryDTag(filter["#d"][0]) &&
-              !isWalletNamesDTag(filter["#d"][0]) &&
-              !isAddressRequestsDTag(filter["#d"][0])))) ||
+        filter["#t"]?.length !== 1 ||
+        filter["#t"][0] !== PORTABLE_WALLET_TAG ||
         (filter.ids !== undefined &&
           (filter.ids.length !== 1 ||
             !/^[0-9a-f]{64}$/.test(filter.ids[0] ?? ""))) ||

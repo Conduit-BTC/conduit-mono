@@ -258,8 +258,8 @@ describe("durable organizer stock schema", () => {
       const upgraded = new ConduitDB(name, options)
       try {
         await upgraded.open()
-        expect(upgraded.verno).toBe(30)
-        expect(upgraded.backendDB().version).toBe(300)
+        expect(upgraded.verno).toBe(31)
+        expect(upgraded.backendDB().version).toBe(310)
         for (const [table, rows] of retained) {
           expect(
             upgraded.tables.some((candidate) => candidate.name === table)

@@ -10,6 +10,7 @@ import {
   type AuthStorage,
 } from "./auth-session"
 import type { Nip46AuthSession } from "./nip46-auth-session"
+import { isInvalidNip44CiphertextError } from "./nostr-event-signer"
 import type {
   AccountSignerCapabilities,
   NostrKeySigner,
@@ -64,6 +65,7 @@ export type RemoteSignerErrorCode =
   | "unavailable"
   | "credential_unavailable"
   | "invalid_response"
+  | "invalid_ciphertext"
   | "session_identity_mismatch"
 
 export class RemoteSignerError extends Error {
@@ -480,6 +482,12 @@ function classifyRemoteSignerError(
   operation: string
 ): RemoteSignerError {
   if (error instanceof RemoteSignerError) return error
+  if (operation === "nip44 decrypt" && isInvalidNip44CiphertextError(error))
+    return new RemoteSignerError(
+      "invalid_ciphertext",
+      "The encrypted payload is invalid.",
+      { operation }
+    )
   if (error instanceof Nip46TransportError) {
     return new RemoteSignerError(
       error.code,

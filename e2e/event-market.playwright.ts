@@ -24,6 +24,7 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
@@ -1744,6 +1745,9 @@ async function createAssignedPickupOrder(
   const orderStart = relay.publications.length
   await page.getByRole("button", { name: /^Send order$/i }).click()
   await expect(page).toHaveURL(/\/orders(?:\?|$)/, { timeout: 30_000 })
+  await expect(
+    page.getByRole("heading", { name: "Orders", exact: true })
+  ).toBeVisible()
   const orderMessages = () =>
     uniquePrivatePublications(
       decryptPrivatePublications(
@@ -4990,6 +4994,9 @@ test("event shopping keeps pickup-only choices and merchant profile navigation @
         new URL(page.url()).pathname === `/${nip19.npubEncode(MERCHANT_PUBKEY)}`
     )
     .toBe(true)
+  await expect(
+    page.getByRole("heading", { name: "Choice merchant", exact: true })
+  ).toBeVisible()
   await gotoAs(page, marketUrl, `/events/${marketRef}`, "buyer")
   await expect(page.getByRole("heading", { name: "Choice soap" })).toBeVisible()
   await expect(
@@ -5273,6 +5280,11 @@ for (const retention of ["screen", "file"] as const) {
         /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
       ).toBe(true)
       expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      // The Orders component must commit before starting a new document.
+      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
       receiptStage = "code-verification"
       await gotoAs(page, merchantUrl, "/orders", "merchant", {
         order: order.id,
@@ -5603,15 +5615,19 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         throw error
       }
       await gotoAs(page, merchantUrl, eventPath, "merchant")
-      await page
-        .getByRole("combobox", {
-          name: "Stock for organizer pickup",
-          exact: true,
-        })
-        .click()
-      await page
-        .getByRole("option", { name: /synthetic-existing-product/ })
-        .click()
+      const stock = page.getByRole("combobox", {
+        name: "Stock for organizer pickup",
+        exact: true,
+      })
+      await expect(stock).toBeEnabled()
+      // Exercise Radix's focused keyboard path, then confirm the exact selection.
+      await stock.press("Enter")
+      const product = page.getByRole("option", {
+        name: /synthetic-existing-product/,
+      })
+      await expect(product).toBeVisible()
+      await product.press("Enter")
+      await expect(stock).toContainText(/synthetic-existing-product/)
       await page
         .getByRole("textbox", { name: "Quantity to reserve", exact: true })
         .fill("2")
@@ -5786,7 +5802,9 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
   })
   await expect(complete).toBeEnabled()
   const completionStart = result.relay.publications.length
-  await complete.click()
+  // Mobile WebKit can release a scripted pointer outside this button.
+  // Focused keyboard activation starts exactly one action without retrying it.
+  await complete.press("Enter")
   // Settle the initiated action before checking its exact private receipt.
   await complete.waitFor({ state: "hidden" })
   await page
@@ -5881,8 +5899,15 @@ async function enablePrivateInbox(page: Page): Promise<void> {
     exact: true,
   })
   if ((await inbox.count()) === 0) {
-    await relays.getByLabel("Add relay", { exact: true }).fill(FIXTURE_RELAY)
-    await relays.getByRole("button", { name: "Add relay", exact: true }).click()
+    const input = relays.getByLabel("Add relay", { exact: true })
+    await input.fill(FIXTURE_RELAY)
+    await expect(
+      relays.getByRole("button", { name: "Add relay", exact: true })
+    ).toBeEnabled()
+    // Mobile WebKit can lose a pointer click while the relay list settles.
+    // Submit from the focused field and confirm the form handled the action.
+    await input.press("Enter")
+    await expect(input).toHaveValue("")
   }
   await expect(
     relays.getByRole("button", {
@@ -6021,16 +6046,25 @@ test("a host and merchant create, request, approve and offer through the screens
   )
   await expect(page.getByLabel(/^Start \(/)).toHaveValue("2030-06-01T11:00")
 
-  await page
-    .getByRole("button", { name: "I'm also selling", exact: true })
-    .click()
-  await page.getByRole("combobox", { name: "Who holds the stock?" }).click()
+  const selling = page.getByRole("button", {
+    name: "I'm also selling",
+    exact: true,
+  })
+  await expect(selling).toBeEnabled()
+  await selling.press("Enter")
+  const stockMode = page.getByRole("combobox", {
+    name: "Who holds the stock?",
+    exact: true,
+  })
+  await expect(stockMode).toBeVisible()
+  await stockMode.press("Enter")
   await expect(
     page.getByRole("option", { name: "Organizer-held pickup", exact: true })
   ).toBeDisabled()
   await page
     .getByRole("option", { name: "Merchant-managed pickup", exact: true })
-    .click()
+    .press("Enter")
+  await expect(stockMode).toHaveText("Merchant-managed pickup")
   await page.getByLabel("Public assignment").fill("Host booth")
   await page
     .getByRole("button", { name: "Approve merchant", exact: true })
@@ -7476,7 +7510,16 @@ async function acceptPickupOrder(
       (key) => localStorage.setItem(key, "1"),
       SYNTHETIC_SIGNER_UNAVAILABLE_KEY
     )
+  const pending = page.getByRole("button", { name: /^(Sending|Recording)…$/ })
+  const saved = page.getByRole("button", {
+    name: "Retry acceptance publication",
+    exact: true,
+  })
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
+  // A click starts the async action; settle it before checking durable readback.
+  // Accept the saved control as the start signal when the action finishes quickly.
+  await pending.or(saved).first().waitFor({ state: "visible" })
+  await pending.waitFor({ state: "hidden" })
   if (interruptSigning)
     await expect(
       page.getByText(
@@ -7486,12 +7529,7 @@ async function acceptPickupOrder(
     ).toBeVisible()
   // This control exists only after the exact acceptance is read from storage.
   // Publication can replace the transient notice before the next render.
-  await expect(
-    page.getByRole("button", {
-      name: "Retry acceptance publication",
-      exact: true,
-    })
-  ).toBeVisible()
+  await expect(saved).toBeVisible()
   if (interruptSigning)
     await page.evaluate(
       (key) => localStorage.removeItem(key),
@@ -7546,7 +7584,9 @@ test("paid pickup keeps its original receipt and stock after same-event reschedu
   await page.clock.setFixedTime(new Date((newStart + 600) * 1000))
   await gotoAs(page, merchantUrl, "/orders", "merchant", { order: order.id })
   const from = relay.publications.length
-  await complete.click()
+  await expect(complete).toBeEnabled()
+  // Use the same focused activation as the free-pickup reconciliation case.
+  await complete.press("Enter")
   await complete.waitFor({ state: "hidden" })
   await page
     .getByRole("button", { name: /^(Sending|Recording)…$/ })
@@ -8310,10 +8350,105 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   )
   const pendingRetry = retry.and(page.locator(":disabled"))
-  await retry.click()
-  await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
-  await pendingRetry.waitFor({ state: "hidden" })
-  await expect(publishedNotice).toBeVisible()
+  const retryObservation = await page.evaluateHandle((unavailableKey) => {
+    const seen = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      pendingObserved: false,
+      publishedObserved: false,
+      publicationErrorObserved: false,
+    }
+    const trigger = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) =>
+          button.textContent?.trim() === "Retry acceptance publication"
+      )
+    const observe = () => {
+      seen.pendingObserved ||= trigger()?.disabled === true
+      seen.publishedObserved ||= [
+        ...document.querySelectorAll('[role="status"]'),
+      ].some(
+        (status) =>
+          status.textContent?.trim() === "Accepted inventory updates published."
+      )
+      seen.publicationErrorObserved ||= [
+        ...document.querySelectorAll('[role="alert"]'),
+      ].some((alert) =>
+        alert.textContent?.includes(
+          "Acceptance remains saved. Publication could not finish;"
+        )
+      )
+    }
+    const isTrigger = (event: Event) =>
+      event.target instanceof Node && trigger()?.contains(event.target) === true
+    const down = (event: Event) => {
+      if (isTrigger(event)) seen.pointerDownOnTrigger = true
+    }
+    const up = (event: Event) => {
+      if (isTrigger(event)) seen.pointerUpOnTrigger = true
+    }
+    const click = (event: Event) => {
+      if (isTrigger(event)) seen.clickOnTrigger = true
+    }
+    document.addEventListener("pointerdown", down, true)
+    document.addEventListener("pointerup", up, true)
+    document.addEventListener("click", click, true)
+    const observer = new MutationObserver(observe)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    })
+    observe()
+    return {
+      read() {
+        observe()
+        return {
+          observationAvailable: true,
+          ...seen,
+          signerDenied: localStorage.getItem(unavailableKey) === "1",
+          signerAttempts:
+            (
+              window as typeof window & {
+                __conduitSyntheticSignAttempts?: number
+              }
+            ).__conduitSyntheticSignAttempts ?? 0,
+          retryPresent: !!trigger(),
+          retryEnabled: !!trigger() && !trigger()!.disabled,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", down, true)
+        document.removeEventListener("pointerup", up, true)
+        document.removeEventListener("click", click, true)
+      },
+    }
+  }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
+  try {
+    await retry.click()
+    await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
+    await pendingRetry.waitFor({ state: "hidden" })
+    await expect(publishedNotice).toBeVisible()
+  } catch (error) {
+    let safe: Record<string, unknown> = { observationAvailable: false }
+    try {
+      safe = await retryObservation.evaluate((observation) =>
+        observation.read()
+      )
+    } catch {
+      /* Retain the original failure if the page is unavailable. */
+    }
+    recordSmokeDiagnostic(test.info(), "inventory-publication-retry", safe)
+    throw error
+  } finally {
+    await retryObservation
+      .evaluate((observation) => observation.dispose())
+      .catch(() => {})
+    await retryObservation.dispose()
+  }
   const state = await page.evaluate(
     async ({ root, coordinate, orderId }) => {
       const { db } = await import(`${root}/db/index.ts`)

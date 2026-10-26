@@ -41,7 +41,11 @@ export function WalletAddressSetup({
             setPending(true)
             onPendingChange(true)
             try {
-              onChange(await resolve(walletId))
+              onChange(
+                await resolve(walletId, false, undefined, undefined, {
+                  priority: "foreground",
+                })
+              )
             } catch {
               onChange({
                 status: "unavailable",

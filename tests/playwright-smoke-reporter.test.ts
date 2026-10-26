@@ -1583,6 +1583,46 @@ describe("bounded smoke failure diagnostics", () => {
     }
   })
 
+  it("keeps inventory retry diagnostics scalar and scoped to its owning test", () => {
+    const annotation = {
+      type: "smoke:inventory-publication-retry",
+      description: JSON.stringify({
+        observationAvailable: true,
+        clickOnTrigger: false,
+        pendingObserved: false,
+        publishedObserved: false,
+        publicationErrorObserved: true,
+        signerDenied: false,
+        signerAttempts: 2,
+        retryPresent: true,
+        retryEnabled: true,
+        pubkey: "private-value",
+        orderId: "private-value",
+        message: "private-value",
+        event: { content: "private-value" },
+      }),
+    }
+    expect(
+      safeSmokeDiagnostics("e2e/event-market.playwright.ts", [annotation])
+    ).toEqual([
+      {
+        kind: "inventory-publication-retry",
+        observationAvailable: true,
+        clickOnTrigger: false,
+        pendingObserved: false,
+        publishedObserved: false,
+        publicationErrorObserved: true,
+        signerDenied: false,
+        signerAttempts: 2,
+        retryPresent: true,
+        retryEnabled: true,
+      },
+    ])
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", [annotation])
+    ).toEqual([])
+  })
+
   it("allows only fixed surface phases and scalar pending-resource observations", () => {
     const annotation = {
       type: "smoke:surface-audit",

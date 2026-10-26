@@ -35,6 +35,10 @@ export type WalletLifecycleStatus =
   "registered" | "connecting" | "ready" | "unavailable" | "locked" | "error"
 
 export interface WalletDescriptor {
+  portableRecordVersion?: 1
+  accountRemoved?: boolean
+  accountPaySelectedAt?: number
+  accountReceiveSelectedAt?: number
   id: string
   kind: WalletKind
   providerId: WalletProviderId
