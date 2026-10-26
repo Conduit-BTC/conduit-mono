@@ -210,11 +210,12 @@ test("wallet persistence failure keeps verified receiving visible while saving r
   await expect(form).toContainText(
     "Your address is activated and your public profile is updated."
   )
+  // Initial load plus the failure-path recovery read; neither is a provider lookup.
   expect(
     await page.evaluate(() =>
       (window as ActivationFixtureWindow).__activationFixture.counts()
     )
-  ).toEqual({ calls: 2, loads: 1 })
+  ).toEqual({ calls: 2, loads: 2 })
 })
 
 test("switching account and wallet ignores late activation results @market", async ({
