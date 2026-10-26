@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { readFileSync } from "node:fs"
-import gatewayConfig from "../apps/address-gateway/wrangler.json"
 import { secp256k1 } from "../packages/core/node_modules/@noble/curves/secp256k1.js"
 import { sha256 } from "../packages/core/node_modules/@noble/hashes/sha2.js"
 import { bytesToHex } from "../packages/core/node_modules/@noble/hashes/utils.js"
@@ -255,68 +254,164 @@ function fixture() {
   }
 }
 describe("approved-name gateway", () => {
-  test("only the exact Merchant release preview receives CORS and Turnstile admission", async () => {
-    const merchantOrigin =
-      "https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev"
-    const otherPreview =
-      "https://another-preview.conduit-merchant-33n.pages.dev"
+  test("native repository previews submit and check real gateway records while forks fail closed", async () => {
+    const origin = "https://feat-names.conduit-merchant-33n.pages.dev"
     const f = fixture()
-    f.env.ALLOWED_ORIGINS = gatewayConfig.vars.ALLOWED_ORIGINS
-    f.env.TURNSTILE_HOSTNAMES = gatewayConfig.vars.TURNSTILE_HOSTNAMES
-    for (const [origin, status, allowedOrigin] of [
-      [merchantOrigin, 204, merchantOrigin],
-      [otherPreview, 403, null],
-    ] as const) {
-      const result = await f.handle(
-        new Request(`https://conduit.cash${ADDRESS_REQUEST_PATH}`, {
-          method: "OPTIONS",
-          headers: { Origin: origin },
-        })
+    Object.assign(f.env, {
+      TRUSTED_PREVIEWS_ENABLED: "true",
+      PAGES_ACCOUNT_ID: "a".repeat(32),
+      PAGES_READ_API_TOKEN: "server-only-fixture",
+      PREVIEW_DISCOVERY_RATE_LIMITER: {
+        limit: async () => ({ success: true }),
+      },
+    })
+    const verificationAttempts: string[] = []
+    let fork = false,
+      expired = false,
+      wrongHostname = false,
+      providerChecks = 0
+    const provider = (async (input, init) => {
+      if (
+        String(input).startsWith("https://api.cloudflare.com/") &&
+        !new URL(String(input)).pathname.endsWith("/deployments")
       )
-      expect(result.status).toBe(status)
-      expect(result.headers.get("Access-Control-Allow-Origin")).toBe(
-        allowedOrigin
-      )
-    }
-    const request = f.nameRequest()
-    request.headers.set("Origin", merchantOrigin)
-    const verified = await handleAddressGateway(
-      request,
-      f.env,
-      [],
-      (async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (new URL(String(input)).hostname === "challenges.cloudflare.com")
-          return Response.json({
-            success: true,
-            hostname: new URL(merchantOrigin).hostname,
-            action: "address_name_request",
-          })
-        return f.fetcher(input, init)
-      }) as typeof fetch,
-      f.now
-    )
-    expect(verified.status).toBe(200)
-    expect(await verified.json()).toEqual({ status: "received" })
-
-    const rejected = fixture()
-    rejected.env.ALLOWED_ORIGINS = gatewayConfig.vars.ALLOWED_ORIGINS
-    rejected.env.TURNSTILE_HOSTNAMES = gatewayConfig.vars.TURNSTILE_HOSTNAMES
-    const rejectedRequest = rejected.nameRequest()
-    rejectedRequest.headers.set("Origin", merchantOrigin)
-    const wrongHostname = await handleAddressGateway(
-      rejectedRequest,
-      rejected.env,
-      [],
-      (async () =>
-        Response.json({
+        return Response.json({
           success: true,
-          hostname: new URL(otherPreview).hostname,
+          result: {
+            name: "conduit-merchant",
+            subdomain: "conduit-merchant-33n.pages.dev",
+            source: {
+              type: "github",
+              config: {
+                owner: "Conduit-BTC",
+                repo_name: "conduit-mono",
+                repo_id: "1154829623",
+              },
+            },
+          },
+        })
+      if (String(input).startsWith("https://api.cloudflare.com/"))
+        return Response.json({
+          success: true,
+          result: [
+            {
+              url: "https://abc12345.conduit-merchant-33n.pages.dev",
+              aliases: [origin],
+              environment: "preview",
+              project_name: "conduit-merchant",
+              created_on: new Date(
+                (f.now - (expired ? 8 * 86400 : 60)) * 1000
+              ).toISOString(),
+              latest_stage: { name: "deploy", status: "success" },
+              source: {
+                type: "github",
+                config: {
+                  owner: fork ? "fork-owner" : "Conduit-BTC",
+                  repo_name: "conduit-mono",
+                  repo_id: "1154829623",
+                },
+              },
+              deployment_trigger: {
+                type: "github:push",
+                metadata: {
+                  branch: "feat/names",
+                  commit_hash: "a".repeat(40),
+                  commit_dirty: false,
+                },
+              },
+            },
+          ],
+          result_info: { total_pages: 1 },
+        })
+      if (String(input).includes("challenges.cloudflare.com")) {
+        providerChecks++
+        verificationAttempts.push(
+          JSON.parse(String(init?.body)).idempotency_key
+        )
+        return Response.json({
+          success: true,
+          hostname: wrongHostname
+            ? "shop.conduit.market"
+            : new URL(origin).hostname,
           action: "address_name_request",
-        })) as typeof fetch,
-      rejected.now
+        })
+      }
+      return f.fetcher(input, init)
+    }) as typeof fetch
+    const handle = (request: Request, names: ApprovedName[] = []) => {
+      request.headers.set("Origin", origin)
+      return handleAddressGateway(request, f.env, names, provider, f.now)
+    }
+    expect(
+      (
+        await handle(
+          new Request("https://conduit.cash/api/name-requests", {
+            method: "OPTIONS",
+          })
+        )
+      ).status
+    ).toBe(204)
+    wrongHostname = true
+    const rejected = await handle(f.nameRequest())
+    expect(rejected.status).toBe(400)
+    expect(await rejected.json()).toEqual({ status: "challenge_failed" })
+    expect(
+      f.db.query("SELECT count(*) AS count FROM name_requests").get()
+    ).toEqual({ count: 0 })
+    wrongHostname = false
+    expect(await (await handle(f.nameRequest())).json()).toEqual({
+      status: "received",
+    })
+    // The same signed request is available through production, without re-submission.
+    expect(
+      await (
+        await f.handle(f.nameRequest(ADDRESS_REQUEST_PATH + "/status"), [])
+      ).json()
+    ).toEqual({ status: "received" })
+    expect(
+      await (
+        await handle(f.nameRequest(ADDRESS_REQUEST_PATH + "/status"), [
+          f.approved,
+        ])
+      ).json()
+    ).toEqual({ status: "approved" })
+    expect(providerChecks).toBe(2)
+    expect(new Set(verificationAttempts).size).toBe(2)
+    // Preview admission does not grant registration: the same manual approval,
+    // fresh recovery, account proof and wallet signature still protect activation.
+    expect((await handle(f.management("register"))).status).toBe(403)
+    expect((await handle(f.management("recover"), [f.approved])).status).toBe(
+      404
     )
-    expect(wrongHostname.status).toBe(400)
-    expect(await wrongHostname.json()).toEqual({ status: "challenge_failed" })
+    expect((await handle(f.management("register"), [f.approved])).status).toBe(
+      200
+    )
+    expect(
+      f.calls.some((call) => call.path === `/lnurlpay/${f.identity}`)
+    ).toBe(true)
+    fork = true
+    const forbidden = await handle(f.nameRequest())
+    expect(forbidden.status).toBe(403)
+    expect(forbidden.headers.get("Access-Control-Allow-Origin")).toBeNull()
+    expect(providerChecks).toBe(2)
+    // Public readiness exposes only the denial so browsers can give a clear message.
+    const readiness = await handle(
+      new Request("https://conduit.cash/api/name-requests/availability")
+    )
+    expect(await readiness.json()).toEqual({ status: "origin_forbidden" })
+    expect(readiness.headers.get("Access-Control-Allow-Origin")).toBe(origin)
+    fork = false
+    expired = true
+    expect(
+      await (
+        await handle(
+          new Request("https://conduit.cash/api/name-requests/availability")
+        )
+      ).json()
+    ).toEqual({ status: "preview_expired" })
+    expect(
+      f.db.query("SELECT count(*) AS count FROM name_requests").get()
+    ).toEqual({ count: 1 })
   })
   test("operator proposes only the original verified binding and preserves legacy records", async () => {
     const f = fixture()

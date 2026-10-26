@@ -5,11 +5,17 @@
   "compatibility_date": "2026-10-01",
   "workers_dev": false,
   "preview_urls": false,
-  "routes": [{ "pattern": "conduit.cash/*", "zone_name": "conduit.cash" }],
+  "routes": [
+    {
+      "pattern": "conduit.cash/*",
+      "zone_name": "conduit.cash"
+    }
+  ],
   "vars": {
-    "ALLOWED_ORIGINS": "https://shop.conduit.market,https://sell.conduit.market,https://feat-conduit-cash-release.conduit-market-coo.pages.dev,https://feat-conduit-cash-release.conduit-merchant-33n.pages.dev",
-    "TURNSTILE_HOSTNAMES": "shop.conduit.market,sell.conduit.market,feat-conduit-cash-release.conduit-market-coo.pages.dev,feat-conduit-cash-release.conduit-merchant-33n.pages.dev",
-    "PROVIDER_PROXY_QUALIFIED": "false"
+    "ALLOWED_ORIGINS": "https://shop.conduit.market,https://sell.conduit.market",
+    "TURNSTILE_HOSTNAMES": "shop.conduit.market,sell.conduit.market",
+    "PROVIDER_PROXY_QUALIFIED": "false",
+    "TRUSTED_PREVIEWS_ENABLED": "false"
   },
   "d1_databases": [
     {
@@ -23,10 +29,23 @@
     {
       "name": "REQUEST_RATE_LIMITER",
       "namespace_id": "4001",
-      "simple": { "limit": 5, "period": 60 }
+      "simple": {
+        "limit": 5,
+        "period": 60
+      }
+    },
+    {
+      "name": "PREVIEW_DISCOVERY_RATE_LIMITER",
+      "namespace_id": "4003",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
     }
   ],
-  "observability": { "enabled": false },
+  "observability": {
+    "enabled": false
+  },
   "env": {
     "preview": {
       "name": "conduit-address-gateway-preview",
@@ -50,7 +69,10 @@
         {
           "name": "REQUEST_RATE_LIMITER",
           "namespace_id": "4002",
-          "simple": { "limit": 5, "period": 60 }
+          "simple": {
+            "limit": 5,
+            "period": 60
+          }
         }
       ]
     }
