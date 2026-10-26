@@ -1,5 +1,6 @@
 import path from "node:path"
 import type { AuthContextValue } from "@conduit/core"
+import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
 import { expect, test, type Page } from "@playwright/test"
 import { decodeLightningInvoicePaymentHash } from "../packages/core/src/protocol/lightning"
 import { makeSignedBolt11Fixture } from "../tests/support/signed-bolt11-fixture"
@@ -36,9 +37,10 @@ type FundingFixtureWindow = Window & {
     balanceSats: number
   }
   __fundingCaptures: { copies: string[]; links: boolean[] }
+  __controlledWalletController: Pick<UseWalletsReturn, "signerUnlockSupported">
   __controlledWalletAuth: Pick<
     AuthContextValue,
-    "accountPubkey" | "connect" | "disconnect"
+    "accountPubkey" | "connect" | "disconnect" | "signerReadiness"
   >
 }
 
@@ -60,6 +62,18 @@ async function begin(page: Page, app: "market" | "merchant", funding = true) {
       : (process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001")
   await page.goto(`http://127.0.0.1:${port}/wallet`)
   await installControlledWallet(page)
+  // Funding exercises the signed-in wallet, not creation during signer discovery.
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const fixture = window as unknown as FundingFixtureWindow
+        return (
+          fixture.__controlledWalletAuth?.signerReadiness === "ready" &&
+          fixture.__controlledWalletController?.signerUnlockSupported === true
+        )
+      })
+    )
+    .toBe(true)
   await openWalletSetup(page, "Create wallet")
   await saveWalletRecovery(page)
   await page

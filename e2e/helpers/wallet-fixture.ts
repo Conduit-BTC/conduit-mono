@@ -286,7 +286,23 @@ export async function prepareControlledWallet(page: Page) {
   await page.route(
     "**/packages/core/src/wallets/spark-sdk.ts*",
     async (route) => {
-      const response = await route.fetch()
+      let response
+      try {
+        response = await route.fetch()
+      } catch (error) {
+        // This request is only the public SDK source module. Keep transport
+        // diagnostics bounded and strip URLs; never emit headers or bodies.
+        const detail =
+          error instanceof Error ? error.message.split("\n")[0] : "unknown"
+        console.info("[wallet-fixture] SDK source fetch failed", {
+          detail: detail
+            .replace(/https?:\/\/\S+/g, "[module URL]")
+            .slice(0, 180),
+          pageClosed: page.isClosed(),
+          navigation: route.request().isNavigationRequest(),
+        })
+        throw error
+      }
       const body = await response.text()
       const marker = "new FirstPartySparkSdkFactory("
       if (body.split(marker).length !== 2)
