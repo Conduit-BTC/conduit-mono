@@ -8482,7 +8482,11 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
   try {
-    await retry.click()
+    await retry.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
+    )
+    if (test.info().project.use.hasTouch) await retry.tap()
+    else await retry.click()
     await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
     await pendingRetry.waitFor({ state: "hidden" })
     await expect(publishedNotice).toBeVisible()
