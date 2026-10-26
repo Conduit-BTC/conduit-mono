@@ -247,13 +247,7 @@ afterEach(() => {
 
 describe("Merchant storefront shipping preparation", () => {
   it("reopens a signed fixed-shipping family through the real storefront/editor path", async () => {
-    const result = await fetchMerchantProducts(merchant, {
-      accountPubkey: merchant,
-      authenticatedPubkey: null,
-      accountNetworkLocalStateRepository: accountPolicy,
-    })
-    const family = groupProductVariationRecords(result.data)[0]!
-    const form = getProductVariationFormState(family.root, family.variations)
+    const { result, family, form } = await readFamily()
     expect(form.supported).toBe(true)
     expect(getProductVariationFormError(form.state, "USD")).toBeNull()
     expect(shippingReads).toBeGreaterThan(0)
