@@ -38,6 +38,85 @@ async function hasOwner(page: Page): Promise<boolean> {
   }, protocol)
 }
 
+// Capture public operation capabilities before dismissal; retain no identity in
+// Playwright output. Delay the provider read independently of storage promotion.
+async function captureProvisionalAuthority(page: Page) {
+  await page.evaluate(async (root) => {
+    const owners = await import(`${root}/session-signer.ts`)
+    const reads = await import(`${root}/protected-read-authorization.ts`)
+    const { LocalKeyStorage } = await import(`${root}/local-key/storage.ts`)
+    const signer = owners.getAccountSigner()
+    if (!signer) throw new Error("LOCAL_TEST_PROVISIONAL_OWNER_ABSENT")
+    const pubkey = signer.pubkey
+    const grant = reads.getProtectedReadAuthorization(pubkey)
+    if (!grant) throw new Error("LOCAL_TEST_PROVISIONAL_GRANT_ABSENT")
+    const read = LocalKeyStorage.prototype.read
+    let release!: () => void
+    let entered!: () => void
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve
+    })
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    LocalKeyStorage.prototype.read = async function (...args) {
+      entered()
+      await barrier
+      return read.apply(this, args)
+    }
+    const pending = signer
+      .signEvent({
+        pubkey,
+        kind: 1,
+        created_at: 1_700_000_000,
+        tags: [],
+        content: "synthetic",
+      })
+      .then(
+        () => false,
+        () => true
+      )
+    await waiting
+    Object.assign(window, {
+      provisionalAuthority: {
+        async check() {
+          const noOwner = !owners.getAccountSigner()
+          const noGrant = reads.getProtectedReadAuthorization(pubkey) === null
+          const oldGrantRevoked = !reads.hasProtectedReadAuthority(grant)
+          // Do not await an unfenced provider on the negative control.
+          if (!noOwner || !noGrant || !oldGrantRevoked) return false
+          const capturedRejected = await signer.getPublicKey().then(
+            () => false,
+            () => true
+          )
+          return capturedRejected && (await pending)
+        },
+        release() {
+          LocalKeyStorage.prototype.read = read
+          release()
+        },
+      },
+    })
+  }, protocol)
+}
+
+async function expectProvisionalRevoked(page: Page) {
+  expect(
+    await page.evaluate(() =>
+      (
+        window as unknown as {
+          provisionalAuthority: { check(): Promise<boolean> }
+        }
+      ).provisionalAuthority.check()
+    )
+  ).toBe(true)
+  await page.evaluate(() =>
+    (
+      window as unknown as { provisionalAuthority: { release(): void } }
+    ).provisionalAuthority.release()
+  )
+}
+
 for (const app of ["market", "merchant"] as const) {
   const port =
     app === "market"
@@ -486,11 +565,22 @@ for (const app of ["market", "merchant"] as const) {
         )
       )
       .toBe(true)
+    await captureProvisionalAuthority(page)
     await page
       .getByRole("dialog")
       .getByRole("button", { name: "Close", exact: true })
       .click()
     await expect(page.getByRole("dialog")).toBeHidden()
+    await expectProvisionalRevoked(page)
+    expect(
+      await page.evaluate(async (root) => {
+        const metadata = await import(`${root}/auth-session.ts`)
+        return (
+          metadata.readPendingLocalKeyRemoval() !== null &&
+          metadata.readAuthSession() === null
+        )
+      }, protocol)
+    ).toBe(true)
     await page.evaluate(() =>
       (
         window as unknown as {
@@ -778,6 +868,226 @@ for (const app of ["market", "merchant"] as const) {
     await expect.poll(() => hasOwner(page)).toBe(false)
   })
 
+  for (const transition of [
+    "import-unmount",
+    "import-epoch",
+    "import-late-cancel",
+    "import-reload",
+    "restore-unmount",
+    "restore-disconnect",
+    "restore-success",
+  ] as const) {
+    test(`${app} provisional ownership ${transition} @${app}`, async ({
+      page,
+    }) => {
+      await page.goto(home)
+      await page.evaluate(
+        async ({ root, fixturePath, transition }) => {
+          const helper = await import(fixturePath)
+          const { mountLocalAuthFixture } = await import(
+            fixturePath.replace(
+              "local-key-test-identity.ts",
+              "local-key-auth-fixture.tsx"
+            )
+          )
+          const metadata = await import(`${root}/auth-session.ts`)
+          const owners = await import(`${root}/session-signer.ts`)
+          const reads = await import(`${root}/protected-read-authorization.ts`)
+          const { LocalKeyStorage } = await import(
+            `${root}/local-key/storage.ts`
+          )
+          const input = document.createElement("input")
+          input.type = "password"
+          if (transition.startsWith("restore")) {
+            // Seed the saved credential directly; this case exercises the real
+            // provider's restore, not a second interactive sign-in.
+            const keys = await import(`${root}/local-key/index.ts`)
+            helper.populateImportInput(input)
+            const seed = await keys
+              .prepareLocalKeyImport(input)
+              .persist(() => true)
+            await seed.commit(() => true)
+            metadata.writeAuthSession({
+              version: 1,
+              type: "local",
+              ...seed.reference,
+              authClaim: metadata.claimAuthRevision().revision,
+            })
+            seed.invalidate()
+          }
+          const commit = LocalKeyStorage.prototype.commit
+          let release!: () => void
+          let entered!: () => void
+          const waiting = new Promise<void>((resolve) => {
+            entered = resolve
+          })
+          const barrier = new Promise<void>((resolve) => {
+            release = resolve
+          })
+          LocalKeyStorage.prototype.commit = async function (...args) {
+            if (transition === "import-late-cancel")
+              await commit.apply(this, args)
+            entered()
+            await barrier
+            if (transition !== "import-late-cancel")
+              return commit.apply(this, args)
+          }
+          const mounted = await mountLocalAuthFixture()
+          let completion = Promise.resolve()
+          if (transition.startsWith("import")) {
+            helper.populateImportInput(input)
+            completion = mounted.auth
+              .connect({ method: "local", localKeyInput: input })
+              .catch(() => {})
+          }
+          await waiting
+          let disconnected = Promise.resolve()
+          const selected = metadata.readAuthSession()
+          Object.assign(window, {
+            authTransition: {
+              interrupt() {
+                if (transition.endsWith("unmount")) mounted.dispose()
+                else if (transition === "restore-disconnect")
+                  disconnected = mounted.auth.disconnect()
+                else if (transition === "import-epoch") {
+                  const revision = metadata.claimAuthRevision().revision
+                  window.dispatchEvent(
+                    new StorageEvent("storage", {
+                      key: metadata.AUTH_REVISION_STORAGE_KEY,
+                      newValue: revision,
+                    })
+                  )
+                } else mounted.auth.cancelConnect()
+              },
+              removalPending() {
+                return metadata.readPendingLocalKeyRemoval() !== null
+              },
+              async finish() {
+                LocalKeyStorage.prototype.commit = commit
+                release()
+                await completion
+                await navigator.locks.request(
+                  "conduit-auth-operation",
+                  () => undefined
+                )
+                await disconnected
+                const current = metadata.readAuthSession()
+                const signer = owners.getAccountSigner()
+                const savedPreserved =
+                  selected?.type === "local" &&
+                  current?.type === "local" &&
+                  selected.localKeyRevision === current.localKeyRevision
+                if (transition === "restore-success") {
+                  // Closing an already-completed attempt must not revoke the session.
+                  mounted.auth.cancelConnect()
+                  const event = await signer?.signEvent({
+                    pubkey: signer.pubkey,
+                    kind: 1,
+                    created_at: 1_700_000_000,
+                    tags: [],
+                    content: "synthetic",
+                  })
+                  const { isValidSignedPublicNostrEvent } = await import(
+                    `${root}/signed-event.ts`
+                  )
+                  const usable =
+                    !!event &&
+                    isValidSignedPublicNostrEvent(event) &&
+                    !!reads.getProtectedReadAuthorization(signer.pubkey)
+                  mounted.dispose()
+                  return { usable, savedPreserved }
+                }
+                const noAuthority =
+                  !signer &&
+                  (!selected ||
+                    !reads.getProtectedReadAuthorization(selected.userPubkey))
+                if (transition === "restore-unmount") {
+                  const next = await mountLocalAuthFixture()
+                  await navigator.locks.request(
+                    "conduit-auth-operation",
+                    () => undefined
+                  )
+                  const restored = !!owners.getAccountSigner()
+                  next.dispose()
+                  return { noAuthority, savedPreserved, restored }
+                }
+                if (!transition.endsWith("unmount")) mounted.dispose()
+                return {
+                  noAuthority,
+                  noSession: current === null,
+                  noRemoval: metadata.readPendingLocalKeyRemoval() === null,
+                }
+              },
+            },
+          })
+        },
+        { root: protocol, fixturePath: fixture, transition }
+      )
+      if (transition !== "restore-success") {
+        await captureProvisionalAuthority(page)
+        await page.evaluate(() =>
+          (
+            window as unknown as { authTransition: { interrupt(): void } }
+          ).authTransition.interrupt()
+        )
+        await expectProvisionalRevoked(page)
+        expect(
+          await page.evaluate(() =>
+            (
+              window as unknown as {
+                authTransition: { removalPending(): boolean }
+              }
+            ).authTransition.removalPending()
+          )
+        ).toBe(transition !== "restore-unmount")
+      }
+      if (transition === "import-reload") {
+        // Destroy the old document while promotion is still blocked. Bootstrap
+        // must honor the synchronous removal journal, then support cleanup.
+        await page.reload()
+        expect(await hasOwner(page)).toBe(false)
+        if (app === "market")
+          await page
+            .getByRole("button", { name: "Sign In", exact: true })
+            .first()
+            .click()
+        const retry = page.getByRole("button", {
+          name: "Remove saved local signer",
+          exact: true,
+        })
+        await expect(retry).toBeVisible()
+        await retry.click()
+        await expect
+          .poll(() =>
+            page.evaluate(async (root) => {
+              const metadata = await import(`${root}/auth-session.ts`)
+              return (
+                metadata.readPendingLocalKeyRemoval() === null &&
+                metadata.readAuthSession() === null
+              )
+            }, protocol)
+          )
+          .toBe(true)
+        expect(await hasOwner(page)).toBe(false)
+        return
+      }
+      const result = await page.evaluate(() =>
+        (
+          window as unknown as {
+            authTransition: { finish(): Promise<unknown> }
+          }
+        ).authTransition.finish()
+      )
+      expect(result).toEqual(
+        transition === "restore-success"
+          ? { usable: true, savedPreserved: true }
+          : transition === "restore-unmount"
+            ? { noAuthority: true, savedPreserved: true, restored: true }
+            : { noAuthority: true, noSession: true, noRemoval: true }
+      )
+    })
+  }
+
   for (const kind of ["rollback", "unreadable", "orphan"] as const) {
     test(`${app} coordinated local lifecycle ${kind} survives storage faults @${app}`, async ({
       page,
@@ -868,7 +1178,9 @@ for (const app of ["market", "merchant"] as const) {
                 const signer = await keys.restoreLocalKeySigner(retained)
                 restorable = !!(await signer.getPublicKey())
                 signer.invalidate()
-              } catch {}
+              } catch {
+                // A failed restore remains false for the assertion below.
+              }
             }
             return {
               entered,
@@ -916,7 +1228,9 @@ for (const app of ["market", "merchant"] as const) {
               const signer = await keys.restoreLocalKeySigner(session)
               restorable = !!(await signer.getPublicKey())
               signer.invalidate()
-            } catch {}
+            } catch {
+              // A failed restore remains false for the assertion below.
+            }
             return {
               before,
               metadataStillSelectsCandidate:

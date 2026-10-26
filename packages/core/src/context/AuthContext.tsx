@@ -16,7 +16,6 @@ import {
   reconcileLocalKeyRecord,
   LOCAL_KEY_CAPABILITIES,
   type LocalKeyImport,
-  type LocalKeySigner,
   type LocalKeyReference,
 } from "../protocol/local-key"
 import type {
@@ -31,8 +30,6 @@ import {
 import {
   SessionSigner,
   SessionSignerError,
-  installAccountSigner,
-  retireAccountSigner,
 } from "../protocol/session-signer"
 import {
   abandonRemoteSignerConnection,
@@ -62,6 +59,7 @@ import {
   revokeAuthSessionAuthority,
   shouldRetireAuthSessionAfterAuthorityChange,
   writeAuthSession,
+  writePendingLocalKeyRemoval,
   rollbackAuthSession,
   AuthSessionError,
   type AuthSession,
@@ -74,10 +72,7 @@ import {
 } from "../protocol/auth-session-lifecycle"
 import { withBrowserAuthOperationLock } from "../protocol/auth-operation-lock"
 import { isTransientNip07BridgeError } from "../protocol/signing-retry"
-import {
-  createProtectedReadSessionLifecycle,
-  type ProtectedReadSessionLifecycle,
-} from "../protocol/protected-read-session-lifecycle"
+import { AuthConnection } from "../protocol/auth-connection"
 import { createAccountIdentityScope } from "../protocol/session"
 import { RemoteSignerResumeController } from "../protocol/remote-signer-resume"
 
@@ -652,7 +647,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         currentGeneration: authEpoch.current,
         connected: connected.current,
         connecting: connecting.current,
-        activeSession: activeSession.current,
+        activeSession: installedConnection.current?.session ?? null,
         recoverySession: recoverySession.current,
         recoveryAvailable: remoteSignerRecoveryRef.current !== null,
         retirementBlocked:
@@ -671,13 +666,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const exactDeliveryRetryRevision = useRef<string | null>(null)
   const authorityDisplacedSession = useRef<AuthSession | null>(null)
   const retirementBlockedSession = useRef<AuthSession | null>(initialRemoval)
-  const remoteConnection = useRef<RemoteSignerConnection | null>(null)
-  const localConnection = useRef<LocalKeySigner | null>(null)
-  const protectedReadSessionLifecycle = useRef<ProtectedReadSessionLifecycle>(
-    createProtectedReadSessionLifecycle()
-  )
-  const activeSessionSigner = useRef<SessionSigner | null>(null)
-  const activeSession = useRef<AuthSession | null>(null)
+  const pendingConnection = useRef<AuthConnection | null>(null)
+  const installedConnection = useRef<AuthConnection | null>(null)
   const activePairing = useRef<AbortController | null>(null)
   const resumeVerification = useRef<Promise<void> | null>(null)
   const resumeVerificationRunner = useRef<() => Promise<void>>(() =>
@@ -693,7 +683,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     (generation: number) =>
       authEpoch.current === generation &&
       !connected.current &&
-      activeSession.current === null &&
+      (installedConnection.current?.session ?? null) === null &&
       recoverySession.current === null &&
       readAuthSession() === null,
     []
@@ -734,10 +724,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const invalidatePendingRestoreForDisconnect = useCallback((): boolean => {
     if (!restorePending.current.active) return false
 
-    // A restore cannot install a local or remote signer until after its final
-    // authority fence. JavaScript cannot interleave this handler with that
-    // synchronous success settlement, so an active pending restore owns no
-    // connection that this local reset could discard.
+    // Restore may already expose provisional authority while promotion waits.
+    pendingConnection.current?.retire()
     authEpoch.current += 1
     setAuthGeneration(authEpoch.current)
     connecting.current = false
@@ -774,20 +762,13 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setAuthGeneration(authEpoch.current)
     connecting.current = false
     connected.current = false
-    const connection = remoteConnection.current
-    localConnection.current?.invalidate()
-    localConnection.current = null
-    const sessionSigner = activeSessionSigner.current
-    const session = options.preservedSession ?? activeSession.current
-    remoteConnection.current = null
-    activeSessionSigner.current = null
-    activeSession.current = null
+    pendingConnection.current?.retire(options.signerFailure)
+    const connection = installedConnection.current?.remote ?? null
+    const session = options.preservedSession ?? installedConnection.current?.session ?? null
+    installedConnection.current?.retire(options.signerFailure)
+    installedConnection.current = null
     resumeController.reset()
     resumeVerification.current = null
-    protectedReadSessionLifecycle.current.deactivate()
-    sessionSigner?.invalidateLocal(options.signerFailure)
-    if (sessionSigner) retireAccountSigner(sessionSigner)
-    connection?.signer.invalidate()
     setAuthSigner(null)
     const preservedRemotePubkey = getRetainedAuthAccountPubkey(
       session,
@@ -820,7 +801,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   }, [resumeController, setAccountPubkey, updateRemoteSignerRecovery])
 
   const handleLocalKeyInvalidated = useCallback((reference: LocalKeyReference) => {
-    const session = activeSession.current
+    const session = installedConnection.current?.session ?? null
     if (session?.type !== "local" || session.userPubkey !== reference.userPubkey ||
         session.localKeyRevision !== reference.localKeyRevision) return
     // A read failure is not durable removal. Preserve public reconnect metadata;
@@ -887,7 +868,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
 
   const handleSignerSessionInvalidated = useCallback(
     (sessionError: Nip07SessionSignerError | SessionSignerError) => {
-      const invalidatedSession = activeSession.current
+      const invalidatedSession = installedConnection.current?.session ?? null
       const authorityChanged =
         sessionError instanceof SessionSignerError &&
         sessionError.code === "authority_changed"
@@ -931,9 +912,9 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
 
   const handleRemoteSignerAdapterInvalidated = useCallback(
     (transition: RemoteSignerAdapterInvalidation) => {
-      if (remoteConnection.current?.signer !== transition.source) return
+      if (installedConnection.current?.remote?.signer !== transition.source) return
 
-      const invalidatedSession = activeSession.current
+      const invalidatedSession = installedConnection.current?.session ?? null
       const revocation = invalidatedSession
         ? revokeAuthSessionAuthority(invalidatedSession, undefined, {
             sessionDisposition: transition.sessionDisposition,
@@ -1072,12 +1053,18 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       !options.pairingSignal?.aborted &&
       authRevision === readAuthRevision() &&
       restoreAttemptIsCurrent()
-    let uncommittedRemote: RemoteSignerConnection | null = null
+    let localCandidateSession: AuthSession | null = null
+    const attempt = new AuthConnection(attemptIsCurrent, options.pairingSignal, () => {
+      if (mode !== "restore" && localCandidateSession?.type === "local") {
+        // Record rollback/removal now, even if storage promotion is still
+        // awaiting completion. A reload must not restore a cancelled import.
+        rollbackAuthSession(localCandidateSession, storedSession)
+        writePendingLocalKeyRemoval(localCandidateSession)
+      }
+    })
+    pendingConnection.current = attempt
     let remotePersistenceStarted = false
     let sessionPersisted = false
-    let uncommittedLocal: LocalKeySigner | null = null
-    let localCandidateSession: AuthSession | null = null
-    let uncommittedSessionSigner: SessionSigner | null = null
 
     setStatus(mode === "restore" ? "restoring" : "connecting")
     setMethod(requestedMethod)
@@ -1126,7 +1113,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
             ? await options.localKeyImport.persist(attemptIsCurrent, options.pairingSignal)
             : null
         if (!local) throw new Error("Reimport your backed-up Nostr key to connect.")
-        uncommittedLocal = local
+        attempt.ownLocal(local)
         signer = local
         session = { version: 1, type: "local", ...local.reference }
         localCandidateSession = session
@@ -1185,7 +1172,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           )
         }
         connectedRemote = connection
-        uncommittedRemote = connection
+        attempt.ownRemote(connection)
         signer = connection.signer
         session = connection.session
       }
@@ -1204,10 +1191,6 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
 
       const authClaim = claimAuthRevision()
       if (!authClaim.persisted) {
-        if (connectedRemote) {
-          abandonRemoteSignerConnection(connectedRemote)
-          uncommittedRemote = null
-        }
         throw new AuthConnectionInvariantError(
           "authority",
           "This browser could not establish exclusive signer authority. Check site storage permissions, clear the saved session if needed, and reconnect."
@@ -1237,10 +1220,6 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           throw new Error(SIGNER_AUTHORITY_RETRY_MESSAGE)
         }
         if (!persisted || !connectedRemote) {
-          if (connectedRemote) {
-            abandonRemoteSignerConnection(connectedRemote)
-            uncommittedRemote = null
-          }
           throw new AuthConnectionInvariantError(
             "storage",
             "This browser could not save the remote signer session. Check site storage permissions and try again."
@@ -1263,29 +1242,20 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       const boundSession = session
       const hasSessionAuthority = () =>
         hasAuthSessionAuthority(boundSession, sessionPersisted)
-      const sessionSigner = new SessionSigner(signer, {
-        expectedPubkey: pk,
-        revision: authRevision,
-        authMethod: session.type,
+      attempt.install(signer, session, {
         getCapabilities: session.type === "nip46"
           ? () => connectedRemote?.signer.capabilities ?? NO_SIGNER_CAPABILITIES
           : session.type === "local" ? () => LOCAL_KEY_CAPABILITIES : getNip07Capabilities,
         hasAuthority: hasSessionAuthority,
         onInvalidated: handleSignerSessionInvalidated,
       })
-      installAccountSigner(sessionSigner, protectedReadSessionLifecycle.current, hasSessionAuthority)
-      uncommittedSessionSigner = sessionSigner
       if (session.type === "local") {
-        await uncommittedLocal!.commit(attemptIsCurrent, options.pairingSignal)
+        await attempt.local!.commit(attemptIsCurrent, options.pairingSignal)
       }
-      uncommittedSessionSigner = null
-      activeSessionSigner.current = sessionSigner
-      localConnection.current = uncommittedLocal
-      uncommittedLocal = null
-      remoteConnection.current = connectedRemote
+      const sessionSigner = attempt.complete()
+      installedConnection.current = attempt
+      pendingConnection.current = null
       if (connectedRemote) void commitRemoteSignerConnection(connectedRemote)
-      uncommittedRemote = null
-      activeSession.current = session
       setAuthSigner(sessionSigner)
       setAccountPubkey(pk)
       setPubkey(pk)
@@ -1311,17 +1281,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         settleRestorePending(restoreAttempt)
       }
     } catch (err) {
-      if (uncommittedSessionSigner) {
-        uncommittedSessionSigner.invalidateLocal()
-        retireAccountSigner(uncommittedSessionSigner)
-        protectedReadSessionLifecycle.current.deactivate()
-      }
-      uncommittedLocal?.invalidate()
+      attempt.retire()
       if (mode !== "restore" && localCandidateSession) {
-        // Failed metadata rollback must never skip credential retirement.
-        // A verified restored predecessor is preserved by retirement; otherwise
-        // the selected candidate and its superseded lineage are removed.
-        rollbackAuthSession(localCandidateSession, storedSession)
+        // Live retirement already attempted metadata rollback and journaled
+        // removal. Always finish exact-candidate cleanup, even if those failed.
         try {
           await retireAuthSession(localCandidateSession, {
             withLock: async task => task(),
@@ -1338,12 +1301,12 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
             setStatus("error")
             setError(message)
           }
-          throw new Error(message)
+          throw new Error(message, { cause })
         }
       }
       const resolution = await resolveFailedAuthAttempt({
         failure: err,
-        uncommittedRemote,
+        uncommittedRemote: attempt.remote,
         remotePersistenceStarted,
         getAttemptState: () => {
           const ownsEpoch = attemptOwnsEpoch()
@@ -1447,6 +1410,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       setNostrConnectUri(null)
       throw normalizedError
     } finally {
+      if (pendingConnection.current === attempt) pendingConnection.current = null
       if (attemptOwnsEpoch()) {
         activePairing.current = null
         setNostrConnectUri(null)
@@ -1560,23 +1524,16 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         setError(importError.message)
         throw importError
       }
-      const pairingController =
-        (mode === "interactive" && requestedMethod === "nip46") || requestedMethod === "local"
-          ? new AbortController()
-          : null
+      const pairingController = new AbortController()
       activePairing.current = pairingController
-      const attemptOptions: AuthConnectAttemptOptions = pairingController
-        ? {
-            ...options,
-            pairingSignal: pairingController.signal,
-            localKeyImport: preparedLocal,
-            ...(mode === "restore"
-              ? { restorePendingAttempt: pendingRestoreAttempt }
-              : {}),
-          }
-        : mode === "restore"
-          ? { ...options, restorePendingAttempt: pendingRestoreAttempt }
-          : options
+      const attemptOptions: AuthConnectAttemptOptions = {
+        ...options,
+        pairingSignal: pairingController.signal,
+        localKeyImport: preparedLocal,
+        ...(mode === "restore"
+          ? { restorePendingAttempt: pendingRestoreAttempt }
+          : {}),
+      }
 
       let operationStarted = false
       try {
@@ -1637,8 +1594,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     if (!activePairing.current) return
     authEpoch.current += 1
     setAuthGeneration(authEpoch.current)
+    pendingConnection.current?.retire()
     activePairing.current.abort()
     activePairing.current = null
+    settleRestorePending()
     connecting.current = false
     setMethod(null)
     setStatus("disconnected")
@@ -1647,7 +1606,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
     setAuthUrl(null)
     setNostrConnectUri(null)
     setRemoteSignerState("none")
-  }, [setAccountPubkey])
+  }, [setAccountPubkey, settleRestorePending])
 
   const disconnectWithoutLock = useCallback(
     async (expectedSession: AuthSession | null): Promise<void> => {
@@ -1686,7 +1645,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         recoverySession.current ??
         authorityDisplacedSession.current ??
         retirementBlockedSession.current ??
-        activeSession.current ??
+        installedConnection.current?.session ??
         readAuthSession()
       const recoveryRequired = remoteSignerRecoveryRef.current !== null
       if (expectedSession) retirementBlockedSession.current = expectedSession
@@ -1695,8 +1654,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
             sessionDisposition: "discard",
           })
         : null
-      activeSessionSigner.current?.invalidateLocal()
-      localConnection.current?.invalidate()
+      pendingConnection.current?.retire()
+      installedConnection.current?.retire()
       invalidatePendingRestoreForDisconnect()
       activePairing.current?.abort()
       activePairing.current = null
@@ -1739,8 +1698,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   )
 
   const verifyRemoteSignerAfterResume = useCallback((): Promise<void> => {
-    const connection = remoteConnection.current
-    const session = activeSession.current
+    const connection = installedConnection.current?.remote ?? null
+    const session = installedConnection.current?.session ?? null
     const browserCanVerify =
       (typeof document === "undefined" ||
         document.visibilityState === "visible") &&
@@ -1811,8 +1770,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       .then(() => {
         if (
           !acceptsCompletion() ||
-          remoteConnection.current !== connection ||
-          activeSession.current !== session ||
+          (installedConnection.current?.remote ?? null) !== connection ||
+          (installedConnection.current?.session ?? null) !== session ||
           !connected.current ||
           !connection.signer.completeVerification()
         ) {
@@ -1826,8 +1785,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       .catch(async (cause) => {
         if (
           acceptsCompletion() &&
-          remoteConnection.current === connection &&
-          activeSession.current === session
+          (installedConnection.current?.remote ?? null) === connection &&
+          (installedConnection.current?.session ?? null) === session
         ) {
           await connection.signer.failVerification(cause)
         }
@@ -1889,10 +1848,10 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       state: Extract<RemoteSignerState, "verifying" | "recoverable"> =
         "verifying"
     ) => {
-      const connection = remoteConnection.current
+      const connection = installedConnection.current?.remote ?? null
       if (
         !connection ||
-        activeSession.current?.type !== "nip46" ||
+        installedConnection.current?.session?.type !== "nip46" ||
         !connected.current
       ) {
         return
@@ -1960,12 +1919,12 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         }
         if (
           event.key === AUTH_REVISION_STORAGE_KEY &&
-          event.newValue === activeSession.current?.authClaim
+          event.newValue === installedConnection.current?.session?.authClaim
         ) {
           return
         }
         const invalidatedSession =
-          activeSession.current ?? recoverySession.current
+          installedConnection.current?.session ?? recoverySession.current
         const storedSession = readAuthSession()
         const preserveDisplacedSession =
           !!invalidatedSession &&
@@ -2005,7 +1964,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       if (event.key !== AUTH_STORAGE_KEY) return
       const replacement = readAuthSession()
       const previous =
-        activeSession.current ??
+        installedConnection.current?.session ??
         recoverySession.current ??
         authorityDisplacedSession.current
       if (

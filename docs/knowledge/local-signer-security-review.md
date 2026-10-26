@@ -68,7 +68,11 @@ Public auth
 metadata stores public identity and that revision, separately from the shared
 auth claim. Check stored account/revision before use and before returning.
 Replacement, cancellation and logout fence pending results; the shared owner
-also fences queued work. Missing/unavailable storage stops signing and offers
+also fences queued work. One connection owns the adapter, session signer and
+exact read lease throughout pending promotion and installed use. Cancellation
+revokes all three before waiting for promotion or durable cleanup. Transition
+regressions assert that immediate boundary, successful handoff, late completion,
+replacement isolation, interrupted restore and unmount. Missing/unavailable storage stops signing and offers
 retry/removal/reimport. Logout stops live authority immediately, then commits
 exact-revision deletion and public-session retirement. Failed deletion stays a
 visible error and blocks connection until removal succeeds. Cancellation must

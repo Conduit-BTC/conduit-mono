@@ -14,6 +14,7 @@ see the [local signer contract](local-signer-security-review.md).
 | `auth-session.ts`                             | Version-1 public metadata, legacy NIP-07 parsing, storage keys, authority revision claims, synchronous revocation, exact-session metadata cleanup, restoration method selection and installed-session authority checks |
 | `auth-operation-lock.ts`                      | Browser-wide serialization; existing IndexedDB lock namespace retained for compatibility with open tabs, without reading credential records                                                                            |
 | `AuthProvider`                                | Attempt epoch, cancellation, restoration pending state, account identity, transactional installation, React state and cleanup dispatch                                                                                 |
+| `auth-connection.ts`                          | Pending-to-installed live resource ownership, attempt fencing, exact signer/read-lease retirement and synchronous handoff                                                                                              |
 | `session-signer.ts`                           | Account/revision binding, operation queue, capabilities, signature/template validation, pending-operation cancellation and single active owner                                                                         |
 | `auth-session-lifecycle.ts`                   | Fixed provider credential-retirement dispatch with shared metadata verification and method-specific cleanup ordering                                                                                                   |
 | `nip46-auth-session.ts`                       | NIP-46 metadata validation and stable credential identity                                                                                                                                                              |
@@ -30,11 +31,25 @@ provider. Unknown provider metadata remains unsupported.
 
 ## Installation and cleanup
 
-The connection attempt owns provider resources until installation succeeds.
-After the final attempt/revision fence, `installAccountSigner` installs the
-protected-read lease before publishing the existing `SessionSigner` owner.
-Installation failure revokes the candidate lease and signer. `AuthProvider`
-commits its session/connection refs only after this succeeds.
+`AuthProvider` retains one pending `AuthConnection` until installation succeeds,
+then transfers that same connection to its installed owner. The connection owns
+the provider adapter, `SessionSigner` and its exact protected-read lease together.
+After the attempt/revision fence, `installAccountSigner` installs the read lease
+before publishing the signer. While local promotion awaits storage, both exposed
+capabilities also require the pending attempt's epoch and cancellation authority.
+Cancellation, disconnect, cross-tab displacement and unmount synchronously retire
+those resources, including captured capabilities and pending operation results.
+Late acquisition is retired on arrival; late completion cannot hand off ownership.
+
+Successful promotion is followed by one synchronous handoff. Installed authority
+then depends on the saved session/revision, independently of the completed dialog
+attempt. Each connection retires only its exact signer and read lease, so stale
+cleanup cannot revoke a replacement. A failed new local import synchronously
+rolls back its public metadata and records removal retry before awaiting storage,
+so a reload during delayed promotion cannot restore it. Exact credential deletion
+still runs under the browser auth lock. Restore interruption preserves
+its saved credential; failed new imports retain their existing exact-candidate
+rollback and removal-retry behavior.
 
 A failed new NIP-46 install rolls back newly persisted metadata/client credentials
 and abandons the connection. A failed restored install preserves its existing

@@ -105,8 +105,24 @@ describe("local account secret containment", () => {
     }
     expect(imports.sort()).toEqual([
       "packages/core/src/context/AuthContext.tsx",
+      "packages/core/src/protocol/auth-connection.ts",
       "packages/core/src/protocol/auth-session-lifecycle.ts",
     ])
+    const connection = ts.createSourceFile(
+      "auth-connection.ts",
+      await Bun.file("packages/core/src/protocol/auth-connection.ts").text(),
+      ts.ScriptTarget.Latest,
+      true
+    )
+    for (const statement of connection.statements) {
+      if (
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        statement.moduleSpecifier.text === "./local-key"
+      ) {
+        expect(statement.importClause?.isTypeOnly).toBe(true)
+      }
+    }
     for (const file of [
       "package.json",
       "packages/core/package.json",
