@@ -8,6 +8,7 @@ import { createThemeBootstrapScript } from "../../packages/ui/src/theme/definiti
 // These are executable dependencies, not general network destinations. Any new
 // source requires review here; an environment variable cannot expand this list.
 const TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+const CLOUDFLARE_ANALYTICS_ORIGIN = "https://static.cloudflareinsights.com"
 
 export function browserSecurityHeaders(
   env: Record<string, string | undefined> = {}
@@ -19,6 +20,8 @@ export function browserSecurityHeaders(
     "'wasm-unsafe-eval'",
     `'sha256-${createHash("sha256").update(createThemeBootstrapScript()).digest("base64")}'`,
     TURNSTILE_ORIGIN,
+    // Hosting injects the approved Cloudflare Web Analytics beacon.
+    CLOUDFLARE_ANALYTICS_ORIGIN,
   ]
   if (
     env.VITE_ENABLE_TELEMETRY?.trim().toLowerCase() === "true" &&

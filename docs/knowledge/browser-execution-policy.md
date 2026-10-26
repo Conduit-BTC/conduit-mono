@@ -15,15 +15,17 @@ JavaScript string evaluation. Inline styles remain permitted for the existing UI
 
 ## Executable dependencies
 
-| Source                                               | Purpose                                                | Update and review boundary                                                           |
-| ---------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| First-party built modules and worker                 | Application, bundled PostHog, protocol and wallet code | Reviewed source, frozen lockfile, build and release controls                         |
-| Hashed inline theme bootstrap                        | Apply saved theme before rendering                     | Shared theme source; build rejects other inline code                                 |
-| `challenges.cloudflare.com`                          | Turnstile address-request challenge                    | Vendor-managed mutable code; explicit script/frame allowance, no permanent SRI claim |
-| Exact configured `https://plausible.io/js/*.js` file | Optional legacy telemetry on nonofficial hosts         | Only allowed when configured at build; arbitrary source overrides fail the build     |
+| Source                                               | Purpose                                                                | Update and review boundary                                                                      |
+| ---------------------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| First-party built modules and worker                 | Application, bundled PostHog, protocol and wallet code                 | Reviewed source, frozen lockfile, build and release controls                                    |
+| Hashed inline theme bootstrap                        | Apply saved theme before rendering                                     | Shared theme source; build rejects other inline code                                            |
+| `challenges.cloudflare.com`                          | Turnstile address-request challenge                                    | Vendor-managed mutable code; explicit script/frame allowance, no permanent SRI claim            |
+| `static.cloudflareinsights.com`                      | Hosting-injected Cloudflare Web Analytics and performance measurements | Explicitly approved vendor-managed script origin; hosting controls injection and vendor updates |
+| Exact configured `https://plausible.io/js/*.js` file | Optional legacy telemetry on nonofficial hosts                         | Only allowed when configured at build; arbitrary source overrides fail the build                |
 
 Official Shop/Sell already disable Plausible. PostHog remains bundled, with
-remote dependency loading and session recording disabled. Hosting-injected
+remote dependency loading and session recording disabled. Cloudflare Web Analytics
+is retained through an explicit script-origin allowance. Other hosting-injected
 scripts are not automatically trusted. New script providers require explicit
 source and policy review. Restricting scripts cannot protect against a malicious
 allowed bundle or an administrator who changes both content and headers.
@@ -40,7 +42,8 @@ The required `build-mainnet` job runs `playwright.security.config.ts` in the
 pinned Linux browser image after building and verifying deployment manifests.
 Chromium and WebKit exercise both apps' built responses: inline/script-URL
 injection, unapproved remote scripts, base changes, generated and fallback
-routes, modules, workers and WebAssembly. The local fixture serves the emitted
+routes, modules, workers and WebAssembly. A synthetic beacon response verifies
+the Cloudflare script allowance without loading vendor code or sending telemetry. The local fixture serves the emitted
 headers; it does not emulate Cloudflare Functions or prove deployed policy.
 
 Before production activation, verify enforcing headers on the exact preview

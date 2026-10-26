@@ -88,6 +88,28 @@ for (const [app, port] of [
       base: true,
     })
   })
+  test(`${app}: approved hosting beacon can execute`, async ({ page }) => {
+    // Prove the policy allowance without loading vendor code or sending telemetry.
+    await page.route("https://static.cloudflareinsights.com/**", (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: "window.__approvedBeaconLoads = (window.__approvedBeaconLoads || 0) + 1",
+      })
+    )
+    await page.goto(`${origin}/about`)
+    for (const path of ["/beacon.min.js", "/beacon.min.js/synthetic-version"]) {
+      await page.addScriptTag({
+        url: `https://static.cloudflareinsights.com${path}`,
+      })
+    }
+    expect(
+      await page.evaluate(
+        () =>
+          (window as typeof window & { __approvedBeaconLoads?: number })
+            .__approvedBeaconLoads
+      )
+    ).toBe(2)
+  })
   test(`${app}: theme, lazy code, worker and wallet WASM remain usable`, async ({
     page,
   }) => {
