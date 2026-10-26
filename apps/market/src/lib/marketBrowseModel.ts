@@ -28,6 +28,7 @@ export interface MarketBrowseSearch {
   sort?: MarketBrowseSortOption
   tag?: string[]
   authRequired?: boolean
+  returnTo?: string
 }
 
 export interface MerchantIdentityView {

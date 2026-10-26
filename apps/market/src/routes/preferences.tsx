@@ -63,8 +63,8 @@ import type { ShopperPresetsUnlockPolicy } from "../lib/shopper-presets-store"
 import { isClearedRemoteShopperPreset } from "../lib/shopper-presets-ui"
 
 export const Route = createFileRoute("/preferences")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: PreferencesPage,
 })

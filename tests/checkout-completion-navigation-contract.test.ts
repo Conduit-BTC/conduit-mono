@@ -505,7 +505,8 @@ describe("checkout completion navigation contracts", () => {
     expect(checkoutRoute).toContain(
       "walletPayCapable: !isGuestCheckout && canAttemptLightningPayment"
     )
-    expect(checkoutRoute).toContain("<SignerSwitch")
+    expect(checkoutRoute).toContain("requestSignIn()")
+    expect(checkoutRoute).not.toContain("<SignInDialog")
   })
 
   it("keeps guest checkout on one concise review and contact screen", async () => {

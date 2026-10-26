@@ -215,14 +215,14 @@ export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
 export {
   NoSignerSetupGuide,
   SignerConnectPanel,
-  SignerSwitch,
+  SignInDialog,
   SignerUnlockCard,
   isMobileSignerEnvironment,
   type SignerEnvironmentInput,
   type SignerConnectPanelProps,
-  type SignerSwitchProps,
-  type SignerSwitchStatus,
-} from "./SignerSwitch"
+  type SignInDialogProps,
+  type SignInDialogStatus,
+} from "./SignInDialog"
 export {
   SignerAuthUrlNotice,
   type SignerAuthUrlNoticeProps,
@@ -285,7 +285,6 @@ export {
   type AboutPagePanelProps,
 } from "./AboutPagePanel"
 
-export { ProfileSelector, type ProfileSelectorProps } from "./ProfileSelector"
 export {
   StatusPill,
   statusPillVariants,
@@ -334,3 +333,5 @@ export {
   type ExternalInvoicePaymentAction,
   type ExternalInvoicePaymentActionResult,
 } from "./InvoicePayment"
+
+export * from "./SignInProvider"

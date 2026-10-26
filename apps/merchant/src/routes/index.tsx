@@ -1,4 +1,9 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
+import {
+  createFileRoute,
+  Link,
+  Navigate,
+  useNavigate,
+} from "@tanstack/react-router"
 import { useQuery } from "@tanstack/react-query"
 import {
   clearProtectedReadAuthenticationSuppression,
@@ -25,7 +30,6 @@ import {
 } from "lucide-react"
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -311,7 +315,7 @@ function DashboardPage() {
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
   }, [authGeneration])
-  const { authRequired, event: pendingEvent } = Route.useSearch()
+  const { authRequired, event: pendingEvent, returnTo } = Route.useSearch()
   const signerConnected = status === "connected" && !!pubkey
   const navigate = useNavigate()
   const readiness = useMerchantReadinessState()
@@ -322,15 +326,6 @@ function DashboardPage() {
     products: DEFAULT_DASHBOARD_RANGE,
   }))
 
-  useEffect(() => {
-    if (!signerConnected || !authRequired || !pendingEvent) return
-    void navigate({
-      to: "/events/$collectionRef",
-      params: { collectionRef: pendingEvent },
-      search: {},
-      replace: true,
-    })
-  }, [authRequired, navigate, pendingEvent, signerConnected])
   const statsQuery = useQuery({
     queryKey: ["merchant-dashboard-live", pubkey ?? "none"],
     enabled: signerConnected,
@@ -467,6 +462,19 @@ function DashboardPage() {
     shouldContinue: () => authGenerationRef.current === authGeneration,
     enabled: signerConnected && buyerPubkeys.length > 0,
   })
+
+  if (signerConnected && authRequired) {
+    if (returnTo) return <Navigate to="/" href={returnTo} replace />
+    if (pendingEvent)
+      return (
+        <Navigate
+          to="/events/$collectionRef"
+          params={{ collectionRef: pendingEvent }}
+          search={{}}
+          replace
+        />
+      )
+  }
 
   return (
     <div className="space-y-6">

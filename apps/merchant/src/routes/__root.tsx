@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-router"
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { KeyRound } from "lucide-react"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import {
   buildBugReportUrl,
@@ -16,17 +16,16 @@ import {
   recordBrowserTelemetryEvent,
   recordBrowserTelemetryPageView,
   useAuth,
-  useNip07Availability,
 } from "@conduit/core"
 import {
   ErrorPage,
   NotFoundPage,
-  SignerAuthUrlNotice,
   SignerConnectPanel,
+  type SignerConnectPanelProps,
   ThemeToggleButton,
   isProductLegalPath,
-  isMobileSignerEnvironment,
 } from "@conduit/ui"
+import { AppSignIn } from "../components/AppSignIn"
 import {
   MerchantSidebar,
   MerchantWorkspaceHeader,
@@ -62,6 +61,7 @@ function RootShell({
             <MerchantSidebar />
             <div className="min-h-dvh min-w-0 lg:flex lg:min-h-0 lg:flex-col lg:overflow-hidden">
               <main
+                tabIndex={-1}
                 data-merchant-main-scroll
                 className={
                   fullBleed
@@ -114,15 +114,8 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
         (match) => match._notFound || match.status === "notFound"
       ),
   })
-  const {
-    authUrl,
-    dismissAuthUrl,
-    pubkey,
-    restorePendingPubkey,
-    method,
-    remoteSignerRecovery,
-    status,
-  } = useAuth()
+  const { pubkey, restorePendingPubkey, method, remoteSignerRecovery, status } =
+    useAuth()
   const [authFallbackReady, setAuthFallbackReady] = useState(false)
   const appLoadTelemetrySentRef = useRef(false)
   const previousAuthStatusRef = useRef(status)
@@ -230,50 +223,58 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
 
   throwSyntheticClientErrorForTelemetryTest()
 
-  // Settle a saved signer before choosing the missing-page shell. Starting the
-  // public video only to unmount it during restore can stall WebKit media load.
-  if (isNotFound && !signerWorkspaceAvailable && !signerRestoring) {
-    return (
-      <MerchantPublicAboutShell pageTitle="Not Found" fullBleed>
-        <Outlet />
-      </MerchantPublicAboutShell>
-    )
-  }
+  const showGate =
+    !isNotFound &&
+    !shouldDelayAuthFallback &&
+    !signerRestoring &&
+    !signerWorkspaceAvailable &&
+    !deviceWalletRoute
+  return (
+    <AppSignIn
+      gate={showGate}
+      renderGate={(props) => <ConnectGate {...props} />}
+    >
+      {renderContent()}
+    </AppSignIn>
+  )
 
-  if (shouldDelayAuthFallback && !deviceWalletRoute) {
-    return (
-      <>
-        <AuthGateGrace />
-        {authUrl && (
-          <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
-        )}
-      </>
-    )
-  }
+  function renderContent() {
+    // Settle a saved signer before choosing the missing-page shell. Starting the
+    // public video only to unmount it during restore can stall WebKit media load.
+    if (isNotFound && !signerWorkspaceAvailable && !signerRestoring) {
+      return (
+        <MerchantPublicAboutShell pageTitle="Not Found" fullBleed>
+          <Outlet />
+        </MerchantPublicAboutShell>
+      )
+    }
 
-  if (signerRestoring && !deviceWalletRoute) {
+    if (shouldDelayAuthFallback && !deviceWalletRoute) {
+      return (
+        <>
+          <AuthGateGrace />
+        </>
+      )
+    }
+
+    if (signerRestoring && !deviceWalletRoute) {
+      return (
+        <RootShell>
+          <AuthRestoring method={method} />
+        </RootShell>
+      )
+    }
+
+    if (!signerWorkspaceAvailable && !deviceWalletRoute) {
+      return null
+    }
+
     return (
-      <RootShell>
-        <AuthRestoring method={method} />
-        {authUrl && (
-          <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
-        )}
+      <RootShell fullBleed={isNotFound}>
+        <Outlet key={pubkey} />
       </RootShell>
     )
   }
-
-  if (!signerWorkspaceAvailable && !deviceWalletRoute) {
-    return <ConnectGate />
-  }
-
-  return (
-    <RootShell fullBleed={isNotFound}>
-      <Outlet key={pubkey} />
-      {authUrl && (
-        <SignerAuthUrlNotice authUrl={authUrl} onDismiss={dismissAuthUrl} />
-      )}
-    </RootShell>
-  )
 }
 
 function throwSyntheticClientErrorForTelemetryTest(): void {
@@ -403,9 +404,11 @@ function MerchantProductRootError({ error }: { error: unknown }) {
     </ErrorPage>
   )
 
-  if (!signerConnected) return errorPage
-
-  return <RootShell>{errorPage}</RootShell>
+  return (
+    <AppSignIn>
+      {signerConnected ? <RootShell>{errorPage}</RootShell> : errorPage}
+    </AppSignIn>
+  )
 }
 
 function RootNotFound() {
@@ -442,27 +445,8 @@ function useMerchantBugReportUrl(): string {
   return buildBugReportUrl({ app: "merchant", route: pathname })
 }
 
-function ConnectGate() {
-  const {
-    status,
-    method,
-    connect,
-    cancelConnect,
-    disconnect,
-    error,
-    authUrl,
-    nostrConnectUri,
-    rememberedMethod,
-  } = useAuth()
+function ConnectGate(props: SignerConnectPanelProps) {
   const connectGateRef = useRef<HTMLElement | null>(null)
-  const extensionAvailable = useNip07Availability()
-  const authPending = status === "connecting" || status === "restoring"
-  const isProbablyMobileBrowser = useMemo(isMobileSignerEnvironment, [])
-  const extensionNotice =
-    !extensionAvailable && !isProbablyMobileBrowser
-      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
-      : null
-
   useEffect(() => {
     connectGateRef.current?.focus({ preventScroll: true })
   }, [])
@@ -479,41 +463,14 @@ function ConnectGate() {
         className="mx-auto flex min-h-dvh w-full max-w-4xl items-center justify-center px-4 pb-20 pt-8 outline-none sm:px-6 lg:px-8"
       >
         <SignerConnectPanel
-          logoSrc="/images/logo/merchant-logo-full.svg"
-          title="Sign in to Conduit"
-          description="Use your Nostr account to open your merchant workspace."
-          helperText={
-            isProbablyMobileBrowser
-              ? "Approve sign-in in your app, then return here."
-              : "Choose a browser extension or remote signer."
-          }
+          {...props}
+          className="w-full max-w-xl"
           unlockLabel="UNLOCK YOUR COMMAND CENTER"
           unlockItems={[
             "Create your store and start publishing products.",
             "Handle orders, customer messages, and product comments from one workspace.",
             "Sell through Conduit, your own storefront, and the wider Nostr network.",
           ]}
-          error={error}
-          authUrl={authUrl}
-          nostrConnectUri={nostrConnectUri}
-          rememberedMethod={rememberedMethod}
-          connectingMethod={status === "restoring" ? null : method}
-          extensionNotice={extensionNotice}
-          mobile={isProbablyMobileBrowser}
-          extensionAvailable={extensionAvailable}
-          connectPending={authPending}
-          connectDisabled={authPending}
-          className="w-full max-w-xl"
-          onConnectExtension={() => connect({ method: "nip07" })}
-          onConnectNostrConnect={() =>
-            connect({ method: "nip46", nip46Flow: "nostrconnect" })
-          }
-          onConnectRemote={(bunkerUri) =>
-            connect({ method: "nip46", nip46Flow: "bunker", bunkerUri })
-          }
-          onCancelConnect={cancelConnect}
-          onReconnect={() => connect({ mode: "restore" })}
-          onForget={disconnect}
         />
       </main>
       <nav

@@ -394,3 +394,5 @@ export {
   type CheckoutSparkPerformanceObservation,
   type CheckoutSparkPerformanceObserver,
 } from "./protocol/checkout-spark-performance"
+
+export { parseSignInReturnTo } from "./utils/sign-in-return"

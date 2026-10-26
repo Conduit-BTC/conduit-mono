@@ -43,8 +43,8 @@ import { isProfileComplete } from "../lib/readiness"
 import { getIdentityUrl } from "../lib/market-links"
 
 export const Route = createFileRoute("/profile")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: ProfilePage,
 })

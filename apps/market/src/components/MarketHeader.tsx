@@ -1,8 +1,6 @@
 import {
-  ChevronDown,
   CircleUser,
   LoaderCircle,
-  LogOut,
   MessagesSquare,
   Radio,
   ReceiptText,
@@ -29,25 +27,18 @@ import {
   useUnreadDirectMessageCount,
 } from "@conduit/core"
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
+  AccountMenu,
   Badge,
   Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   Input,
   SearchSuggestions,
   ThemeToggleButton,
   cn,
   getSearchSuggestionInputProps,
   useSearchSuggestionKeyboard,
+  useSignIn,
 } from "@conduit/ui"
 
-import { SignerSwitch } from "./SignerSwitch"
 import { useCart } from "../hooks/useCart"
 import { useMarketHeaderSuggestions } from "../hooks/useMarketHeaderSuggestions"
 import { DEFAULT_MARKET_CATALOG_SOURCE } from "../lib/productCatalogRead"
@@ -60,20 +51,6 @@ export type MarketChromeState = "top" | "scrolled" | "hidden"
 
 const headerActionClassName =
   "inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-2 rounded-[var(--radius-md)] px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40 sm:px-3"
-
-const accountControlClassName =
-  "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-[var(--radius-md)] bg-primary-500 px-3 text-sm font-semibold text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50"
-
-function accountMenuItemClassName(
-  variant: "default" | "danger" = "default"
-): string {
-  return cn(
-    "min-h-11 cursor-pointer rounded-[var(--radius-md)] px-3 py-2 text-[15px] font-medium",
-    variant === "danger"
-      ? "text-[var(--error-text)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error-text)]"
-      : "text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
-  )
-}
 
 function Logo() {
   return (
@@ -163,201 +140,19 @@ function HeaderAction({
   )
 }
 
-function AccountMenuItem({
-  icon,
-  label,
-  detail,
-  variant = "default",
-  onSelect,
-}: {
-  icon: ReactNode
-  label: string
-  detail?: string
-  variant?: "default" | "danger"
-  onSelect: () => void
-}) {
-  return (
-    <DropdownMenuItem
-      onSelect={onSelect}
-      className={accountMenuItemClassName(variant)}
-    >
-      <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
-        {icon}
-      </span>
-      <span className="min-w-0">
-        <span className="block truncate">{label}</span>
-        {detail ? (
-          <span className="block truncate text-[10px] font-medium text-[var(--text-muted)]">
-            {detail}
-          </span>
-        ) : null}
-      </span>
-    </DropdownMenuItem>
-  )
-}
-
-function AccountMenuLink({
-  icon,
-  label,
-  detail,
-  to,
-  onClick,
-}: {
-  icon: ReactNode
-  label: string
-  detail?: string
-  to: "/profile" | "/preferences" | "/network" | "/wallet"
-  onClick: () => void
-}) {
-  return (
-    <DropdownMenuItem asChild className={accountMenuItemClassName()}>
-      <Link to={to} onClick={onClick}>
-        <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
-          {icon}
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate">{label}</span>
-          {detail ? (
-            <span className="block truncate text-[10px] font-medium text-[var(--text-muted)]">
-              {detail}
-            </span>
-          ) : null}
-        </span>
-      </Link>
-    </DropdownMenuItem>
-  )
-}
-
-function AccountControl({
-  connected,
-  displayName,
-  npub,
-  avatarUrl,
-  authPending,
-  onConnect,
-  onDisconnect,
-}: {
-  connected: boolean
-  displayName: string
-  npub?: string
-  avatarUrl?: string | null
-  authPending: boolean
-  onConnect: () => void
-  onDisconnect: () => void
-}) {
-  const [open, setOpen] = useState(false)
-
-  if (!connected) {
-    return (
-      // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
-      <button
-        type="button"
-        className={cn(
-          accountControlClassName,
-          "size-11 px-0 sm:w-auto sm:min-w-[5.25rem] sm:px-3"
-        )}
-        aria-label="Connect"
-        aria-busy={authPending}
-        onClick={onConnect}
-      >
-        {authPending ? (
-          <LoaderCircle
-            className="size-5 animate-spin sm:hidden"
-            aria-hidden="true"
-          />
-        ) : (
-          <CircleUser className="size-5 sm:hidden" aria-hidden="true" />
-        )}
-        <span className="hidden sm:inline">Connect</span>
-      </button>
-    )
-  }
-
-  return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
-        <button
-          type="button"
-          className="inline-flex size-11 items-center justify-center rounded-[var(--radius-md)] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
-          aria-label="Open account menu"
-        >
-          <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
-            <AvatarImage src={avatarUrl ?? undefined} alt={displayName} />
-            <AvatarFallback className="bg-primary-600 text-xs text-white">
-              {displayName.slice(0, 1).toUpperCase()}
-            </AvatarFallback>
-          </Avatar>
-          <span className="hidden min-w-0 flex-1 sm:block">
-            <span className="block truncate text-sm font-semibold">
-              {displayName}
-            </span>
-            {npub ? (
-              <span className="block truncate text-[11px] text-white/70">
-                {npub}
-              </span>
-            ) : null}
-          </span>
-          <ChevronDown
-            className={cn(
-              "hidden size-4 shrink-0 text-white/70 transition-transform duration-150 sm:block",
-              open && "rotate-180"
-            )}
-            aria-hidden="true"
-          />
-        </button>
-      </DropdownMenuTrigger>
-
-      <DropdownMenuContent
-        align="end"
-        sideOffset={10}
-        className="w-[14rem] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 shadow-[var(--shadow-dialog)]"
-      >
-        <AccountMenuLink
-          icon={<CircleUser className="size-4" />}
-          label="Profile"
-          to="/profile"
-          onClick={() => setOpen(false)}
-        />
-        <AccountMenuLink
-          icon={<Settings2 className="size-4" />}
-          label="Preferences"
-          to="/preferences"
-          onClick={() => setOpen(false)}
-        />
-        <AccountMenuLink
-          icon={<Radio className="size-4" />}
-          label="Network"
-          to="/network"
-          onClick={() => setOpen(false)}
-        />
-        <AccountMenuLink
-          icon={<Wallet className="size-4" />}
-          label="Wallets"
-          to="/wallet"
-          onClick={() => setOpen(false)}
-        />
-        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
-        <AccountMenuItem
-          icon={<LogOut className="size-4" />}
-          label="Disconnect"
-          variant="danger"
-          onSelect={() => {
-            setOpen(false)
-            onDisconnect()
-          }}
-        />
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-}
-
 export function MarketHeader({
   chromeState,
 }: {
   chromeState: MarketChromeState
 }) {
-  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const {
+    pubkey,
+    accountPubkey,
+    status,
+    connect,
+    signerReadiness,
+    authGeneration,
+  } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -378,7 +173,7 @@ export function MarketHeader({
   })
   const [searchValue, setSearchValue] = useState("")
   const [searchDirty, setSearchDirty] = useState(false)
-  const [connectOpen, setConnectOpen] = useState(false)
+  const { requestSignIn, disconnectAccount } = useSignIn()
   const [searchFocused, setSearchFocused] = useState(false)
   const [suggestionsDismissed, setSuggestionsDismissed] = useState(false)
   const [activeSuggestionId, setActiveSuggestionId] = useState<string | null>(
@@ -559,8 +354,8 @@ export function MarketHeader({
   }
 
   function handleProtectedRoute(to: "/messages" | "/orders"): void {
-    if (!connected) {
-      setConnectOpen(true)
+    if (!accountPubkey) {
+      requestSignIn(() => void navigate({ to }))
       return
     }
 
@@ -722,24 +517,61 @@ export function MarketHeader({
             />
           </nav>
           <ThemeToggleButton />
-          <AccountControl
-            connected={connected}
+          <AccountMenu
+            key={accountPubkey ?? "guest"}
+            accountPresent={!!accountPubkey}
+            recoveryRequired={
+              !!accountPubkey && signerReadiness === "unavailable"
+            }
+            incompatible={signerReadiness === "incompatible"}
+            onReconnect={() => connect({ mode: "restore" })}
+            items={[
+              {
+                label: "Profile",
+                content: (
+                  <Link to="/profile">
+                    <CircleUser className="size-4" />
+                    Profile
+                  </Link>
+                ),
+              },
+              {
+                label: "Preferences",
+                content: (
+                  <Link to="/preferences">
+                    <Settings2 className="size-4" />
+                    Preferences
+                  </Link>
+                ),
+              },
+              {
+                label: "Network",
+                content: (
+                  <Link to="/network">
+                    <Radio className="size-4" />
+                    Network
+                  </Link>
+                ),
+              },
+              {
+                label: "Wallets",
+                content: (
+                  <Link to="/wallet">
+                    <Wallet className="size-4" />
+                    Wallets
+                  </Link>
+                ),
+              },
+            ]}
             displayName={displayName}
-            npub={pubkey ? formatNpub(pubkey, 8) : undefined}
+            pubkeyLabel={pubkey ? formatNpub(pubkey, 8) : undefined}
             avatarUrl={profile?.picture}
-            authPending={authPending}
-            onConnect={() => setConnectOpen(true)}
-            onDisconnect={disconnect}
+            pending={authPending}
+            onConnect={() => requestSignIn()}
+            onDisconnect={disconnectAccount}
           />
         </div>
       </div>
-
-      {/* Keep mounted so successful sign-in can clear the controlled open state. */}
-      <SignerSwitch
-        open={connectOpen}
-        onOpenChange={setConnectOpen}
-        hideTrigger
-      />
     </header>
   )
 }

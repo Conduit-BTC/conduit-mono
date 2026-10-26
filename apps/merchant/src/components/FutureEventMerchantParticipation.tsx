@@ -9,6 +9,8 @@ import {
 } from "@conduit/core"
 import {
   Button,
+  SignerRecoveryNotice,
+  useSignIn,
   Card,
   CardContent,
   CardDescription,
@@ -16,7 +18,6 @@ import {
   CardTitle,
 } from "@conduit/ui"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
-import { SignerSwitch } from "./SignerSwitch"
 import { getEventParticipationStatus } from "../lib/event-market-enrollment-presentation"
 
 export function FutureEventMerchantParticipation({
@@ -40,7 +41,16 @@ export function FutureEventMerchantParticipation({
   pendingDelivery?: boolean
   onSend: (action: "request" | "withdraw", merchant: string) => Promise<void>
 }) {
-  const { accountPubkey, authGeneration, isAuthGenerationCurrent } = useAuth()
+  const {
+    accountPubkey,
+    authGeneration,
+    isAuthGenerationCurrent,
+    signerReadiness,
+    status: authStatus,
+    error: authError,
+    connect,
+  } = useAuth()
+  const { requestSignIn } = useSignIn()
   const profiles = useProfiles([market.organizerPubkey], {
     accountPubkey,
     authenticatedPubkey,
@@ -103,7 +113,9 @@ export function FutureEventMerchantParticipation({
         <p role="status" className="font-medium">
           {authenticatedPubkey
             ? status
-            : "Connect your signer to request a place or review your invitation."}
+            : accountPubkey
+              ? "Your account is retained. A ready signer is required for participation actions."
+              : "Connect your signer to request a place or review your invitation."}
         </p>
         {error ? (
           <p role="alert" className="text-sm text-[var(--error-text)]">
@@ -119,7 +131,24 @@ export function FutureEventMerchantParticipation({
           </p>
         ) : null}
         {!authenticatedPubkey ? (
-          <SignerSwitch />
+          !accountPubkey ? (
+            <Button onClick={() => requestSignIn()}>Connect</Button>
+          ) : signerReadiness === "incompatible" ? (
+            <p role="alert">
+              Your signer does not support the capabilities required for
+              participation. Open Network settings to review compatibility.
+            </p>
+          ) : (
+            <SignerRecoveryNotice
+              description="Reconnect your account, then retry your participation action."
+              reconnecting={
+                authStatus === "restoring" || authStatus === "connecting"
+              }
+              restoreFailed={authStatus === "error"}
+              restoreFailureDescription={authError}
+              onReconnect={() => connect({ mode: "restore" })}
+            />
+          )
         ) : approved ? (
           <>
             <p className="text-sm">

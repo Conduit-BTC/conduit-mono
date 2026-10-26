@@ -33,8 +33,8 @@ import {
 } from "../components/MerchantIdentity"
 
 export const Route = createFileRoute("/profile")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: ProfilePage,
 })

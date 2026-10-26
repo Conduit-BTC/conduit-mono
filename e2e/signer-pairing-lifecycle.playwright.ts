@@ -1,6 +1,8 @@
 import path from "node:path"
 import { expect, test, type Page } from "@playwright/test"
 
+test.use({ trace: "off", screenshot: "off", video: "off" })
+
 const marketUrl = `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`
 
 interface PairingInput {
@@ -43,7 +45,9 @@ async function mountPairing(
       const host = document.createElement("div")
       host.id = "signer-pairing-lifecycle-test"
       document.body.append(host)
-      const root = ReactDOM.createRoot(host)
+      const root = ReactDOM.createRoot(host, {
+        identifierPrefix: "sign-in-fixture-",
+      })
       let input = { autoPrepare: true, ...initial }
       const settlements: Array<() => void> = []
       const harness: PairingHarness = {
@@ -329,22 +333,23 @@ async function mountSignerModal(
   page.on("pageerror", (error) => runtimeErrors.push(error.message))
   const componentUrl = `/@fs${path.resolve(
     process.cwd(),
-    "packages/ui/src/components/SignerSwitch.tsx"
+    "packages/ui/src/components/SignInDialog.tsx"
   )}`
   await page.evaluate(
     async ({ url, initialConnected }) => {
       const React = (await import("/@id/react")).default
       const ReactDOM = (await import("/@id/react-dom/client")).default
-      const { SignerSwitch } = await import(url)
+      const { SignInDialog } = await import(url)
       Object.defineProperty(navigator, "userAgent", {
         configurable: true,
         value: "iPhone",
       })
       const host = document.createElement("div")
       document.body.append(host)
-      const root = ReactDOM.createRoot(host)
+      const root = ReactDOM.createRoot(host, {
+        identifierPrefix: "sign-in-fixture-",
+      })
       const settlements: Array<() => void> = []
-      let settleDisconnect: (() => void) | undefined
       let open = true
       let status = initialConnected ? "connected" : "disconnected"
       let uri: string | null = null
@@ -361,26 +366,21 @@ async function mountSignerModal(
           render()
         },
         settle: (attempt: number) => settlements[attempt - 1]?.(),
-        settleDisconnect: () => settleDisconnect?.(),
       }
       window.__signerModalHarness = harness
 
       function render() {
         root.render(
-          React.createElement(SignerSwitch, {
+          React.createElement(SignInDialog, {
             open,
             onOpenChange: (nextOpen: boolean) => {
               open = nextOpen
               render()
             },
-            hideTrigger: true,
             status,
-            pubkeyLabel: status === "connected" ? "Test account" : null,
             signerMethod: status === "disconnected" ? null : "nip46",
             extensionAvailable: false,
-            connectedDescription: "Connected for the lifecycle test.",
             connectDescription: "Approve in the test signer.",
-            connectedUseDescription: "No real signer is connected.",
             unlockItems: [],
             nostrConnectUri: uri,
             onConnectExtension: () => undefined,
@@ -390,9 +390,6 @@ async function mountSignerModal(
               status = "disconnected"
               uri = null
               render()
-              return new Promise<void>((resolve) => {
-                settleDisconnect = resolve
-              })
             },
             onConnectNostrConnect: () => {
               harness.starts += 1
@@ -421,7 +418,7 @@ async function mountSignerModal(
       dialogs: await page.getByRole("dialog").count(),
       errors: runtimeErrors,
     }))
-    .toEqual({ dialogs: 1, errors: [] })
+    .toEqual({ dialogs: initialConnected ? 0 : 1, errors: [] })
 }
 
 test("a canceled connection resolving late cannot close a reopened signer dialog @market", async ({
@@ -451,32 +448,17 @@ test("a canceled connection resolving late cannot close a reopened signer dialog
   await expect(dialog).not.toBeVisible()
 })
 
-test("switching accounts prepares the next mobile connection only after logout settles @market", async ({
+test("an already connected account never opens a sign-in or account-switch dialog @market", async ({
   page,
 }) => {
   await mountSignerModal(page, true)
-  const connectedDialog = page.getByRole("dialog", { name: "Signer connected" })
-  await connectedDialog
-    .getByRole("button", { name: "Switch account", exact: true })
-    .click()
-  await expect
-    .poll(() => page.evaluate(() => window.__signerModalHarness.disconnects))
-    .toBe(1)
+  await expect(page.getByRole("dialog")).toHaveCount(0)
   expect(await page.evaluate(() => window.__signerModalHarness.starts)).toBe(0)
-  await expect(
-    page.getByRole("link", { name: "Connect with Clave", exact: true })
-  ).toHaveCount(0)
-
-  await page.evaluate(() => window.__signerModalHarness.settleDisconnect())
-  await expect
-    .poll(() => page.evaluate(() => window.__signerModalHarness.starts))
-    .toBe(1)
-  await expect(
-    page.getByRole("dialog", { name: "Sign in to Conduit" })
-  ).toBeVisible()
-  await expect(
-    page.getByRole("link", { name: "Connect with Clave", exact: true })
-  ).toBeVisible()
+  expect(
+    await page.evaluate(() => window.__signerModalHarness.disconnects)
+  ).toBe(0)
+  await page.evaluate(() => window.__signerModalHarness.reopen())
+  await expect(page.getByRole("dialog")).toHaveCount(0)
 })
 
 declare global {
@@ -489,7 +471,257 @@ declare global {
       reopen: () => void
       complete: () => void
       settle: (attempt: number) => void
-      settleDisconnect: () => void
     }
   }
 }
+
+async function mountAppSignIn(
+  page: Page,
+  options: { mobile?: boolean; gate?: boolean } = {}
+) {
+  const url = `/@fs${path.resolve(process.cwd(), "packages/ui/src/components/SignInProvider.tsx")}`
+  const panelUrl = `/@fs${path.resolve(process.cwd(), "packages/ui/src/components/SignInDialog.tsx")}`
+  await page.evaluate(
+    async ({ url, panelUrl, options }) => {
+      const React = (await import("/@id/react")).default
+      const ReactDOM = (await import("/@id/react-dom/client")).default
+      const { SignInProvider, useSignIn } = await import(url)
+      const { SignerConnectPanel } = await import(panelUrl)
+      if (options.mobile)
+        Object.defineProperty(navigator, "userAgent", {
+          configurable: true,
+          value: "iPhone",
+        })
+      const host = document.createElement("div")
+      host.style.cssText = "position:fixed;top:100px;left:20px;z-index:50"
+      document.body.append(host)
+      const root = ReactDOM.createRoot(host, {
+        identifierPrefix: "sign-in-fixture-",
+      })
+      let status = "disconnected"
+      let gate = options.gate ?? false
+      let route = "checkout"
+      let showRoute = true
+      let authUrl: string | null = null
+      let rejectDisconnect = false
+      const settlements: Array<() => void> = []
+      const harness = {
+        starts: 0,
+        cancels: 0,
+        navigations: 0,
+        hideRoute: () => {
+          showRoute = false
+          render()
+        },
+        changeRoute: () => {
+          route = "other"
+          render()
+        },
+        toggleGate: () => {
+          gate = !gate
+          render()
+        },
+        showApproval: () => {
+          authUrl = "https://signer.example/approve"
+          render()
+        },
+        complete: () => {
+          settlements.at(-1)?.()
+          status = "connected"
+          render()
+        },
+        failDisconnect: () => {
+          rejectDisconnect = true
+        },
+        disconnect: () => undefined as void | Promise<void>,
+        request: () => undefined,
+        unmount: () => {
+          root.unmount()
+          host.remove()
+        },
+      }
+      window.__appSignInHarness = harness
+      function Route() {
+        const { requestSignIn, disconnectAccount } = useSignIn()
+        harness.request = () =>
+          requestSignIn(() => {
+            harness.navigations++
+          })
+        harness.disconnect = () => disconnectAccount().catch(() => undefined)
+        return showRoute
+          ? React.createElement(
+              "button",
+              { onClick: harness.request },
+              "Start fixture sign-in"
+            )
+          : React.createElement("p", null, "Route is loading")
+      }
+      function render() {
+        root.render(
+          React.createElement(
+            SignInProvider,
+            {
+              status,
+              accountPresent: status === "connected",
+              navigationKey: route,
+              gate,
+              renderGate: (props: unknown) =>
+                React.createElement(SignerConnectPanel, props),
+              authUrl,
+              onDismissAuthUrl: () => {
+                authUrl = null
+                render()
+              },
+              signerMethod: "nip46",
+              extensionAvailable: true,
+              connectDescription: "Synthetic connection lifecycle",
+              unlockItems: [],
+              onConnectExtension: () => undefined,
+              onConnectRemote: () => undefined,
+              onConnectNostrConnect: () => {
+                harness.starts++
+                status = "connecting"
+                render()
+                return new Promise<void>((resolve) => settlements.push(resolve))
+              },
+              onCancelConnect: () => {
+                harness.cancels++
+                status = "disconnected"
+                render()
+              },
+              onDisconnect: async () => {
+                status = "disconnected"
+                showRoute = false
+                render()
+                if (rejectDisconnect)
+                  throw new Error("Synthetic cleanup failure")
+              },
+            },
+            React.createElement(Route)
+          )
+        )
+      }
+      render()
+    },
+    { url, panelUrl, options }
+  )
+  await expect(
+    page.getByRole("button", { name: "Start fixture sign-in", exact: true })
+  ).toBeVisible()
+}
+
+test("route loading and gate presentation changes retain one owned pairing and one approval notice @market", async ({
+  page,
+}) => {
+  await mountAppSignIn(page, { mobile: true })
+  await page
+    .getByRole("button", { name: "Start fixture sign-in", exact: true })
+    .click()
+  await expect
+    .poll(() => page.evaluate(() => window.__appSignInHarness.starts))
+    .toBe(1)
+  await page.evaluate(() => {
+    window.__appSignInHarness.hideRoute()
+    window.__appSignInHarness.showApproval()
+  })
+  await expect(page.getByRole("dialog")).toHaveCount(1)
+  await expect(
+    page.getByRole("link", { name: "Open signer approval" })
+  ).toHaveCount(1)
+  await page.evaluate(() => window.__appSignInHarness.toggleGate())
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  await expect(
+    page.getByRole("heading", { name: "Sign in to Conduit", exact: true })
+  ).toBeVisible()
+  expect(await page.evaluate(() => window.__appSignInHarness.starts)).toBe(1)
+  expect(await page.evaluate(() => window.__appSignInHarness.cancels)).toBe(0)
+  await page.evaluate(() => window.__appSignInHarness.complete())
+  await expect(
+    page.getByRole("heading", { name: "Sign in to Conduit", exact: true })
+  ).toHaveCount(0)
+  expect(await page.evaluate(() => window.__appSignInHarness.navigations)).toBe(
+    1
+  )
+  await page.evaluate(() => window.__appSignInHarness.unmount())
+})
+
+test("dismissed or abandoned navigation does not replay after sign-in @market", async ({
+  page,
+}) => {
+  await mountAppSignIn(page)
+  await page
+    .getByRole("button", { name: "Start fixture sign-in", exact: true })
+    .click()
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Close", exact: true })
+    .click()
+  await page.evaluate(() => {
+    window.__appSignInHarness.request()
+    window.__appSignInHarness.changeRoute()
+  })
+  await expect(page.getByRole("dialog")).toHaveCount(1)
+  await page.evaluate(() => window.__appSignInHarness.complete())
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  expect(await page.evaluate(() => window.__appSignInHarness.navigations)).toBe(
+    0
+  )
+  await page.evaluate(() => window.__appSignInHarness.unmount())
+})
+
+test("disconnect failure stays actionable after account controls disappear @market", async ({
+  page,
+}) => {
+  await mountAppSignIn(page)
+  await page.evaluate(() => window.__appSignInHarness.complete())
+  await page.evaluate(async () => {
+    window.__appSignInHarness.failDisconnect()
+    await window.__appSignInHarness.disconnect()
+  })
+  await expect(
+    page.getByRole("button", { name: "Retry disconnect", exact: true })
+  ).toBeVisible()
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Could not finish disconnecting" })
+  ).toBeVisible()
+  await page.evaluate(() => window.__appSignInHarness.unmount())
+})
+
+declare global {
+  interface Window {
+    __appSignInHarness: {
+      starts: number
+      cancels: number
+      navigations: number
+      hideRoute: () => void
+      changeRoute: () => void
+      toggleGate: () => void
+      showApproval: () => void
+      complete: () => void
+      failDisconnect: () => void
+      disconnect: () => void | Promise<void>
+      request: () => void
+      unmount: () => void
+    }
+  }
+}
+
+test("a connection started at the Merchant gate survives switching to modal presentation @market", async ({
+  page,
+}) => {
+  await mountAppSignIn(page, { mobile: true, gate: true })
+  await expect
+    .poll(() => page.evaluate(() => window.__appSignInHarness.starts))
+    .toBe(1)
+  await page.evaluate(() => window.__appSignInHarness.toggleGate())
+  await expect(
+    page.getByRole("dialog", { name: "Sign in to Conduit" })
+  ).toHaveCount(1)
+  expect(await page.evaluate(() => window.__appSignInHarness.cancels)).toBe(0)
+  await page.evaluate(() => window.__appSignInHarness.complete())
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+  expect(await page.evaluate(() => window.__appSignInHarness.starts)).toBe(1)
+  await page.evaluate(() => window.__appSignInHarness.unmount())
+})

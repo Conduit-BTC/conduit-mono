@@ -98,6 +98,7 @@ import {
   SelectTrigger,
   SignerRecoveryNotice,
   Textarea,
+  useSignIn,
 } from "@conduit/ui"
 import {
   EventGuestReceiptDetails,
@@ -117,7 +118,6 @@ import {
 } from "../components/PaymentTargetSelectContent"
 import { CheckoutMerchantPaymentNotice } from "../components/CheckoutMerchantPaymentNotice"
 import { EventActorName } from "../components/EventActorIdentity"
-import { SignerSwitch } from "../components/SignerSwitch"
 import {
   type CartItem,
   type CartPurchaseClaim,
@@ -1340,7 +1340,7 @@ function CheckoutPage() {
   const [touchedShippingFields, setTouchedShippingFields] = useState<
     Set<ShippingFieldKey>
   >(() => new Set())
-  const [connectOpen, setConnectOpen] = useState(false)
+  const { requestSignIn } = useSignIn()
   const [signerReconnectPending, setSignerReconnectPending] = useState(false)
   // Synchronous re-entrancy guard for the payment flow. A `step`/`disabled`
   // check can't prevent a double-click because the state change doesn't commit
@@ -6099,7 +6099,7 @@ function CheckoutPage() {
                           }
                           className="h-11 w-full px-5 text-sm sm:w-auto"
                           disabled={hasUnpricedCheckoutItems}
-                          onClick={() => setConnectOpen(true)}
+                          onClick={() => requestSignIn()}
                         >
                           <KeyRound className="h-4 w-4" />
                           {hasUnpricedCheckoutItems
@@ -6152,12 +6152,6 @@ function CheckoutPage() {
           }
         </section>
       </div>
-
-      <SignerSwitch
-        open={connectOpen}
-        onOpenChange={setConnectOpen}
-        hideTrigger
-      />
     </div>
   )
 }

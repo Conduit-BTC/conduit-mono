@@ -2,12 +2,10 @@ import { Link, useRouterState } from "@tanstack/react-router"
 import {
   Bug,
   CalendarDays,
-  ChevronDown,
   CreditCard,
   ExternalLink,
   FileText,
   Info,
-  LogOut,
   Menu,
   MessageCircle,
   Package,
@@ -37,16 +35,8 @@ import {
   useProfile,
 } from "@conduit/core"
 import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
   Badge,
   Button,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
   Sheet,
   SheetClose,
   SheetContent,
@@ -55,10 +45,11 @@ import {
   StatusPill,
   ThemeToggleButton,
   cn,
+  useSignIn,
+  AccountMenu,
 } from "@conduit/ui"
 
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
-import { SignerSwitch } from "./SignerSwitch"
 import { MerchantProjectTip } from "./MerchantProjectTip"
 
 type CommerceNavRoute =
@@ -280,36 +271,17 @@ function NetworkBadge() {
   )
 }
 
-function AccountMenuLink({
-  to,
-  icon,
-  children,
-  onNavigate,
-}: {
-  to: "/profile" | "/network"
-  icon: ReactNode
-  children: ReactNode
-  onNavigate: () => void
-}) {
-  return (
-    <DropdownMenuItem
-      asChild
-      className="min-h-11 cursor-pointer rounded-[var(--radius-md)] px-3 py-2 text-[15px] font-medium text-[var(--text-primary)] focus:bg-[color-mix(in_srgb,var(--primary-500)_6%,transparent)] focus:text-[var(--text-primary)]"
-    >
-      <Link to={to} onClick={onNavigate}>
-        <span className="mr-3 inline-flex size-5 shrink-0 items-center justify-center">
-          {icon}
-        </span>
-        <span>{children}</span>
-      </Link>
-    </DropdownMenuItem>
-  )
-}
-
 export function MerchantAccountMenu() {
-  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const {
+    pubkey,
+    accountPubkey,
+    status,
+    connect,
+    signerReadiness,
+    authGeneration,
+  } = useAuth()
+  const { requestSignIn, disconnectAccount } = useSignIn()
   const authGenerationRef = useRef(authGeneration)
-  const [open, setOpen] = useState(false)
 
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -322,83 +294,49 @@ export function MerchantAccountMenu() {
     shouldContinue: () => authGenerationRef.current === authGeneration,
   })
 
-  if (!pubkey || status !== "connected") return <SignerSwitch />
-
   const profile = profileQuery.data
-  const displayName = getProfileDisplayLabel(profile, pubkey, {
+  const displayName = getProfileDisplayLabel(profile, pubkey ?? "", {
     lookupSettled: !profileQuery.isPlaceholderData,
     pendingLabel: "Loading profile",
     chars: 6,
   })
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
-      <DropdownMenuTrigger asChild>
-        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
-        <button
-          type="button"
-          aria-label="Open merchant account menu"
-          className="inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] bg-primary-500 p-1.5 text-left text-white transition-colors hover:bg-primary-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/50 sm:h-12 sm:w-auto sm:min-w-[12.75rem] sm:justify-start sm:gap-3 sm:px-3"
-        >
-          <Avatar className="size-8 shrink-0 border border-[color-mix(in_srgb,var(--on-primary)_24%,transparent)]">
-            <AvatarImage
-              src={profile?.picture ?? undefined}
-              alt={displayName}
-            />
-            <AvatarFallback className="bg-[var(--avatar-bg)] text-[var(--on-primary)]">
-              <MerchantAvatarFallback />
-            </AvatarFallback>
-          </Avatar>
-          <span className="hidden min-w-0 flex-1 sm:block">
-            <span className="block truncate text-sm font-semibold">
-              {displayName}
-            </span>
-            <span className="block truncate text-[11px] text-white/70">
-              {formatNpub(pubkey, 12)}
-            </span>
-          </span>
-          <ChevronDown
-            aria-hidden="true"
-            className={cn(
-              "hidden size-4 shrink-0 text-white/70 transition-transform duration-150 sm:block",
-              open && "rotate-180"
-            )}
-          />
-        </button>
-      </DropdownMenuTrigger>
-
-      <DropdownMenuContent
-        align="end"
-        sideOffset={10}
-        className="w-[14rem] rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-overlay)] p-3 text-[var(--text-primary)] shadow-[var(--shadow-dialog)]"
-      >
-        <AccountMenuLink
-          to="/profile"
-          icon={<UserRound className="size-4" />}
-          onNavigate={() => setOpen(false)}
-        >
-          Profile
-        </AccountMenuLink>
-        <AccountMenuLink
-          to="/network"
-          icon={<Wifi className="size-4" />}
-          onNavigate={() => setOpen(false)}
-        >
-          Network
-        </AccountMenuLink>
-        <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
-        <DropdownMenuItem
-          className="min-h-11 cursor-pointer rounded-[var(--radius-md)] px-3 py-2 text-[15px] font-medium text-[var(--error-text)] focus:bg-[color-mix(in_srgb,var(--error)_10%,transparent)] focus:text-[var(--error-text)]"
-          onSelect={() => {
-            setOpen(false)
-            disconnect()
-          }}
-        >
-          <LogOut className="mr-3 size-4" />
-          <span>Disconnect</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <AccountMenu
+      key={accountPubkey ?? "guest"}
+      label="Open merchant account menu"
+      accountPresent={!!accountPubkey}
+      displayName={displayName}
+      pubkeyLabel={pubkey ? formatNpub(pubkey, 12) : undefined}
+      avatarUrl={profile?.picture}
+      fallback={<MerchantAvatarFallback />}
+      pending={status === "connecting" || status === "restoring"}
+      recoveryRequired={!!accountPubkey && signerReadiness === "unavailable"}
+      incompatible={signerReadiness === "incompatible"}
+      onConnect={() => requestSignIn()}
+      onReconnect={() => connect({ mode: "restore" })}
+      onDisconnect={disconnectAccount}
+      items={[
+        {
+          label: "Profile",
+          content: (
+            <Link to="/profile">
+              <UserRound className="size-4" />
+              Profile
+            </Link>
+          ),
+        },
+        {
+          label: "Network",
+          content: (
+            <Link to="/network">
+              <Wifi className="size-4" />
+              Network
+            </Link>
+          ),
+        },
+      ]}
+    />
   )
 }
 

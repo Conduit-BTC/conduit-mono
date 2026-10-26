@@ -54,8 +54,8 @@ import { BuyerAvatar } from "../components/OrderListItem"
 import { requireAuth } from "../lib/auth"
 
 export const Route = createFileRoute("/messages")({
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: MessagesPage,
 })

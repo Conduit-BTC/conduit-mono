@@ -340,8 +340,8 @@ type StockUpdateMutationPayload =
 
 export const Route = createFileRoute("/orders")({
   validateSearch: parseMerchantOrderSearch,
-  beforeLoad: () => {
-    requireAuth()
+  beforeLoad: ({ location }) => {
+    requireAuth({ returnTo: location.href })
   },
   component: OrdersPage,
 })

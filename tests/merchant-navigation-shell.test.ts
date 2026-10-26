@@ -55,11 +55,15 @@ describe("Merchant navigation shell", () => {
       "<span>Privacy</span>",
       "<span>conduit.market</span>",
     ])
-    expectInOrder(account, [
-      'to="/profile"',
-      'to="/network"',
-      "<span>Disconnect</span>",
-    ])
+    expectInOrder(account, ['to="/profile"', 'to="/network"'])
+
+    expect(account).toContain("onDisconnect={disconnectAccount}")
+    const sharedMenu = await Bun.file(
+      "packages/ui/src/components/AccountMenu.tsx"
+    ).text()
+    expect(sharedMenu.indexOf("{items.map")).toBeLessThan(
+      sharedMenu.indexOf('void run(onDisconnect, "disconnect")')
+    )
 
     expect(commerce).not.toContain('label: "Profile"')
     expect(commerce).not.toContain('label: "Network"')
@@ -182,7 +186,9 @@ describe("Merchant navigation shell", () => {
     expect(messages).not.toContain(
       ">\n          Messages\n        </div>\n        <h1"
     )
-    expect(productError).toContain("if (!signerConnected) return errorPage")
+    expect(productError).toContain("<AppSignIn>")
+    expect(productError).toContain("signerConnected ? <RootShell>")
+    expect(productError).not.toContain("if (!signerConnected) return errorPage")
     expect(productError).toContain("<RootShell>{errorPage}</RootShell>")
   })
 })
