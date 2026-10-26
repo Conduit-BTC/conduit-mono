@@ -6,6 +6,7 @@ import {
   NostrSignerError,
   type AccountSigner,
   type AccountSignerCapabilities,
+  type AccountSignerOperationOptions,
   type NostrKeySigner,
   type SignedNostrEvent,
   type UnsignedNostrEvent,
@@ -203,7 +204,7 @@ export class SessionSigner implements AccountSigner {
 
   async signEvent(
     event: UnsignedNostrEvent,
-    options: { priority?: "foreground" | "background" } = {}
+    options: AccountSignerOperationOptions = {}
   ): Promise<SignedNostrEvent> {
     // Snapshot before queueing: neither caller nor provider may change consent.
     try {
@@ -235,12 +236,12 @@ export class SessionSigner implements AccountSigner {
       this.assertExpectedPubkey(expected.pubkey)
       return await this.runOperation(
         "signEvent",
-        async () => {
+        async (operationOptions) => {
           const draft = {
             ...expected,
             tags: expected.tags.map((tag) => [...tag]),
           }
-          const signed = await this.signer.signEvent(draft)
+          const signed = await this.signer.signEvent(draft, operationOptions)
           this.assertAuthority()
           if (!isValidSignedPublicNostrEvent(signed)) {
             this.reject(
@@ -262,7 +263,8 @@ export class SessionSigner implements AccountSigner {
           }
           return { ...expected, id: signed.id, sig: signed.sig }
         },
-        options.priority ?? "foreground"
+        options.priority ?? "foreground",
+        options.assertCurrent
       )
     } catch (error) {
       throw publicSignerFailure(error)
@@ -272,42 +274,45 @@ export class SessionSigner implements AccountSigner {
   async encryptNip44(
     recipientPubkey: string,
     plaintext: string,
-    options: { priority?: "foreground" | "background" } = {}
+    options: AccountSignerOperationOptions = {}
   ): Promise<string> {
     return this.runKeyOperation(
       "encrypt",
       recipientPubkey,
       plaintext,
       "nip44",
-      options.priority ?? "foreground"
+      options.priority ?? "foreground",
+      options.assertCurrent
     )
   }
 
   async decryptNip44(
     senderPubkey: string,
     ciphertext: string,
-    options: { priority?: "foreground" | "background" } = {}
+    options: AccountSignerOperationOptions = {}
   ): Promise<string> {
     return this.runKeyOperation(
       "decrypt",
       senderPubkey,
       ciphertext,
       "nip44",
-      options.priority ?? "background"
+      options.priority ?? "background",
+      options.assertCurrent
     )
   }
 
   async decryptLegacy(
     senderPubkey: string,
     ciphertext: string,
-    options: { priority?: "foreground" | "background" } = {}
+    options: AccountSignerOperationOptions = {}
   ): Promise<string> {
     return this.runKeyOperation(
       "decrypt",
       senderPubkey,
       ciphertext,
       "nip04",
-      options.priority ?? "background"
+      options.priority ?? "background",
+      options.assertCurrent
     )
   }
 
@@ -316,20 +321,21 @@ export class SessionSigner implements AccountSigner {
     peerPubkey: string,
     value: string,
     scheme: "nip44" | "nip04",
-    priority: "foreground" | "background" = "foreground"
+    priority: "foreground" | "background" = "foreground",
+    assertCurrent?: () => void
   ): Promise<string> {
     if (!/^[0-9a-f]{64}$/i.test(peerPubkey))
       throw new NostrSignerError("invalid_response")
     const peer = normalizePubkey(peerPubkey)
     const result = await this.runOperation(
       scheme === "nip04" ? "nip04Decrypt" : "nip44",
-      async () => {
+      async (operationOptions) => {
         try {
           return await (operation === "encrypt"
-            ? this.signer.encryptNip44(peer, value)
+            ? this.signer.encryptNip44(peer, value, operationOptions)
             : scheme === "nip44"
-              ? this.signer.decryptNip44(peer, value)
-              : this.signer.decryptLegacy(peer, value))
+              ? this.signer.decryptNip44(peer, value, operationOptions)
+              : this.signer.decryptLegacy(peer, value, operationOptions))
         } catch (error) {
           this.assertAuthority()
           if (
@@ -341,7 +347,8 @@ export class SessionSigner implements AccountSigner {
           throw error
         }
       },
-      priority
+      priority,
+      assertCurrent
     )
     if (
       typeof result !== "string" ||
@@ -353,8 +360,9 @@ export class SessionSigner implements AccountSigner {
 
   private async runOperation<T>(
     capability: keyof AccountSignerCapabilities,
-    operation: () => Promise<T>,
-    priority: "foreground" | "background" = "foreground"
+    operation: (options: AccountSignerOperationOptions) => Promise<T>,
+    priority: "foreground" | "background" = "foreground",
+    assertCurrent?: () => void
   ): Promise<T> {
     this.assertAuthority()
     if (this.providerUnavailable)
@@ -384,7 +392,7 @@ export class SessionSigner implements AccountSigner {
     return new Promise<T>((resolve, reject) => {
       const queuedOperation = {
         start: () => {
-          void this.executeOperation(capability, operation).then(
+          void this.executeOperation(capability, operation, assertCurrent).then(
             resolve,
             reject
           )
@@ -421,23 +429,33 @@ export class SessionSigner implements AccountSigner {
 
   private async executeOperation<T>(
     capability: keyof AccountSignerCapabilities,
-    operation: () => Promise<T>
+    operation: (options: AccountSignerOperationOptions) => Promise<T>,
+    assertCurrent?: () => void
   ): Promise<T> {
     this.running = true
     let timer: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
     let provider: Promise<T> | undefined
     let providerSettled = false
+    let operationCurrent = true
+    const operationOptions: AccountSignerOperationOptions = {
+      assertCurrent: () => {
+        assertCurrent?.()
+        // A timeout retires only this operation, not future authorized work.
+        if (!operationCurrent) throw new NostrSignerError("timeout")
+        this.assertAuthority()
+        if (!this.capabilities[capability])
+          throw new NostrSignerError("unsupported_operation")
+      },
+    }
     const finish = () => {
       this.running = false
       this.providerUnavailable = false
       this.pump()
     }
     try {
-      this.assertAuthority()
-      if (!this.capabilities[capability])
-        throw new NostrSignerError("unsupported_operation")
-      provider = Promise.resolve(operation())
+      operationOptions.assertCurrent?.()
+      provider = Promise.resolve(operation(operationOptions))
       void provider.then(
         () => {
           providerSettled = true
@@ -455,6 +473,7 @@ export class SessionSigner implements AccountSigner {
       })
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
+          operationCurrent = false
           this.providerUnavailable = true
           this.rejectQueued(
             new SessionSignerError(
@@ -471,9 +490,7 @@ export class SessionSigner implements AccountSigner {
         }, this.operationTimeoutMs)
       })
       const result = await Promise.race([provider, cancelled, timeout])
-      this.assertAuthority()
-      if (!this.capabilities[capability])
-        throw new NostrSignerError("unsupported_operation")
+      operationOptions.assertCurrent?.()
       return result
     } catch (error) {
       const failure =
@@ -492,6 +509,7 @@ export class SessionSigner implements AccountSigner {
       }
       throw failure
     } finally {
+      operationCurrent = false
       if (timer !== undefined) clearTimeout(timer)
       if (onAbort)
         this.cancellation.signal.removeEventListener("abort", onAbort)

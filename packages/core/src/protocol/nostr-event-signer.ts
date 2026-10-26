@@ -16,7 +16,10 @@ export interface NostrEventSigner {
   /** Protected-read eligibility is limited to externally backed account sessions. */
   readonly authMethod?: AuthMethod
   getPublicKey(): Promise<string>
-  signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent>
+  signEvent(
+    event: UnsignedNostrEvent,
+    options?: AccountSignerOperationOptions
+  ): Promise<SignedNostrEvent>
 }
 
 export type NostrSignerFailureCode =
@@ -49,13 +52,27 @@ export interface AccountSignerCapabilities {
 /** Plain key operations; local guest implementations remain purpose-scoped. */
 export interface NostrKeySigner extends NostrEventSigner {
   readonly pubkey: string
-  encryptNip44(recipientPubkey: string, plaintext: string): Promise<string>
-  decryptNip44(senderPubkey: string, ciphertext: string): Promise<string>
-  decryptLegacy(senderPubkey: string, ciphertext: string): Promise<string>
+  encryptNip44(
+    recipientPubkey: string,
+    plaintext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
+  decryptNip44(
+    senderPubkey: string,
+    ciphertext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
+  decryptLegacy(
+    senderPubkey: string,
+    ciphertext: string,
+    options?: AccountSignerOperationOptions
+  ): Promise<string>
 }
 
 export interface AccountSignerOperationOptions {
   priority?: "foreground" | "background"
+  /** Narrow operation authority again after adapter awaits, before dispatch. */
+  assertCurrent?: () => void
 }
 
 /** Established account authority. Guest order keys never implement this grant. */
