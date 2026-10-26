@@ -24,6 +24,7 @@ import {
 import { createEventMarketStockAuthorityRumor } from "@conduit/core/protocol/event-market-stock-authority"
 import type { InboxProjection } from "../packages/core/src/protocol/commerce-inbox-store"
 import { interceptBlossom } from "./helpers/blossom"
+import { recordSmokeDiagnostic } from "./helpers/smoke-diagnostics"
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
@@ -8337,10 +8338,105 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   )
   const pendingRetry = retry.and(page.locator(":disabled"))
-  await retry.click()
-  await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
-  await pendingRetry.waitFor({ state: "hidden" })
-  await expect(publishedNotice).toBeVisible()
+  const retryObservation = await page.evaluateHandle((unavailableKey) => {
+    const seen = {
+      pointerDownOnTrigger: false,
+      pointerUpOnTrigger: false,
+      clickOnTrigger: false,
+      pendingObserved: false,
+      publishedObserved: false,
+      publicationErrorObserved: false,
+    }
+    const trigger = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (button) =>
+          button.textContent?.trim() === "Retry acceptance publication"
+      )
+    const observe = () => {
+      seen.pendingObserved ||= trigger()?.disabled === true
+      seen.publishedObserved ||= [
+        ...document.querySelectorAll('[role="status"]'),
+      ].some(
+        (status) =>
+          status.textContent?.trim() === "Accepted inventory updates published."
+      )
+      seen.publicationErrorObserved ||= [
+        ...document.querySelectorAll('[role="alert"]'),
+      ].some((alert) =>
+        alert.textContent?.includes(
+          "Acceptance remains saved. Publication could not finish;"
+        )
+      )
+    }
+    const isTrigger = (event: Event) =>
+      event.target instanceof Node && trigger()?.contains(event.target) === true
+    const down = (event: Event) => {
+      if (isTrigger(event)) seen.pointerDownOnTrigger = true
+    }
+    const up = (event: Event) => {
+      if (isTrigger(event)) seen.pointerUpOnTrigger = true
+    }
+    const click = (event: Event) => {
+      if (isTrigger(event)) seen.clickOnTrigger = true
+    }
+    document.addEventListener("pointerdown", down, true)
+    document.addEventListener("pointerup", up, true)
+    document.addEventListener("click", click, true)
+    const observer = new MutationObserver(observe)
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    })
+    observe()
+    return {
+      read() {
+        observe()
+        return {
+          observationAvailable: true,
+          ...seen,
+          signerDenied: localStorage.getItem(unavailableKey) === "1",
+          signerAttempts:
+            (
+              window as typeof window & {
+                __conduitSyntheticSignAttempts?: number
+              }
+            ).__conduitSyntheticSignAttempts ?? 0,
+          retryPresent: !!trigger(),
+          retryEnabled: !!trigger() && !trigger()!.disabled,
+        }
+      },
+      dispose() {
+        observer.disconnect()
+        document.removeEventListener("pointerdown", down, true)
+        document.removeEventListener("pointerup", up, true)
+        document.removeEventListener("click", click, true)
+      },
+    }
+  }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
+  try {
+    await retry.click()
+    await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
+    await pendingRetry.waitFor({ state: "hidden" })
+    await expect(publishedNotice).toBeVisible()
+  } catch (error) {
+    let safe: Record<string, unknown> = { observationAvailable: false }
+    try {
+      safe = await retryObservation.evaluate((observation) =>
+        observation.read()
+      )
+    } catch {
+      /* Retain the original failure if the page is unavailable. */
+    }
+    recordSmokeDiagnostic(test.info(), "inventory-publication-retry", safe)
+    throw error
+  } finally {
+    await retryObservation
+      .evaluate((observation) => observation.dispose())
+      .catch(() => {})
+    await retryObservation.dispose()
+  }
   const state = await page.evaluate(
     async ({ root, coordinate, orderId }) => {
       const { db } = await import(`${root}/db/index.ts`)
