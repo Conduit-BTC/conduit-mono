@@ -186,7 +186,9 @@ describe("Merchant navigation shell", () => {
     expect(messages).not.toContain(
       ">\n          Messages\n        </div>\n        <h1"
     )
-    expect(productError).toContain("if (!signerConnected) return errorPage")
+    expect(productError).toContain("<AppSignIn>")
+    expect(productError).toContain("signerConnected ? <RootShell>")
+    expect(productError).not.toContain("if (!signerConnected) return errorPage")
     expect(productError).toContain("<RootShell>{errorPage}</RootShell>")
   })
 })

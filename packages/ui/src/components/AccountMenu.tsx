@@ -72,7 +72,7 @@ export function AccountMenu({
         aria-busy={pending}
         disabled={working !== null}
         onClick={onConnect}
-        className="h-11 gap-2"
+        className="size-11 gap-2 p-0 sm:h-11 sm:w-auto sm:px-4"
       >
         <CircleUser className="size-5 sm:hidden" aria-hidden="true" />
         <span className="hidden sm:inline">Connect</span>

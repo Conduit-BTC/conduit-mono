@@ -1473,6 +1473,15 @@ for (const initiallyConnected of [true, false]) {
       guestPage.getByText("Restoring checkout…", { exact: true })
     ).toBeVisible()
     await expect(signIn).toBeVisible()
+    await expect
+      .poll(() =>
+        guestPage.evaluate(
+          () =>
+            typeof (window as unknown as { finishSignIn?: () => void })
+              .finishSignIn
+        )
+      )
+      .toBe("function")
     await guestPage.evaluate(() =>
       (window as unknown as { finishSignIn: () => void }).finishSignIn()
     )

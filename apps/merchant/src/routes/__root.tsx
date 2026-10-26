@@ -404,11 +404,9 @@ function MerchantProductRootError({ error }: { error: unknown }) {
     </ErrorPage>
   )
 
-  if (!signerConnected) return errorPage
-
   return (
     <AppSignIn>
-      <RootShell>{errorPage}</RootShell>
+      {signerConnected ? <RootShell>{errorPage}</RootShell> : errorPage}
     </AppSignIn>
   )
 }
