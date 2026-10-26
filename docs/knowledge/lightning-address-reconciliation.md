@@ -42,14 +42,18 @@ In-flight registration cancellation remains uncertain and is reconciled by reads
 No activation resumes merely because a component mounts.
 
 Session-only progress distinguishes approval checking, registration confirmation,
-public lookup, and profile confirmation, including throttling, invalid responses,
+public lookup, and wallet persistence, and profile confirmation, including throttling, invalid responses,
 and exhausted retries. These fields are not written to wallet records. The wallet
 does not promote an unverified recovered address to its persisted receiving address
 or offer it as ready to share or as a wallet-generated public-profile suggestion.
 These suggestions use the same public-verification gate as display/copy controls.
 A later unavailable lookup does not erase an independently published profile
 address. A verified address can remain visible while the form explains that
-profile publication is still pending. A fresh profile read recognizes an already
+wallet persistence or profile publication is still pending. The workflow exposes
+the verified result before either metadata or checkpoint signing/storage write;
+a failed write remains an error and leaves registration intent resumable. A retry
+rechecks ownership and public receiving without replaying an uncertain registration.
+A fresh profile read recognizes an already
 published address before constructing another update.
 
 The persisted request schema and phase meanings are unchanged. Legacy `activating`,

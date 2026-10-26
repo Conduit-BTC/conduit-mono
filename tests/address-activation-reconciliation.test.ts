@@ -45,6 +45,8 @@ function fixture(failure: "throttled" | "delayed" | "none") {
   let registrationFailure: "rejected" | "lost" | undefined
   let registrationAttempts = 0
   let afterRegistrationSigning: (() => void) | undefined
+  let persistenceFailure: "address" | "record" | undefined
+  let addressWrites = 0
   const assertCurrent = () => {
     if (!active) throw new Error("Authority changed")
   }
@@ -124,13 +126,21 @@ function fixture(failure: "throttled" | "delayed" | "none") {
         }
       },
       load: async () => view,
-      save: async (_id, record) =>
-        (view = {
+      save: async (_id, record) => {
+        if (record.phase === "registered" && persistenceFailure === "record")
+          throw new Error("Checkpoint write refused")
+        return (view = {
           record: addressRequestRecordSchema.parse(
             mergeAddressRequestRecord(view?.record, record)
           ),
           publication: "local",
-        }),
+        })
+      },
+      saveAddress: async () => {
+        addressWrites++
+        if (persistenceFailure === "address")
+          throw new Error("Address metadata write refused")
+      },
       signWallet: async (_id, input) => {
         const request = { ...input, sparkIdentity: identity }
         return {
@@ -175,6 +185,10 @@ function fixture(failure: "throttled" | "delayed" | "none") {
     })
   return {
     workflow,
+    persistenceFailure: (value: typeof persistenceFailure) => {
+      persistenceFailure = value
+    },
+    addressWrites: () => addressWrites,
     progress,
     waits,
     counts: () => ({ registrations, recoveries, profiles }),
@@ -452,3 +466,58 @@ for (const failure of ["throttled", "delayed"] as const) {
       expect(f.waits[0]).toBeGreaterThanOrEqual(60_000)
   })
 }
+
+for (const failure of ["address", "record"] as const) {
+  it(`retains verified session progress when the ${failure} write fails and resumes without registration`, async () => {
+    const f = fixture("none")
+    await f
+      .workflow()
+      .submit("wallet", { desiredName: "alice", token: "fixture" })
+    f.persistenceFailure(failure)
+    await expect(
+      f.workflow().activate("wallet", {
+        onProgress: (view) => f.progress.push(view),
+      })
+    ).rejects.toThrow(
+      failure === "address"
+        ? "Address metadata write refused"
+        : "Checkpoint write refused"
+    )
+    expect(f.progress.at(-1)?.activation).toMatchObject({
+      step: "persistence",
+      address: {
+        status: "registered",
+        publicLookup: "verified",
+        address: "alice@conduit.cash",
+      },
+    })
+    expect(f.saved()!.record.phase).toBe("activating")
+    expect(f.counts()).toEqual({ registrations: 1, recoveries: 3, profiles: 0 })
+    f.persistenceFailure(undefined)
+    expect((await f.workflow().activate("wallet")).record.phase).toBe(
+      "complete"
+    )
+    expect(f.counts().registrations).toBe(1)
+    expect(f.counts().profiles).toBe(1)
+    expect(f.addressWrites()).toBe(2)
+  })
+}
+
+it("fences persistence when verified progress cancels the activation", async () => {
+  const f = fixture("none")
+  await f
+    .workflow()
+    .submit("wallet", { desiredName: "alice", token: "fixture" })
+  const controller = new AbortController()
+  await expect(
+    f.workflow().activate("wallet", {
+      signal: controller.signal,
+      onProgress: (view) => {
+        if (view.activation?.step === "persistence") controller.abort()
+      },
+    })
+  ).rejects.toThrow()
+  expect(f.addressWrites()).toBe(0)
+  expect(f.saved()!.record.phase).toBe("activating")
+  expect(f.counts().profiles).toBe(0)
+})

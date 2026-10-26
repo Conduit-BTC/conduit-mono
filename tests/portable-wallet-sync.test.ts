@@ -670,6 +670,9 @@ describe("address progress in the complete wallet", () => {
               }
             : { status: "absent" }
         },
+        async saveAddress(id, address) {
+          await service.update(id, { lightningAddress: address })
+        },
         async publishProfile() {
           profiles++
           return "a".repeat(64)

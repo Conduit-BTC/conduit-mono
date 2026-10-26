@@ -157,9 +157,11 @@ function requestStatus(
           : "Checking wallet ownership before registration."
         : activation?.step === "public_lookup"
           ? "Registration confirmed. Public receiving lookup still needs verification before this address can be used."
-          : activation?.step === "profile"
-            ? "Address verified. Your public profile still needs confirmation."
-            : undefined
+          : activation?.step === "persistence"
+            ? "Address verified. Saving it to your wallet still needs confirmation; your public profile is not updated yet."
+            : activation?.step === "profile"
+              ? "Address verified. Your public profile still needs confirmation."
+              : undefined
   const reasonMessage =
     activation?.reason === "rate_limited"
       ? "The service is limiting lookups."

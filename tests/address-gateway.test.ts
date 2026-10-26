@@ -606,6 +606,7 @@ describe("approved-name gateway", () => {
               retryKnownNonSubmissionOnly: register === "retry",
             })
           : client.lookup(),
+      saveAddress: async () => {},
       publishProfile: async () => "a".repeat(64),
     })
     expect((await workflow.activate("wallet")).record.phase).toBe("complete")

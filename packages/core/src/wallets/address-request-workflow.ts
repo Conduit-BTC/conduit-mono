@@ -24,7 +24,8 @@ export interface AddressRequestView {
   status?: AddressNameRequestStatus
   /** Session evidence only; never persisted or used as approval/ownership authority. */
   activation?: {
-    step: "approval" | "registration" | "public_lookup" | "profile"
+    step:
+      "approval" | "registration" | "public_lookup" | "persistence" | "profile"
     reason?: string
     retryAt?: number
     exhausted?: boolean
@@ -62,6 +63,8 @@ export interface AddressRequestWorkflowDependencies {
     beforeRegister?: () => Promise<void | (() => Promise<void>)>,
     signal?: AbortSignal
   ): Promise<BreezAddressState>
+  /** Persist a verified receiving address after session progress is exposed. */
+  saveAddress(walletId: string, address: string): Promise<void>
   publishProfile(address: string, assertCurrent?: () => void): Promise<string>
   now?(): number
   wait?(milliseconds: number, signal?: AbortSignal): Promise<void>
@@ -331,6 +334,12 @@ export function createAddressRequestWorkflow(
       }
       if (address.status !== "registered")
         throw new Error("Address verification failed.")
+      progress({ step: "persistence", address })
+      current()
+      await d.authorize?.(walletId, view.record)
+      current()
+      await d.saveAddress(walletId, address.address)
+      current()
       view = await save(walletId, { ...view.record, phase: "registered" })
       progress({ step: "profile", address })
       current()

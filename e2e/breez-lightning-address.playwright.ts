@@ -27,7 +27,7 @@ test.use({ trace: "off", screenshot: "off", video: "off" })
 
 async function mountActivation(
   page: Page,
-  scenario: "throttle" | "public" | "profile" | "switch"
+  scenario: "throttle" | "public" | "profile" | "persistence" | "switch"
 ) {
   await page.goto(`${marketUrl}/wallet`)
   await page.clock.install()
@@ -74,18 +74,23 @@ async function mountActivation(
         ) => {
           calls++
           saved = { ...saved, record: { ...saved.record, phase: "activating" } }
-          if (scenario === "profile") {
+          if (scenario === "profile" || scenario === "persistence") {
             saved = {
               ...saved,
-              record: { ...saved.record, phase: "registered" },
+              record: {
+                ...saved.record,
+                phase: scenario === "profile" ? "registered" : "activating",
+              },
             }
             options.onProgress({
               ...saved,
-              activation: { step: "profile", address },
+              activation: { step: scenario, address },
             })
             if (calls === 1)
               throw new Error(
-                "Address activated. Profile publication still needs confirmation."
+                scenario === "profile"
+                  ? "Address activated. Profile publication still needs confirmation."
+                  : "Wallet update refused."
               )
           } else {
             const delay = scenario === "throttle" ? 60_000 : 20_000
@@ -186,6 +191,30 @@ test("profile confirmation recovery keeps the verified address and offers the re
   await expect(form).toContainText(
     "Your address is activated and your public profile is updated."
   )
+})
+
+test("wallet persistence failure keeps verified receiving visible while saving remains retryable @market", async ({
+  page,
+}) => {
+  await mountActivation(page, "persistence")
+  const form = page.locator("#activation-fixture")
+  await form.getByRole("button", { name: "Activate and use address" }).click()
+  await expect(form).toHaveAttribute("data-displayed", "verified")
+  await expect(form.getByRole("alert")).toContainText("Wallet update refused")
+  await expect(form).toContainText(
+    "Saving it to your wallet still needs confirmation"
+  )
+  await form
+    .getByRole("button", { name: "Check activation", exact: true })
+    .click()
+  await expect(form).toContainText(
+    "Your address is activated and your public profile is updated."
+  )
+  expect(
+    await page.evaluate(() =>
+      (window as ActivationFixtureWindow).__activationFixture.counts()
+    )
+  ).toEqual({ calls: 2, loads: 1 })
 })
 
 test("switching account and wallet ignores late activation results @market", async ({

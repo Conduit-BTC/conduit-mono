@@ -110,13 +110,16 @@ export function accountAddressRequests(
         )
         current()
         signal?.throwIfAborted()
-        if (state.status === "registered" && state.publicLookup === "verified")
-          await service.update(
-            walletId,
-            { lightningAddress: state.address },
-            { priority }
-          )
         return state
+      },
+      async saveAddress(walletId, address) {
+        assertWritesEnabled()
+        await authorize(walletId)
+        await service.update(
+          walletId,
+          { lightningAddress: address },
+          { priority }
+        )
       },
       async publishProfile(address, assertActivationCurrent) {
         const options = {
