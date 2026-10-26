@@ -7,6 +7,33 @@ import {
 import { createThemeBootstrapScript } from "../packages/ui/src/theme/definitions"
 
 describe("built browser execution boundary", () => {
+  it("validates browser schemas without attempting code generation", () => {
+    const result = Bun.spawnSync(
+      [
+        process.execPath,
+        "-e",
+        `
+      let attempts = 0
+      globalThis.Function = new Proxy(Function, {
+        construct() { attempts++; throw new Error("Code generation disabled") },
+        apply() { attempts++; throw new Error("Code generation disabled") },
+      })
+      const { z } = await import("./packages/core/src/schemas/browser-zod.ts")
+      const schema = z.object({ quantity: z.number().int().positive(), label: z.string().min(1) })
+      const valid = schema.safeParse({ quantity: 2, label: "synthetic" }).success
+      const invalid = schema.safeParse({ quantity: -1, label: "" }).success
+      console.log(JSON.stringify({ valid, invalid, attempts }))
+    `,
+      ],
+      { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" }
+    )
+    expect(result.exitCode).toBe(0)
+    expect(JSON.parse(new TextDecoder().decode(result.stdout))).toEqual({
+      valid: true,
+      invalid: false,
+      attempts: 0,
+    })
+  })
   it("rejects arbitrary executable telemetry configuration", () => {
     for (const source of [
       "https://attacker.invalid/a.js",

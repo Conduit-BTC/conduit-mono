@@ -29,6 +29,7 @@ LICENSE @dylangolow @ericfj2140
 
 # Browser execution policy and its enforcement evidence.
 scripts/vite/browser_security.ts @dylangolow @ericfj2140
+packages/core/src/schemas/browser-zod.ts @dylangolow @ericfj2140
 apps/*/vite.config.ts @dylangolow @ericfj2140
 playwright.security.config.ts @dylangolow @ericfj2140
 security-tests/** @dylangolow @ericfj2140

@@ -10,6 +10,8 @@ The policy allows first-party scripts and the exact theme bootstrap hash.
 It rejects additional entry HTML scripts at build time, JavaScript eval,
 inline handlers, objects, base-URL changes, and framing the apps. NDK's installed
 `tseep` dependency uses its documented no-eval entry point in application builds.
+Zod uses its supported `jitless` mode before schemas initialize, avoiding a
+blocked code-generation probe while retaining schema validation.
 The existing Spark wallet requires `wasm-unsafe-eval`; this does not enable
 JavaScript string evaluation. Inline styles remain permitted for the existing UI.
 
@@ -60,4 +62,5 @@ release procedures remain outside this repository.
 
 Sources: [Pages headers](https://developers.cloudflare.com/pages/configuration/headers/),
 [Turnstile CSP](https://developers.cloudflare.com/turnstile/reference/content-security-policy/),
-[tseep no-eval entry](https://github.com/Morglod/tseep#use-no-eval-version).
+[tseep no-eval entry](https://github.com/Morglod/tseep#use-no-eval-version),
+[Zod no-eval mode](https://zod.dev/compile).

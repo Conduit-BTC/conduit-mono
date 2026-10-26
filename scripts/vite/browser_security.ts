@@ -100,6 +100,11 @@ export function createBrowserSecurityPlugin(): Plugin {
         resolve: {
           alias: [
             {
+              find: /^zod$/,
+              replacement:
+                require.resolve("../../packages/core/src/schemas/browser-zod.ts"),
+            },
+            {
               find: /^tseep$/,
               replacement: ndkRequire.resolve("tseep/lib/ee-safe.js"),
             },
