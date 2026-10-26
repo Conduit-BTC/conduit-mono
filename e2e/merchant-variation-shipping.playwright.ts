@@ -144,10 +144,14 @@ for (const scenario of ["ready", "late", "restored", "replacement"] as const) {
         if (replacement) {
           await edit.locator("#product-shipping").fill("11")
           await edit.locator("#product-variation-shipping-0").fill("13")
-          await edit
-            .getByRole("combobox", { name: "Search countries to add..." })
-            .fill("Canada")
-          await page.getByRole("option", { name: /CA Canada/ }).click()
+          const destination = edit.getByRole("combobox", {
+            name: "Search countries to add...",
+          })
+          await destination.fill("Canada")
+          await expect(
+            page.getByRole("option", { name: /CA Canada/ })
+          ).toHaveAttribute("data-selected", "true")
+          await destination.press("Enter")
         } else {
           await edit
             .getByRole("button", {
