@@ -30,6 +30,8 @@ import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-chec
 import { observeEventFeeDropdown } from "./helpers/event-fee-dropdown-diagnostics"
 import {
   classifySmokeBrowserError,
+  observePrepaidConfirmationTrigger,
+  recordEventStockControlFailure,
   recordSmokeDiagnostic,
   recordSmokeFailureContext,
 } from "./helpers/smoke-diagnostics"
@@ -5541,7 +5543,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
 
 test("reserved organizer stock carries a free purchase through pickup and once-only seller reconciliation @market @merchant @commerce @occurrence-orders", async ({
   page,
-}) => {
+}, info) => {
   test.setTimeout(240_000)
   const result = await createAssignedPickupOrder(page, {
     zeroCost: true,
@@ -5683,12 +5685,18 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
         })
       ).toBeHidden()
       await page.getByText("Technical pickup details", { exact: true }).click()
-      const writerId = await page
-        .getByRole("textbox", {
-          name: "Pickup setup code",
-          exact: true,
-        })
-        .inputValue()
+      let writerId: string
+      try {
+        writerId = await page
+          .getByRole("textbox", {
+            name: "Pickup setup code",
+            exact: true,
+          })
+          .inputValue()
+      } catch (error) {
+        await recordEventStockControlFailure(page, info, "setup_code_read")
+        throw error
+      }
       await gotoAs(page, merchantUrl, eventPath, "merchant")
       const stock = page.getByRole("combobox", {
         name: "Stock for organizer pickup",
@@ -5825,7 +5833,12 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
     page.getByText(/New sales are stopped for this pool/)
   ).toBeVisible()
   await gotoAs(page, merchantUrl, eventPath, "merchant")
-  await (await discoverAcceptedStock(page)).click()
+  try {
+    await (await discoverAcceptedStock(page)).click()
+  } catch (error) {
+    await recordEventStockControlFailure(page, info, "stock_reconcile")
+    throw error
+  }
   await expect(
     page.getByText(/exact accepted order and handout are reconciled once/)
   ).toBeVisible()
@@ -7969,13 +7982,22 @@ for (const scenario of [
         : order.items[0]!.fulfillment!.calendar.end
       await page.clock.setFixedTime(expiry + 1)
     }
-    await page
-      .getByRole("button", { name: "Confirm payment", exact: true })
-      .click()
     const dialog = page.getByRole("alertdialog", {
       name: "Confirm payment received?",
     })
-    await expect(dialog).toBeVisible()
+    const confirmationObservation =
+      await observePrepaidConfirmationTrigger(page)
+    try {
+      await page
+        .getByRole("button", { name: "Confirm payment", exact: true })
+        .click()
+      await expect(dialog).toBeVisible()
+    } catch (error) {
+      await confirmationObservation.recordFailure(info)
+      throw error
+    } finally {
+      await confirmationObservation.dispose()
+    }
     const from = relay.publications.length
     const confirmationAck = relay.holdNextPublicationAck(
       (event) =>
@@ -8482,11 +8504,10 @@ test("legacy stock decision survives acceptance and publication retry @merchant 
     }
   }, SYNTHETIC_SIGNER_UNAVAILABLE_KEY)
   try {
-    await retry.evaluate((element) =>
-      element.scrollIntoView({ behavior: "instant", block: "center" })
-    )
-    if (test.info().project.use.hasTouch) await retry.tap()
-    else await retry.click()
+    await expect(retry).toBeVisible()
+    await expect(retry).toBeEnabled()
+    // Exercise the native button without the pointer-delivery gap seen in WebKit.
+    await retry.press("Enter")
     await pendingRetry.or(publishedNotice).first().waitFor({ state: "visible" })
     await pendingRetry.waitFor({ state: "hidden" })
     await expect(publishedNotice).toBeVisible()

@@ -3,15 +3,15 @@ import { EVENT_KINDS } from "./kinds"
 
 export const PROJECT_TIP_RECIPIENT_PUBKEY =
   "9d92077c5e35af76f7b1cd84738000b7bafb43d20b0a26c18fe29fa838d27146"
-export const PROJECT_TIP_LIGHTNING_ADDRESS = "conduithodlings@strike.me"
+export const PROJECT_TIP_LIGHTNING_ADDRESS = "receiver@conduit.cash"
 export const PROJECT_TIP_MIN_SATS = 100
 export const PROJECT_TIP_AMOUNTS_SATS = [111, 1_111, 11_111] as const
 export const PROJECT_TIP_MESSAGE = "Supporting Conduit's open market mission."
 export const PROJECT_TIP_PAY_REQUEST_URL =
-  "https://strike.me/.well-known/lnurlp/conduithodlings"
+  "https://conduit.cash/.well-known/lnurlp/receiver"
 // Fixed address LNURL, checked against the shared encoder in project-tip.test.ts.
 export const PROJECT_TIP_LNURL =
-  "lnurl1dp68gurn8ghj7um5wf5kkefwd4jj7tnhv4kxctttdehhwm30d3h82unvwqhkxmmwv36kjargdajxc6twvaesmwsj5r"
+  "lnurl1dp68gurn8ghj7cm0dej826t59e3kzumg9uh8wetvdskkkmn0wahz7mrww4excup0wfjkxetfwejhyxrluqe"
 
 export type ProjectTipSigningAuthorization = {
   scope: "project_tip"

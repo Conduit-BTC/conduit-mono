@@ -389,6 +389,27 @@ stays suppressed. Do not enable `PW_RUNNER_DEBUG`, which bypasses the reporter.
 A matching signal is diagnostic evidence, not proof that every timeout shares
 the same cause; absence of a signal does not exclude a browser failure.
 
+The reserved-stock journey records failure-only, file-bound control-state
+observations at pickup setup and reconciliation: fixed phase/cardinality enums
+and availability, visibility, enablement, hit-target and disclosure booleans.
+These observations do not establish stock delivery or settlement. Input values,
+pickup codes, identifiers, error text, DOM and coordinates remain excluded;
+the original operation error and test deadlines are unchanged.
+
+The prepaid-confirmation seam retains only matching input-event and expected
+dialog-lifecycle booleans, closed trigger cardinality, and control enablement.
+It observes the original gesture without dispatching input or changing order
+state. Failure reads and cleanup are best-effort bounded; unavailable observation
+is not evidence that an event or dialog never occurred. These observations do
+not establish payment or signer state. The original click, assertions, deadlines
+and retry policy remain unchanged.
+
+Wallet-balance fixture fetch failures distinguish the fixed Spark-factory and
+wallet-controller module boundaries using bounded error categories, request
+counts and navigation booleans. The Spark-factory observer rethrows its original
+fetch failure even if diagnostic recording fails. These observations retain no module contents,
+URLs or error text and do not establish a production-wallet root cause.
+
 ## Code Conventions
 
 ### General

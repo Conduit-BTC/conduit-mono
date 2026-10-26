@@ -38,7 +38,7 @@ const SENDER = getPublicKey(SECRET)
 const METADATA: LnurlPayMetadata = {
   payRequestUrl: PROJECT_TIP_PAY_REQUEST_URL,
   lnurl: encodeLnurl(PROJECT_TIP_PAY_REQUEST_URL),
-  callback: "https://strike.me/api/lnurl/callback",
+  callback: "https://conduit.cash/lnurlp/receiver/invoice",
   minSendable: 100_000,
   maxSendable: 100_000_000,
   tag: "payRequest",
@@ -49,6 +49,10 @@ const METADATA: LnurlPayMetadata = {
 
 describe("project tip contract", () => {
   it("keeps the signer-only LNURL constant tied to the fixed address", () => {
+    expect(PROJECT_TIP_LIGHTNING_ADDRESS).toBe("receiver@conduit.cash")
+    expect(PROJECT_TIP_PAY_REQUEST_URL).toBe(
+      "https://conduit.cash/.well-known/lnurlp/receiver"
+    )
     expect(PROJECT_TIP_LNURL).toBe(encodeLnurl(PROJECT_TIP_PAY_REQUEST_URL))
   })
 
@@ -236,11 +240,23 @@ describe("guest project tip signing", () => {
       lnurl: METADATA.lnurl,
     }
     expect(isAuthorizedProjectTipDraft(draft, authorization)).toBe(true)
+    const retiredLnurl = encodeLnurl(
+      "https://strike.me/.well-known/lnurlp/conduithodlings"
+    )
     const wrongRecipient = "a".repeat(64)
     const cases: Array<{
       draft: AnonZapRequestDraft
       authorization: Record<string, unknown>
     }> = [
+      {
+        draft: {
+          ...draft,
+          tags: draft.tags.map((tag) =>
+            tag[0] === "lnurl" ? ["lnurl", retiredLnurl] : tag
+          ),
+        },
+        authorization: { ...authorization, lnurl: retiredLnurl },
+      },
       {
         draft: {
           ...draft,
@@ -315,7 +331,10 @@ describe("guest project tip signing", () => {
   })
 
   it("resolves the fixed Lightning address with an edge-compatible no-redirect request", async () => {
-    const fetchImpl: typeof fetch = async (_input, init) => {
+    const fetchImpl: typeof fetch = async (input, init) => {
+      expect(String(input)).toBe(
+        "https://conduit.cash/.well-known/lnurlp/receiver"
+      )
       if (init?.redirect !== "manual") {
         throw new TypeError(
           'invalid redirect value, must be one of "follow" or "manual"'
