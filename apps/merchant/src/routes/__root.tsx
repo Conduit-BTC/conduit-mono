@@ -490,13 +490,6 @@ function ConnectGate() {
           logoSrc="/images/logo/merchant-logo-full.svg"
           title="Sign in to Conduit"
           description="Open your merchant workspace."
-          helperText={
-            isProbablyMobileBrowser
-              ? "Approve sign-in in your app, then return here."
-              : localKeyEnabled
-                ? "Sign in with your nsec, a browser extension, or a remote signer."
-                : "Choose a browser extension or remote signer."
-          }
           unlockLabel="Your merchant workspace"
           unlockItems={[
             "Create your store and start publishing products.",

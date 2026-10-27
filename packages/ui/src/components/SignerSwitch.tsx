@@ -68,7 +68,6 @@ export interface SignerConnectPanelProps {
   logoSrc?: string
   title?: string
   description: string
-  helperText: string
   unlockLabel?: string
   unlockItems: readonly string[]
   error?: string | null
@@ -420,7 +419,6 @@ export function SignerConnectPanel({
   logoSrc,
   title = "Sign in to Conduit",
   description,
-  helperText,
   unlockLabel,
   unlockItems,
   error,
@@ -475,7 +473,6 @@ export function SignerConnectPanel({
         </div>
 
         <SignerDisconnectedContent
-          helperText={helperText}
           unlockLabel={unlockLabel}
           unlockItems={unlockItems}
           error={error}
@@ -654,11 +651,6 @@ export function SignerSwitch({
                 )}
                 {isOpen && !isWorking && (
                   <SignerDisconnectedContent
-                    helperText={
-                      localKeyEnabled
-                        ? "Sign in with your nsec, a browser extension, or a remote signer."
-                        : "Choose a browser extension or remote signer."
-                    }
                     unlockItems={unlockItems}
                     error={error}
                     authUrl={authUrl}

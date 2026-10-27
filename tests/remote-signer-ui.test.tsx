@@ -15,7 +15,6 @@ import { SignerRecoveryNotice } from "../packages/ui/src/components/SignerRecove
 
 const commonProps = {
   description: "Connect to continue.",
-  helperText: "Choose a signer.",
   unlockItems: ["Sign events without sharing keys."],
   extensionAvailable: true,
   onConnectExtension: () => undefined,
