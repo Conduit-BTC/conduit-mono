@@ -12,7 +12,7 @@
     "dompurify": "3.4.17",
     "fflate": "0.4.9",
     "nanoid": "3.3.18",
-    "postcss": "8.5.30",
+    "postcss": "8.5.31",
     "seroval": "1.6.8",
     "sharp": "0.35.5",
     "source-map-js": "1.2.2",
@@ -83,8 +83,8 @@
     "@getalby/sdk": "^8.0.3",
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.64.0",
-    "@tanstack/router-generator": "^1.167.40",
-    "dexie": "^4.4.6",
+    "@tanstack/router-generator": "^1.167.46",
+    "dexie": "^4.4.7",
     "eslint": "^10.13.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -94,7 +94,7 @@
     "nostr-tools": "2.25.2",
     "prettier": "^3.9.10",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.71.2"
+    "typescript-eslint": "^8.72.0"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [
