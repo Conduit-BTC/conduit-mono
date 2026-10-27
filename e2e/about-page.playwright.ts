@@ -219,7 +219,7 @@ test("market mobile chrome hides while scrolling down and returns on scroll up @
   await expect(page.getByRole("button", { name: /^Messages/ })).toHaveCount(0)
   await expect(page.getByRole("button", { name: "Orders" })).toHaveCount(0)
   const cartButton = page.getByRole("button", { name: /^Cart,/ })
-  const connectButton = page.getByRole("button", { name: "Connect" })
+  const connectButton = page.getByRole("button", { name: "Sign In" })
   await expect(cartButton).toBeVisible()
   await expect(connectButton).toBeVisible()
   expect((await connectButton.boundingBox())!.width).toBeLessThanOrEqual(44)

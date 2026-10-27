@@ -80,7 +80,7 @@ export interface UseMediaServerPreferencesOptions {
   /** Explicit signed-in account; the requested preference owner is not proof. */
   authenticatedPubkey?: string | null
   signer?: AccountSigner | null
-  authMethod?: "nip07" | "nip46" | null
+  authMethod?: "nip07" | "nip46" | "local" | null
   authGeneration?: number
   relayScope?: string | null
 }

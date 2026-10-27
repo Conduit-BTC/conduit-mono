@@ -295,10 +295,19 @@ async function expectMobileSignerChoices(
   await expect(surface.locator('a[href^="nostrconnect:"]')).toHaveCount(0)
   await expect(
     surface.getByRole("button", { name: "Other ways to connect", exact: true })
+  ).toHaveCount(0)
+  const initialApp = surface.getByRole("button", {
+    name: ios ? "Sign in with Clave" : "Sign in with Amber",
+    exact: true,
+  })
+  await expectMobileTouchTarget(initialApp)
+  await initialApp.tap()
+  await expect(
+    surface.getByRole("button", { name: "Other ways to connect", exact: true })
   ).toBeVisible()
   if (ios) {
     const clave = surface.getByRole("link", {
-      name: "Connect with Clave",
+      name: "Open Clave",
       exact: true,
       includeHidden: true,
     })
@@ -326,7 +335,7 @@ async function expectMobileSignerChoices(
   await expect(
     surface.getByRole("button", { name: "Other ways to connect", exact: true })
   ).toBeVisible()
-  const choices = [["Use Amber", "com.greenart7c3.nostrsigner"]] as const
+  const choices = [["Open Amber", "com.greenart7c3.nostrsigner"]] as const
   for (const [name, packageName] of choices) {
     const control = surface.getByRole("link", {
       name,
@@ -1462,13 +1471,13 @@ test.describe("CND-162 mobile browser baseline", () => {
       await installTestSigner(page, TEST_BUYER_PUBKEY, { rememberAuth: false })
       await page.goto(`${marketUrl}/products`)
       await page
-        .getByRole("button", { name: /^Connect$/ })
+        .getByRole("button", { name: /^Sign In$/ })
         .first()
         .tap()
 
       const dialog = page.getByRole("dialog")
       const browserSigner = dialog.getByRole("button", {
-        name: "Continue with browser signer",
+        name: "Sign in with Extension",
         exact: true,
       })
       await expectMobileTouchTarget(browserSigner)
@@ -1488,7 +1497,7 @@ test.describe("CND-162 mobile browser baseline", () => {
       await installInertMobilePairing(page)
       await page.goto(`${marketUrl}/products`)
       await page
-        .getByRole("button", { name: /^Connect$/ })
+        .getByRole("button", { name: /^Sign In$/ })
         .first()
         .tap()
 
@@ -1496,17 +1505,17 @@ test.describe("CND-162 mobile browser baseline", () => {
       await expect(dialog).toBeVisible()
       await expectMobileTouchTarget(
         dialog.getByRole("button", {
-          name: /Use (a Safari extension|a browser signer)/,
+          name: "Sign in with Extension",
         })
       )
-      const primaryApp = await expectMobileSignerChoices(page, dialog)
       await expect(
         dialog.getByRole("button", { name: "Cancel pairing" })
       ).toHaveCount(0)
+      const primaryApp = await expectMobileSignerChoices(page, dialog)
       await assertMobileViewport(page)
       await dialog
         .getByRole("link", {
-          name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+          name: primaryApp === "Clave" ? "Open Clave" : "Open Amber",
           exact: true,
           includeHidden: true,
         })
@@ -1589,20 +1598,26 @@ test.describe("CND-162 mobile browser baseline", () => {
       ).toBeVisible()
       await expect(
         dialog.getByRole("button", {
-          name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+          name:
+            primaryApp === "Clave"
+              ? "Sign in with Clave"
+              : "Sign in with Amber",
           exact: true,
         })
       ).toBeEnabled()
       if (primaryApp === "Clave") {
         await expect(
           dialog
-            .getByRole("button", { name: "Connect with Clave" })
-            .locator("img")
+            .getByRole("button", { name: "Sign in with Clave" })
+            .locator("svg")
         ).toHaveCount(1)
       }
       await dialog
         .getByRole("button", {
-          name: primaryApp === "Clave" ? "Connect with Clave" : "Use Amber",
+          name:
+            primaryApp === "Clave"
+              ? "Sign in with Clave"
+              : "Sign in with Amber",
           exact: true,
         })
         .tap()
@@ -1613,14 +1628,16 @@ test.describe("CND-162 mobile browser baseline", () => {
       })
       await expect(readyApp).toHaveCount(1)
       await expect(readyApp).toBeFocused()
-      await expect(dialog.getByRole("status")).toHaveText(
-        `Ready. Open ${primaryApp} to approve sign-in.`
-      )
+      await expect(
+        dialog
+          .getByRole("status")
+          .filter({ hasText: `Ready. Open ${primaryApp}` })
+      ).toHaveText(`Ready. Open ${primaryApp} to approve sign-in.`)
       await closeButton.tap()
       await expect(dialog).not.toBeVisible()
 
       await page
-        .getByRole("button", { name: /^Connect$/ })
+        .getByRole("button", { name: /^Sign In$/ })
         .first()
         .tap()
       await expectMobileSignerChoices(page, dialog)
@@ -3034,7 +3051,7 @@ test.describe("CND-162 mobile browser baseline", () => {
 
     const gate = page.getByRole("region", { name: "Sign in to Conduit" })
     const browserSigner = gate.getByRole("button", {
-      name: "Continue with browser signer",
+      name: "Sign in with Extension",
       exact: true,
     })
     await expectMobileTouchTarget(browserSigner)
@@ -3058,7 +3075,7 @@ test.describe("CND-162 mobile browser baseline", () => {
     const gate = page.getByRole("region", { name: "Sign in to Conduit" })
     await expectMobileTouchTarget(
       gate.getByRole("button", {
-        name: /Use (a Safari extension|a browser signer)/,
+        name: "Sign in with Extension",
       })
     )
     await expectMobileSignerChoices(page, gate)

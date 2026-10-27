@@ -308,7 +308,7 @@ test("Market direct theme toggle cycles System, Day, and Night while signed out 
   await page.goto(`${marketUrl}/products`)
 
   await expect(
-    page.getByRole("button", { name: "Connect", exact: true })
+    page.getByRole("button", { name: "Sign In", exact: true })
   ).toBeVisible()
   await expectResolvedTheme(page, "day-market", "light")
   await expectFirstFrameTheme(page, "day-market")

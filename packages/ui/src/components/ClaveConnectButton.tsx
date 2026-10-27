@@ -1,3 +1,4 @@
+import { Smartphone } from "lucide-react"
 import { Button } from "./Button"
 import { claveConnectUrl } from "./signer-platform"
 import { cn } from "../utils"
@@ -24,6 +25,7 @@ export interface ClaveConnectButtonProps {
   nostrConnectUri: string
   className?: string
   label?: string
+  secondary?: boolean
   onClick?: () => void
 }
 
@@ -32,11 +34,12 @@ export function ClaveConnectButton({
   className,
   label = "Connect with Clave",
   onClick,
+  secondary = false,
 }: ClaveConnectButtonProps) {
   return (
     <Button
       asChild
-      variant="primary"
+      variant={secondary ? "outline" : "primary"}
       size="sm"
       className={cn("h-11 w-full", className)}
     >
@@ -46,7 +49,11 @@ export function ClaveConnectButton({
         rel="noopener"
         onClick={onClick}
       >
-        <ClaveMark />
+        {secondary ? (
+          <Smartphone className="size-5" aria-hidden="true" />
+        ) : (
+          <ClaveMark />
+        )}
         {label}
       </a>
     </Button>

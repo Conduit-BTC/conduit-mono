@@ -31,6 +31,10 @@ import {
 import { admitFixtureEvent } from "../tests/helpers/admit-event"
 import { getFutureMarketClaimRef } from "@conduit/core/protocol/future-market-handoff"
 import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-checkout"
+import {
+  classifyStockAcceptanceError,
+  observeStockAcceptance,
+} from "./helpers/stock-acceptance-diagnostics"
 import { recordEventStockControlFailure } from "./helpers/smoke-diagnostics"
 
 // Protocol-bearing fixtures and private receipt files must not enter browser artifacts.
@@ -5663,12 +5667,28 @@ test("reserved organizer stock carries a free purchase through pickup and once-o
           exact: true,
         })
         .click()
-      await page
-        .getByRole("button", {
-          name: "Accept reserved stock",
-          exact: true,
+      const acceptOptions = {
+        name: "Accept reserved stock",
+        exact: true,
+      }
+      const accept = page.getByRole("button", acceptOptions)
+      recordSmokeDiagnostic(info, "event-stock-acceptance", { phase: "click" })
+      try {
+        await accept.click()
+      } catch (cause) {
+        recordSmokeDiagnostic(info, "event-stock-acceptance", {
+          phase: "failure",
+          ...classifyStockAcceptanceError(cause),
+          ...(await observeStockAcceptance(
+            page.getByRole("button", { ...acceptOptions, includeHidden: true })
+          )),
+          pageClosed: page.isClosed(),
         })
-        .click()
+        throw cause
+      }
+      recordSmokeDiagnostic(info, "event-stock-acceptance", {
+        phase: "complete",
+      })
       await expect(
         page.getByText(/Reserved stock is ready for pickup here/)
       ).toBeVisible()

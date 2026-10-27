@@ -13,7 +13,7 @@ export interface UnsignedNostrEvent {
 export type SignedNostrEvent = SignedPublicNostrEvent
 
 export interface NostrEventSigner {
-  /** Protected-read eligibility is limited to externally backed account sessions. */
+  /** Protected-read eligibility is limited to authenticated account sessions. */
   readonly authMethod?: AuthMethod
   getPublicKey(): Promise<string>
   signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent>

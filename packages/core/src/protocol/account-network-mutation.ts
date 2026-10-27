@@ -1,3 +1,4 @@
+import { isAccountAuthMethod } from "./auth-session"
 import {
   mergeRelayTargets,
   relayTargetsFromUrls,
@@ -1737,11 +1738,7 @@ async function publishUnderLock(input: {
   }
 
   if (input.reviewed.changedKinds.length > 0) {
-    if (
-      !input.signer ||
-      (input.signer.authMethod !== "nip07" &&
-        input.signer.authMethod !== "nip46")
-    ) {
+    if (!input.signer || !isAccountAuthMethod(input.signer.authMethod)) {
       throw new NostrSignerError("unavailable")
     }
     assertContinue(input.dependencies.shouldContinue)

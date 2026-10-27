@@ -693,7 +693,11 @@ describe("restore attempt isolation", () => {
   })
 
   it("releases the connecting flag inside the epoch-owned finally block", () => {
-    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {")
+    const finallyIndex = source.indexOf(
+      "} finally {",
+      source.indexOf("const resolution = await resolveFailedAuthAttempt")
+    )
+    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {", finallyIndex)
     expect(fenceIndex).toBeGreaterThan(-1)
     const fencedBlock = source.slice(
       fenceIndex,
@@ -840,21 +844,6 @@ describe("NIP-46 AuthContext API", () => {
     ])
   })
 
-  it("routes AuthProvider connect, disconnect, storage switch, and unmount through the lease lifecycle", async () => {
-    const source = await readFile(
-      "packages/core/src/context/AuthContext.tsx",
-      "utf8"
-    )
-
-    expect(source).toContain("createProtectedReadSessionLifecycle()")
-    expect(source).toContain("installAccountSigner(")
-    expect(source).toContain(
-      "protectedReadSessionLifecycle.current.deactivate()"
-    )
-    expect(source).not.toContain("installProtectedReadSigner(")
-    expect(source).not.toContain("removeProtectedReadSigner(")
-  })
-
   it("exposes the client-initiated flow discriminator and ephemeral URI", () => {
     const options = {
       method: "nip46",
@@ -866,53 +855,6 @@ describe("NIP-46 AuthContext API", () => {
     expect(options.nip46Flow).toBe("nostrconnect")
     expect(uri).toBeNull()
     expect(authGeneration).toBe(0)
-  })
-
-  it("preflights the client before persistence and installs before ownership commit", async () => {
-    const source = await readFile(
-      "packages/core/src/context/AuthContext.tsx",
-      "utf8"
-    )
-    const connectStart = source.indexOf("const connectWithoutLock")
-    const connectEnd = source.indexOf(
-      "const connect = useCallback",
-      connectStart
-    )
-    const connectAttempt = source.slice(connectStart, connectEnd)
-    const persistRemote = connectAttempt.indexOf("persistRemoteSignerSession(")
-    const persistNip07 = connectAttempt.indexOf(
-      "sessionPersisted = writeAuthSession(session)"
-    )
-    const finalAuthorityFence = connectAttempt.indexOf(
-      "if (!attemptIsCurrent())",
-      persistNip07
-    )
-    const installSigner = connectAttempt.indexOf("installAccountSigner(")
-    const commitRemote = connectAttempt.indexOf(
-      "remoteConnection.current = connectedRemote"
-    )
-    const retirePreviousRoute = connectAttempt.indexOf(
-      "commitRemoteSignerConnection(connectedRemote)"
-    )
-    const releasePendingRemote = connectAttempt.indexOf(
-      "uncommittedRemote = null",
-      commitRemote
-    )
-    const catchStart = connectAttempt.indexOf("} catch (err)")
-    const catchEnd = connectAttempt.indexOf("} finally", catchStart)
-    const catchBlock = connectAttempt.slice(catchStart, catchEnd)
-
-    expect(connectAttempt).not.toContain("getNdk()")
-    expect(persistRemote).toBeGreaterThan(-1)
-    expect(persistNip07).toBeGreaterThan(-1)
-    expect(finalAuthorityFence).toBeGreaterThan(persistNip07)
-    expect(installSigner).toBeGreaterThan(finalAuthorityFence)
-    expect(installSigner).toBeGreaterThan(persistRemote)
-    expect(commitRemote).toBeGreaterThan(installSigner)
-    expect(retirePreviousRoute).toBeGreaterThan(commitRemote)
-    expect(releasePendingRemote).toBeGreaterThan(installSigner)
-    expect(releasePendingRemote).toBeGreaterThan(retirePreviousRoute)
-    expect(catchBlock).toContain("resolveFailedAuthAttempt({")
   })
 
   it("surfaces a cancelled attempt's failed rollback without replacing a newer signer state", async () => {

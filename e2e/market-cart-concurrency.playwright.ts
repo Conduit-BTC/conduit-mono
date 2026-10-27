@@ -1075,7 +1075,7 @@ test("a stale remove consumes only observed quantities and preserves a concurren
   })
   const addingTab = await context.newPage()
   const staleRemovingTab = await context.newPage()
-  await delayCartNotifications(staleRemovingTab)
+  await delayCartNotifications(staleRemovingTab, { resumeEvents: true })
   await Promise.all([
     addingTab.goto(`${marketUrl}/cart`),
     staleRemovingTab.goto(`${marketUrl}/cart`),
@@ -1099,6 +1099,16 @@ test("a stale remove consumes only observed quantities and preserves a concurren
     .poll(async () => readCanonicalLines(addingTab))
     .toEqual([expect.objectContaining({ title: "Race item", quantity: 2 })])
 
+  // Even a browser resume must remain delayed in this deliberately stale tab.
+  await staleRemovingTab.evaluate(() => {
+    window.dispatchEvent(new Event("focus"))
+    window.dispatchEvent(new PageTransitionEvent("pageshow"))
+    document.dispatchEvent(new Event("visibilitychange"))
+  })
+  await expect(
+    staleRemovingTab.getByText("Qty 1", { exact: true })
+  ).toBeVisible()
+
   await staleRemovingTab
     .getByRole("button", { name: "Remove Race item from cart" })
     .click()
@@ -1116,6 +1126,38 @@ test("a stale remove consumes only observed quantities and preserves a concurren
   await expect(
     staleRemovingTab.getByText("Qty 1", { exact: true })
   ).toBeVisible()
+})
+
+test("focus refreshes observed cart quantities before removal while notifications are delayed @market", async ({
+  context,
+}) => {
+  await seedLegacyCart(context, {
+    ...legacyCart,
+    items: [{ ...legacyCart.items[0]!, quantity: 1 }],
+  })
+  const addingTab = await context.newPage()
+  const resumedTab = await context.newPage()
+  await delayCartNotifications(resumedTab)
+  await Promise.all([
+    addingTab.goto(`${marketUrl}/cart`),
+    resumedTab.goto(`${marketUrl}/cart`),
+  ])
+  await expect(resumedTab.getByText("Qty 1", { exact: true })).toBeVisible()
+  await addCartItemThroughRepository(addingTab, {
+    productId: legacyCart.items[0]!.productId,
+    merchantPubkey: MERCHANT,
+    title: "Race item",
+    price: 1_200,
+    currency: "SATS",
+    priceSats: 1_200,
+    format: "digital",
+  })
+  await resumedTab.evaluate(() => window.dispatchEvent(new Event("focus")))
+  await expect(resumedTab.getByText("Qty 2", { exact: true })).toBeVisible()
+  await resumedTab
+    .getByRole("button", { name: "Remove Race item from cart" })
+    .click()
+  await expect.poll(() => readCanonicalLines(addingTab)).toEqual([])
 })
 
 test("signed cart quantities can decrease and be removed while verification is unavailable @market", async ({
