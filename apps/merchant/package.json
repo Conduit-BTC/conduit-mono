@@ -18,7 +18,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@scure/bip39": "2.4.0",
     "@tanstack/react-query": "^5.104.1",
-    "@tanstack/react-router": "^1.170.41",
+    "@tanstack/react-router": "^1.170.46",
     "country-list": "^2.4.1",
     "lucide-react": "^1.58.0",
     "react": "^19.2.8",
@@ -30,8 +30,8 @@
     "@tanstack/react-query-devtools": "^5.104.1",
     "@tanstack/router-core": "^1.171.16",
     "@tanstack/router-devtools": "^1.167.2",
-    "@tanstack/router-generator": "^1.167.40",
-    "@tanstack/router-plugin": "^1.168.42",
+    "@tanstack/router-generator": "^1.167.46",
+    "@tanstack/router-plugin": "^1.168.48",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/country-list": "^2.1.4",
     "@types/react": "^19.2.18",
@@ -40,6 +40,6 @@
     "postcss": "^8.5.30",
     "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
-    "vite": "^8.3.4"
+    "vite": "^8.3.5"
   }
 }
