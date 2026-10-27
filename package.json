@@ -84,7 +84,7 @@
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@playwright/test": "^1.64.0",
     "@tanstack/router-generator": "^1.167.40",
-    "dexie": "^4.4.6",
+    "dexie": "^4.4.7",
     "eslint": "^10.13.0",
     "eslint-plugin-react": "^7.37.4",
     "eslint-plugin-react-hooks": "^7.1.1",
