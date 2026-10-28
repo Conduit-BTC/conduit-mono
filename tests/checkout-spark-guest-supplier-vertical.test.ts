@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { NDKEvent } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
@@ -62,6 +62,19 @@ import {
 
 const RELAYS = ["wss://merchant.inbox.relay.dev"]
 const MNEMONIC = createRuntimeMnemonic()
+let previousTreasuryAddress: string | undefined
+
+beforeEach(() => {
+  previousTreasuryAddress = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+  process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS =
+    "guest-supplier-native-treasury-fixture"
+})
+
+afterEach(() => {
+  if (previousTreasuryAddress === undefined)
+    delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+  else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousTreasuryAddress
+})
 
 class MemoryStorage {
   private readonly values = new Map<string, string>()
@@ -265,6 +278,23 @@ describe("offline guest supplier settled checkout composition", () => {
                   receiverContracts: qualifiedReceiverMetadataFixture(
                     "merchant@wallet.conduit.market"
                   ).contracts,
+                  treasuryConfiguration: {
+                    mainnetAddress: "guest-supplier-native-treasury-fixture",
+                  },
+                  validateTreasuryDestination: async () => ({
+                    sparkAddress: "guest-supplier-native-treasury-fixture",
+                    receiverIdentityPublicKey: `03${f.supplierPubkey}`,
+                  }),
+                  prepareTreasuryRequest: async (input) => ({
+                    schemaVersion: 1,
+                    sparkAddress: input.sparkAddress,
+                    receiverIdentityPublicKey: input.receiverIdentityPublicKey,
+                    senderIdentityPublicKey: input.senderIdentityPublicKey,
+                    invoiceId: input.invoiceId,
+                    invoiceRequest: "guest-supplier-canonical-native-fixture",
+                    feePolicy: "zero_required",
+                    residualPolicy: "unused_commerce_reserves",
+                  }),
                   fetchPayoutMetadata: (lud16) =>
                     fetchLnurlPayMetadata(lud16, {
                       fetchImpl: async (url, options) => {
@@ -459,7 +489,9 @@ describe("offline guest supplier settled checkout composition", () => {
         { kind: "conduit" },
       ])
       expect(plan.commerceQuote.commerceTotalSats).toBe(3_031)
-      expect(plan.takeoverAt).toBe(createdAt + 2 * 60_000)
+      expect(plan.schemaVersion).toBe(6)
+      expect(plan).not.toHaveProperty("takeoverAt")
+      expect(result.prepared.state.buyerActivation).toBeNull()
       expect(plan.funding.expiresAt - plan.funding.createdAt).toBe(15 * 60_000)
       const initial = await openCheckoutSparkRecoveryDelivery({
         record: (await getCheckoutSparkRecoveryDelivery(
@@ -521,6 +553,21 @@ describe("offline guest supplier settled checkout composition", () => {
         grossSats: plan.funding.grossFundingSats,
         creditedSats: plan.funding.grossFundingSats,
       }
+      const acknowledge = async (state: CheckoutSparkSettledReconciliation) => {
+        now = Math.max(now, state.updatedAt)
+        const ack = await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+          initialHandoffId: recoveryHandoffId,
+          state,
+          identity: guest,
+          preparedAt: now,
+          now: () => now,
+          storage,
+          transport,
+          requireCrossTabLock: false,
+        })
+        lastProgressId = ack.handoffId
+        lastAcknowledgedState = JSON.stringify(state)
+      }
       const bridge = createCheckoutSparkSettledFundingBridge(checkoutId, {
         repository,
         storage,
@@ -541,6 +588,7 @@ describe("offline guest supplier settled checkout composition", () => {
         paymentTarget: { type: "manual" as const },
         timeoutMs: 1_000,
         appId: "market" as const,
+        acknowledgeRecoverySnapshot: acknowledge,
       }
       const external = await bridge.fund({
         ...fundingPayment,
@@ -549,6 +597,12 @@ describe("offline guest supplier settled checkout composition", () => {
       expect(external.status).toBe("external_ready")
       if (external.status !== "external_ready")
         throw new Error("Expected one external invoice")
+      const activated = await repository.load(checkoutId, plan.planDigest)
+      expect(activated.status).toBe("active")
+      if (activated.status !== "active")
+        throw new Error("Expected durable Pay activation")
+      expect(activated.state.buyerActivation?.activatedAt).toBe(now)
+      expect(activated.state.buyerActivation?.takeoverAt).toBe(now + 120_000)
       expect(external.externalInvoice.invoice).toBe(plan.funding.paymentRequest)
       expect(
         getCheckoutSparkSettledPreparation(checkoutId, storage)
@@ -566,21 +620,6 @@ describe("offline guest supplier settled checkout composition", () => {
       ).toBe("funded")
       expect(calls.payer).toBe(0)
 
-      const acknowledge = async (state: CheckoutSparkSettledReconciliation) => {
-        now = Math.max(now, state.updatedAt)
-        const ack = await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
-          initialHandoffId: recoveryHandoffId,
-          state,
-          identity: guest,
-          preparedAt: now,
-          now: () => now,
-          storage,
-          transport,
-          requireCrossTabLock: false,
-        })
-        lastProgressId = ack.handoffId
-        lastAcknowledgedState = JSON.stringify(state)
-      }
       const completed = new Set<string>()
       const paymentDetails = new Map<
         string,
@@ -613,6 +652,9 @@ describe("offline guest supplier settled checkout composition", () => {
         )
       }
       let availableSats = credit.creditedSats
+      let nativeSendCalls = 0
+      let nativeHistoryReads = 0
+      let nativePreflightCalls = 0
       const manager: Pick<
         SparkWalletManager,
         | "isOpen"
@@ -621,8 +663,30 @@ describe("offline guest supplier settled checkout composition", () => {
         | "preflightCheckoutLightningObligation"
         | "sendCheckoutLightningObligation"
         | "reconcileInvoiceAttempt"
+        | "attestCheckoutReceiveCredit"
+        | "openCheckoutRetirementReader"
+        | "inspectCheckoutTreasury"
+        | "preflightCheckoutTreasury"
+        | "sendCheckoutTreasury"
       > = {
         isOpen: () => true,
+        attestCheckoutReceiveCredit: async () => credit,
+        inspectCheckoutTreasury: async () => ({
+          invoiceId: plan.nativeTreasury!.invoiceId,
+          status: "not_found",
+        }),
+        preflightCheckoutTreasury: async () => {
+          nativePreflightCalls += 1
+          return "unavailable"
+        },
+        sendCheckoutTreasury: async () => {
+          nativeSendCalls += 1
+          throw new Error("Unavailable native fee must not enter send")
+        },
+        openCheckoutRetirementReader: async () => {
+          nativeHistoryReads += 1
+          throw new Error("Exact native fee history intentionally unavailable")
+        },
         estimateCheckoutLightningFee: async () => 1,
         getFundsState: async () => ({
           availableSats,
@@ -631,8 +695,8 @@ describe("offline guest supplier settled checkout composition", () => {
           observedAt: now,
         }),
         preflightCheckoutLightningObligation: async () => "ready",
-        reconcileInvoiceAttempt: async (_wallet, attempt) =>
-          completed.has(attempt.transferId)
+        reconcileInvoiceAttempt: async (_wallet, attempt) => {
+          return completed.has(attempt.transferId)
             ? {
                 status: "resolved",
                 payment: {
@@ -645,7 +709,8 @@ describe("offline guest supplier settled checkout composition", () => {
                 },
                 verifiedTransferTotalSats: attempt.amountSats + 1,
               }
-            : { status: "not_found" },
+            : { status: "not_found" }
+        },
         sendCheckoutLightningObligation: async (_wallet, request) => {
           await request.assertBeforeSend?.()
           const saved = await repository.load(checkoutId, plan.planDigest)
@@ -782,10 +847,16 @@ describe("offline guest supplier settled checkout composition", () => {
         localFacts!.paidLegs.every((leg) => leg.recipientVerified === true)
       ).toBe(true)
 
-      // An ordinary unavailable optional-fee check does not undo the commerce legs.
-      expect((await advance(feeLeg!.legId)).status).toBe("payout_prepared")
-      manager.preflightCheckoutLightningObligation = async () => "unavailable"
-      await advance(feeLeg!.legId)
+      // An explicitly unavailable native history read does not undo verified
+      // commerce or enter either native preflight or send.
+      const feeAttempt = await advance(feeLeg!.legId)
+      expect(feeAttempt.status).toBe("outgoing_step")
+      if (feeAttempt.status !== "outgoing_step")
+        throw new Error("Expected native fee preflight result")
+      expect(feeAttempt.step.reason).toBe("provider_evidence_unavailable")
+      expect(nativeHistoryReads).toBe(1)
+      expect(nativePreflightCalls).toBe(0)
+      expect(nativeSendCalls).toBe(0)
       expect(calls.sends).toHaveLength(2)
       expect(
         projectCheckoutSparkMerchantSettlement(

@@ -168,6 +168,7 @@ import {
   buildMerchantOrderActionView,
   captureMerchantPaymentConfirmationTarget,
   getMerchantOrderCancellationCopy,
+  getMerchantFulfillmentBlockReason,
   isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
   resolveMerchantPaymentConfirmationSelection,
@@ -175,6 +176,7 @@ import {
   type MerchantPaymentConfirmationTarget,
 } from "../lib/order-action-view"
 import { prepareShippingUpdate } from "../lib/shipping-update"
+import { MerchantOrderContactNotice } from "../components/MerchantOrderContactNotice"
 import { formatMerchantOrderAmount } from "../lib/order-summary-display"
 import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
 import {
@@ -1734,6 +1736,64 @@ function OrdersWorkspace() {
   const merchantPaid = merchantOrderState.checkoutSparkRouted
     ? selectedRoutedSettlement?.commerceVerified === true
     : isMerchantOrderPaid(merchantOrderState)
+  const reservedOrganizerHandoutQuery = useQuery({
+    queryKey: [
+      "merchant-reserved-organizer-handout",
+      pubkey,
+      authGeneration,
+      selectedOrderMessage?.id,
+      acceptedInventoryQuery.dataUpdatedAt,
+    ],
+    enabled:
+      signerConnected &&
+      !!selectedOrder &&
+      selectedOrganizerHandoffPolicy === "reserved_organizer_stock",
+    queryFn: async ({ signal }) => {
+      const signer = getAccountSigner()
+      if (!signer || !pubkey || !selectedOrder) return false
+      const shouldContinue = () =>
+        !signal.aborted && isCurrentOrderSigner(pubkey, authGeneration)
+      await assertMerchantOrganizerStockOrderHandout({
+        db,
+        signer,
+        authenticatedPubkey: pubkey,
+        order: selectedOrder,
+        shouldContinue,
+      })
+      return shouldContinue()
+    },
+    retry: false,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  })
+  const fulfillmentBlockReason = getMerchantFulfillmentBlockReason({
+    goodsPaymentVerified: merchantPaid,
+    zeroCostPickupAuthorized:
+      !merchantOrderState.checkoutSparkRouted &&
+      merchantOrderState.isZeroCostPickup === true,
+    inventoryAcceptanceReady,
+    pickupAuthorityVerified:
+      !snapshottedOrderFulfillment.hasPickupClaim ||
+      pickupAuthorizationVerified,
+    organizerHandoutVerified:
+      !organizerCompletionBlocked &&
+      selectedOrganizerHandoffPolicy !== "stock_reconciliation_required" &&
+      (selectedOrganizerHandoffPolicy !== "reserved_organizer_stock" ||
+        reservedOrganizerHandoutQuery.data === true),
+  })
+  const newStockActionsAuthorized = fulfillmentBlockReason === null
+  // Fresh signatures are fenced to the currently selected exact order. An
+  // already-signed delivery retry remains in its separate immutable path.
+  const stockActionGateRef = useRef({
+    orderId: selected?.orderId,
+    orderMessageId: selectedOrderMessage?.id,
+    authorized: newStockActionsAuthorized,
+  })
+  stockActionGateRef.current = {
+    orderId: selected?.orderId,
+    orderMessageId: selectedOrderMessage?.id,
+    authorized: newStockActionsAuthorized,
+  }
   const safeTrackingUrl = normalizeSafeHttpUrl(orderSummary?.trackingUrl)
   const assertPaidForFulfillment = useCallback(
     async (allowZeroCostPickup = false) => {
@@ -1869,8 +1929,7 @@ function OrdersWorkspace() {
     canSendInvoice,
     canRecordShipping,
     canRequestPaymentOutOfBand,
-    fulfillmentActionsAuthorized:
-      pickupFulfillmentActionsAuthorized && !organizerCompletionBlocked,
+    fulfillmentActionsAuthorized: fulfillmentBlockReason === null,
   })
   const { primaryButtonActions, destructiveActions, hasNextStep } = actionView
   const paymentConfirmationSelection =
@@ -2071,6 +2130,25 @@ function OrdersWorkspace() {
 
       const authority = captureFreshOrderAuthority()
 
+      const assertCurrentStockAction = () => {
+        const current = stockActionGateRef.current
+        if (
+          !isCurrentOrderAction(authority) ||
+          payload.orderId !== selected?.orderId ||
+          current.orderId !== payload.orderId ||
+          current.orderMessageId !== selectedOrderMessage?.id ||
+          !current.authorized
+        ) {
+          throw new Error(
+            "Verify the selected order's goods payment and pickup authority before publishing new stock changes."
+          )
+        }
+      }
+      assertCurrentStockAction()
+      await assertPaidForFulfillment(true)
+      await assertCurrentPickupAuthorization(authority)
+      assertCurrentStockAction()
+
       const latestLocal = await getCachedMerchantStorefront({
         merchantPubkey: pubkey,
         includeMarketHidden: true,
@@ -2159,6 +2237,7 @@ function OrdersWorkspace() {
         throw new Error("This order already consumed inventory at acceptance.")
       const expectedRevision = captureOrderStockRevision(record)
       const assertCurrentWriteBaseline = async () => {
+        assertCurrentStockAction()
         if (!isCurrentOrderAccount(pubkey)) {
           throw new Error("Stock update belongs to another account.")
         }
@@ -3659,15 +3738,13 @@ function OrdersWorkspace() {
         <CheckoutSparkRecoveryPanel
           key={`${pubkey}:${authGeneration}`}
           principalPubkey={pubkey}
-          selectedOrderId={
-            merchantOrderState.checkoutSparkRouted
-              ? (selectedOrder?.id ?? null)
-              : null
+          selectedOrder={
+            merchantOrderState.checkoutSparkRouted ? selected : null
           }
           selectedOrderSettlement={
             selectedOrder && selectedRoutedSettlement
               ? {
-                  orderId: selectedOrder.id,
+                  order: selected!,
                   projection: selectedRoutedSettlement,
                 }
               : null
@@ -3871,7 +3948,15 @@ function OrdersWorkspace() {
                       </p>
                       <div className="mt-5">
                         <StatusStepper
-                          rows={buildOrderStatusTimeline(merchantOrderState)}
+                          rows={buildOrderStatusTimeline(
+                            merchantOrderState
+                          ).filter(
+                            (step) =>
+                              fulfillmentBlockReason === null ||
+                              step.status === "complete" ||
+                              (step.key !== "shipped" &&
+                                step.key !== "delivered")
+                          )}
                           ariaLabel="Order progress"
                         />
                       </div>
@@ -3893,15 +3978,11 @@ function OrdersWorkspace() {
                         {isGuestOrder ? "Guest order" : "Actions"}
                       </h3>
                       <>
-                        {!buyerInboxKnown && (
-                          <p className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm leading-6 text-[var(--warning-text)]">
-                            {isGuestOrder
-                              ? orderSummary.guestContact
-                                ? "This guest has no Nostr reply inbox. Contact them by phone or email; fulfillment actions below are recorded to your encrypted order history."
-                                : "This guest has no Nostr reply inbox and the order is missing required contact details. Fulfillment actions below are recorded only to your encrypted order history."
-                              : "This partial order history does not prove the buyer has a Nostr reply inbox. Actions are recorded to your encrypted order history until the order identity is recovered."}
-                          </p>
-                        )}
+                        <MerchantOrderContactNotice
+                          buyerInboxKnown={buyerInboxKnown}
+                          isGuestOrder={isGuestOrder}
+                          order={selectedOrder}
+                        />
                         <div className="mt-4 space-y-5">
                           {successFlash && (
                             <div
@@ -3915,6 +3996,9 @@ function OrdersWorkspace() {
 
                           <OrderStockPanel
                             adjustments={stockAdjustments}
+                            newStockActionsAuthorized={
+                              newStockActionsAuthorized
+                            }
                             stockMutationDisabledKeys={
                               stockMutationDisabledKeys
                             }
@@ -3932,6 +4016,15 @@ function OrdersWorkspace() {
                             onRepublish={republishStock}
                             onDismissDelivery={dismissStockDelivery}
                           />
+
+                          {fulfillmentBlockReason && (
+                            <p
+                              role="status"
+                              className="text-sm text-[var(--text-secondary)]"
+                            >
+                              {fulfillmentBlockReason}
+                            </p>
+                          )}
 
                           {hasNextStep && (
                             <h4 className="text-sm font-semibold text-[var(--text-primary)]">

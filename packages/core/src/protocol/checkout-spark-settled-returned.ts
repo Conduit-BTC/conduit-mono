@@ -164,7 +164,8 @@ function exactReturnedClosure(input: {
   if (
     (plan.schemaVersion !== 3 &&
       plan.schemaVersion !== 4 &&
-      plan.schemaVersion !== 5) ||
+      plan.schemaVersion !== 5 &&
+      plan.schemaVersion !== 6) ||
     !recipient ||
     target.walletId !== plan.walletId ||
     target.network !== plan.network ||

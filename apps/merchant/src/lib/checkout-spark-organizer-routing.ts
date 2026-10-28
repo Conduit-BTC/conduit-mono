@@ -9,6 +9,8 @@ import {
   createCheckoutSparkSettledNativeOutgoingProvider,
   deriveCheckoutSparkNativeTreasuryBudget,
   isCheckoutSparkNativePreProviderRetry,
+  isCheckoutSparkEventMarketPlan,
+  getCheckoutSparkBuyerTakeoverAt,
   proveSparkCheckoutReceiveCredit,
   recordCheckoutSparkSettledCredit,
   restoreCheckoutSparkSettledReconciliation,
@@ -152,6 +154,12 @@ export async function routeCheckoutSparkOrganizerOrder(
       withCheckoutSparkOrganizerRecovery(input.authority, async (context) => {
         const { initial } = context
         const plan = initial.plan
+        const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+          plan,
+          context.state.buyerActivation
+        )
+        if (takeoverAt === null)
+          throw new Error("Organizer checkout Pay activation is unavailable.")
         const assertProofCurrent = () => {
           context.assertCurrent()
           assertSession()
@@ -166,7 +174,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           assertCurrent()
         }
         if (
-          plan.schemaVersion !== 5 ||
+          !isCheckoutSparkEventMarketPlan(plan) ||
           plan.eventMarket?.mode !== "organizer_handoff" ||
           !plan.nativeTreasury
         )
@@ -289,7 +297,7 @@ export async function routeCheckoutSparkOrganizerOrder(
             fundingProof: credit,
           })
           if (
-            expected.updatedAt < plan.takeoverAt &&
+            expected.updatedAt < takeoverAt &&
             expected.legs.some((leg) => leg.intent !== null)
           ) {
             const current = await load()
@@ -303,7 +311,7 @@ export async function routeCheckoutSparkOrganizerOrder(
             })
             const adopted = restoreCheckoutSparkSettledReconciliation({
               ...current.state,
-              updatedAt: Math.max(now(), plan.takeoverAt),
+              updatedAt: Math.max(now(), takeoverAt),
             })
             const saved = await repository.save(
               adopted,

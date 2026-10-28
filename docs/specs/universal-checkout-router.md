@@ -272,10 +272,25 @@ not prove safe abandonment.
 
 ## Separate funding and execution deadlines
 
-Normal new plans request a fifteen-minute funding invoice and freeze Merchant
-takeover two minutes after preparation. The actual signed funding expiry is
-validated. Existing plans keep their saved deadlines; neither a heartbeat nor
-an inferred abandonment time rewrites them.
+Normal new plans request a fifteen-minute funding invoice and use explicit
+Pay-activation timing (plan v6, reconciliation v7). Preparation has no takeover
+timestamp and admits neither Buyer nor Merchant/Organizer dispatch. The first
+Pay action atomically records one Buyer-bound activation, with takeover exactly
+two minutes later. Before connected-payer admission or external invoice/QR
+disclosure, the same immutable activation must be durably delivered and
+acknowledged by the Merchant and, for organizer handout, the designated
+Organizer. Failed or interrupted acknowledgement retries the exact retained
+activation and ciphertext, never restarts its clock. Activation changes no
+order, plan digest, wallet, funding invoice or payment identifier. The actual
+signed funding expiry is validated independently. Historical plans retain
+their original saved deadlines and canonical bytes; neither a heartbeat,
+local credit observation nor an inferred provider timestamp rewrites them.
+
+Only authenticated progress from the original Buyer may introduce activation
+to another actor. Merchant and Organizer snapshots must retain that exact
+activation and cannot invent, replace or renew it. Discovery timing is a
+private selection hint, not payment authority; opening the authenticated
+payload must re-establish the same marker before dispatch.
 
 The same exact funding invoice may be presented or reopened until its funding
 expiry, including after takeover, provided the current buyer/order, durable

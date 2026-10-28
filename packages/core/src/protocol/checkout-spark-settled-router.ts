@@ -26,6 +26,14 @@ import {
 } from "./checkout-spark-settled-returned"
 import { checkoutSparkProviderSendWindowEndsAt } from "./checkout-spark-invoice-expiry"
 import {
+  createCheckoutSparkBuyerActivation,
+  getCheckoutSparkBuyerTakeoverAt,
+  restoreCheckoutSparkBuyerActivation,
+  restoreCheckoutSparkPayActivationTiming,
+  type CheckoutSparkBuyerActivation,
+  type CheckoutSparkPayActivationTiming,
+} from "./checkout-spark-buyer-activation"
+import {
   createCheckoutSparkNativeTreasuryFinalization,
   restoreCheckoutSparkNativeTreasuryFinalization,
   restoreCheckoutSparkNativeTreasuryPlan,
@@ -125,7 +133,8 @@ export interface FreezeCheckoutSparkSettledPlanInput {
   readonly walletId: string
   readonly network: CheckoutSparkNetwork
   readonly createdAt: number
-  readonly takeoverAt: number
+  readonly takeoverAt?: number
+  readonly executionTiming?: CheckoutSparkPayActivationTiming
   readonly commerceQuote: CheckoutSparkCommerceQuote
   readonly funding: CheckoutSparkSettledFundingPlan
   readonly recipients: readonly CheckoutSparkSettledRecipientInput[]
@@ -135,13 +144,33 @@ export interface FreezeCheckoutSparkSettledPlanInput {
 }
 
 /** V3 freezes identities, endpoints and weights, but no outgoing invoice. */
-export interface CheckoutSparkSettledPlan extends FreezeCheckoutSparkSettledPlanInput {
+export interface CheckoutSparkLegacySettledPlan extends FreezeCheckoutSparkSettledPlanInput {
   readonly schemaVersion: 3 | 4 | 5
+  readonly takeoverAt: number
+  readonly executionTiming?: never
+  readonly checkoutKind?: never
   readonly nativeTreasury?: CheckoutSparkNativeTreasuryPlan
   readonly eventMarket?: CheckoutSparkEventMarketBinding
   readonly planDigest: string
   readonly recipients: readonly CheckoutSparkSettledRecipient[]
 }
+
+export interface CheckoutSparkPayActivatedSettledPlan extends Omit<
+  FreezeCheckoutSparkSettledPlanInput,
+  "takeoverAt" | "executionTiming"
+> {
+  readonly schemaVersion: 6
+  readonly checkoutKind: "ordinary" | "event_market"
+  readonly executionTiming: CheckoutSparkPayActivationTiming
+  readonly takeoverAt?: never
+  readonly nativeTreasury: CheckoutSparkNativeTreasuryPlan
+  readonly eventMarket?: CheckoutSparkEventMarketBinding
+  readonly planDigest: string
+  readonly recipients: readonly CheckoutSparkSettledRecipient[]
+}
+
+export type CheckoutSparkSettledPlan =
+  CheckoutSparkLegacySettledPlan | CheckoutSparkPayActivatedSettledPlan
 
 export interface CheckoutSparkSettledCreditEvidence {
   readonly requestId: string
@@ -199,7 +228,8 @@ export interface CheckoutSparkSettledClosedGeneration {
 }
 
 export interface CheckoutSparkSettledReconciliation {
-  readonly schemaVersion: 3 | 4 | 5 | 6
+  readonly schemaVersion: 3 | 4 | 5 | 6 | 7
+  readonly buyerActivation?: CheckoutSparkBuyerActivation | null
   readonly treasuryFinalization?: CheckoutSparkNativeTreasuryFinalization
   readonly plan: CheckoutSparkSettledPlan
   /** Exact invoice-attributed credit; never a wallet-balance inference. */
@@ -326,14 +356,18 @@ function uuidFromDigest(value: string): string {
 }
 
 function canonicalPlanValue(
-  plan: Omit<CheckoutSparkSettledPlan, "planDigest">
+  plan:
+    | Omit<CheckoutSparkLegacySettledPlan, "planDigest">
+    | Omit<CheckoutSparkPayActivatedSettledPlan, "planDigest">
 ): unknown {
   return [
-    plan.schemaVersion === 5
-      ? "conduit:checkout-spark-settled-plan:v5"
-      : plan.schemaVersion === 4
-        ? "conduit:checkout-spark-settled-plan:v4"
-        : PLAN_DOMAIN,
+    plan.schemaVersion === 6
+      ? "conduit:checkout-spark-settled-plan:v6"
+      : plan.schemaVersion === 5
+        ? "conduit:checkout-spark-settled-plan:v5"
+        : plan.schemaVersion === 4
+          ? "conduit:checkout-spark-settled-plan:v4"
+          : PLAN_DOMAIN,
     plan.schemaVersion,
     plan.checkoutId,
     plan.orderId,
@@ -341,7 +375,12 @@ function canonicalPlanValue(
     plan.walletId,
     plan.network,
     plan.createdAt,
-    plan.takeoverAt,
+    ...(plan.schemaVersion === 6
+      ? [
+          plan.checkoutKind,
+          [plan.executionTiming.type, plan.executionTiming.windowMs],
+        ]
+      : [plan.takeoverAt]),
     checkoutSparkCommerceQuoteDigestValue(plan.commerceQuote),
     [
       plan.funding.requestId,
@@ -376,7 +415,8 @@ function canonicalPlanValue(
           ],
         ]
       : []),
-    ...(plan.schemaVersion === 5
+    ...(plan.schemaVersion === 5 ||
+    (plan.schemaVersion === 6 && plan.checkoutKind === "event_market")
       ? [checkoutSparkEventMarketBindingDigestValue(plan.eventMarket!)]
       : []),
     ...(plan.merchantPublicZapPolicy
@@ -396,7 +436,20 @@ function canonicalPlanValue(
 export function isCheckoutSparkNativeTreasuryPlan(
   plan: Pick<CheckoutSparkSettledPlan, "schemaVersion">
 ): boolean {
-  return plan.schemaVersion === 4 || plan.schemaVersion === 5
+  return (
+    plan.schemaVersion === 4 ||
+    plan.schemaVersion === 5 ||
+    plan.schemaVersion === 6
+  )
+}
+
+export function isCheckoutSparkEventMarketPlan(
+  plan: CheckoutSparkSettledPlan
+): boolean {
+  return (
+    plan.schemaVersion === 5 ||
+    (plan.schemaVersion === 6 && plan.checkoutKind === "event_market")
+  )
 }
 
 function destinationSourceDigestValue(
@@ -428,8 +481,18 @@ function freezeCheckoutSparkSettledPlanInternal(
     throw new Error("Checkout Spark network is invalid.")
   }
   const createdAt = time(input.createdAt, "Plan creation time")
-  const takeoverAt = time(input.takeoverAt, "Takeover time")
-  if (takeoverAt <= createdAt) {
+  const executionTiming = input.executionTiming
+    ? restoreCheckoutSparkPayActivationTiming(input.executionTiming)
+    : undefined
+  if (executionTiming && (!nativeTreasury || input.takeoverAt !== undefined)) {
+    throw new Error(
+      "Checkout Spark Pay activation requires exclusive native timing terms."
+    )
+  }
+  const takeoverAt = executionTiming
+    ? undefined
+    : time(input.takeoverAt!, "Takeover time")
+  if (takeoverAt !== undefined && takeoverAt <= createdAt) {
     throw new Error("Checkout Spark takeover must follow plan creation.")
   }
   const commerceQuote = freezeCheckoutSparkCommerceQuote(
@@ -645,18 +708,27 @@ function freezeCheckoutSparkSettledPlanInternal(
       throw new Error("Checkout Spark event payout ordering is invalid.")
   }
   const unsigned = {
-    schemaVersion: eventMarket
-      ? (5 as const)
-      : nativeTreasury
-        ? (4 as const)
-        : (3 as const),
+    schemaVersion: executionTiming
+      ? (6 as const)
+      : eventMarket
+        ? (5 as const)
+        : nativeTreasury
+          ? (4 as const)
+          : (3 as const),
     checkoutId,
     orderId,
     merchantPubkey,
     walletId,
     network: input.network,
     createdAt,
-    takeoverAt,
+    ...(executionTiming
+      ? {
+          executionTiming,
+          checkoutKind: eventMarket
+            ? ("event_market" as const)
+            : ("ordinary" as const),
+        }
+      : { takeoverAt: takeoverAt! }),
     commerceQuote,
     funding,
     recipients: Object.freeze(recipients),
@@ -689,8 +761,14 @@ function freezeCheckoutSparkSettledPlanInternal(
   }
   return Object.freeze({
     ...unsigned,
-    planDigest: digest(canonicalPlanValue(unsigned)),
-  })
+    planDigest: digest(
+      canonicalPlanValue(
+        unsigned as
+          | Omit<CheckoutSparkLegacySettledPlan, "planDigest">
+          | Omit<CheckoutSparkPayActivatedSettledPlan, "planDigest">
+      )
+    ),
+  }) as CheckoutSparkSettledPlan
 }
 
 /** New plans must include the inbound allowance; only restore accepts old v3. */
@@ -760,13 +838,25 @@ export function restoreCheckoutSparkSettledPlan(
   if (
     (plan.schemaVersion !== 3 &&
       plan.schemaVersion !== 4 &&
-      plan.schemaVersion !== 5) ||
+      plan.schemaVersion !== 5 &&
+      plan.schemaVersion !== 6) ||
+    (plan.schemaVersion === 6
+      ? Object.hasOwn(plan, "takeoverAt") ||
+        !plan.executionTiming ||
+        !["ordinary", "event_market"].includes(plan.checkoutKind) ||
+        (plan.checkoutKind === "event_market"
+          ? !plan.eventMarket
+          : Object.hasOwn(plan, "eventMarket"))
+      : Object.hasOwn(plan, "executionTiming") ||
+        Object.hasOwn(plan, "checkoutKind")) ||
     (plan.schemaVersion === 3 && Object.hasOwn(plan, "nativeTreasury")) ||
     (isCheckoutSparkNativeTreasuryPlan(plan) && !plan.nativeTreasury) ||
-    (plan.schemaVersion === 5
+    (plan.schemaVersion === 5 ||
+    (plan.schemaVersion === 6 && plan.checkoutKind === "event_market")
       ? !plan.eventMarket
       : Object.hasOwn(plan, "eventMarket")) ||
-    (plan.schemaVersion === 5 && plan.merchantPublicZapPolicy !== undefined)
+    ((plan.schemaVersion === 5 || plan.schemaVersion === 6) &&
+      plan.merchantPublicZapPolicy !== undefined)
   ) {
     throw new Error("Checkout Spark settled plan version is invalid.")
   }
@@ -780,7 +870,9 @@ export function restoreCheckoutSparkSettledPlan(
       walletId: plan.walletId,
       network: plan.network,
       createdAt: plan.createdAt,
-      takeoverAt: plan.takeoverAt,
+      ...(plan.schemaVersion === 6
+        ? { executionTiming: plan.executionTiming }
+        : { takeoverAt: plan.takeoverAt }),
       commerceQuote: plan.commerceQuote,
       funding: plan.funding,
       recipients: plan.recipients,
@@ -879,7 +971,11 @@ function allocatedLegs(
   plan: CheckoutSparkSettledPlan,
   creditedSats: number
 ): readonly CheckoutSparkSettledLegProgress[] {
-  const eventMarket = plan.schemaVersion === 5 ? plan.eventMarket! : undefined
+  const eventMarket =
+    plan.schemaVersion === 5 ||
+    (plan.schemaVersion === 6 && plan.checkoutKind === "event_market")
+      ? plan.eventMarket!
+      : undefined
   const weights = eventMarket
     ? calculateCheckoutSparkEventAllocationWeights(
         plan.commerceQuote.commerceTotalSats,
@@ -957,6 +1053,9 @@ function freezeState(
 ): CheckoutSparkSettledReconciliation {
   return Object.freeze({
     ...state,
+    ...(state.buyerActivation
+      ? { buyerActivation: Object.freeze({ ...state.buyerActivation }) }
+      : {}),
     ...(state.treasuryFinalization
       ? {
           treasuryFinalization: Object.freeze({
@@ -998,7 +1097,14 @@ export function createCheckoutSparkSettledReconciliation(
   const canonical = restoreCheckoutSparkSettledPlan(plan)
   return freezeState({
     schemaVersion:
-      canonical.schemaVersion === 5 ? 6 : canonical.schemaVersion === 4 ? 5 : 3,
+      canonical.schemaVersion === 6
+        ? 7
+        : canonical.schemaVersion === 5
+          ? 6
+          : canonical.schemaVersion === 4
+            ? 5
+            : 3,
+    ...(canonical.schemaVersion === 6 ? { buyerActivation: null } : {}),
     plan: canonical,
     credit: null,
     legs: canonical.recipients.map((recipient) => ({
@@ -1029,7 +1135,8 @@ export function restoreCheckoutSparkSettledReconciliation(
     state.schemaVersion !== 3 &&
     state.schemaVersion !== 4 &&
     state.schemaVersion !== 5 &&
-    state.schemaVersion !== 6
+    state.schemaVersion !== 6 &&
+    state.schemaVersion !== 7
   ) {
     throw new Error("Checkout Spark settled state version is invalid.")
   }
@@ -1037,13 +1144,36 @@ export function restoreCheckoutSparkSettledReconciliation(
   if (
     (plan.schemaVersion === 4) !== (state.schemaVersion === 5) ||
     (plan.schemaVersion === 5) !== (state.schemaVersion === 6) ||
+    (plan.schemaVersion === 6) !== (state.schemaVersion === 7) ||
     (state.schemaVersion !== 5 &&
       state.schemaVersion !== 6 &&
+      state.schemaVersion !== 7 &&
       Object.hasOwn(state, "treasuryFinalization"))
   ) {
     throw new Error("Checkout Spark treasury state version is invalid.")
   }
   time(state.updatedAt, "Checkout Spark settled update time")
+  const buyerActivation =
+    state.schemaVersion === 7
+      ? state.buyerActivation === null
+        ? null
+        : restoreCheckoutSparkBuyerActivation(plan, state.buyerActivation!)
+      : undefined
+  if (
+    (state.schemaVersion !== 7 && Object.hasOwn(state, "buyerActivation")) ||
+    (state.schemaVersion === 7 && !Object.hasOwn(state, "buyerActivation")) ||
+    (state.schemaVersion === 7 &&
+      !buyerActivation &&
+      (state.credit !== null ||
+        state.legs.some(
+          (leg) => leg.intent !== null || leg.status !== "unprepared"
+        ) ||
+        state.treasuryFinalization?.status !== "unprepared"))
+  )
+    throw new Error(
+      "Checkout Spark Buyer activation is required before payment."
+    )
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(plan, buyerActivation)
   if (
     state.updatedAt < plan.createdAt ||
     state.legs.length !== plan.recipients.length
@@ -1149,7 +1279,8 @@ export function restoreCheckoutSparkSettledReconciliation(
         entry.observedAt < oldIntent.preparedAt ||
         closure.observedAt < entry.observedAt ||
         closure.observedAt > intent.preparedAt ||
-        intent.preparedAt < plan.takeoverAt ||
+        takeoverAt === null ||
+        intent.preparedAt < takeoverAt ||
         intent.paymentHash === oldIntent.paymentHash ||
         intent.paymentRequest === oldIntent.paymentRequest ||
         (checkoutSparkProviderSendWindowEndsAt(oldIntent.paymentRequest) ??
@@ -1225,6 +1356,7 @@ export function restoreCheckoutSparkSettledReconciliation(
     throw new Error("Checkout Spark cumulative debit exceeds its credit.")
   const latest = Math.max(
     plan.createdAt,
+    buyerActivation?.activatedAt ?? plan.createdAt,
     credit?.observedAt ?? plan.createdAt,
     ...legs.map((leg) => leg.observedAt ?? plan.createdAt)
   )
@@ -1232,7 +1364,9 @@ export function restoreCheckoutSparkSettledReconciliation(
     throw new Error("Checkout Spark settled state timestamp is stale.")
   }
   const treasuryFinalization =
-    state.schemaVersion === 5 || state.schemaVersion === 6
+    state.schemaVersion === 5 ||
+    state.schemaVersion === 6 ||
+    state.schemaVersion === 7
       ? restoreCheckoutSparkNativeTreasuryFinalization(
           state.treasuryFinalization!,
           { ...state, plan, credit, legs }
@@ -1259,7 +1393,36 @@ export function restoreCheckoutSparkSettledReconciliation(
     credit,
     legs,
     updatedAt: state.updatedAt,
+    ...(state.schemaVersion === 7 ? { buyerActivation: buyerActivation! } : {}),
     ...(treasuryFinalization ? { treasuryFinalization } : {}),
+  })
+}
+
+/** A retry keeps the original marker; persistence/ACK admission is a separate gate. */
+export function activateCheckoutSparkBuyer(
+  state: CheckoutSparkSettledReconciliation,
+  input: { buyerPubkey: string; activatedAt: number }
+): CheckoutSparkSettledReconciliation {
+  const current = restoreCheckoutSparkSettledReconciliation(state)
+  if (current.plan.schemaVersion !== 6 || current.schemaVersion !== 7) {
+    throw new Error(
+      "Checkout Spark historical terms do not use Buyer activation."
+    )
+  }
+  if (current.buyerActivation) {
+    if (current.buyerActivation.buyerPubkey !== input.buyerPubkey) {
+      throw new Error("Checkout Spark Buyer activation owner changed.")
+    }
+    return current
+  }
+  const buyerActivation = createCheckoutSparkBuyerActivation(
+    current.plan,
+    input
+  )
+  return freezeState({
+    ...current,
+    buyerActivation,
+    updatedAt: Math.max(current.updatedAt, buyerActivation.activatedAt),
   })
 }
 
@@ -1306,6 +1469,9 @@ export function recordCheckoutSparkSettledCredit(
 ): CheckoutSparkSettledReconciliation {
   const current = restoreCheckoutSparkSettledReconciliation(state)
   const credit = normalizeCredit(current.plan, evidence)
+  if (current.schemaVersion === 7 && !current.buyerActivation) {
+    throw new Error("Checkout Spark Buyer Pay activation has not begun.")
+  }
   if (current.credit) {
     if (
       current.credit.requestId !== credit.requestId ||
@@ -1331,29 +1497,54 @@ export function recordCheckoutSparkSettledCredit(
   })
 }
 
+/** Exact credit/allocation facts only; never creates or activates execution state. */
+export function projectCheckoutSparkSettledCredit(
+  plan: CheckoutSparkSettledPlan,
+  evidence: CheckoutSparkSettledCreditEvidence
+): {
+  readonly credit: CheckoutSparkSettledCreditEvidence
+  readonly allocations: readonly {
+    readonly legId: string
+    readonly allocationSats: number
+  }[]
+} {
+  const canonical = restoreCheckoutSparkSettledPlan(plan)
+  const credit = normalizeCredit(canonical, evidence)
+  assertCheckoutSparkSettledFundingCoverage(canonical, credit.creditedSats)
+  return Object.freeze({
+    credit,
+    allocations: Object.freeze(
+      allocatedLegs(canonical, credit.creditedSats).map((leg) =>
+        Object.freeze({ legId: leg.legId, allocationSats: leg.allocationSats! })
+      )
+    ),
+  })
+}
+
 /** A short receive is evidence to reconcile, never approval to reduce payouts. */
 export function assertCheckoutSparkSettledFundingCoverage(
   plan: CheckoutSparkSettledPlan,
   creditedSats: number
 ): void {
-  const weights =
-    plan.schemaVersion === 5
-      ? calculateCheckoutSparkEventAllocationWeights(
-          plan.commerceQuote.commerceTotalSats,
-          plan.eventMarket!.organizerFeeSats,
-          plan.conduitFeePolicy
-        )
-      : calculateCheckoutSparkAllocationWeights(
-          plan.commerceQuote.commerceTotalSats,
-          plan.conduitFeePolicy
-        )
+  const weights = isCheckoutSparkEventMarketPlan(plan)
+    ? calculateCheckoutSparkEventAllocationWeights(
+        plan.commerceQuote.commerceTotalSats,
+        plan.eventMarket!.organizerFeeSats,
+        plan.conduitFeePolicy
+      )
+    : calculateCheckoutSparkAllocationWeights(
+        plan.commerceQuote.commerceTotalSats,
+        plan.conduitFeePolicy
+      )
   if (
     !Number.isSafeInteger(creditedSats) ||
     BigInt(creditedSats) <
       BigInt(weights.commerceWeightSats) +
         BigInt(weights.conduitWeightSats) +
         BigInt(
-          plan.schemaVersion === 5 ? plan.eventMarket!.organizerFeeSats : 0
+          isCheckoutSparkEventMarketPlan(plan)
+            ? plan.eventMarket!.organizerFeeSats
+            : 0
         )
   ) {
     throw new Error("Checkout Spark funding shortfall requires reconciliation.")
@@ -1510,6 +1701,10 @@ export function renewCheckoutSparkSettledLeg(
   const recipient = current.plan.recipients.find(
     (item) => item.legId === input.legId
   )
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    current.plan,
+    current.buyerActivation
+  )
   if (
     !current.credit ||
     !leg?.intent ||
@@ -1518,7 +1713,8 @@ export function renewCheckoutSparkSettledLeg(
     leg.status === "paid" ||
     getCheckoutSparkSettledLegGeneration(leg) !== 0 ||
     !Number.isSafeInteger(input.nowMs) ||
-    input.nowMs < current.plan.takeoverAt ||
+    takeoverAt === null ||
+    input.nowMs < takeoverAt ||
     input.nowMs < current.updatedAt ||
     input.intent.preparedAt !== input.nowMs ||
     (checkoutSparkProviderSendWindowEndsAt(leg.intent.paymentRequest) ??
@@ -1563,11 +1759,13 @@ export function renewCheckoutSparkSettledLeg(
   return restoreCheckoutSparkSettledReconciliation({
     ...current,
     schemaVersion:
-      current.plan.schemaVersion === 5
-        ? 6
-        : current.plan.schemaVersion === 4
-          ? 5
-          : 4,
+      current.plan.schemaVersion === 6
+        ? 7
+        : current.plan.schemaVersion === 5
+          ? 6
+          : current.plan.schemaVersion === 4
+            ? 5
+            : 4,
     legs: current.legs.map((item) =>
       item.legId === input.legId
         ? {

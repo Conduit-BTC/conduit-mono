@@ -1,6 +1,8 @@
 import {
   deriveCheckoutSparkSettledTransferId,
   getCheckoutSparkSettledLegGeneration,
+  isCheckoutSparkEventMarketPlan,
+  isCheckoutSparkNativeTreasuryPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
@@ -113,21 +115,20 @@ export function createCheckoutSparkRetiredSettlementSummary(
 ): CheckoutSparkRetiredSettlementSummary {
   const state = restoreCheckoutSparkSettledReconciliation(input)
   const summary: CheckoutSparkRetiredSettlementSummary = {
-    schemaVersion:
-      state.schemaVersion === 6
-        ? 4
-        : state.schemaVersion === 5
-          ? 3
-          : state.schemaVersion === 4
-            ? 2
-            : 1,
+    schemaVersion: isCheckoutSparkEventMarketPlan(state.plan)
+      ? 4
+      : isCheckoutSparkNativeTreasuryPlan(state.plan)
+        ? 3
+        : state.schemaVersion === 4
+          ? 2
+          : 1,
     checkoutId: state.plan.checkoutId,
     planDigest: state.plan.planDigest,
     orderId: state.plan.orderId,
     merchantPubkey: state.plan.merchantPubkey,
     walletId: state.plan.walletId,
     commerceTotalSats: state.plan.commerceQuote.commerceTotalSats,
-    ...(state.schemaVersion === 5 || state.schemaVersion === 6
+    ...(isCheckoutSparkNativeTreasuryPlan(state.plan)
       ? {
           nativeTreasury: state.treasuryFinalization!.intent
             ? {
@@ -167,7 +168,7 @@ export function createCheckoutSparkRetiredSettlementSummary(
         legId: recipient.legId,
         kind: recipient.kind,
         transferId:
-          (state.schemaVersion === 5 || state.schemaVersion === 6) &&
+          isCheckoutSparkNativeTreasuryPlan(state.plan) &&
           recipient.kind === "conduit"
             ? state.treasuryFinalization!.providerTransferId
             : state.schemaVersion !== 3 && leg?.intent

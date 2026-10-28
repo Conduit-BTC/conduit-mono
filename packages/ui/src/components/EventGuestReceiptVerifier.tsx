@@ -1,7 +1,7 @@
 import { useState } from "react"
 import {
   parseEventGuestReceipt,
-  verifyEventGuestReceipt,
+  verifyEventPickupReceipt,
   type OrderSchema,
 } from "@conduit/core"
 import { Input } from "./Input"
@@ -15,7 +15,7 @@ export function EventGuestReceiptVerifier({
   order: OrderSchema
   merchantPubkey: string
 }) {
-  const scope = `${order.id}:${merchantPubkey}:${order.contactFreePickup?.receiptCommitment ?? ""}`
+  const scope = `${order.id}:${merchantPubkey}:${order.pickupReceiptCommitment ?? order.contactFreePickup?.receiptCommitment ?? ""}`
   const [result, setResult] = useState<{
     scope: string
     message: string
@@ -24,7 +24,7 @@ export function EventGuestReceiptVerifier({
   function check(value: unknown) {
     setResult({
       scope,
-      message: verifyEventGuestReceipt(value, order, merchantPubkey)
+      message: verifyEventPickupReceipt(value, order, merchantPubkey)
         ? "Receipt matches this order. Confirm payment and any prior refund before arranging a manual refund or rebate. Ask the customer for a payment destination in person."
         : "This receipt does not match this order and merchant.",
     })
@@ -45,14 +45,23 @@ export function EventGuestReceiptVerifier({
       })
     }
   }
-  if (!order.contactFreePickup) return null
+  if (!order.contactFreePickup && !order.pickupReceiptCommitment) return null
   return (
     <section className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-4">
-      <h3 className="font-semibold">Contact-free event order</h3>
-      <p className="text-sm">Handoff name: {order.contactFreePickup.label}</p>
+      <h3 className="font-semibold">
+        {order.contactFreePickup
+          ? "Contact-free event order"
+          : "Event pickup receipt"}
+      </h3>
+      {order.contactFreePickup ? (
+        <p className="text-sm">Handoff name: {order.contactFreePickup.label}</p>
+      ) : null}
       <p className="text-xs text-[var(--text-muted)]">
-        This guest has no reply inbox or contact details. Receipt verification
-        does not prove payment or issue money.
+        {order.contactFreePickup
+          ? "This guest has no reply inbox or contact details. "
+          : ""}
+        Receipt verification does not prove payment, authorize handout or issue
+        money.
       </p>
       <Label htmlFor="event-guest-receipt-file">Verify customer receipt</Label>
       <Input

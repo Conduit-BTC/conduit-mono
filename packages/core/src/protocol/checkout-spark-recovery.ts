@@ -1,4 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js"
+import { getCheckoutSparkBuyerTakeoverAt } from "./checkout-spark-buyer-activation"
+import type { CheckoutSparkRecoveryTiming } from "./checkout-spark-recovery-timing"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import { getEventHash } from "nostr-tools"
 import { type PrivateMessageEvent, type PrivateMessageRumor } from "./messaging"
@@ -123,7 +125,7 @@ export type CheckoutSparkRecoveryPayload =
   | CheckoutSparkSettledRecoveryProgressPayload
 
 /** Encrypted local discovery metadata. Wallet material remains in the original wrapper. */
-export interface CheckoutRecoveryDescriptor {
+export type CheckoutRecoveryDescriptor = CheckoutSparkRecoveryTiming & {
   /** Absent in historical Merchant descriptors. Never grants role authority. */
   recipientRole?: "organizer"
   organizerMessage?:
@@ -136,7 +138,6 @@ export interface CheckoutRecoveryDescriptor {
   checkoutId: string
   orderId: string
   planDigest: string
-  takeoverAt: number
   preparedAt: number
   payloadDigest: string
 }
@@ -287,7 +288,8 @@ function canonicalSettledState(
     if (
       state.schemaVersion !== 3 &&
       state.schemaVersion !== 5 &&
-      state.schemaVersion !== 6
+      state.schemaVersion !== 6 &&
+      state.schemaVersion !== 7
     )
       throw new Error("unsupported buyer state")
     const plan = restoreCheckoutSparkSettledPlan(state.plan)
@@ -406,7 +408,16 @@ export function createCheckoutSparkSettledRecoveryPayload(
     input.sourceEvents === undefined
       ? undefined
       : canonicalizeCheckoutSparkPlanSourceEvents(plan, input.sourceEvents)
-  if (preparedAt < plan.createdAt || preparedAt >= plan.takeoverAt) {
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    plan,
+    state.buyerActivation
+  )
+  if (
+    preparedAt < plan.createdAt ||
+    (plan.schemaVersion === 6
+      ? state.buyerActivation !== null || preparedAt >= plan.funding.expiresAt
+      : takeoverAt === null || preparedAt >= takeoverAt)
+  ) {
     throw new Error(
       "Checkout Spark recovery must be prepared before merchant takeover."
     )
@@ -464,9 +475,16 @@ export function createCheckoutSparkSettledRecoveryProgressPayload(
     "Initial recovery handoff id"
   )
   const preparedAt = normalizeTimestamp(input.preparedAt, "Recovery time")
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    plan,
+    state.buyerActivation
+  )
   if (
     preparedAt < plan.createdAt ||
-    preparedAt >= plan.takeoverAt ||
+    takeoverAt === null ||
+    preparedAt >= takeoverAt ||
+    (plan.schemaVersion === 6 &&
+      state.buyerActivation?.buyerPubkey !== senderPubkey) ||
     state.updatedAt > preparedAt
   ) {
     throw new Error("Checkout Spark progress is outside its recovery window.")

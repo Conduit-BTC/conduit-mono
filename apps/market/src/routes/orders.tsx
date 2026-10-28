@@ -103,6 +103,11 @@ import {
   resolveCheckoutSparkFundingSelection,
 } from "../components/checkout-spark-funding-selection"
 import { CheckoutSparkPaymentReceipt } from "../components/CheckoutSparkPaymentReceipt"
+import {
+  GuestPickupReceiptRecovery,
+  OrderPickupReceipt,
+} from "../components/OrderPickupReceipt"
+import { getEventPickupReceiptAccess } from "../lib/order-pickup-receipt"
 import { CheckoutPaymentProgress } from "../components/CheckoutPaymentProgress"
 import { CheckoutCoordinationSummary } from "../components/CheckoutCoordinationSummary"
 import { MarketProjectTip } from "../components/MarketProjectTip"
@@ -822,6 +827,10 @@ function OrderDetail({
   const shouldContinueAccountRead = () =>
     authGenerationRef.current === authGeneration
   const zeroCostPickupOrder = isZeroCostPickupOrder(vm)
+  const pickupReceiptAccess = useMemo(
+    () => getEventPickupReceiptAccess(row.lifecycle, vm, buyerPubkey),
+    [row.lifecycle, vm, buyerPubkey]
+  )
   const cart = useCart()
   const wallets = useWallets()
   const shopperPricing = useShopperPricing()
@@ -2435,6 +2444,20 @@ function OrderDetail({
           <OrderHeaderPill status={headerStatus} />
         </div>
       )}
+
+      {pickupReceiptAccess ? (
+        <OrderPickupReceipt
+          key={`pickup-receipt:${authGeneration}:${row.orderId}`}
+          access={pickupReceiptAccess}
+          sessionKey={authGeneration}
+          isCurrent={() =>
+            viewMountedRef.current &&
+            currentViewRef.current.orderId === vm.orderId &&
+            shouldContinueBuyerSession() &&
+            (!guestIdentity || getCurrentRouterGuestIdentity() !== null)
+          }
+        />
+      ) : null}
 
       {!zeroCostPickupOrder && isBuyerOrderPaid(vm) && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
@@ -4202,11 +4225,22 @@ function OrdersPage() {
           }
           body={
             selectedFromUrl
-              ? "Guest checkout orders are tied to the browser session that created them. Return from checkout in the same tab before the session expires; the merchant can use the private recovery contact submitted at checkout."
+              ? "The guest signing session is unavailable or expired. A separately saved pickup receipt can still be retrieved below; it does not restore payment actions or confirm payment."
               : "Order updates, invoices, and merchant replies are tied to your signer identity."
           }
         />
       )}
+
+      {!activeBuyerPubkey && !hasAccount ? (
+        <GuestPickupReceiptRecovery
+          key={`guest-receipts:${authGeneration}:${selectedFromUrl ?? "all"}`}
+          orderId={selectedFromUrl}
+          sessionKey={authGeneration}
+          isCurrent={() =>
+            !accountPubkey && isGuestGenerationCurrent(authGeneration)
+          }
+        />
+      ) : null}
 
       {!paymentFocused &&
         signerConnected &&

@@ -87,6 +87,7 @@ export function EventMarketOrganizerPickupForm(props: {
   paymentVerified: boolean
   handedOut: boolean
   waitingForBuyer: boolean
+  buyerNotStarted?: boolean
   waitingForFunding?: boolean
   needsAttention?: boolean
   claimCode: string
@@ -114,9 +115,11 @@ export function EventMarketOrganizerPickupForm(props: {
                 ? "Needs attention"
                 : props.waitingForFunding
                   ? "Awaiting funding verification"
-                  : props.waitingForBuyer
-                    ? "Buyer payment in progress"
-                    : "Awaiting verification"}
+                  : props.buyerNotStarted
+                    ? "Waiting for buyer to start payment"
+                    : props.waitingForBuyer
+                      ? "Buyer payment in progress"
+                      : "Awaiting verification"}
       </p>
       <p className="text-sm">
         {props.quantity} {props.quantity === 1 ? "item" : "items"} ·{" "}
@@ -223,8 +226,9 @@ export function EventMarketOrganizerPickupForm(props: {
           </Button>
           {props.waitingForBuyer ? (
             <p className="text-sm text-[var(--text-secondary)]">
-              The buyer still has time to finish routing. Organizer recovery
-              starts after the saved takeover time.
+              {props.buyerNotStarted
+                ? "Recovery timing starts when the buyer chooses Pay. The original order and recovery stay saved."
+                : "The buyer still has time to finish routing. Organizer recovery starts after the saved takeover time."}
             </p>
           ) : null}
           {props.historyReady === false && !props.error ? (
@@ -302,24 +306,26 @@ export function EventMarketOrganizerPickupCard(props: {
   let purchase: ReturnType<
     typeof assertEventMarketOrganizerPurchaseAuthority
   > | null = null
-  let takeoverAt: number | undefined
+  let takeoverAt: number | null | undefined
   try {
     purchase = assertEventMarketOrganizerPurchaseAuthority(props.authority)
     if (purchase.kind === "routed") {
       takeoverAt = assertCheckoutSparkOrganizerRecoveryAuthority(
         props.authority as CheckoutSparkOrganizerRecoveryAuthority
-      ).plan.takeoverAt
+      ).buyerTakeoverAt
     }
   } catch {
     purchase = null
     /* Reopen the exact selected recovery; never refresh its financial terms. */
   }
   const timeBoundaries = useMemo(
-    () => (takeoverAt === undefined ? [] : [takeoverAt]),
+    () => (typeof takeoverAt === "number" ? [takeoverAt] : []),
     [takeoverAt]
   )
   const nowMs = useTimeBoundaryNow(timeBoundaries)
-  const waitingForBuyer = takeoverAt !== undefined && nowMs < takeoverAt
+  const buyerNotStarted = takeoverAt === null
+  const waitingForBuyer =
+    buyerNotStarted || (typeof takeoverAt === "number" && nowMs < takeoverAt)
   const saved = useQuery({
     queryKey: [
       "organizer-stock-handout",
@@ -466,6 +472,7 @@ export function EventMarketOrganizerPickupCard(props: {
       paymentVerified={paymentVerified}
       handedOut={handedOut}
       waitingForBuyer={waitingForBuyer}
+      buyerNotStarted={buyerNotStarted}
       waitingForFunding={waitingReason === "funding_wait"}
       needsAttention={
         !!error || (!!waitingReason && waitingReason !== "funding_wait")

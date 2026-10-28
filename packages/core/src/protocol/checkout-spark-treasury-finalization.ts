@@ -1,8 +1,10 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import { getCheckoutSparkBuyerTakeoverAt } from "./checkout-spark-buyer-activation"
 import {
   assertCheckoutSparkSettledFundingCoverage,
   isCheckoutSparkNativeTreasuryPlan,
+  isCheckoutSparkEventMarketPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
@@ -349,12 +351,11 @@ export function deriveCheckoutSparkNativeTreasuryBudget(
     record.credit.creditedSats !== state.credit!.creditedSats
   )
     invalid()
-  const requiredPayoutIds =
-    state.plan.schemaVersion === 5
-      ? state.plan.recipients
-          .filter((recipient) => recipient.kind !== "conduit")
-          .map((recipient) => recipient.legId)
-      : record.requiredCommerceLegIds
+  const requiredPayoutIds = isCheckoutSparkEventMarketPlan(state.plan)
+    ? state.plan.recipients
+        .filter((recipient) => recipient.kind !== "conduit")
+        .map((recipient) => recipient.legId)
+    : record.requiredCommerceLegIds
   for (const legId of requiredPayoutIds) {
     const leg = state.legs.find((candidate) => candidate.legId === legId)!
     const paid = record.paidLegs.find((candidate) => candidate.legId === legId)
@@ -710,10 +711,20 @@ export async function runCheckoutSparkNativeTreasuryStep(
     sendAttempted,
   })
   const now = () => Math.max(input.now(), state.updatedAt + 1)
-  const authority = () =>
-    input.actor === "shopper"
-      ? input.now() < state.plan.takeoverAt
-      : input.now() >= state.plan.takeoverAt
+  const authority = () => {
+    const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+      state.plan,
+      state.buyerActivation
+    )
+    return (
+      takeoverAt !== null &&
+      (!state.buyerActivation ||
+        input.now() >= state.buyerActivation.activatedAt) &&
+      (input.actor === "shopper"
+        ? input.now() < takeoverAt
+        : input.now() >= takeoverAt)
+    )
+  }
   const hasFundingCoverage = () => {
     try {
       assertCheckoutSparkSettledFundingCoverage(

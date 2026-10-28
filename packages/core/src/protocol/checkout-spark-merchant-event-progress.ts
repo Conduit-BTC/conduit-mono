@@ -12,7 +12,10 @@ import {
   deriveCheckoutSparkOrganizerRecoveryHandoffId,
   type CheckoutSparkOrganizerOrderBinding,
 } from "./checkout-spark-organizer-recovery"
-import type { CheckoutSparkSettledReconciliation } from "./checkout-spark-settled-router"
+import {
+  isCheckoutSparkEventMarketPlan,
+  type CheckoutSparkSettledReconciliation,
+} from "./checkout-spark-settled-router"
 import {
   unwrapPrivateMessageEnvelope,
   type PrivateMessageEvent,
@@ -71,10 +74,13 @@ export function createCheckoutSparkMerchantEventProgress(input: {
   const binding = state.plan.eventMarket
   const orderBinding = bindingSchema.parse(input.orderBinding)
   if (
-    state.plan.schemaVersion !== 5 ||
+    !isCheckoutSparkEventMarketPlan(state.plan) ||
     binding?.mode !== "organizer_handoff" ||
     orderBinding.createdAt < state.plan.createdAt ||
-    orderBinding.createdAt >= state.plan.takeoverAt
+    orderBinding.createdAt >=
+      (state.plan.schemaVersion === 6
+        ? state.plan.funding.expiresAt
+        : state.plan.takeoverAt)
   )
     invalid()
   const base = {

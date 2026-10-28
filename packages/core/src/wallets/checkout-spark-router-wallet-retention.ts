@@ -10,6 +10,7 @@ import {
 } from "./checkout-spark-settled-preparation-storage"
 import { acquireCheckoutSparkWalletRetentionLock } from "./checkout-spark-wallet-retention-lock"
 import type { SparkWalletManager } from "./spark-wallet"
+import { getCheckoutSparkBuyerTakeoverAt } from "../protocol/checkout-spark-buyer-activation"
 
 export async function closeUnusedSparkWallets(
   manager: Pick<SparkWalletManager, "closeWalletsExcept">,
@@ -68,6 +69,10 @@ async function closeUnusedSparkWalletsUnlocked(
       if (snapshot.status === "retired") continue
       if (snapshot.status !== "active") return
       const { plan } = snapshot.state
+      const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+        plan,
+        snapshot.state.buyerActivation
+      )
       if (
         plan.checkoutId !== preparation.checkoutId ||
         plan.planDigest !== preparation.planDigest
@@ -75,9 +80,9 @@ async function closeUnusedSparkWalletsUnlocked(
         return
       }
       if (
-        !Number.isSafeInteger(plan.takeoverAt) ||
+        (takeoverAt !== null &&
+          (!Number.isSafeInteger(takeoverAt) || takeoverAt < 0)) ||
         !Number.isSafeInteger(plan.funding.expiresAt) ||
-        plan.takeoverAt < 0 ||
         plan.funding.expiresAt < 0
       ) {
         return
@@ -86,7 +91,7 @@ async function closeUnusedSparkWalletsUnlocked(
       // still ends at takeover, while the same exact invoice and admitted
       // attempts remain inspectable through their original bounded lifetime.
       // Historical plans retain their longer saved takeover where applicable.
-      if (now < Math.max(plan.takeoverAt, plan.funding.expiresAt)) {
+      if (now < Math.max(takeoverAt ?? 0, plan.funding.expiresAt)) {
         settledWalletIds.add(plan.walletId)
       }
     }

@@ -1,5 +1,12 @@
 import { groupOrderConversationMessages } from "./order-conversation"
 import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  compareCheckoutSparkRecoveryTiming,
+  restoreCheckoutSparkRecoveryTiming,
+  type CheckoutSparkRecoveryTiming,
+} from "./checkout-spark-recovery-timing"
+import {
   cachedDirectMessageRow,
   parseCachedDirectMessage,
 } from "./cached-direct-message"
@@ -59,9 +66,10 @@ import {
   type CheckoutSparkMerchantOrderEvidence,
   type CheckoutSparkMerchantOrderWitness,
 } from "./checkout-spark-merchant-order-witness"
-import type {
-  CheckoutSparkSettledPlan,
-  CheckoutSparkSettledReconciliation,
+import {
+  isCheckoutSparkEventMarketPlan,
+  type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
 import {
   canonicalizeCheckoutSparkPlanSourceEvents,
@@ -205,6 +213,7 @@ import {
 import {
   getProtectedReadAuthorization,
   hasProtectedReadAuthority,
+  subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 
@@ -8835,24 +8844,26 @@ export async function getEventMarketPrivateMessageList(
   return await fetchEventMarketPrivateMessagesStrict(principalPubkey)
 }
 
-export interface MerchantCheckoutSparkRecoveryCandidate {
-  wrapId: string
-  schemaVersion: CheckoutSparkRecoveryPayload["schemaVersion"]
-  checkoutId: string
-  orderId: string
-  planDigest: string
-  takeoverAt: number
-  preparedAt: number
-  /** Present only when a later state-only wrap is paired with its wallet wrap. */
-  initialWrapId?: string
-  initialHandoffId?: string
-  /** Opaque pointer to separately authenticated Merchant-authored progress. */
-  merchantProgress?: {
+export type MerchantCheckoutSparkRecoveryCandidate =
+  CheckoutSparkRecoveryTiming & {
     wrapId: string
-    snapshotId: string
-    recordedAt: number
+    schemaVersion: CheckoutSparkRecoveryPayload["schemaVersion"]
+    checkoutId: string
+    orderId: string
+    /** Authenticated initial recovery sender; selection hint, never payment proof. */
+    initialBuyerPubkey?: string
+    planDigest: string
+    preparedAt: number
+    /** Present only when a later state-only wrap is paired with its wallet wrap. */
+    initialWrapId?: string
+    initialHandoffId?: string
+    /** Opaque pointer to separately authenticated Merchant-authored progress. */
+    merchantProgress?: {
+      wrapId: string
+      snapshotId: string
+      recordedAt: number
+    }
   }
-}
 
 export interface MerchantCheckoutSparkRecoveryListResult {
   candidates: MerchantCheckoutSparkRecoveryCandidate[]
@@ -8880,6 +8891,8 @@ export interface MerchantCheckoutSparkRecoveryDiscovery {
   nextPage(): Promise<MerchantCheckoutSparkRecoveryDiscoveryResult>
   /** Start another bounded sweep without forgetting observed private evidence. */
   restartScan(): void
+  /** Local authenticated arrival hint only; candidates still require a scan. */
+  subscribeToRecoveryChanges?(listener: () => void): Promise<() => void>
   dispose(): void
 }
 
@@ -9249,6 +9262,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
   }))
   let disposed = false
   let reading = false
+  let strictScanStarted = false
   let nextSource = 0
   let stitched = false
   let retainedAcrossSweeps = false
@@ -9259,12 +9273,15 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
   let lastPageStatus: ProtectedInboxHistoryPageStatus = "unavailable"
   const expiresAt = Date.now() + CHECKOUT_SPARK_RECOVERY_SESSION_LIFETIME_MS
   let lifetimeTimer: ReturnType<typeof setTimeout> | undefined
+  const changeSubscriptions = new Set<() => void>()
 
   const dispose = () => {
     signal?.removeEventListener("abort", dispose)
     if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer)
     lifetimeTimer = undefined
     disposed = true
+    for (const unsubscribe of changeSubscriptions) unsubscribe()
+    changeSubscriptions.clear()
     signer = undefined
     initialByCheckout.clear()
     progressByCheckout.clear()
@@ -9311,8 +9328,14 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     schemaVersion: entry.payload.schemaVersion,
     checkoutId: entry.payload.plan.checkoutId,
     orderId: entry.payload.plan.orderId,
+    initialBuyerPubkey: entry.payload.senderPubkey,
     planDigest: entry.payload.plan.planDigest,
-    takeoverAt: entry.payload.plan.takeoverAt,
+    ...checkoutSparkRecoveryTiming(
+      entry.payload.plan,
+      entry.payload.schemaVersion === 1
+        ? undefined
+        : entry.payload.state.buyerActivation
+    ),
     preparedAt: entry.payload.preparedAt,
   })
   type PendingOrderBinding = {
@@ -9484,7 +9507,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     return {
       candidates: candidates.sort(
         (left, right) =>
-          left.takeoverAt - right.takeoverAt ||
+          compareCheckoutSparkRecoveryTiming(left, right) ||
           left.checkoutId.localeCompare(right.checkoutId)
       ),
       coverage,
@@ -9555,6 +9578,100 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
 
   return {
     dispose,
+    async subscribeToRecoveryChanges(listener) {
+      assertCurrent()
+      // The account Inbox already authenticates envelopes and projects only
+      // machine metadata. This is not another relay reader or an authority
+      // shortcut: a hint only wakes the existing strict bounded scan.
+      let owner: CommerceInbox
+      try {
+        owner = getCommerceInbox(principal)
+        owner.assertCurrent()
+      } catch {
+        assertCurrent()
+        return () => {}
+      }
+      if (owner.authorization.sessionScope !== authorization.sessionScope)
+        throw new ProtectedInboxAuthorityChangedError()
+      let stopped = false
+      let comparing = false
+      let compareAgain = false
+      let baseline = true
+      const seen = new Set<string>()
+      let unsubscribeInbox = () => {}
+      let unsubscribeRevocation = () => {}
+      const stop = () => {
+        if (stopped) return
+        stopped = true
+        unsubscribeInbox()
+        unsubscribeRevocation()
+        seen.clear()
+        changeSubscriptions.delete(stop)
+      }
+      const compare = async () => {
+        if (stopped) return
+        if (comparing) {
+          compareAgain = true
+          return
+        }
+        comparing = true
+        try {
+          do {
+            compareAgain = false
+            assertCurrent()
+            owner.assertCurrent()
+            const descriptors =
+              await owner.checkoutRecoveryDescriptors(relayUrls)
+            if (stopped) return
+            assertCurrent()
+            owner.assertCurrent()
+            let changed = false
+            for (const descriptor of descriptors) {
+              if (descriptor.recipientRole === "organizer") continue
+              // A rewrapped copy of the same signed rumor is not new work.
+              // Keep identities private, bounded and monotonic across omissions.
+              const identity = `${descriptor.senderPubkey}:${descriptor.id}:${descriptor.payloadDigest}`
+              if (seen.has(identity)) continue
+              if (
+                seen.size >= CHECKOUT_SPARK_RECOVERY_RETAINED_EVIDENCE_LIMIT
+              ) {
+                // Saturated hints fall back to ordinary polling; never evict
+                // retained evidence or change discovery/payment authority.
+                stop()
+                return
+              }
+              seen.add(identity)
+              // A late first comparison must not hide an arrival missed by
+              // the first relay-page snapshot. Already-visited wraps need no
+              // extra sweep, even when optional initialization finishes late.
+              changed ||= !visitedWrapIds.has(descriptor.wrapId)
+            }
+            if ((!baseline || strictScanStarted) && changed) listener()
+            baseline = false
+          } while (compareAgain && !stopped)
+        } catch {
+          // Optional local projection failures must not suppress the strict
+          // authenticated relay scan or leak private storage/signer errors.
+          stop()
+        } finally {
+          comparing = false
+        }
+      }
+      changeSubscriptions.add(stop)
+      unsubscribeRevocation = subscribeProtectedReadSignerRevocation(
+        (scope) => {
+          if (scope === authorization.sessionScope) dispose()
+        }
+      )
+      unsubscribeInbox = owner.subscribe(() => {
+        void compare()
+      })
+      // This optional comparison can finish after the first strict page. Emits
+      // coalesce without overlapping local reads; the caller must not await it
+      // before authoritative scanning. Disposal fences even a hung local read.
+      await compare()
+      return stop
+    },
     restartScan() {
       assertCurrent()
       if (retentionLimitReached) {
@@ -9586,6 +9703,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     },
     async nextPage() {
       assertCurrent()
+      strictScanStarted = true
       if (reading)
         throw new Error("Recovery discovery page already in progress.")
       const offset = sources.findIndex(
@@ -10005,8 +10123,12 @@ async function inspectMerchantCheckoutSparkRecoveries(
       schemaVersion: payload.schemaVersion,
       checkoutId: payload.plan.checkoutId,
       orderId: payload.plan.orderId,
+      initialBuyerPubkey: payload.senderPubkey,
       planDigest: payload.plan.planDigest,
-      takeoverAt: payload.plan.takeoverAt,
+      ...checkoutSparkRecoveryTiming(
+        payload.plan,
+        payload.schemaVersion === 1 ? undefined : payload.state.buyerActivation
+      ),
       preparedAt: payload.preparedAt,
     }
     if (payload.schemaVersion === 3) {
@@ -10174,7 +10296,11 @@ async function inspectMerchantCheckoutSparkRecoveries(
       candidates: [...byCheckout.entries()]
         .filter(([id]) => !conflictingCheckouts.has(id))
         .map(([, row]) => row.candidate)
-        .sort((a, b) => a.takeoverAt - b.takeoverAt),
+        .sort(
+          (a, b) =>
+            compareCheckoutSparkRecoveryTiming(a, b) ||
+            a.checkoutId.localeCompare(b.checkoutId)
+        ),
       coverage,
       declarationState: declaration.state,
       malformedCount,
@@ -10304,7 +10430,7 @@ export async function withMerchantCheckoutSparkRecovery(
     checkoutId: selected.checkoutId,
     orderId: selected.orderId,
     planDigest: selected.planDigest,
-    takeoverAt: selected.takeoverAt,
+    ...restoreCheckoutSparkRecoveryTiming(selected),
     preparedAt: selected.preparedAt,
     ...(initialWrapId ? { initialWrapId } : {}),
     ...(initialHandoffId ? { initialHandoffId } : {}),
@@ -10452,7 +10578,13 @@ export async function withMerchantCheckoutSparkRecovery(
     payload.plan.checkoutId !== candidate.checkoutId ||
     payload.plan.orderId !== candidate.orderId ||
     payload.plan.planDigest !== candidate.planDigest ||
-    payload.plan.takeoverAt !== candidate.takeoverAt ||
+    !checkoutSparkRecoveryTimingMatches(
+      checkoutSparkRecoveryTiming(
+        payload.plan,
+        payload.schemaVersion === 1 ? undefined : payload.state.buyerActivation
+      ),
+      candidate
+    ) ||
     payload.preparedAt !== candidate.preparedAt ||
     payload.merchantPubkey !== principal
   ) {
@@ -10493,7 +10625,7 @@ export async function withMerchantCheckoutSparkRecovery(
     let progress: CheckoutSparkRecoveryActorProgress | undefined =
       merchantSnapshot
     if (
-      initial.plan.schemaVersion === 5 &&
+      isCheckoutSparkEventMarketPlan(initial.plan) &&
       initial.plan.eventMarket?.mode === "organizer_handoff"
     ) {
       const owner = getCommerceInbox(principal)

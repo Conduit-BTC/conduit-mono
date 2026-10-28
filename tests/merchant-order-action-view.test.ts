@@ -4,12 +4,49 @@ import { getMerchantOrderActions, type OrderSchema } from "@conduit/core"
 import {
   buildMerchantOrderActionView,
   getMerchantOrderCancellationCopy,
+  getMerchantFulfillmentBlockReason,
   isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
   runExclusiveOrderAction,
 } from "../apps/merchant/src/lib/order-action-view"
 
 describe("merchant order action presentation", () => {
+  it("gates goods, inventory and handout separately from coordination fee or cleanup", () => {
+    const verified = {
+      goodsPaymentVerified: true,
+      zeroCostPickupAuthorized: false,
+      inventoryAcceptanceReady: true,
+      pickupAuthorityVerified: true,
+      organizerHandoutVerified: true,
+    }
+    expect(getMerchantFulfillmentBlockReason(verified)).toBeNull()
+    for (const key of [
+      "goodsPaymentVerified",
+      "inventoryAcceptanceReady",
+      "pickupAuthorityVerified",
+      "organizerHandoutVerified",
+    ] as const) {
+      expect(
+        getMerchantFulfillmentBlockReason({ ...verified, [key]: false })
+      ).not.toBeNull()
+    }
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...verified,
+        goodsPaymentVerified: false,
+        zeroCostPickupAuthorized: true,
+      })
+    ).toBeNull()
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...verified,
+        goodsPaymentVerified: false,
+        zeroCostPickupAuthorized: true,
+        pickupAuthorityVerified: false,
+      })
+    ).not.toBeNull()
+  })
+
   const fixture = createEventMarketOrderFixture({ price: 0 })
   const merchant = fixture.merchant
   const zeroCostOrder: Pick<

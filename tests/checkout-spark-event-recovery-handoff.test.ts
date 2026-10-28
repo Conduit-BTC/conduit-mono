@@ -7,6 +7,8 @@ import {
 import { v2 as nip44 } from "nostr-tools/nip44"
 import {
   createCheckoutSparkSettledReconciliation,
+  freezeCheckoutSparkSettledEventPlan,
+  activateCheckoutSparkBuyer,
   type NostrKeySigner,
   openCheckoutSparkOrganizerRecoveryMessage,
 } from "@conduit/core"
@@ -80,8 +82,18 @@ function signer(): NostrKeySigner {
   }
 }
 
-function fixture(guest = false) {
-  const event = checkoutSparkEventMarketFixture({ mode: "organizer_handoff" })
+function fixture(guest = false, payActivation = false) {
+  const source = checkoutSparkEventMarketFixture({ mode: "organizer_handoff" })
+  const prepared = { ...source.input, takeoverAt: undefined }
+  const event = {
+    ...source,
+    plan: payActivation
+      ? freezeCheckoutSparkSettledEventPlan({
+          ...prepared,
+          executionTiming: { type: "pay_activation_v1", windowMs: 120_000 },
+        })
+      : source.plan,
+  }
   const storage = new MemoryStorage()
   const buyer = signer()
   const guestStorage = new MemoryStorage()
@@ -203,6 +215,89 @@ async function pendingOrganizerProgress() {
 }
 
 describe("atomic Merchant and organizer checkout recovery handoff", () => {
+  it.each([false, true])(
+    "ACKs the same v6 activation to both recipients and retries only missing ciphertext (guest=%s)",
+    async (guest) => {
+      const f = fixture(guest, true)
+      const clock = { now: AT + 1_000 }
+      let wraps = 0,
+        publishes = 0,
+        organizerAck = true
+      const transport = {
+        recipientInboxRelays: relays,
+        giftWrapFn: async (...args: Parameters<typeof wrapPrivateMessage>) => {
+          wraps++
+          return wrapPrivateMessage(...args)
+        },
+        publishFn: async () => {
+          publishes++
+          return delivery()
+        },
+      }
+      const organizerTransport = {
+        ...transport,
+        publishFn: async () => {
+          publishes++
+          return delivery(organizerAck)
+        },
+      }
+      const initial = await publishCheckoutSparkEventRecoveryHandoff({
+        ...f.input,
+        now: () => clock.now,
+        transport,
+        organizerTransport,
+      })
+      clock.now = AT + 300_000
+      const active = activateCheckoutSparkBuyer(f.input.state, {
+        buyerPubkey: f.identity.pubkey,
+        activatedAt: clock.now,
+      })
+      const snapshotInput = {
+        initialHandoffId: initial.handoffId,
+        state: active,
+        identity: f.identity,
+        preparedAt: clock.now,
+        now: () => clock.now,
+        storage: f.storage,
+        transport,
+        organizerTransport,
+        requireCrossTabLock: false,
+      }
+      organizerAck = false
+      await expect(
+        acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+      ).rejects.toThrow("relay ACK")
+      expect(wraps).toBe(4)
+      organizerAck = true
+      const retried =
+        await acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+      expect(retried.mode).toBe("retried")
+      expect(wraps).toBe(4)
+      const saved = (await getCheckoutSparkRecoveryDelivery(
+        retried.handoffId,
+        f.storage
+      ))!
+      expect(saved.deliveryProgress.acknowledgedRelayRefs.length).toBe(1)
+      expect(saved.organizerDelivery!.acknowledgedRelayRefs.length).toBe(1)
+      const opened = await openCheckoutSparkOrganizerRecoveryMessage({
+        signedRecipientWrap: saved.organizerDelivery!.signedRecipientWrap,
+        signer: f.organizerSigner,
+        shouldContinue: () => true,
+      })
+      expect(opened.payload.schemaVersion).toBe(5)
+      expect(
+        opened.payload.state.buyerActivation?.activationId ===
+          active.buyerActivation!.activationId
+      ).toBe(true)
+      const previousPublishes = publishes
+      clock.now += 120_001
+      const reused =
+        await acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+      expect(reused.mode).toBe("reused")
+      expect(publishes).toBe(previousPublishes)
+      expect(wraps).toBe(4)
+    }
+  )
   it("retains terminal Event recovery until the exact pending Organizer wrap receives an ACK", async () => {
     const f = await pendingOrganizerProgress()
     const before = await listCheckoutSparkRecoveryDeliveries(f.storage)

@@ -1,4 +1,5 @@
 import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-expiry"
+import { getCheckoutSparkBuyerTakeoverAt } from "./checkout-spark-buyer-activation"
 import {
   deriveCheckoutSparkSettledTransferId,
   deriveCheckoutSparkSettledRenewalTransferId,
@@ -149,15 +150,24 @@ export function assertCheckoutSparkSettledBuyerPreparationWindow(
   state: CheckoutSparkSettledReconciliation,
   nowMs: number
 ): void {
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    state.plan,
+    state.buyerActivation
+  )
+  if (
+    takeoverAt === null ||
+    (state.buyerActivation && nowMs < state.buyerActivation.activatedAt)
+  )
+    throw new Error("Checkout Spark Buyer Pay activation has not begun.")
   if (
     !Number.isSafeInteger(nowMs) ||
     nowMs < 0 ||
-    !Number.isSafeInteger(state.plan.takeoverAt) ||
-    state.plan.takeoverAt < 0
+    !Number.isSafeInteger(takeoverAt) ||
+    takeoverAt < 0
   ) {
     throw new Error("Checkout Spark buyer payout authority has ended.")
   }
-  if (nowMs >= state.plan.takeoverAt) {
+  if (nowMs >= takeoverAt) {
     throw new CheckoutSparkBuyerPreparationAuthorityEndedError()
   }
 }
@@ -167,10 +177,15 @@ export function assertCheckoutSparkSettledMerchantPreparationWindow(
   state: CheckoutSparkSettledReconciliation,
   nowMs: number
 ): void {
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    state.plan,
+    state.buyerActivation
+  )
   if (
     !Number.isSafeInteger(nowMs) ||
     nowMs < 0 ||
-    nowMs < state.plan.takeoverAt
+    takeoverAt === null ||
+    nowMs < takeoverAt
   ) {
     throw new Error("Checkout Spark merchant payout authority has not begun.")
   }

@@ -443,9 +443,19 @@ function advance(
 
 function expectPrivateMetadata(
   candidate: MerchantCheckoutSparkRecoveryCandidate,
-  fixture: ReturnType<typeof fixtures>
+  fixture: ReturnType<typeof fixtures>,
+  boundary: "discovery" | "consumed"
 ) {
-  const serialized = JSON.stringify(candidate)
+  // This authenticated identity is ephemeral selection metadata, not a public
+  // diagnostic identifier or a decrypted recovery payload.
+  const opaqueCandidate = { ...candidate }
+  if (boundary === "discovery") {
+    expect(candidate.initialBuyerPubkey === BUYER).toBe(true)
+    delete opaqueCandidate.initialBuyerPubkey
+  } else {
+    expect(candidate).not.toHaveProperty("initialBuyerPubkey")
+  }
+  const serialized = JSON.stringify(opaqueCandidate)
   for (const privateValue of [
     MNEMONIC,
     "private full-order note",
@@ -603,7 +613,7 @@ describe("Merchant-authored progress inbox integration", () => {
         snapshotId: fixture.progress.snapshotId,
         recordedAt: TAKEOVER_AT,
       })
-      expectPrivateMetadata(candidate, fixture)
+      expectPrivateMetadata(candidate, fixture, "discovery")
     }
   )
 
@@ -658,7 +668,7 @@ describe("Merchant-authored progress inbox integration", () => {
       })
       expect(JSON.stringify(saved)).not.toContain(MNEMONIC)
       expect(JSON.stringify(saved)).not.toContain("private full-order note")
-      expectPrivateMetadata(second.candidates[0]!, fixture)
+      expectPrivateMetadata(second.candidates[0]!, fixture, "discovery")
     } finally {
       session.dispose()
     }
@@ -816,7 +826,7 @@ describe("Merchant-authored progress inbox integration", () => {
       expect(exactIds.sort()).toEqual(
         [...buyer.map((value) => value.event.id), merchant.event.id].sort()
       )
-      expectPrivateMetadata(result.candidate!, fixture)
+      expectPrivateMetadata(result.candidate!, fixture, "consumed")
     }
   )
 
@@ -947,7 +957,10 @@ describe("Merchant-authored progress inbox integration", () => {
     release()
     const result = await pending
     expect(result.status).toBe("consumed")
-    expect(result.candidate).toEqual(original)
+    expect(original.initialBuyerPubkey === BUYER).toBe(true)
+    const originalOpaque = { ...original }
+    delete originalOpaque.initialBuyerPubkey
+    expect(result.candidate).toEqual(originalOpaque)
     expect(consumed).toBe(1)
     expect(fallback).toBe(0)
     expect(exactIds.sort()).toEqual(all.map((value) => value.event.id).sort())

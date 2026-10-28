@@ -12,6 +12,11 @@ import {
   type CheckoutSparkSettledRecoveryPayload,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
+import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  restoreCheckoutSparkRecoveryTiming,
+} from "@conduit/core/protocol/checkout-spark-recovery-timing"
 
 type Leg = CheckoutSparkSettledReconciliation["legs"][number]
 
@@ -107,7 +112,8 @@ type SelectionInitial = Pick<
 
 function assertSelectionPlan(
   { principal, selected }: SelectionScope,
-  state: CheckoutSparkSettledReconciliation
+  state: CheckoutSparkSettledReconciliation,
+  initial = false
 ) {
   const { plan } = state
   if (
@@ -115,7 +121,13 @@ function assertSelectionPlan(
     plan.checkoutId !== selected.checkoutId ||
     plan.orderId !== selected.orderId ||
     plan.planDigest !== selected.planDigest ||
-    plan.takeoverAt !== selected.takeoverAt
+    (initial && plan.schemaVersion === 6
+      ? state.buyerActivation !== null ||
+        selected.executionTiming !== "pay_activation_v1"
+      : !checkoutSparkRecoveryTimingMatches(
+          selected,
+          checkoutSparkRecoveryTiming(plan, state.buyerActivation)
+        ))
   ) {
     throw new CheckoutSparkSettledRepositoryConflictError()
   }
@@ -126,15 +138,16 @@ async function inspectSelectionState(
 ): Promise<MerchantCheckoutSparkSignedNextPayoutSelection | null> {
   const { principal, selected, repository, now, assertActive } = scope
   assertActive()
+  const timing = restoreCheckoutSparkRecoveryTiming(selected)
   if (
     !/^[0-9a-f]{64}$/.test(principal) ||
-    !Number.isSafeInteger(selected.takeoverAt) ||
-    selected.takeoverAt < 0
+    (timing.takeoverAt !== null && !Number.isSafeInteger(timing.takeoverAt))
   ) {
     throw new Error("Checkout Spark Merchant selection is invalid.")
   }
   if (selected.schemaVersion === 1) return { status: "recovery_unavailable" }
-  if (now() < selected.takeoverAt) return { status: "handoff_wait" }
+  if (timing.takeoverAt === null || now() < timing.takeoverAt)
+    return { status: "handoff_wait" }
   const saved = await repository.load(selected.checkoutId, selected.planDigest)
   assertActive()
   if (saved.status === "retired") return { status: "retired" }
@@ -196,14 +209,18 @@ export async function selectMerchantCheckoutSparkPayoutFromRecovery(
   const assertEligible = () => {
     assertActive()
     assertCurrent()
-    if (now() < selected.takeoverAt) {
+    if (selected.takeoverAt === null || now() < selected.takeoverAt) {
       throw new Error("Merchant checkout takeover is not yet available.")
     }
   }
   assertEligible()
   const signed = restoreCheckoutSparkSettledReconciliation(signedState)
   assertPlan(signed)
-  assertPlan(restoreCheckoutSparkSettledReconciliation(initial.state))
+  assertSelectionPlan(
+    input,
+    restoreCheckoutSparkSettledReconciliation(initial.state),
+    true
+  )
   if (
     initial.merchantPubkey !== principal ||
     initial.plan.planDigest !== signed.plan.planDigest ||
