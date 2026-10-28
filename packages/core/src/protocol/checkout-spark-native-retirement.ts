@@ -133,6 +133,9 @@ export type CheckoutSparkNativeRetirementObservation = {
     | "freshness"
     | "complete"
   status: "not_verified" | "verified"
+  /** Transient display only; never persisted or used as payment authority. */
+  recoveryCheckpoint?:
+    "saved_progress" | "prepared_snapshot" | "submitted_snapshot"
   availableZero?: boolean
   ownedZero?: boolean
   pendingEmpty?: boolean

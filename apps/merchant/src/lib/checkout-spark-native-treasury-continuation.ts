@@ -238,7 +238,11 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
       )
         throw new Error("Merchant native progress binding changed.")
       if (entry.relayAccepted) continue
-      observe({ phase: "recovery_delivery", status: "not_verified" })
+      observe({
+        phase: "recovery_delivery",
+        status: "not_verified",
+        recoveryCheckpoint: "saved_progress",
+      })
       const delivery = await retryMerchantCheckoutSparkProgress({
         record,
         signer,
@@ -411,7 +415,19 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
           await assertDurable()
           if (JSON.stringify(state) !== JSON.stringify(expectedState))
             throw new CheckoutSparkSettledRepositoryConflictError()
-          observe({ phase: "recovery_delivery", status: "not_verified" })
+          const status = state.treasuryFinalization?.status
+          observe({
+            phase: "recovery_delivery",
+            status: "not_verified",
+            ...(status === "prepared" || status === "submitted"
+              ? {
+                  recoveryCheckpoint:
+                    status === "prepared"
+                      ? ("prepared_snapshot" as const)
+                      : ("submitted_snapshot" as const),
+                }
+              : {}),
+          })
           const delivery = await publishMerchantCheckoutSparkProgress({
             payload: createCheckoutSparkMerchantProgress({
               initialHandoffId: initial.handoffId,
