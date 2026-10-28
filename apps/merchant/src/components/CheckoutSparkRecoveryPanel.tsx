@@ -495,6 +495,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
               if (automaticDispatch) {
                 const isPayoutSelectionCurrent =
                   captureCandidateSelection(candidate)
+                // This invocation's finite checkpoint cannot outlive its exact
+                // participant selection or leak into a later order/check.
+                let recoveryCheckpoint: unknown
                 outcome = await advanceMerchantCheckoutSparkOrder(
                   principalPubkey,
                   candidate,
@@ -505,6 +508,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                     onNativeObservation(observation) {
                       assertActive()
                       if (!isPayoutSelectionCurrent()) return
+                      if (observation.phase === "recovery_delivery")
+                        recoveryCheckpoint = observation.recoveryCheckpoint
                       const message =
                         formatMerchantCheckoutSparkNativeObservation(
                           observation
@@ -521,7 +526,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                       if (!isPayoutSelectionCurrent()) return
                       const message =
                         formatMerchantCheckoutSparkPayoutObservation(
-                          observation
+                          observation,
+                          recoveryCheckpoint
                         )
                       setLastPayoutObservation(
                         message

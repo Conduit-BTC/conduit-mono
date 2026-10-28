@@ -69,6 +69,21 @@ const NATIVE_CHECK_PHASE_LABELS = {
   complete: "remaining-funds proof",
 } as const
 
+const RECOVERY_CHECKPOINT_LABELS = {
+  saved_progress: "saved progress retry",
+  prepared_snapshot: "prepared snapshot acknowledgement",
+  submitted_snapshot: "submitted snapshot acknowledgement",
+} as const
+
+function recoveryCheckpointLabel(value: unknown): string | null {
+  return typeof value === "string" &&
+    Object.hasOwn(RECOVERY_CHECKPOINT_LABELS, value)
+    ? RECOVERY_CHECKPOINT_LABELS[
+        value as keyof typeof RECOVERY_CHECKPOINT_LABELS
+      ]
+    : null
+}
+
 /** Local preparation details only; a passed proof is not a payment receipt. */
 export function formatMerchantCheckoutSparkNativeObservation(
   observation: unknown
@@ -92,7 +107,11 @@ export function formatMerchantCheckoutSparkNativeObservation(
       return null
     const label =
       NATIVE_CHECK_PHASE_LABELS[phase as keyof typeof NATIVE_CHECK_PHASE_LABELS]
-    let text = `Last Conduit check: ${label} (${status === "verified" ? "passed" : "checking"}).`
+    const checkpoint =
+      phase === "recovery_delivery"
+        ? recoveryCheckpointLabel(own("recoveryCheckpoint"))
+        : null
+    let text = `Last Conduit check: ${label}${checkpoint ? ` / ${checkpoint}` : ""} (${status === "verified" ? "passed" : "checking"}).`
     for (const [key, comparison] of [
       ["availableMatchesAuthorized", "Approved remainder match"],
       ["ownedMatchesAvailable", "Ownership match"],
@@ -110,7 +129,8 @@ export function formatMerchantCheckoutSparkNativeObservation(
 
 /** A finite check result is informational, never payment or retry authority. */
 export function formatMerchantCheckoutSparkPayoutObservation(
-  observation: unknown
+  observation: unknown,
+  recoveryCheckpoint?: unknown
 ): string | null {
   try {
     if (
@@ -142,7 +162,11 @@ export function formatMerchantCheckoutSparkPayoutObservation(
       PAYOUT_OBSERVATION_REASON_MESSAGES[
         reason as keyof typeof PAYOUT_OBSERVATION_REASON_MESSAGES
       ]
-    return `${message} ${sendAttempted ? "Funds may have moved; inspect exact history." : "No new provider send was entered by that check."}`
+    const checkpoint =
+      reason === "recovery_handoff_unavailable" && !sendAttempted
+        ? recoveryCheckpointLabel(recoveryCheckpoint)
+        : null
+    return `${message} ${sendAttempted ? "Funds may have moved; inspect exact history." : "No new provider send was entered by that check."}${checkpoint ? ` Recovery checkpoint: ${checkpoint}.` : ""}`
   } catch {
     return null
   }
