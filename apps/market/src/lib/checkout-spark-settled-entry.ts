@@ -88,6 +88,7 @@ export interface PrepareCheckoutSparkSettledOrderInput {
   note?: string
   guestContact?: OrderSchema["guestContact"]
   contactFreePickup?: OrderSchema["contactFreePickup"]
+  pickupReceiptCommitment?: OrderSchema["pickupReceiptCommitment"]
   shippingAddress?: OrderSchema["shippingAddress"]
   relayAuthMethod?: "nip07" | "nip46" | "local"
   merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
@@ -149,7 +150,7 @@ type Dependencies = {
 }
 
 /**
- * V3 checkout: freeze signed commerce endpoints, not short-lived
+ * Settled checkout: freeze signed commerce endpoints, not short-lived
  * payout invoices. The buyer's ordinary gross invoice remains unexposed until
  * the exact wallet/plan recovery wrap is persisted and relay-acknowledged.
  */
@@ -373,7 +374,6 @@ async function prepareCheckoutSparkSettledOrderPhase(
     throw new Error("Checkout Spark shipping totals changed after validation.")
   }
   const timing = getCheckoutSparkSettledTiming()
-  const takeoverAt = input.nowMs + timing.takeoverAfterMs
   const conduitFeePolicy = checkoutSparkConduitFeePolicyForNewPlan(
     commerceQuote.commerceTotalSats,
     eventMarket?.organizerFeeSats
@@ -389,7 +389,9 @@ async function prepareCheckoutSparkSettledOrderPhase(
         conduitFeePolicy
       )
   if (
-    !Number.isSafeInteger(takeoverAt) ||
+    !Number.isSafeInteger(input.nowMs) ||
+    input.nowMs < 0 ||
+    !Number.isSafeInteger(input.nowMs + 120_000) ||
     !Number.isSafeInteger(grossFundingSats) ||
     !Number.isSafeInteger(grossFundingSats * 1_000)
   ) {
@@ -417,6 +419,7 @@ async function prepareCheckoutSparkSettledOrderPhase(
     note: input.note || undefined,
     guestContact: input.guestContact,
     contactFreePickup: input.contactFreePickup,
+    pickupReceiptCommitment: input.pickupReceiptCommitment,
     createdAt: input.nowMs,
   })
   // Historical pickup parsing permits one contact; new guest orders do not.
@@ -555,7 +558,7 @@ async function prepareCheckoutSparkSettledOrderPhase(
             purchaseClaimDigest: input.purchaseClaimDigest,
             merchantPubkey,
             network: input.network,
-            takeoverAt,
+            executionTiming: { type: "pay_activation_v1", windowMs: 120_000 },
             grossFundingSats,
             conduitFeePolicy,
             fundingExpirySecs: timing.fundingExpirySecs,

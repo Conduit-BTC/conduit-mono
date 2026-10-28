@@ -42,11 +42,14 @@ import {
   deriveCheckoutSparkNativeTreasuryInvoiceId,
   selectCheckoutSparkTreasuryAddress,
   restoreCheckoutSparkSettledReconciliation,
+  restoreCheckoutSparkPayActivationTiming,
+  isCheckoutSparkEventMarketPlan,
   snapshotCheckoutSparkPlanSourceEvents,
   projectProfileContent,
   resolveCheckoutSparkSignedPickup,
   DexieCheckoutSparkSettledRepository,
   type CheckoutSparkNetwork,
+  type CheckoutSparkPayActivationTiming,
   type CheckoutSparkConduitFeePolicy,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledRecipientInput,
@@ -110,7 +113,8 @@ export interface PrepareCheckoutSparkSettledFundingInput {
   purchaseClaimDigest?: string
   merchantPubkey: string
   network: CheckoutSparkNetwork
-  takeoverAt: number
+  takeoverAt?: number
+  executionTiming?: CheckoutSparkPayActivationTiming
   grossFundingSats: number
   conduitFeePolicy?: CheckoutSparkConduitFeePolicy
   fundingExpirySecs: number
@@ -460,7 +464,7 @@ async function recoveryAcked(
     delivery.record.walletId === plan.walletId &&
     delivery.record.merchantPubkey === plan.merchantPubkey &&
     delivery.deliveryProgress.acknowledgedRelayRefs.length > 0 &&
-    (plan.schemaVersion !== 5 ||
+    (!isCheckoutSparkEventMarketPlan(plan) ||
       plan.eventMarket?.mode !== "organizer_handoff" ||
       (delivery.organizerDelivery?.organizerPubkey ===
         plan.eventMarket.organizerPubkey &&
@@ -489,6 +493,14 @@ export async function prepareCheckoutSparkSettledFunding(
     shouldContinue: callerShouldContinue,
   } = input
   const now = dependencies.now ?? Date.now
+  const executionTiming = input.executionTiming
+    ? restoreCheckoutSparkPayActivationTiming(input.executionTiming)
+    : undefined
+  if (executionTiming && takeoverAt !== undefined) {
+    throw new Error(
+      "Buyer Pay activation cannot replace a frozen takeover time."
+    )
+  }
   const fetchPayoutMetadata = dependencies.fetchPayoutMetadata
   const identity = { ...input.identity }
   const shouldContinue = () =>
@@ -603,6 +615,11 @@ export async function prepareCheckoutSparkSettledFunding(
   if (eventMarket && !treasuryDestination) {
     throw new Error(
       "Event checkout requires the configured native Conduit destination."
+    )
+  }
+  if (executionTiming && !treasuryDestination) {
+    throw new Error(
+      "Buyer Pay activation requires the configured native Conduit destination."
     )
   }
 
@@ -939,7 +956,7 @@ export async function prepareCheckoutSparkSettledFunding(
       walletId: wallet.walletId,
       network,
       createdAt: receive.createdAt,
-      takeoverAt,
+      ...(executionTiming ? { executionTiming } : { takeoverAt }),
       commerceQuote,
       ...(conduitFeePolicy ? { conduitFeePolicy } : {}),
       funding: {
@@ -1090,7 +1107,7 @@ export async function prepareCheckoutSparkSettledFunding(
     }
     // Recovery publication can outlive a scheduled event. Historical plan
     // validity must not authorize first invoice exposure after ordering ends.
-    if (plan.schemaVersion === 5)
+    if (isCheckoutSparkEventMarketPlan(plan))
       assertCheckoutSparkSignedEventMarketSources({
         eventMarket: plan.eventMarket!,
         commerceQuote: plan.commerceQuote,

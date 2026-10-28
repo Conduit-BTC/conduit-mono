@@ -280,9 +280,18 @@ failure and fee-policy failures pause new dispatch. Invoice expiry and the
 saved objective shopper-to-Merchant takeover boundary remain separate limits;
 polling cannot extend either or infer abandonment from a missing heartbeat.
 
-Normal new plans freeze Merchant takeover two minutes after preparation while
-requesting a fifteen-minute funding invoice. Existing plans keep their original
-deadlines. New buyer outgoing admission ends at that boundary; already admitted
+Normal new native plans use explicit Pay-activation timing (plan v6/state v7)
+while requesting a fifteen-minute funding invoice. Initial preparation is
+inactive for both actors. The first Pay atomically fixes the original Buyer's
+activation and a cutoff exactly two minutes later; retries cannot reset it.
+The Merchant and, for organizer handout, the designated Organizer must
+acknowledge the same durably retained activation before a connected payer can
+be admitted or an external invoice/QR disclosed. Interrupted delivery retries
+the same ciphertext and marker. Activation never replaces the order, plan,
+digest, wallet or invoice. Actors may import activation only from authenticated
+progress by the original Buyer, never from their own snapshots or inferred
+credit/provider timestamps. Existing plans keep their original canonical bytes
+and deadlines. New buyer outgoing admission ends at the effective cutoff; already admitted
 operations remain queryable and must drain or reconcile under their exact saved identifiers.
 New payout preparation uses that same exact saved boundary, not an earlier
 fixed preparation buffer. Recheck current authority after asynchronous work

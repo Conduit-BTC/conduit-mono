@@ -29,6 +29,7 @@ import { pruneExpiredCheckoutShippingSession } from "./lib/checkout-session"
 import { captureCheckoutIntentFragment } from "./lib/checkout-intent-stage"
 import { checkoutReferralSessionFence } from "./lib/checkout-referral-session"
 import { pruneExpiredSessionGuestOrderSigningIdentities } from "./lib/guest-order-identity"
+import { createEventPickupReceiptRepository } from "@conduit/core/protocol/event-pickup-receipt-storage"
 import "@conduit/ui/styles/site.css"
 import "./styles/index.css"
 
@@ -153,6 +154,9 @@ function pruneGuestRecoveryState() {
   pruneExpiredSessionGuestOrderSigningIdentities()
   pruneExpiredCheckoutShippingSession()
   void pruneExpiredGuestOrderData().catch(() => {})
+  void createEventPickupReceiptRepository()
+    .pruneExpired()
+    .catch(() => {})
 }
 
 const root = createRoot(document.getElementById("root")!)

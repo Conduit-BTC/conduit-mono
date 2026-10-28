@@ -2,6 +2,8 @@ import {
   buildEventMarketOrganizerFeeTags,
   getProfilePaymentAddress,
   normalizeCheckoutSparkReceiverAddress,
+  observeCheckoutSparkReceiverCapability,
+  type CheckoutSparkReceiverDependencies,
   type EventMarketOrganizerFeeAuthoring,
   type EventMarketOrganizerFeeResolution,
   type SelectedProfileContext,
@@ -13,6 +15,36 @@ export interface EventMarketOrganizerFeeFormValues {
   lightningAddress: string
 }
 
+export type OrganizerFeeProfileReceiver =
+  | { status: "supported"; address: string }
+  | {
+      status:
+        "none" | "checking" | "unsupported" | "unavailable" | "conflicting"
+    }
+
+/** A suggestion for a new draft, never a replacement for signed or typed terms. */
+export function withOrganizerFeeProfileDefault({
+  fee,
+  values,
+  receiver,
+  addressEdited,
+}: {
+  fee: EventMarketOrganizerFeeResolution
+  values: EventMarketOrganizerFeeFormValues
+  receiver: OrganizerFeeProfileReceiver
+  addressEdited: boolean
+}): EventMarketOrganizerFeeFormValues {
+  if (
+    fee.state === "active" ||
+    values.state !== "active" ||
+    values.lightningAddress !== "" ||
+    addressEdited ||
+    receiver.status !== "supported"
+  )
+    return values
+  return { ...values, lightningAddress: receiver.address }
+}
+
 /** Reuse selected profile evidence, never a richer display-profile fallback. */
 export function getOrganizerFeeProfileAddress(
   context: SelectedProfileContext | undefined,
@@ -21,6 +53,31 @@ export function getOrganizerFeeProfileAddress(
   if (context?.profile.pubkey !== organizerPubkey) return undefined
   const address = getProfilePaymentAddress(context)
   return address ? normalizeCheckoutSparkReceiverAddress(address) : undefined
+}
+
+/** Resolve only this organizer's selected evidence through the shared qualification owner. */
+export async function observeOrganizerFeeProfileReceiver(
+  input: {
+    context: SelectedProfileContext | undefined
+    organizerPubkey: string
+    assertCurrent: () => void
+  },
+  dependencies?: CheckoutSparkReceiverDependencies
+): Promise<OrganizerFeeProfileReceiver> {
+  input.assertCurrent()
+  const address = getOrganizerFeeProfileAddress(
+    input.context,
+    input.organizerPubkey
+  )
+  if (!address) return { status: "none" }
+  const result = await observeCheckoutSparkReceiverCapability(
+    { lud16: address, mode: "private", assertCurrent: input.assertCurrent },
+    dependencies
+  )
+  input.assertCurrent()
+  return result.status === "supported"
+    ? { status: "supported", address }
+    : { status: result.status }
 }
 
 export function formatOrganizerFeePercent(basisPoints: number): string {

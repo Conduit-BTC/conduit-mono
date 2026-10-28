@@ -235,12 +235,47 @@ function aggregateProductEventDeliveries(
 /** Preservation is a merchant write policy, never checkout authorization. */
 export type ProductPublicationFulfillmentIntent =
   | ProductFulfillmentIntent
-  | { kind: "preserve_existing"; baseline: ProductSchema }
+  | {
+      kind: "preserve_existing"
+      baseline: ProductSchema
+      /** Deliberate visibility edit; all other existing fulfillment stays fixed. */
+      eventOnlyChange?: boolean
+    }
+
+export function projectProductEventOnlyChoice(
+  product: Pick<
+    ProductSchema,
+    "format" | "visibility" | "eventOnly" | "eventOnlyMalformed"
+  >,
+  choice: boolean | undefined
+) {
+  if (choice === undefined)
+    return {
+      visibility: product.visibility,
+      eventOnly: product.eventOnly,
+      eventOnlyMalformed: product.eventOnlyMalformed,
+    }
+  if (choice && product.format !== "physical")
+    throw new Error(
+      "Event-only selling requires a physical product. Turn off Sell only at events before choosing digital fulfillment."
+    )
+  return {
+    visibility: choice
+      ? ("private" as const)
+      : product.eventOnly || product.eventOnlyMalformed
+        ? ("public" as const)
+        : product.visibility,
+    eventOnly: choice,
+    eventOnlyMalformed: false,
+  }
+}
 
 export function getProductPreservedFulfillmentFields(product: ProductSchema) {
   return {
     format: product.format,
     visibility: product.visibility,
+    eventOnly: product.eventOnly,
+    eventOnlyMalformed: product.eventOnlyMalformed,
     shippingCostSats: product.shippingCostSats,
     sourceShippingCost: product.sourceShippingCost,
     shippingOptionId: product.shippingOptionId,
@@ -848,7 +883,13 @@ export function applyProductFulfillmentIntentForPublication(input: {
     }
     if (
       JSON.stringify(getProductPreservedFulfillmentFields(input.product)) !==
-      JSON.stringify(getProductPreservedFulfillmentFields(baseline))
+      JSON.stringify({
+        ...getProductPreservedFulfillmentFields(baseline),
+        ...projectProductEventOnlyChoice(
+          baseline,
+          input.intent.eventOnlyChange
+        ),
+      })
     ) {
       throw new Error(
         "Choose change fulfillment before changing existing fulfillment"

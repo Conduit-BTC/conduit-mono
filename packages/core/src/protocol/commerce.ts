@@ -1,5 +1,12 @@
 import { groupOrderConversationMessages } from "./order-conversation"
 import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  compareCheckoutSparkRecoveryTiming,
+  restoreCheckoutSparkRecoveryTiming,
+  type CheckoutSparkRecoveryTiming,
+} from "./checkout-spark-recovery-timing"
+import {
   cachedDirectMessageRow,
   parseCachedDirectMessage,
 } from "./cached-direct-message"
@@ -59,9 +66,10 @@ import {
   type CheckoutSparkMerchantOrderEvidence,
   type CheckoutSparkMerchantOrderWitness,
 } from "./checkout-spark-merchant-order-witness"
-import type {
-  CheckoutSparkSettledPlan,
-  CheckoutSparkSettledReconciliation,
+import {
+  isCheckoutSparkEventMarketPlan,
+  type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
 import {
   canonicalizeCheckoutSparkPlanSourceEvents,
@@ -118,6 +126,7 @@ import {
   type ListingAvailabilityContext,
   type ListingAvailabilityEvaluation,
 } from "./listing-availability"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import {
   prepareProductCatalog,
   type PreparedProductFamily,
@@ -205,6 +214,7 @@ import {
 import {
   getProtectedReadAuthorization,
   hasProtectedReadAuthority,
+  subscribeProtectedReadSignerRevocation,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 
@@ -368,6 +378,7 @@ interface RetainedProductFamilyContext {
   records: CommerceProductRecord[]
   includeMarketHidden?: boolean
   includeMerchantHiddenProductIds?: readonly string[]
+  includeEventOnlyProductIds?: readonly string[]
 }
 
 export interface MarketplaceProductsQuery {
@@ -443,6 +454,8 @@ export interface ProductsByIdsOptions {
    * images and unsupported product structures remain filtered.
    */
   includeMerchantHiddenProductIds?: readonly string[]
+  /** Data-only exact read for current Event carts; never admission or ordinary checkout. */
+  includeEventOnlyProductIds?: readonly string[]
   /**
    * Coordinate-scoped routing hints supplied by a signed reference. Hints only
    * extend bounded relay discovery; listing, author, and deletion checks remain
@@ -2134,10 +2147,18 @@ function filterExactProductRecordsForRead(
       .map((id) => getProductLookupIds(id).addressId)
       .filter((id): id is string => !!id)
   )
+  const eventOnlyAddresses = new Set(
+    (options.includeEventOnlyProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
   for (const context of contexts.values()) {
     context.includeMerchantHiddenProductIds = context.records
       .map((record) => record.addressId)
       .filter((address) => hiddenAddresses.has(address))
+    context.includeEventOnlyProductIds = context.records
+      .map((record) => record.addressId)
+      .filter((address) => eventOnlyAddresses.has(address))
   }
   return selected.map((record) => {
     const parentAddress = familyAddress(record)
@@ -2169,12 +2190,25 @@ function selectExactProductRecordsForRead(
       .map((productId) => getProductLookupIds(productId).addressId)
       .filter((addressId): addressId is string => !!addressId)
   )
+  const eventOnlyAddresses = new Set(
+    (options.includeEventOnlyProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
+  const eventOnlyByAddress =
+    eventOnlyAddresses.size > 0
+      ? prepareMerchantHiddenExactRecords(records, eventOnlyAddresses, true)
+      : new Map<string, CommerceProductRecord>()
   const merchantHiddenByAddress =
     merchantHiddenAddresses.size > 0
       ? prepareMerchantHiddenExactRecords(records, merchantHiddenAddresses)
       : new Map<string, CommerceProductRecord>()
 
   return targets.flatMap((target) => {
+    if (eventOnlyAddresses.has(target.addressId)) {
+      const allowed = eventOnlyByAddress.get(target.addressId)
+      return allowed ? [allowed] : []
+    }
     if (merchantHiddenAddresses.has(target.addressId)) {
       const allowed = merchantHiddenByAddress.get(target.addressId)
       return allowed ? [allowed] : []
@@ -2209,8 +2243,18 @@ function selectExactProductRecordsForRead(
 
 function isMerchantHiddenExactRecordAllowed(
   record: CommerceProductRecord,
-  context?: ListingAvailabilityContext
+  context?: ListingAvailabilityContext,
+  allowEventOnly = false
 ): boolean {
+  if (allowEventOnly) {
+    return (
+      hasEventMarketListingVisibility(record.product) &&
+      evaluateListingAvailability(record.product, context).reasons.every(
+        (reason) =>
+          reason.code === "event_only" || reason.code === "merchant_hidden"
+      )
+    )
+  }
   return isMerchantHiddenOnlyListingAvailable(
     evaluateListingAvailability(record.product, context)
   )
@@ -2218,7 +2262,8 @@ function isMerchantHiddenExactRecordAllowed(
 
 function prepareMerchantHiddenExactRecords(
   records: CommerceProductRecord[],
-  allowedAddresses: ReadonlySet<string>
+  allowedAddresses: ReadonlySet<string>,
+  allowEventOnly = false
 ): Map<string, CommerceProductRecord> {
   const prepared = new Map<string, CommerceProductRecord>()
   const catalog = prepareProductCatalog(records, {
@@ -2235,7 +2280,11 @@ function prepareMerchantHiddenExactRecords(
     if (item.kind === "simple") {
       if (
         allowedAddresses.has(item.record.addressId) &&
-        isMerchantHiddenExactRecordAllowed(item.record)
+        isMerchantHiddenExactRecordAllowed(
+          item.record,
+          undefined,
+          allowEventOnly
+        )
       ) {
         prepared.set(item.record.addressId, item.record)
       }
@@ -2248,7 +2297,13 @@ function prepareMerchantHiddenExactRecords(
       variationGroupRole: "parent",
       hasGroupImage: true,
     }
-    if (!isMerchantHiddenExactRecordAllowed(parent, structuralContext)) {
+    if (
+      !isMerchantHiddenExactRecordAllowed(
+        parent,
+        structuralContext,
+        allowEventOnly
+      )
+    ) {
       continue
     }
 
@@ -2259,10 +2314,15 @@ function prepareMerchantHiddenExactRecords(
     const structurallyAllowedChildren = item.family.children.filter(
       (child) =>
         allowedAddresses.has(child.addressId) &&
-        isMerchantHiddenExactRecordAllowed(child, ownImageChildContext)
+        isMerchantHiddenExactRecordAllowed(
+          child,
+          ownImageChildContext,
+          allowEventOnly
+        )
     )
     const hasGroupImage =
-      (parentAllowed && hasMarketProductImage(parent.product)) ||
+      ((parentAllowed || allowEventOnly) &&
+        hasMarketProductImage(parent.product)) ||
       structurallyAllowedChildren.some((child) =>
         hasMarketProductImage(child.product)
       )
@@ -2272,16 +2332,16 @@ function prepareMerchantHiddenExactRecords(
     }
     const children = structurallyAllowedChildren
       .filter((child) =>
-        isMerchantHiddenExactRecordAllowed(child, childContext)
+        isMerchantHiddenExactRecordAllowed(child, childContext, allowEventOnly)
       )
       .map((child) => ({
         ...child,
         availability: evaluateListingAvailability(child.product, childContext),
       }))
 
-    // An accepted child can be rendered atomically without accepting its
-    // parent. The parent still proves family structure and availability, but an
-    // unaccepted parent or sibling cannot donate an image or enter the result.
+    // The exact Event leaf may inherit its validated structural parent's image,
+    // but not a sibling's. The legacy hidden-pickup exception still requires
+    // explicit parent acceptance. Neither returns an unrequested parent.
     for (const child of children) {
       prepared.set(child.addressId, child)
     }
@@ -2291,7 +2351,10 @@ function prepareMerchantHiddenExactRecords(
       variationGroupRole: "parent",
       hasGroupImage,
     }
-    if (!isMerchantHiddenExactRecordAllowed(parent, parentContext)) continue
+    if (
+      !isMerchantHiddenExactRecordAllowed(parent, parentContext, allowEventOnly)
+    )
+      continue
 
     const rebuilt = prepareProductCatalog(
       [
@@ -2356,6 +2419,8 @@ function toCachedProduct(record: CommerceProductRecord) {
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
+    eventOnly: product.eventOnly,
+    eventOnlyMalformed: product.eventOnlyMalformed,
     stock: product.stock,
     images: getProductProtocolImages(product),
     tags: canonicalizeProductTags(product.tags),
@@ -2430,6 +2495,8 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     shippingCountries: row.shippingCountries,
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
+    eventOnly: row.eventOnly,
+    eventOnlyMalformed: row.eventOnlyMalformed,
     stock: row.stock,
     images: getProductProtocolImages({ images: row.images ?? [] }),
     tags,
@@ -7763,7 +7830,10 @@ export async function getCachedProductDetail(
  */
 export async function getCachedProductsByIds(
   productIds: readonly string[],
-  options: CachedProductReadOptions = { includeStale: true }
+  options: CachedProductReadOptions &
+    Pick<ProductsByIdsOptions, "includeEventOnlyProductIds"> = {
+    includeStale: true,
+  }
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
   const lookups = productIds.map(getProductLookupIds)
   const authors = uniqueStrings(
@@ -7783,8 +7853,31 @@ export async function getCachedProductsByIds(
     includeMarketHidden: options.includeMarketHidden,
     groupVariations: true,
   })
+  const requestedEventIds = new Set(
+    (options.includeEventOnlyProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
+  const eventTargets = new Set(
+    lookups.flatMap(({ addressId }) =>
+      addressId && requestedEventIds.has(addressId) ? [addressId] : []
+    )
+  )
+  const eventRecords = new Map(
+    (eventTargets.size > 0
+      ? filterExactProductRecordsForRead(cached, eventTargets, {
+          includeEventOnlyProductIds: [...eventTargets],
+        })
+      : []
+    ).map((record) => [record.addressId, record])
+  )
   const records = new Map<string, CommerceProductRecord>()
   for (const { decodedId, addressId } of lookups) {
+    if (addressId && eventTargets.has(addressId)) {
+      const record = eventRecords.get(addressId)
+      if (record) records.set(record.addressId, record)
+      continue
+    }
     const record = findProductDetailRecord(
       cached,
       [decodedId, addressId].filter((id): id is string => !!id),
@@ -8835,24 +8928,26 @@ export async function getEventMarketPrivateMessageList(
   return await fetchEventMarketPrivateMessagesStrict(principalPubkey)
 }
 
-export interface MerchantCheckoutSparkRecoveryCandidate {
-  wrapId: string
-  schemaVersion: CheckoutSparkRecoveryPayload["schemaVersion"]
-  checkoutId: string
-  orderId: string
-  planDigest: string
-  takeoverAt: number
-  preparedAt: number
-  /** Present only when a later state-only wrap is paired with its wallet wrap. */
-  initialWrapId?: string
-  initialHandoffId?: string
-  /** Opaque pointer to separately authenticated Merchant-authored progress. */
-  merchantProgress?: {
+export type MerchantCheckoutSparkRecoveryCandidate =
+  CheckoutSparkRecoveryTiming & {
     wrapId: string
-    snapshotId: string
-    recordedAt: number
+    schemaVersion: CheckoutSparkRecoveryPayload["schemaVersion"]
+    checkoutId: string
+    orderId: string
+    /** Authenticated initial recovery sender; selection hint, never payment proof. */
+    initialBuyerPubkey?: string
+    planDigest: string
+    preparedAt: number
+    /** Present only when a later state-only wrap is paired with its wallet wrap. */
+    initialWrapId?: string
+    initialHandoffId?: string
+    /** Opaque pointer to separately authenticated Merchant-authored progress. */
+    merchantProgress?: {
+      wrapId: string
+      snapshotId: string
+      recordedAt: number
+    }
   }
-}
 
 export interface MerchantCheckoutSparkRecoveryListResult {
   candidates: MerchantCheckoutSparkRecoveryCandidate[]
@@ -8880,6 +8975,8 @@ export interface MerchantCheckoutSparkRecoveryDiscovery {
   nextPage(): Promise<MerchantCheckoutSparkRecoveryDiscoveryResult>
   /** Start another bounded sweep without forgetting observed private evidence. */
   restartScan(): void
+  /** Local authenticated arrival hint only; candidates still require a scan. */
+  subscribeToRecoveryChanges?(listener: () => void): Promise<() => void>
   dispose(): void
 }
 
@@ -9249,6 +9346,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
   }))
   let disposed = false
   let reading = false
+  let strictScanStarted = false
   let nextSource = 0
   let stitched = false
   let retainedAcrossSweeps = false
@@ -9259,12 +9357,15 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
   let lastPageStatus: ProtectedInboxHistoryPageStatus = "unavailable"
   const expiresAt = Date.now() + CHECKOUT_SPARK_RECOVERY_SESSION_LIFETIME_MS
   let lifetimeTimer: ReturnType<typeof setTimeout> | undefined
+  const changeSubscriptions = new Set<() => void>()
 
   const dispose = () => {
     signal?.removeEventListener("abort", dispose)
     if (lifetimeTimer !== undefined) clearTimeout(lifetimeTimer)
     lifetimeTimer = undefined
     disposed = true
+    for (const unsubscribe of changeSubscriptions) unsubscribe()
+    changeSubscriptions.clear()
     signer = undefined
     initialByCheckout.clear()
     progressByCheckout.clear()
@@ -9311,8 +9412,14 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     schemaVersion: entry.payload.schemaVersion,
     checkoutId: entry.payload.plan.checkoutId,
     orderId: entry.payload.plan.orderId,
+    initialBuyerPubkey: entry.payload.senderPubkey,
     planDigest: entry.payload.plan.planDigest,
-    takeoverAt: entry.payload.plan.takeoverAt,
+    ...checkoutSparkRecoveryTiming(
+      entry.payload.plan,
+      entry.payload.schemaVersion === 1
+        ? undefined
+        : entry.payload.state.buyerActivation
+    ),
     preparedAt: entry.payload.preparedAt,
   })
   type PendingOrderBinding = {
@@ -9484,7 +9591,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     return {
       candidates: candidates.sort(
         (left, right) =>
-          left.takeoverAt - right.takeoverAt ||
+          compareCheckoutSparkRecoveryTiming(left, right) ||
           left.checkoutId.localeCompare(right.checkoutId)
       ),
       coverage,
@@ -9555,6 +9662,100 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
 
   return {
     dispose,
+    async subscribeToRecoveryChanges(listener) {
+      assertCurrent()
+      // The account Inbox already authenticates envelopes and projects only
+      // machine metadata. This is not another relay reader or an authority
+      // shortcut: a hint only wakes the existing strict bounded scan.
+      let owner: CommerceInbox
+      try {
+        owner = getCommerceInbox(principal)
+        owner.assertCurrent()
+      } catch {
+        assertCurrent()
+        return () => {}
+      }
+      if (owner.authorization.sessionScope !== authorization.sessionScope)
+        throw new ProtectedInboxAuthorityChangedError()
+      let stopped = false
+      let comparing = false
+      let compareAgain = false
+      let baseline = true
+      const seen = new Set<string>()
+      let unsubscribeInbox = () => {}
+      let unsubscribeRevocation = () => {}
+      const stop = () => {
+        if (stopped) return
+        stopped = true
+        unsubscribeInbox()
+        unsubscribeRevocation()
+        seen.clear()
+        changeSubscriptions.delete(stop)
+      }
+      const compare = async () => {
+        if (stopped) return
+        if (comparing) {
+          compareAgain = true
+          return
+        }
+        comparing = true
+        try {
+          do {
+            compareAgain = false
+            assertCurrent()
+            owner.assertCurrent()
+            const descriptors =
+              await owner.checkoutRecoveryDescriptors(relayUrls)
+            if (stopped) return
+            assertCurrent()
+            owner.assertCurrent()
+            let changed = false
+            for (const descriptor of descriptors) {
+              if (descriptor.recipientRole === "organizer") continue
+              // A rewrapped copy of the same signed rumor is not new work.
+              // Keep identities private, bounded and monotonic across omissions.
+              const identity = `${descriptor.senderPubkey}:${descriptor.id}:${descriptor.payloadDigest}`
+              if (seen.has(identity)) continue
+              if (
+                seen.size >= CHECKOUT_SPARK_RECOVERY_RETAINED_EVIDENCE_LIMIT
+              ) {
+                // Saturated hints fall back to ordinary polling; never evict
+                // retained evidence or change discovery/payment authority.
+                stop()
+                return
+              }
+              seen.add(identity)
+              // A late first comparison must not hide an arrival missed by
+              // the first relay-page snapshot. Already-visited wraps need no
+              // extra sweep, even when optional initialization finishes late.
+              changed ||= !visitedWrapIds.has(descriptor.wrapId)
+            }
+            if ((!baseline || strictScanStarted) && changed) listener()
+            baseline = false
+          } while (compareAgain && !stopped)
+        } catch {
+          // Optional local projection failures must not suppress the strict
+          // authenticated relay scan or leak private storage/signer errors.
+          stop()
+        } finally {
+          comparing = false
+        }
+      }
+      changeSubscriptions.add(stop)
+      unsubscribeRevocation = subscribeProtectedReadSignerRevocation(
+        (scope) => {
+          if (scope === authorization.sessionScope) dispose()
+        }
+      )
+      unsubscribeInbox = owner.subscribe(() => {
+        void compare()
+      })
+      // This optional comparison can finish after the first strict page. Emits
+      // coalesce without overlapping local reads; the caller must not await it
+      // before authoritative scanning. Disposal fences even a hung local read.
+      await compare()
+      return stop
+    },
     restartScan() {
       assertCurrent()
       if (retentionLimitReached) {
@@ -9586,6 +9787,7 @@ export async function createMerchantCheckoutSparkRecoveryDiscovery(
     },
     async nextPage() {
       assertCurrent()
+      strictScanStarted = true
       if (reading)
         throw new Error("Recovery discovery page already in progress.")
       const offset = sources.findIndex(
@@ -10005,8 +10207,12 @@ async function inspectMerchantCheckoutSparkRecoveries(
       schemaVersion: payload.schemaVersion,
       checkoutId: payload.plan.checkoutId,
       orderId: payload.plan.orderId,
+      initialBuyerPubkey: payload.senderPubkey,
       planDigest: payload.plan.planDigest,
-      takeoverAt: payload.plan.takeoverAt,
+      ...checkoutSparkRecoveryTiming(
+        payload.plan,
+        payload.schemaVersion === 1 ? undefined : payload.state.buyerActivation
+      ),
       preparedAt: payload.preparedAt,
     }
     if (payload.schemaVersion === 3) {
@@ -10174,7 +10380,11 @@ async function inspectMerchantCheckoutSparkRecoveries(
       candidates: [...byCheckout.entries()]
         .filter(([id]) => !conflictingCheckouts.has(id))
         .map(([, row]) => row.candidate)
-        .sort((a, b) => a.takeoverAt - b.takeoverAt),
+        .sort(
+          (a, b) =>
+            compareCheckoutSparkRecoveryTiming(a, b) ||
+            a.checkoutId.localeCompare(b.checkoutId)
+        ),
       coverage,
       declarationState: declaration.state,
       malformedCount,
@@ -10304,7 +10514,7 @@ export async function withMerchantCheckoutSparkRecovery(
     checkoutId: selected.checkoutId,
     orderId: selected.orderId,
     planDigest: selected.planDigest,
-    takeoverAt: selected.takeoverAt,
+    ...restoreCheckoutSparkRecoveryTiming(selected),
     preparedAt: selected.preparedAt,
     ...(initialWrapId ? { initialWrapId } : {}),
     ...(initialHandoffId ? { initialHandoffId } : {}),
@@ -10452,7 +10662,13 @@ export async function withMerchantCheckoutSparkRecovery(
     payload.plan.checkoutId !== candidate.checkoutId ||
     payload.plan.orderId !== candidate.orderId ||
     payload.plan.planDigest !== candidate.planDigest ||
-    payload.plan.takeoverAt !== candidate.takeoverAt ||
+    !checkoutSparkRecoveryTimingMatches(
+      checkoutSparkRecoveryTiming(
+        payload.plan,
+        payload.schemaVersion === 1 ? undefined : payload.state.buyerActivation
+      ),
+      candidate
+    ) ||
     payload.preparedAt !== candidate.preparedAt ||
     payload.merchantPubkey !== principal
   ) {
@@ -10493,7 +10709,7 @@ export async function withMerchantCheckoutSparkRecovery(
     let progress: CheckoutSparkRecoveryActorProgress | undefined =
       merchantSnapshot
     if (
-      initial.plan.schemaVersion === 5 &&
+      isCheckoutSparkEventMarketPlan(initial.plan) &&
       initial.plan.eventMarket?.mode === "organizer_handoff"
     ) {
       const owner = getCommerceInbox(principal)

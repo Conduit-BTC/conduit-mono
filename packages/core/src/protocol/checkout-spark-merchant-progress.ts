@@ -6,6 +6,7 @@ import {
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
 import { EVENT_KINDS } from "./kinds"
+import { getCheckoutSparkBuyerTakeoverAt } from "./checkout-spark-buyer-activation"
 import {
   unwrapPrivateMessageEnvelope,
   type PrivateMessageEvent,
@@ -22,7 +23,7 @@ const HEX_64 = /^[0-9a-f]{64}$/
 
 /** Machine reconciliation data, never takeover authorization or payment proof. */
 export interface CheckoutSparkMerchantProgressPayload {
-  schemaVersion: 1 | 2 | 3 | 4
+  schemaVersion: 1 | 2 | 3 | 4 | 5
   type: "checkout_spark_merchant_progress"
   snapshotId: string
   initialHandoffId: string
@@ -71,8 +72,17 @@ function canonicalState(
           }
         : {}),
     })),
-    ...(state.schemaVersion === 5 || state.schemaVersion === 6
+    ...(state.schemaVersion === 5 ||
+    state.schemaVersion === 6 ||
+    state.schemaVersion === 7
       ? { treasuryFinalization: structuredClone(state.treasuryFinalization) }
+      : {}),
+    ...(state.schemaVersion === 7
+      ? {
+          buyerActivation: state.buyerActivation
+            ? { ...state.buyerActivation }
+            : null,
+        }
       : {}),
     updatedAt: state.updatedAt,
   })
@@ -118,33 +128,42 @@ export function createCheckoutSparkMerchantProgress(input: {
       throw new Error("Invalid handoff")
     }
     const state = canonicalState(input.state)
+    const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+      state.plan,
+      state.buyerActivation
+    )
     if (
-      state.updatedAt < state.plan.takeoverAt ||
+      takeoverAt === null ||
+      state.updatedAt < takeoverAt ||
       !state.legs.some((leg) => leg.intent !== null)
     ) {
       throw new Error("Missing post-handoff progress")
     }
     return {
       schemaVersion:
-        state.schemaVersion === 6
-          ? 4
-          : state.schemaVersion === 5
-            ? 3
-            : state.schemaVersion === 4
-              ? 2
-              : 1,
+        state.schemaVersion === 7
+          ? 5
+          : state.schemaVersion === 6
+            ? 4
+            : state.schemaVersion === 5
+              ? 3
+              : state.schemaVersion === 4
+                ? 2
+                : 1,
       type: "checkout_spark_merchant_progress",
       snapshotId: bytesToHex(
         sha256(
           new TextEncoder().encode(
             JSON.stringify([
-              state.schemaVersion === 6
-                ? "conduit:checkout-spark-merchant-progress:v4"
-                : state.schemaVersion === 5
-                  ? "conduit:checkout-spark-merchant-progress:v3"
-                  : state.schemaVersion === 4
-                    ? "conduit:checkout-spark-merchant-progress:v2"
-                    : SNAPSHOT_DOMAIN,
+              state.schemaVersion === 7
+                ? "conduit:checkout-spark-merchant-progress:v5"
+                : state.schemaVersion === 6
+                  ? "conduit:checkout-spark-merchant-progress:v4"
+                  : state.schemaVersion === 5
+                    ? "conduit:checkout-spark-merchant-progress:v3"
+                    : state.schemaVersion === 4
+                      ? "conduit:checkout-spark-merchant-progress:v2"
+                      : SNAPSHOT_DOMAIN,
               input.initialHandoffId,
               state,
             ])

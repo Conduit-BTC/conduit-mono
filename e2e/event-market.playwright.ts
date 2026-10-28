@@ -1005,6 +1005,40 @@ async function installSyntheticEnvironment(
   )
 }
 
+async function openEventDetailsEditor(page: Page) {
+  await page
+    .getByRole("button", { name: /^Edit (event details|selected date)$/ })
+    .click()
+}
+
+async function expectEventRequestBadge(page: Page, pending: number) {
+  const menu = page.getByRole("button", { name: "Open menu", exact: true })
+  const navigation = page.getByRole("navigation", {
+    name: "Merchant navigation",
+    exact: true,
+  })
+  await expect(menu.or(navigation)).toBeVisible()
+  const mobile = await menu.isVisible()
+  if (mobile) await menu.click()
+  const events = navigation.getByRole("link", { name: "Events", exact: true })
+  await expect(events).toHaveCount(1)
+  const badge = events.locator("[data-event-request-badge]")
+  if (pending) {
+    await expect(badge).toHaveText(String(pending))
+    await expect(events).toHaveAccessibleDescription(
+      `${pending} observed pending merchant ${pending === 1 ? "request" : "requests"}. Open Events to review current requests.`
+    )
+  } else {
+    await expect(badge).toHaveCount(0)
+    await expect(events).not.toHaveAttribute("aria-describedby")
+  }
+  if (mobile)
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Close", exact: true })
+      .click()
+}
+
 function createMerchantTemplateProductEvent(createdAt: number): SignedEvent {
   return signEvent(MERCHANT_SECRET, {
     kind: 30402,
@@ -1024,6 +1058,76 @@ function createMerchantTemplateProductEvent(createdAt: number): SignedEvent {
     ],
   })
 }
+
+test("Merchant explicitly enables and disables event-only selling without changing product identity @merchant @commerce @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  relay.seed(
+    createMerchantTemplateProductEvent(Math.floor(Date.now() / 1000) - 10)
+  )
+  await gotoAs(page, merchantUrl, "/network", "merchant")
+  await enablePrivateInbox(page)
+  await page.goto(`${merchantUrl}/products`)
+  for (const choice of [true, undefined, false]) {
+    const before = uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 30402
+    ).length
+    const edit = page.getByRole("button", { name: "Edit", exact: true }).first()
+    await expect(edit).toBeVisible()
+    await edit.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
+    )
+    await edit.click()
+    const dialog = page.getByRole("dialog", {
+      name: "Edit listing",
+      exact: true,
+    })
+    await expect(dialog).toBeVisible()
+    const eventOnly = dialog.getByRole("checkbox", {
+      name: "Sell only at events",
+      exact: true,
+    })
+    await expect(eventOnly).toBeChecked({ checked: choice !== true })
+    if (choice === undefined) {
+      await dialog
+        .getByLabel("Title", { exact: true })
+        .fill("Event-only mug revised")
+    } else {
+      await eventOnly.setChecked(choice)
+    }
+    await dialog
+      .getByRole("button", { name: "Save changes", exact: true })
+      .click()
+    await expect
+      .poll(
+        () =>
+          uniquePublishedEvents(relay.publications).filter(
+            (event) => event.kind === 30402
+          ).length
+      )
+      .toBe(before + 1)
+    await expect(dialog).toBeHidden()
+    const signed = uniquePublishedEvents(relay.publications)
+      .filter((event) => event.kind === 30402)
+      .at(-1)!
+    expect(eventCoordinate(signed)).toBe(
+      `30402:${MERCHANT_PUBKEY}:${MERCHANT_TEMPLATE_D_TAG}`
+    )
+    expect(
+      signed.tags.some((tag) => tag[0] === "visibility" && tag[1] === "hidden")
+    ).toBe(choice !== false)
+    expect(
+      signed.tags.some(
+        (tag) => tag[0] === "conduit_event_only" && tag[1] === "1"
+      )
+    ).toBe(choice !== false)
+    expect(signed.tags.find((tag) => tag[0] === "stock")?.[1]).toBe("9")
+    await page.reload()
+  }
+})
 
 function seedHistoricalEvent(relay: RelayHarness, title: string) {
   const createdAt = Math.floor(Date.now() / 1000) - 100
@@ -1372,7 +1476,7 @@ test("future Event Market catalog follows signed merchant approval and current p
   )
 })
 
-test("signed series dates open one market and keep separate buyer choices @market @merchant @commerce", async ({
+test("signed series dates open one market and keep separate buyer choices @market @merchant @commerce @occurrence-orders", async ({
   page,
 }) => {
   test.setTimeout(120_000)
@@ -1475,8 +1579,53 @@ test("signed series dates open one market and keep separate buyer choices @marke
   relay.incompleteReadsForKind(31923)
   await page.reload()
   await expect(page.getByRole("heading", { name: "Series soap" })).toBeVisible()
-  await page.getByRole("combobox", { name: "Choose date" }).click()
-  await page.getByRole("option").last().click()
+  const otherDates = page.getByRole("navigation", {
+    name: "Other dates in this series",
+  })
+  const secondDateLink = otherDates.getByRole("link")
+  expect(
+    new URL(
+      (await secondDateLink.getAttribute("href"))!,
+      marketUrl
+    ).searchParams.get("occurrence")
+  ).toBe(eventCoordinate(second))
+  // Modified clicks remain native navigation. Suppress the final browser
+  // default only after React handles the event, so this synthetic page does
+  // not open an unconfigured second window.
+  await page.evaluate(() => {
+    const target = window as typeof window & {
+      __conduitDateNavigationPrevented?: boolean
+    }
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (!event.ctrlKey) return
+        target.__conduitDateNavigationPrevented = event.defaultPrevented
+        event.preventDefault()
+      },
+      { once: true }
+    )
+  })
+  await secondDateLink.dispatchEvent("click", {
+    button: 0,
+    ctrlKey: true,
+    bubbles: true,
+    cancelable: true,
+  })
+  expect(
+    await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __conduitDateNavigationPrevented?: boolean
+          }
+        ).__conduitDateNavigationPrevented
+    )
+  ).toBe(false)
+  expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
+    eventCoordinate(first)
+  )
+  await secondDateLink.click()
   expect(new URL(page.url()).searchParams.get("occurrence")).toBe(
     eventCoordinate(second)
   )
@@ -1485,8 +1634,12 @@ test("signed series dates open one market and keep separate buyer choices @marke
       request.matchedEventIds.includes(second.id)
     )
   ).toBe(true)
-  const selectedDateLabel = await page
-    .getByRole("combobox", { name: "Choose date" })
+  const eventHeader = page.locator("header").filter({
+    has: page.getByRole("heading", { name: "Series Fair", exact: true }),
+  })
+  const selectedDateLabel = await eventHeader
+    .locator("dd")
+    .first()
     .textContent()
   await page.evaluate(() => {
     const target = window as typeof window & { __eventMarketSharedUrl?: string }
@@ -1539,11 +1692,9 @@ test("signed series dates open one market and keep separate buyer choices @marke
       new URL(page.url()).searchParams.get("occurrence") ===
         eventCoordinate(second)
     ).toBe(true)
-    expect(
-      (await page
-        .getByRole("combobox", { name: "Choose date" })
-        .textContent()) === selectedDateLabel
-    ).toBe(true)
+    await expect(eventHeader.locator("dd").first()).toHaveText(
+      selectedDateLabel!
+    )
     await expect(
       page.getByRole("button", { name: /^Add .+ to cart$/ })
     ).toBeEnabled()
@@ -1573,9 +1724,18 @@ test("signed series dates open one market and keep separate buyer choices @marke
     `/events/${nip19.naddrEncode({ kind: 30409, pubkey: ORGANIZER_PUBKEY, identifier: "series-fair" })}`,
     "buyer"
   )
-  await page.getByRole("combobox", { name: "Choose date" }).click()
-  await expect(page.getByRole("option").first()).toBeEnabled()
-  await expect(page.getByRole("option").last()).toBeDisabled()
+  const seriesDates = page.getByRole("navigation", {
+    name: "Dates in this series",
+    exact: true,
+  })
+  await expect(seriesDates.getByRole("link")).toHaveCount(1)
+  expect(
+    new URL(
+      (await seriesDates.getByRole("link").getAttribute("href"))!,
+      marketUrl
+    ).searchParams.get("occurrence")
+  ).toBe(eventCoordinate(first))
+  await expect(seriesDates.locator('[aria-disabled="true"]')).toHaveCount(1)
 })
 
 async function createAssignedPickupOrder(
@@ -2975,6 +3135,98 @@ test("event banner supports choosing a file, previewing, replacing and removing 
   await expect(banner.getByLabel("Banner URL", { exact: true })).toHaveValue("")
 })
 
+test("event timelines hide past by default and retain explicit history navigation @market @merchant @commerce @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const now = Math.floor(Date.now() / 1_000)
+  relay.seed(createFollowList("buyer", [ORGANIZER_PUBKEY], now - 10))
+  for (const [name, start, end] of [
+    ["Past fair", now - 7_200, now - 3_600],
+    ["Ongoing fair", now - 86_400, now + 3_600],
+    ["Upcoming fair", now + 7_200, now + 10_800],
+  ] as const) {
+    const dTag = name.toLowerCase().replaceAll(" ", "-")
+    const calendar = signEvent(ORGANIZER_SECRET, {
+      ...buildEventMarketCalendarDraft({
+        kind: 31923,
+        dTag,
+        title: name,
+        start,
+        end,
+        startTzid: "America/Chicago",
+        endTzid: "America/Chicago",
+      }),
+      created_at: now - 10,
+    })
+    relay.seed(
+      calendar,
+      signEvent(ORGANIZER_SECRET, {
+        kind: 30409,
+        created_at: now - 10,
+        content: "",
+        tags: [
+          ["d", dTag],
+          ["a", eventCoordinate(calendar)],
+          ["event_market", "2", "open"],
+        ],
+      })
+    )
+  }
+  const before = relay.publications.length
+  for (const app of ["market", "merchant"] as const) {
+    await gotoAs(
+      page,
+      app === "market" ? marketUrl : merchantUrl,
+      app === "market" ? "/events?source=following" : "/events",
+      app === "market" ? "buyer" : "organizer"
+    )
+    const surface = page.getByRole("region", {
+      name: app === "market" ? "Events timeline" : "My Events timeline",
+      exact: true,
+    })
+    const past = surface.getByRole("button", { name: /^Open Past fair\./ })
+    await expect(
+      surface.getByRole("button", { name: /^Open Ongoing fair\./ })
+    ).toBeVisible()
+    await expect(
+      surface.getByRole("button", { name: /^Open Upcoming fair\./ })
+    ).toBeVisible()
+    await expect(past).toHaveCount(0)
+    await surface
+      .getByRole("button", { name: "Show past events", exact: true })
+      .click()
+    await expect(past).toBeVisible()
+    await expect(
+      surface.getByRole("list", { name: "Past events", exact: true })
+    ).toContainText("Past fair")
+    await expect(
+      surface.getByRole("list", {
+        name: "Current and upcoming events",
+        exact: true,
+      })
+    ).toContainText("Ongoing fair")
+    await surface
+      .getByRole("button", { name: "Hide past events", exact: true })
+      .click()
+    await expect(past).toHaveCount(0)
+    await expect(
+      surface.getByRole("button", { name: "Show past events", exact: true })
+    ).toBeVisible()
+    await expect(
+      surface.getByRole("button", { name: /^Open Ongoing fair\./ })
+    ).toBeVisible()
+  }
+  // Showing/hiding history never closes an event or signs stock/payment changes.
+  expect(
+    relay.publications
+      .slice(before)
+      .some(({ event }) => [5, 30409, 30410, 3841].includes(event.kind))
+  ).toBe(false)
+})
+
 test("merchant directory separates open collapsible My Events and All Events with a scoped empty state @merchant", async ({
   page,
 }) => {
@@ -4298,6 +4550,128 @@ test("merchant directory All Events refreshes settled products while an exact re
   }
 })
 
+test("owner event editing keeps one banner and preserves single or series drafts on close @merchant @commerce @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  const originalBanner =
+    "https://cdn.conduit.market/conduit-test/template-product.svg"
+  const nextBanner = "https://cdn.conduit.market/conduit-test/staged-event.svg"
+  for (const repeated of [false, true]) {
+    const title = repeated ? "Series draft fair" : "Single draft fair"
+    const prefix = repeated ? "series-edit" : "future-edit"
+    const before = relay.publications.length
+    await gotoAs(page, merchantUrl, "/events/new", "organizer")
+    await page.getByLabel("Event title", { exact: true }).fill(title)
+    await page.getByLabel("Description").fill("Public event description")
+    await page.getByRole("button", { name: "Add by URL", exact: true }).click()
+    await page.getByLabel("Banner URL", { exact: true }).fill(originalBanner)
+    await page.getByLabel("Location", { exact: true }).fill("Original hall")
+    await page.getByRole("checkbox", { name: "All day", exact: true }).check()
+    await page.getByLabel("Start", { exact: true }).fill("2030-06-01")
+    if (repeated) {
+      await page.getByRole("combobox", { name: "Repeat", exact: true }).click()
+      await page.getByRole("option", { name: "Weekly", exact: true }).click()
+      await page.getByLabel("Number of dates").fill("2")
+    }
+    await expect(page.locator(`img[src="${originalBanner}"]`)).toHaveCount(1)
+    await page
+      .getByRole("button", { name: "Publish event", exact: true })
+      .click()
+    await expect(page).toHaveURL(/\/events\/naddr1/)
+    await expect(page.locator(`img[src="${originalBanner}"]`)).toHaveCount(1)
+    await expect(
+      page.getByRole("group", { name: "Event banner (optional)", exact: true })
+    ).toHaveCount(0)
+    const originalDates = uniquePublishedEvents(
+      relay.publications.slice(before)
+    ).filter((event) => event.kind === 31922)
+    expect(originalDates).toHaveLength(repeated ? 2 : 1)
+    const beforeEdit = relay.publications.length
+    const editor = page.locator(`#${prefix}-details`)
+    await openEventDetailsEditor(page)
+    await expect(editor.getByLabel("Location", { exact: true })).toHaveCount(1)
+    if (repeated)
+      await expect(page.getByLabel("Location", { exact: true })).toHaveCount(2)
+    await expect(page.locator(`img[src="${originalBanner}"]`)).toHaveCount(1)
+    await editor
+      .getByLabel("Event title", { exact: true })
+      .fill(`${title} updated`)
+    await editor.getByLabel("Location", { exact: true }).fill("New hall")
+    await editor
+      .getByRole("button", { name: "Add by URL", exact: true })
+      .click()
+    await editor.getByLabel("Banner URL", { exact: true }).fill(nextBanner)
+    await expect(page.locator(`img[src="${nextBanner}"]`)).toHaveCount(1)
+    await expect(page.locator(`img[src="${originalBanner}"]`)).toHaveCount(0)
+    const preview = await page.locator(`img[src="${nextBanner}"]`).boundingBox()
+    expect(preview!.width / preview!.height).toBeCloseTo(3, 1)
+    await page
+      .getByRole("button", { name: "Close editor", exact: true })
+      .click()
+    await expect(page.locator(`#${prefix}-details`)).toBeHidden()
+    await expect(page.locator(`img[src="${originalBanner}"]`)).toHaveCount(1)
+    await expect(page.locator(`img[src="${nextBanner}"]`)).toHaveCount(0)
+    await openEventDetailsEditor(page)
+    await expect(editor.getByLabel("Event title", { exact: true })).toHaveValue(
+      `${title} updated`
+    )
+    await expect(editor.getByLabel("Location", { exact: true })).toHaveValue(
+      "New hall"
+    )
+    await expect(editor.getByLabel("Banner URL", { exact: true })).toHaveValue(
+      nextBanner
+    )
+    await editor
+      .getByRole("button", { name: "Remove banner", exact: true })
+      .click()
+    await expect(page.locator(`img[src="${nextBanner}"]`)).toHaveCount(0)
+    await page
+      .getByRole("button", { name: "Close editor", exact: true })
+      .click()
+    await expect(page.locator(`img[src="${originalBanner}"]`)).toHaveCount(1)
+    await openEventDetailsEditor(page)
+    await expect(editor.getByLabel("Banner URL", { exact: true })).toHaveValue(
+      ""
+    )
+    await editor.getByLabel("Banner URL", { exact: true }).fill(nextBanner)
+    expect(
+      uniquePublishedEvents(relay.publications.slice(beforeEdit)).filter(
+        (event) => [31922, 31924, 30409].includes(event.kind)
+      )
+    ).toHaveLength(0)
+    await editor
+      .getByRole("button", {
+        name: repeated ? "Save selected date" : "Save event details",
+        exact: true,
+      })
+      .click()
+    const changedDates = () =>
+      uniquePublishedEvents(relay.publications.slice(beforeEdit)).filter(
+        (event) => event.kind === 31922
+      )
+    await expect.poll(() => changedDates().length).toBe(1)
+    expect(eventCoordinate(changedDates()[0]!)).toBe(
+      eventCoordinate(originalDates[0]!)
+    )
+    expect(changedDates()[0]!.tags.find((tag) => tag[0] === "image")?.[1]).toBe(
+      nextBanner
+    )
+    expect(
+      uniquePublishedEvents(relay.publications.slice(beforeEdit)).some(
+        (event) => [31924, 30409].includes(event.kind)
+      )
+    ).toBe(false)
+    await expect(page.locator(`img[src="${nextBanner}"]`)).toHaveCount(1)
+    if (repeated)
+      await expect(
+        page.getByRole("heading", { name: "Add date", exact: true })
+      ).toBeVisible()
+  }
+})
+
 for (const monthly of [false, true])
   test(`organizer publishes ${monthly ? "monthly" : "one-day"} all-day events with inclusive displayed ends @merchant`, async ({
     page,
@@ -4342,6 +4716,7 @@ for (const monthly of [false, true])
     ).toEqual(
       monthly ? ["2030-02-01", "2030-04-01", "2030-06-01"] : ["2030-02-01"]
     )
+    await openEventDetailsEditor(page)
     await expect(
       page.locator(monthly ? "#series-edit-end" : "#future-edit-end")
     ).toHaveValue("2030-01-31")
@@ -4380,7 +4755,7 @@ for (const monthly of [false, true])
     )
   })
 
-test("organizer creates and closes one future Event Market without legacy event records @merchant", async ({
+test("organizer creates and closes one future Event Market without legacy event records @merchant @commerce", async ({
   page,
 }) => {
   const relay = createRelayHarness()
@@ -4413,6 +4788,7 @@ test("organizer creates and closes one future Event Market without legacy event 
   await page.getByRole("button", { name: "Reopen Event Market" }).click()
   await expect(page.getByText("Open for sales", { exact: true })).toBeVisible()
   relay.rejectKind(31923, true)
+  await openEventDetailsEditor(page)
   await page.locator("#future-edit-title").fill("New Future Fair updated")
   await page.getByRole("button", { name: "Save event details" }).click()
   const retry = page.getByRole("button", { name: "Retry signed event details" })
@@ -4426,6 +4802,7 @@ test("organizer creates and closes one future Event Market without legacy event 
   relay.rejectKind(31923, false)
   await retry.click()
   await expect(retry).toHaveCount(0)
+  await openEventDetailsEditor(page)
   await expect(
     page.getByRole("button", { name: "Save event details" })
   ).toBeEnabled()
@@ -4501,6 +4878,7 @@ test("organizer generates weekly dates and publishes one signed series @merchant
   await page.reload()
   const resumeNewDate = page.getByRole("button", { name: "Resume publishing" })
   await expect(resumeNewDate).toBeEnabled()
+  await openEventDetailsEditor(page)
   await page.evaluate(() => {
     const syntheticWindow = window as typeof window & {
       __conduitNewDateSignAttempts: number
@@ -4556,6 +4934,10 @@ test("organizer generates weekly dates and publishes one signed series @merchant
     heldRefresh.release()
   }
   await expect(
+    page.getByRole("button", { name: "Edit selected date", exact: true })
+  ).toBeEnabled()
+  await openEventDetailsEditor(page)
+  await expect(
     page.getByRole("button", { name: "Save selected date" })
   ).toBeEnabled()
   await page.locator("#series-edit-title").fill("Weekly Future Fair updated")
@@ -4582,6 +4964,7 @@ test("organizer generates weekly dates and publishes one signed series @merchant
   relay.rejectKind(31923, false)
   await resumeDate.click()
   await expect(resumeDate).toHaveCount(0)
+  await openEventDetailsEditor(page)
   const dateRetries = relay.publications
     .slice(dateRetryStart)
     .filter(({ event }) => event.kind === 31923)
@@ -4677,6 +5060,7 @@ test("organizer reviews a refreshed date revision before saving local edits @mer
     identifier: "concurrent-market",
   })
   await gotoAs(page, merchantUrl, `/events/${marketRef}`, "organizer")
+  await openEventDetailsEditor(page)
   const saveDate = page.getByRole("button", { name: "Save selected date" })
   await expect(saveDate).toBeEnabled()
   await page.locator("#series-edit-title").fill("Unsaved local title")
@@ -5065,15 +5449,20 @@ test("event shopping keeps pickup-only choices and merchant profile navigation @
 })
 
 for (const retention of ["screen", "file"] as const) {
-  test(`guest retains a private event receipt by ${retention} and merchant verifies it @market @merchant @commerce @occurrence-orders`, async ({
+  test(`guest automatically retains a private event receipt with optional ${retention} copy and merchant verifies it @market @merchant @commerce @occurrence-orders`, async ({
     page,
   }) => {
     test.setTimeout(120_000)
     let receiptStage:
       | "setup"
+      | "event-navigation"
+      | "event-product"
+      | "cart-ready"
+      | "checkout-navigation"
       | "phone-normalization"
-      | "receipt-required"
+      | "receipt-before-order"
       | "receipt-display"
+      | "receipt-recovery"
       | "receipt-export"
       | "order-submission"
       | "code-verification"
@@ -5167,14 +5556,18 @@ for (const retention of ["screen", "file"] as const) {
         pubkey: ORGANIZER_PUBKEY,
         identifier: "choice-fair",
       })
+      receiptStage = "event-navigation"
       await page.goto(`${marketUrl}/events/${marketRef}`)
+      receiptStage = "event-product"
       await expect(
         page.getByRole("heading", { name: "Receipt soap" })
       ).toBeVisible()
       await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
+      receiptStage = "cart-ready"
       await expect(
         page.getByRole("button", { name: /Cart, 1 item/ })
       ).toBeVisible()
+      receiptStage = "checkout-navigation"
       await page.goto(`${marketUrl}/checkout`)
       receiptStage = "phone-normalization"
       await expect(
@@ -5200,7 +5593,7 @@ for (const retention of ["screen", "file"] as const) {
         (await page.getByLabel("Phone", { exact: true }).inputValue()) ===
           "+12025550123"
       ).toBe(true)
-      receiptStage = "receipt-required"
+      receiptStage = "receipt-before-order"
       await page
         .getByRole("checkbox", { name: "Use a name only for handoff" })
         .check()
@@ -5208,39 +5601,110 @@ for (const retention of ["screen", "file"] as const) {
       await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
       await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
       const before = relay.publications.length
-      await page
-        .getByRole("button", { name: "Send order", exact: true })
-        .click()
       await expect(
-        page
-          .getByText("Save your event receipt and confirm that you kept it.")
-          .first()
-      ).toBeVisible()
+        page.getByLabel("Private receipt code", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("checkbox", { name: "I saved my private receipt" })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Save event receipt", exact: true })
+      ).toHaveCount(0)
       const prematureOrderCount = decryptPrivatePublications(
         relay.publications,
         MERCHANT_SECRET,
         before
       ).filter((message) => rumorType(message.rumor) === "order").length
       expect(prematureOrderCount).toBe(0)
-      // The private receipt is usable on screen; generating it must not force a file.
+      // Submission verifies browser saving; no download or bearer display is required.
       let automaticDownloads = 0
       page.on("download", () => {
         automaticDownloads += 1
       })
-      receiptStage = "receipt-display"
+      receiptStage = "order-submission"
       await page
-        .getByRole("button", { name: "Show private receipt", exact: true })
+        .getByRole("button", { name: "Send order", exact: true })
         .click()
-      await expect(
-        page.getByRole("region", {
-          name: "Private pickup receipt",
-          exact: true,
-        })
-      ).toBeVisible()
+      const orders = () =>
+        uniquePrivatePublications(
+          decryptPrivatePublications(
+            relay.publications,
+            MERCHANT_SECRET,
+            before
+          )
+        ).filter((message) => rumorType(message.rumor) === "order")
+      await expect.poll(() => orders().length).toBe(1)
       expect(automaticDownloads).toBe(0)
+      const order = JSON.parse(orders()[0]!.rumor.content) as {
+        id: string
+        buyerIdentityKind: string
+        guestContact?: unknown
+        createdAt: number
+        pickupReceiptCommitment: string
+        contactFreePickup: { label: string; receiptCommitment: string }
+      }
+      expect(order.buyerIdentityKind === "guest_ephemeral").toBe(true)
+      expect(order.guestContact === undefined).toBe(true)
+      expect(order.contactFreePickup.label === "Soap fan").toBe(true)
+      expect(
+        /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
+      ).toBe(true)
+      expect(
+        order.pickupReceiptCommitment ===
+          order.contactFreePickup.receiptCommitment
+      ).toBe(true)
+      expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      // The Orders component must commit before starting a new document.
+      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
+      receiptStage = "receipt-display"
+      // Exact zero-price terms and successful order delivery authorize this
+      // receipt display, without inventing a paid payment status.
+      await expect(
+        page.getByRole("region", { name: "Pickup receipt", exact: true })
+      ).toBeVisible()
       const receiptCode = await page
         .getByLabel("Private receipt code", { exact: true })
         .inputValue()
+      await page.reload()
+      await expect(
+        page.getByRole("region", { name: "Pickup receipt", exact: true })
+      ).toBeVisible()
+      expect(
+        (await page
+          .getByLabel("Private receipt code", { exact: true })
+          .inputValue()) === receiptCode
+      ).toBe(true)
+      receiptStage = "receipt-recovery"
+      // Move wall time only. The receipt outlives the unchanged 24-hour guest
+      // signing deadline; recovery must not restore payment or handout authority.
+      await page.clock.setFixedTime(order.createdAt + 24 * 60 * 60 * 1_000 + 1)
+      await page.reload()
+      await expect(
+        page.getByText("Guest order session not found", { exact: true })
+      ).toBeVisible()
+      await expect(
+        page.getByText(/Payment status is unavailable\./)
+      ).toBeVisible()
+      const recoveredReceipt = page.getByRole("region", {
+        name: "Pickup receipt",
+        exact: true,
+      })
+      await expect(recoveredReceipt).toBeVisible()
+      await expect(recoveredReceipt.locator("svg")).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Pay for order", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Resume payment", exact: true })
+      ).toHaveCount(0)
+      expect(
+        (await page
+          .getByLabel("Private receipt code", { exact: true })
+          .inputValue()) === receiptCode
+      ).toBe(true)
       let receiptPath: string | null = null
       if (retention === "file") {
         receiptStage = "receipt-export"
@@ -5255,43 +5719,7 @@ for (const retention of ["screen", "file"] as const) {
           download.suggestedFilename() === "conduit-event-receipt.txt"
         ).toBe(true)
       }
-      receiptStage = "order-submission"
-      await page
-        .getByRole("checkbox", {
-          name: "I saved my private receipt",
-        })
-        .check()
-      await page
-        .getByRole("button", { name: "Send order", exact: true })
-        .click()
-      const orders = () =>
-        uniquePrivatePublications(
-          decryptPrivatePublications(
-            relay.publications,
-            MERCHANT_SECRET,
-            before
-          )
-        ).filter((message) => rumorType(message.rumor) === "order")
-      await expect.poll(() => orders().length).toBe(1)
       expect(automaticDownloads).toBe(retention === "file" ? 1 : 0)
-      const order = JSON.parse(orders()[0]!.rumor.content) as {
-        id: string
-        buyerIdentityKind: string
-        guestContact?: unknown
-        contactFreePickup: { label: string; receiptCommitment: string }
-      }
-      expect(order.buyerIdentityKind === "guest_ephemeral").toBe(true)
-      expect(order.guestContact === undefined).toBe(true)
-      expect(order.contactFreePickup.label === "Soap fan").toBe(true)
-      expect(
-        /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
-      ).toBe(true)
-      expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
-      // The Orders component must commit before starting a new document.
-      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
-      await expect(
-        page.getByRole("heading", { name: "Orders", exact: true })
-      ).toBeVisible()
       receiptStage = "code-verification"
       await gotoAs(page, merchantUrl, "/orders", "merchant", {
         order: order.id,
@@ -5345,9 +5773,96 @@ for (const retention of ["screen", "file"] as const) {
         page.getByText("This receipt does not match this order and merchant.")
       ).toBeVisible()
     } catch {
-      throw new Error(`Guest receipt journey failed at ${receiptStage}.`)
+      let boundary = "unclassified"
+      if (receiptStage === "event-product") {
+        const text = await page
+          .locator("body")
+          .innerText({ timeout: 1_000 })
+          .catch(() => "")
+        boundary = text.includes(
+          "The current signed Event Market record is unavailable."
+        )
+          ? "record-unavailable"
+          : text.includes("Event records could not be checked.")
+            ? "record-check-failed"
+            : text.includes("Loading event products")
+              ? "record-pending"
+              : text.includes("Receipt soap")
+                ? "product-heading-contract"
+                : text.includes("Event Market")
+                  ? "event-without-product"
+                  : await page.evaluate(() =>
+                      document.querySelector("vite-error-overlay")
+                        ? "vite-overlay"
+                        : document.querySelector("#root")?.childElementCount ===
+                            0
+                          ? "empty-root"
+                          : "unexpected-shell"
+                    )
+      }
+      throw new Error(
+        `Guest receipt journey failed at ${receiptStage} (${boundary}).`
+      )
     }
   })
+}
+
+const SYNTHETIC_FEE_RECEIVER_ORIGIN = "https://fee-receiver-e2e.conduit.market"
+const SYNTHETIC_FEE_RECEIVER_ADDRESS = "saved@fee-receiver-e2e.conduit.market"
+
+async function qualifySyntheticOrganizerFeeReceiver(page: Page) {
+  // Test-owned deployment policy and intercepted public metadata, never a live
+  // wallet or a claim that syntax alone qualifies a receiving address.
+  await page.evaluate(
+    async ({ modulePath, origin }) => {
+      const { config } = await import(/* @vite-ignore */ modulePath)
+      config.checkoutSparkReceiverContracts = JSON.stringify([
+        {
+          schemaVersion: 1,
+          contractId: "synthetic-event-fee-private-v1",
+          qualification: "accepted",
+          payRequestOrigins: [origin],
+          callbackOrigins: [origin],
+          verifyOrigins: [origin],
+          verifyPathPrefix: "/verify/",
+          modes: ["private"],
+          binding: "metadata_hash",
+        },
+      ])
+    },
+    {
+      modulePath: browserSourceRoot("packages/core/src/config.ts"),
+      origin: SYNTHETIC_FEE_RECEIVER_ORIGIN,
+    }
+  )
+}
+
+async function fulfillSyntheticOrganizerFeeReceiver(
+  page: Page,
+  beforeResponse = async () => undefined
+) {
+  await page.route(
+    `${SYNTHETIC_FEE_RECEIVER_ORIGIN}/.well-known/lnurlp/*`,
+    async (route) => {
+      await beforeResponse()
+      const name = new URL(route.request().url()).pathname.split("/").at(-1)!
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({
+          tag: "payRequest",
+          callback: `${SYNTHETIC_FEE_RECEIVER_ORIGIN}/callback`,
+          minSendable: 1_000,
+          maxSendable: 1_000_000,
+          metadata: JSON.stringify([
+            ["text/plain", "Synthetic fee receiver"],
+            ["text/identifier", `${name}@fee-receiver-e2e.conduit.market`],
+          ]),
+        }),
+      })
+    }
+  )
 }
 
 test("organizer fee edits use saved addresses and collapse only after signed publication @merchant @commerce @occurrence-orders", async ({
@@ -5356,6 +5871,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
   test.setTimeout(120_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
+  await fulfillSyntheticOrganizerFeeReceiver(page)
   const createdAt = Math.floor(Date.now() / 1_000) - 10
   const calendar = signEvent(ORGANIZER_SECRET, {
     ...buildEventMarketCalendarDraft({
@@ -5390,7 +5906,10 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
     kind: 0,
     created_at: createdAt,
     tags: [],
-    content: JSON.stringify({ name: "Organizer", lud16: "saved@example.com" }),
+    content: JSON.stringify({
+      name: "Organizer",
+      lud16: SYNTHETIC_FEE_RECEIVER_ADDRESS,
+    }),
   })
   relay.seed(calendar, market, profile)
   const reference = nip19.naddrEncode({
@@ -5399,6 +5918,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
     identifier: "fee-editor-fair",
   })
   await gotoAs(page, merchantUrl, `/events/${reference}`, "organizer")
+  await qualifySyntheticOrganizerFeeReceiver(page)
   await expect(
     page.getByText("2.5%, minimum 10 sats", { exact: true })
   ).toBeVisible()
@@ -5423,7 +5943,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
   await page
     .getByRole("button", { name: "Use my Lightning address", exact: true })
     .click()
-  await expect(address).toHaveValue("saved@example.com")
+  await expect(address).toHaveValue(SYNTHETIC_FEE_RECEIVER_ADDRESS)
   await address.fill("custom@example.com")
   await page.getByRole("button", { name: "Cancel", exact: true }).click()
   await expect(
@@ -5472,7 +5992,7 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
     "active",
     "375",
     "0",
-    "saved@example.com",
+    SYNTHETIC_FEE_RECEIVER_ADDRESS,
   ])
   relay.rejectKind(30409, false)
   await page
@@ -5496,13 +6016,14 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
     )
   ).toBe(false)
   await page.reload()
+  await qualifySyntheticOrganizerFeeReceiver(page)
   await expect(
     page.getByRole("button", { name: "Save fee settings", exact: true })
   ).toHaveCount(0)
   await page
     .getByRole("button", { name: "Edit fee settings", exact: true })
     .click()
-  await expect(address).toHaveValue("saved@example.com")
+  await expect(address).toHaveValue(SYNTHETIC_FEE_RECEIVER_ADDRESS)
   await address.fill("custom@example.com")
   await page
     .getByRole("button", { name: "Save fee settings", exact: true })
@@ -5513,6 +6034,120 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
   await expect(
     page.getByRole("button", { name: "Save fee settings", exact: true })
   ).toHaveCount(0)
+})
+
+test("a new organizer fee defaults only after receiver qualification and keeps a changed draft @merchant @commerce @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  let release!: () => void
+  const response = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  await fulfillSyntheticOrganizerFeeReceiver(page, () => response)
+  const createdAt = Math.floor(Date.now() / 1_000) - 10
+  const calendar = signEvent(ORGANIZER_SECRET, {
+    ...buildEventMarketCalendarDraft({
+      kind: 31923,
+      dTag: "fee-default-fair",
+      title: "Fee default fair",
+      start: createdAt + 7_200,
+      end: createdAt + 10_800,
+    }),
+    created_at: createdAt,
+  })
+  const market = signEvent(ORGANIZER_SECRET, {
+    kind: 30409,
+    created_at: createdAt,
+    content: "",
+    tags: [
+      ["d", "fee-default-fair"],
+      ["a", eventCoordinate(calendar)],
+      ["event_market", "2", "open"],
+    ],
+  })
+  relay.seed(
+    calendar,
+    market,
+    signEvent(ORGANIZER_SECRET, {
+      kind: 0,
+      created_at: createdAt,
+      tags: [],
+      content: JSON.stringify({
+        name: "Organizer",
+        lud16: SYNTHETIC_FEE_RECEIVER_ADDRESS,
+      }),
+    })
+  )
+  const reference = nip19.naddrEncode({
+    kind: 30409,
+    pubkey: ORGANIZER_PUBKEY,
+    identifier: "fee-default-fair",
+  })
+  await gotoAs(page, merchantUrl, `/events/${reference}`, "organizer")
+  await qualifySyntheticOrganizerFeeReceiver(page)
+  await page.getByRole("combobox", { name: "Fee setting", exact: true }).click()
+  await page
+    .getByRole("option", { name: "Charge an organizer fee", exact: true })
+    .click()
+  const address = page.getByRole("textbox", {
+    name: "Organizer Lightning address",
+    exact: true,
+  })
+  await expect(
+    page.getByText("Checking your saved Lightning address…", { exact: true })
+  ).toBeVisible()
+  await expect(address).toHaveValue("")
+  await address.fill("typed@example.com")
+  release()
+  await expect(
+    page.getByText("Your supported profile address:", { exact: false })
+  ).toBeVisible()
+  await expect(address).toHaveValue("typed@example.com")
+  await address.fill("")
+  await expect(address).toHaveValue("")
+  await page.getByRole("button", { name: "Cancel", exact: true }).click()
+  await page
+    .getByRole("button", { name: "Edit fee settings", exact: true })
+    .click()
+  await page.getByRole("combobox", { name: "Fee setting", exact: true }).click()
+  await page
+    .getByRole("option", { name: "Charge an organizer fee", exact: true })
+    .click()
+  await expect(address).toHaveValue(SYNTHETIC_FEE_RECEIVER_ADDRESS)
+  await expect(
+    page.getByRole("button", { name: "Use my Lightning address", exact: true })
+  ).toHaveCount(0)
+  await page
+    .getByRole("textbox", { name: "Percentage", exact: true })
+    .fill("2.5")
+  await page
+    .getByRole("button", { name: "Save fee settings", exact: true })
+    .click()
+  // The signed parent remounts the editor. Its durable summary, not the brief
+  // local pre-refresh notice, is the completion observation on every browser.
+  await expect(page.getByText("2.5%", { exact: true })).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Edit fee settings", exact: true })
+  ).toBeEnabled()
+  await expect(
+    page.getByRole("button", { name: "Save fee settings", exact: true })
+  ).toHaveCount(0)
+  expect(
+    uniquePublishedEvents(relay.publications)
+      .filter((event) => event.kind === 30409)
+      .at(-1)
+      ?.tags.find((tag) => tag[0] === "conduit_event_fee")
+  ).toEqual([
+    "conduit_event_fee",
+    "1",
+    "active",
+    "250",
+    "0",
+    SYNTHETIC_FEE_RECEIVER_ADDRESS,
+  ])
 })
 
 test("reserved organizer stock carries a free purchase through pickup and once-only seller reconciliation @market @merchant @commerce @occurrence-orders", async ({
@@ -6037,6 +6672,7 @@ test("a host and merchant create, request, approve and offer through the screens
   const initialCalendar = uniquePublishedEvents(relay.publications).find(
     (event) => event.kind === 31923
   )!
+  await openEventDetailsEditor(page)
   await page.getByRole("button", { name: "Add by URL", exact: true }).click()
   const updatedBanner =
     "https://cdn.conduit.market/conduit-test/updated-event.svg"
@@ -6088,6 +6724,15 @@ test("a host and merchant create, request, approve and offer through the screens
     .getByRole("option", { name: "Merchant-managed pickup", exact: true })
     .press("Enter")
   await expect(stockMode).toHaveText("Merchant-managed pickup")
+  await expect(
+    page.getByText(
+      "Required before approval. Tell buyers which booth or pickup desk to use.",
+      { exact: true }
+    )
+  ).toBeVisible()
+  await expect(
+    page.getByRole("button", { name: "Approve merchant", exact: true })
+  ).toBeDisabled()
   await page.getByLabel("Public assignment").fill("Host booth")
   await page
     .getByRole("button", { name: "Approve merchant", exact: true })
@@ -6164,6 +6809,7 @@ test("a host and merchant create, request, approve and offer through the screens
     exact: true,
   })
   await expect(pendingRequests).toBeVisible()
+  await expectEventRequestBadge(page, 1)
   const requestsBox = await pendingRequests.boundingBox()
   const eventControlsBox = await page
     .getByRole("heading", { name: "Event controls", exact: true })
@@ -6176,6 +6822,20 @@ test("a host and merchant create, request, approve and offer through the screens
     has: page.locator(`[id="assignment-${MERCHANT_PUBKEY}"]`),
   })
   await expect(merchantRow).toBeVisible()
+  await expect(
+    merchantRow.getByRole("button", {
+      name: "Send private invitation",
+      exact: true,
+    })
+  ).toHaveCount(0)
+  await expect(
+    merchantRow.getByText("This merchant has already requested to join.", {
+      exact: false,
+    })
+  ).toBeVisible()
+  await expect(
+    merchantRow.getByRole("button", { name: "Approve merchant", exact: true })
+  ).toBeDisabled()
   await merchantRow.getByLabel("Public assignment").fill("Booth 4")
   // The host's own seller row refreshes independently; target only the requester.
   const approveMerchant = merchantRow.getByRole("button", {
@@ -6183,8 +6843,18 @@ test("a host and merchant create, request, approve and offer through the screens
     exact: true,
   })
   await expect(approveMerchant).toBeEnabled()
+  const approvalAck = relay.holdNextPublicationAck(
+    (event) => event.kind === 3841
+  )
   await approveMerchant.click()
+  await approvalAck.captured
+  await expect(
+    merchantRow.getByText("Updating merchant authorization…", { exact: true })
+  ).toBeVisible()
+  await expect(merchantRow.getByLabel("Public assignment")).toBeDisabled()
+  approvalAck.release()
   await expect(page.getByText("Approved", { exact: true })).toHaveCount(2)
+  await expectEventRequestBadge(page, 0)
   expect(
     uniquePublishedEvents(relay.publications).some(
       (event) => event.kind === 3841
@@ -6192,6 +6862,7 @@ test("a host and merchant create, request, approve and offer through the screens
   ).toBe(true)
 
   await gotoAs(page, merchantUrl, eventPath, "merchant")
+  await expectEventRequestBadge(page, 0)
   await expect(
     page.getByText("Approved to sell", { exact: true })
   ).toBeVisible()
@@ -6867,6 +7538,7 @@ test("signed creation retries retained bytes with invalid saved text then permit
   expect(initial.find((event) => event.kind === 31923)?.id === signed.id).toBe(
     true
   )
+  await openEventDetailsEditor(page)
   await page
     .locator("#future-edit-summary")
     .fill("Corrected description\nAnother paragraph")
@@ -7503,6 +8175,7 @@ async function rescheduleSameEvent(
   end: number
 ) {
   await gotoAs(page, merchantUrl, "/events/" + marketNaddr, "organizer")
+  await openEventDetailsEditor(page)
   await page.locator("#future-edit-summary").fill("Updated market schedule")
   await page
     .locator("#future-edit-start")

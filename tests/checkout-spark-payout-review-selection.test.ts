@@ -2,6 +2,43 @@ import { describe, expect, it } from "bun:test"
 import { createMerchantCheckoutSparkPayoutReviewSelection } from "../apps/merchant/src/lib/checkout-spark-payout-review-selection"
 
 describe("Merchant manual payout review selection", () => {
+  it("revokes consent when the same order ID changes participant or checkout", () => {
+    const selection = createMerchantCheckoutSparkPayoutReviewSelection()
+    selection.select("shared-order", "buyer-a:checkout-a")
+    const isCurrent = selection.capture("shared-order", "buyer-a:checkout-a")
+    expect(isCurrent()).toBe(true)
+    selection.select("shared-order", "buyer-b:checkout-b")
+    expect(isCurrent()).toBe(false)
+    expect(selection.capture("shared-order", "buyer-a:checkout-a")()).toBe(
+      false
+    )
+    expect(selection.capture("shared-order", "buyer-b:checkout-b")()).toBe(true)
+    selection.select("shared-order", "buyer-b:checkout-c")
+    expect(selection.capture("shared-order", "buyer-b:checkout-b")()).toBe(
+      false
+    )
+  })
+
+  it("drops a held review when the same-ID participant changes and returns before completion", async () => {
+    const selection = createMerchantCheckoutSparkPayoutReviewSelection()
+    selection.select("shared-order", "buyer-a:checkout-a")
+    const isCurrent = selection.capture("shared-order", "buyer-a:checkout-a")
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let presented = false
+    const review = held.then(() => {
+      if (isCurrent()) presented = true
+    })
+    selection.select("shared-order", "buyer-b:checkout-b")
+    selection.select("shared-order", "buyer-a:checkout-a")
+    release()
+    await review
+    expect(presented).toBe(false)
+    expect(isCurrent()).toBe(false)
+  })
+
   it.each([false, true])(
     "drops a delayed review after selecting another order (return to A: %s)",
     async (returnToA) => {

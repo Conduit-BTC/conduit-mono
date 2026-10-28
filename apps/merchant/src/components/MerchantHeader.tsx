@@ -21,6 +21,7 @@ import {
 } from "lucide-react"
 import {
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -58,6 +59,12 @@ import {
 } from "@conduit/ui"
 
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
+import { useEventMarketRequestBadge } from "../hooks/useEventMarketRequestBadge"
+import {
+  getEventRequestBadgeDescription,
+  type EventRequestBadgeState,
+} from "../lib/event-market-request-badge"
+import { EventMarketRequestBadge } from "./EventMarketRequestBadge"
 import { SignerSwitch } from "./SignerSwitch"
 import { MerchantProjectTip } from "./MerchantProjectTip"
 
@@ -155,17 +162,25 @@ function IncompleteBadge({ className }: { className?: string }) {
 function CommerceNavLink({
   item,
   incomplete,
+  eventRequests,
   onNavigate,
 }: {
   item: CommerceNavItem
   incomplete: boolean
+  eventRequests?: EventRequestBadgeState
   onNavigate?: (to: CommerceNavRoute) => void
 }) {
   const Icon = item.icon
+  const descriptionId = useId()
+  const eventDescription = eventRequests
+    ? getEventRequestBadgeDescription(eventRequests)
+    : null
 
   return (
     <Link
       to={item.to}
+      aria-label={eventRequests ? item.label : undefined}
+      aria-describedby={eventDescription ? descriptionId : undefined}
       onClick={() => onNavigate?.(item.to)}
       className={navItemClassName}
       activeProps={{
@@ -175,6 +190,12 @@ function CommerceNavLink({
     >
       <Icon className="size-4 shrink-0" />
       <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
+      {eventRequests ? (
+        <EventMarketRequestBadge
+          state={eventRequests}
+          descriptionId={descriptionId}
+        />
+      ) : null}
       {incomplete ? <IncompleteBadge className="ml-auto shrink-0" /> : null}
     </Link>
   )
@@ -229,11 +250,13 @@ function MerchantNavLinks({
   onExternalNavigate,
   paymentsIncomplete,
   shippingIncomplete,
+  eventRequests,
 }: {
   onInternalNavigate?: (to: MerchantInternalNavRoute) => void
   onExternalNavigate?: () => void
   paymentsIncomplete: boolean
   shippingIncomplete: boolean
+  eventRequests: EventRequestBadgeState
 }) {
   return (
     <nav aria-label="Merchant navigation" className="grid gap-2">
@@ -242,6 +265,7 @@ function MerchantNavLinks({
           <CommerceNavLink
             key={item.to}
             item={item}
+            eventRequests={item.to === "/events" ? eventRequests : undefined}
             incomplete={
               item.hasReadiness && item.to === "/wallet"
                 ? paymentsIncomplete
@@ -489,6 +513,7 @@ function MerchantNavigationPanel({
   onReportBug?: () => void
 }) {
   const readiness = useMerchantReadinessState()
+  const eventRequests = useEventMarketRequestBadge()
 
   return (
     <div
@@ -505,6 +530,7 @@ function MerchantNavigationPanel({
         className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1"
       >
         <MerchantNavLinks
+          eventRequests={eventRequests}
           onInternalNavigate={onInternalNavigate}
           onExternalNavigate={onExternalNavigate}
           paymentsIncomplete={

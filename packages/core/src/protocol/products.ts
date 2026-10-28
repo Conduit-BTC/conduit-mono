@@ -23,6 +23,10 @@ import {
 } from "../schemas"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
+import {
+  PRODUCT_EVENT_ONLY_TAG,
+  parseProductEventOnlyTags,
+} from "./product-event-visibility"
 import { parseLegacyConduitInlineShippingTags } from "./compat/conduit-inline-shipping"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
 import { parseAddressableCoordinate } from "./event-market"
@@ -267,6 +271,15 @@ export function buildProductListingEventDraft({
   dTag,
   clientAppId,
 }: BuildProductListingEventDraftInput): ProductListingEventDraft {
+  if (
+    product.eventOnlyMalformed ||
+    (product.eventOnly === true &&
+      (product.visibility !== "private" || product.format !== "physical"))
+  ) {
+    throw new Error(
+      "Event-only products require explicit hidden physical listing terms"
+    )
+  }
   if (product.priceEvidenceMalformed) {
     throw new Error("Product price evidence is malformed")
   }
@@ -330,6 +343,7 @@ export function buildProductListingEventDraft({
   if (product.visibility === "private") {
     tags.push(["visibility", "hidden"])
   }
+  if (product.eventOnly === true) tags.push([PRODUCT_EVENT_ONLY_TAG, "1"])
 
   if (parentProductId) tags.push(["a", parentProductId])
   for (const specification of specifications) {
@@ -1156,6 +1170,7 @@ function parseProductFields(
   const stockTag = parseStockTag(event.tags)
   const productTypeTag = parseProductTypeTag(event.tags)
   const visibilityTag = parseProductVisibilityTag(event.tags)
+  const eventOnlyPolicy = parseProductEventOnlyTags(event.tags)
   const specifications = parseProductSpecifications(event.tags)
   const supplierAllocation = parseProductSupplierAllocationTags({
     tags: event.tags,
@@ -1205,6 +1220,7 @@ function parseProductFields(
       ...zapPolicy,
       supplierAllocation,
       eventGuestContactOptional: hasSignedEventGuestOptIn(event.tags),
+      ...eventOnlyPolicy,
       canonicalShippingResolved: false,
       createdAt: createdAtMs,
       updatedAt: createdAtMs,
@@ -1320,6 +1336,7 @@ function parseProductFields(
       ...zapPolicy,
       supplierAllocation,
       eventGuestContactOptional: hasSignedEventGuestOptIn(event.tags),
+      ...eventOnlyPolicy,
       ...stockTag,
       images,
       tags,

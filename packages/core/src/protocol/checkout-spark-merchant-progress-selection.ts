@@ -57,10 +57,17 @@ export function selectCheckoutSparkMerchantProgress(input: {
       initial.merchantPubkey !== plan.merchantPubkey ||
       initial.wallet.walletId !== plan.walletId ||
       initial.wallet.network !== plan.network ||
-      initial.preparedAt >= plan.takeoverAt ||
+      (plan.schemaVersion === 6
+        ? initialState.buyerActivation !== null ||
+          initial.preparedAt >= plan.funding.expiresAt
+        : initial.preparedAt >= plan.takeoverAt) ||
       initialState.updatedAt > initial.preparedAt ||
       JSON.stringify(initialState.plan) !== frozenPlan ||
-      JSON.stringify(buyerState.plan) !== frozenPlan
+      JSON.stringify(buyerState.plan) !== frozenPlan ||
+      (plan.schemaVersion === 6 &&
+        buyerState.buyerActivation !== null &&
+        (buyerState.buyerActivation?.buyerPubkey !== initial.senderPubkey ||
+          buyerState.buyerActivation.activatedAt < initial.preparedAt))
     ) {
       return { status: "conflict" }
     }
@@ -77,7 +84,10 @@ export function selectCheckoutSparkMerchantProgress(input: {
       if (
         payload.initialHandoffId !== initial.handoffId ||
         payload.merchantPubkey !== plan.merchantPubkey ||
-        JSON.stringify(payload.state.plan) !== frozenPlan
+        JSON.stringify(payload.state.plan) !== frozenPlan ||
+        (plan.schemaVersion === 6 &&
+          JSON.stringify(payload.state.buyerActivation) !==
+            JSON.stringify(buyerState.buyerActivation))
       ) {
         return { status: "conflict" }
       }

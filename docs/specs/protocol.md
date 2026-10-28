@@ -183,6 +183,16 @@ The exception is constrained as follows:
   guest local lifecycle data use a 24-hour recovery deadline: signing and
   restoration are rejected after the deadline, and expired local rows are
   pruned on Market startup.
+- A separately stored private Event pickup receipt may remain on the device
+  until exactly 24 hours after the selected signed occurrence ends. Its
+  order/merchant binding, possession code and minimal expiry metadata contain
+  no guest signing key, contact details, invoice, wallet credential or paid
+  status. A verified write/readback replaces compulsory pre-payment receipt
+  downloading and retention confirmation. Expiry or explicit Delete removes
+  the code; a minimal deletion marker may remain until the same expiry to
+  prevent a stale tab from restoring it. Receipt retention never extends the
+  guest signing/lifecycle deadline, restores a guest inbox or authorizes a
+  payment, refund or handout. Optional private export remains available.
 - The key must not be sent to Conduit services, exposed through `VITE_*`, logs,
   telemetry, PR comments, tracked files, or analytics.
 - The guest contact/address draft must remain in expiring same-tab storage and

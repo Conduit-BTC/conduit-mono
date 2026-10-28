@@ -413,7 +413,7 @@ function MerchantEventTimelineSection({
     () =>
       presentationLimits[relationship] ??
       savedPresentationLimits.get(presentationKey) ?? {
-        earlier: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
+        earlier: 0,
         key: relationship,
         later: MERCHANT_EVENT_TIMELINE_PAGE_SIZE,
       },
@@ -522,6 +522,13 @@ function MerchantEventTimelineSection({
         totalCount
       ),
     }
+    savedPresentationLimits.set(presentationKey, next)
+    setPresentationLimits((current) => ({ ...current, [relationship]: next }))
+  }
+
+  function hideEarlier(): void {
+    timelineAnchor.prepareForPrepend()
+    const next = { ...activePresentationLimits, earlier: 0 }
     savedPresentationLimits.set(presentationKey, next)
     setPresentationLimits((current) => ({ ...current, [relationship]: next }))
   }
@@ -673,10 +680,12 @@ function MerchantEventTimelineSection({
               hiddenLaterCount={presentation.hiddenLaterCount}
               nowAnchorRef={timelineAnchor.nowAnchorRef}
               onLoadEarlier={loadEarlier}
+              onHideEarlier={hideEarlier}
               onLoadLater={loadLater}
               onScroll={timelineAnchor.rememberPosition}
               pageSize={MERCHANT_EVENT_TIMELINE_PAGE_SIZE}
               pastEvents={renderMixedEntries(presentation.past)}
+              visiblePastCount={presentation.past.length}
               viewportRef={timelineAnchor.timelineViewportRef}
             />
           </>

@@ -335,6 +335,9 @@ export const productSchema = z.object({
   eventMarketRefs: z.array(z.string()).optional(),
   /** Merchant-signed Conduit opt-in for immediate event handoff only. */
   eventGuestContactOptional: z.boolean().optional(),
+  /** Explicit Conduit event-only intent; hidden alone does not grant Event access. */
+  eventOnly: z.boolean().optional(),
+  eventOnlyMalformed: z.boolean().optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
   shippingCountryRules: z
@@ -1134,6 +1137,10 @@ export const orderSchema = z
         receiptCommitment: z.string().regex(/^[0-9a-f]{64}$/),
       })
       .optional(),
+    pickupReceiptCommitment: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
     note: z.string().max(2000).optional(),
     createdAt: z.number(),
   })
@@ -1360,6 +1367,23 @@ export const orderSchema = z
         code: "custom",
         path: ["shippingAddress"],
         message: "Pickup orders must not include a delivery address.",
+      })
+    }
+    if (
+      order.pickupReceiptCommitment &&
+      (!order.buyerIdentityKind ||
+        order.items.some(
+          (item) => item.fulfillment?.type !== "event_market_pickup"
+        ) ||
+        (order.contactFreePickup &&
+          order.pickupReceiptCommitment !==
+            order.contactFreePickup.receiptCommitment))
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["pickupReceiptCommitment"],
+        message:
+          "Pickup receipts require an explicit buyer identity, exact Event pickup and consistent receipt commitments.",
       })
     }
     if (

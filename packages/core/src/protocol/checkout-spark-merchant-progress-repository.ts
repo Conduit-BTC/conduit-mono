@@ -6,7 +6,10 @@ import {
   type MerchantCheckoutSparkProgressDeliveryRecord,
 } from "./checkout-spark-merchant-progress-delivery"
 import { deriveCheckoutSparkOrganizerRecoveryHandoffId } from "./checkout-spark-organizer-recovery"
-import { restoreCheckoutSparkSettledReconciliation } from "./checkout-spark-settled-router"
+import {
+  isCheckoutSparkEventMarketPlan,
+  restoreCheckoutSparkSettledReconciliation,
+} from "./checkout-spark-settled-router"
 
 const HEX_64 = /^[0-9a-f]{64}$/
 const MAX_RETAINED_WRAPS = 512
@@ -126,7 +129,7 @@ function assertOrganizerDeliveryBinding(
 ): void {
   if (record.schemaVersion !== 2) return
   if (
-    state.plan.schemaVersion !== 5 ||
+    !isCheckoutSparkEventMarketPlan(state.plan) ||
     state.plan.eventMarket?.mode !== "organizer_handoff" ||
     witness.schemaVersion !== 2 ||
     !witness.organizerOrderBinding ||
@@ -168,7 +171,8 @@ export class DexieMerchantCheckoutSparkProgressRepository {
       (active.state.schemaVersion !== 3 &&
         active.state.schemaVersion !== 4 &&
         active.state.schemaVersion !== 5 &&
-        active.state.schemaVersion !== 6) ||
+        active.state.schemaVersion !== 6 &&
+        active.state.schemaVersion !== 7) ||
       !Number.isSafeInteger(active.revision) ||
       active.revision < 1
     ) {
@@ -224,7 +228,7 @@ export class DexieMerchantCheckoutSparkProgressRepository {
           planDigest
         )
         if (
-          state.plan.schemaVersion !== 5 ||
+          !isCheckoutSparkEventMarketPlan(state.plan) ||
           state.plan.eventMarket?.mode !== "organizer_handoff"
         )
           return null

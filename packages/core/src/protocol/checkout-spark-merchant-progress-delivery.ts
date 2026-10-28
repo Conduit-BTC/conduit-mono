@@ -14,6 +14,7 @@ import {
   retryPrivateMessageWraps,
 } from "./private-message-delivery"
 import { EVENT_KINDS } from "./kinds"
+import { isCheckoutSparkEventMarketPlan } from "./checkout-spark-settled-router"
 import {
   publishPrivateMessage,
   type PublishPrivateMessageInput,
@@ -716,7 +717,7 @@ export async function publishMerchantCheckoutSparkProgress(input: {
   )
   assertCurrent()
   if (
-    payload.state.plan.schemaVersion === 5 &&
+    isCheckoutSparkEventMarketPlan(payload.state.plan) &&
     payload.state.plan.eventMarket?.mode === "organizer_handoff"
   ) {
     const staged = await stageMerchantEventProgress({

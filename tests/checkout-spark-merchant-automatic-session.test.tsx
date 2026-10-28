@@ -7,6 +7,12 @@ import {
 import { CheckoutSparkRecoveryPanel } from "../apps/merchant/src/components/CheckoutSparkRecoveryPanel"
 import { createMerchantCheckoutSparkPayoutReviewSelection } from "../apps/merchant/src/lib/checkout-spark-payout-review-selection"
 
+const selectedOrder = (orderId: string) => ({
+  orderId,
+  buyerPubkey: "b".repeat(64),
+  merchantPubkey: "a".repeat(64),
+})
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>((finish) => {
@@ -28,10 +34,15 @@ describe("Merchant automatic recovery session activation", () => {
     ]) {
       const start = source.indexOf(`async function ${action}(`)
       const denial = source.slice(
-        source.indexOf("if (Date.now() < candidate.takeoverAt)", start),
+        source.indexOf(
+          "if (candidate.takeoverAt === null || Date.now() < candidate.takeoverAt)",
+          start
+        ),
         source.indexOf("const current = beginManualAction", start)
       )
-      expect(denial).toContain("setNoticeOrderId(candidate.orderId)")
+      expect(denial).toContain(
+        "setNoticeSelectionKey(candidateKeyForSelection(candidate))"
+      )
       expect(denial).toContain("setNotice(")
       expect(denial).not.toContain("setAutomaticPayouts")
       expect(denial).not.toContain("await ")
@@ -54,7 +65,7 @@ describe("Merchant automatic recovery session activation", () => {
     const disabled = renderToStaticMarkup(
       <CheckoutSparkRecoveryPanel
         {...base}
-        selectedOrderId="fixture-order"
+        selectedOrder={selectedOrder("fixture-order")}
         startAutomatically
       />
     )
@@ -313,7 +324,7 @@ describe("Merchant automatic recovery session activation", () => {
     const base = {
       principalPubkey: "a".repeat(64),
       isSessionCurrent: () => true,
-      selectedOrderId: "fixture-order",
+      selectedOrder: selectedOrder("fixture-order"),
     }
     const unavailable = renderToStaticMarkup(
       <CheckoutSparkRecoveryPanel {...base} />
@@ -323,8 +334,8 @@ describe("Merchant automatic recovery session activation", () => {
     const available = renderToStaticMarkup(
       <CheckoutSparkRecoveryPanel {...base} allowAutomaticPayouts />
     )
-    expect(available).toContain("Continue this order")
-    expect(available).toContain("only this order")
+    expect(available).not.toContain("Continue this order")
+    expect(available).toContain("Automatic payments are paused")
     expect(available).not.toContain("all loaded orders")
     expect(available).not.toContain(">Pause<")
     expect(available).toContain("Checking payment")
@@ -344,8 +355,11 @@ describe("Merchant automatic recovery session activation", () => {
       const html = renderToStaticMarkup(
         <CheckoutSparkRecoveryPanel
           principalPubkey={"a".repeat(64)}
-          selectedOrderId="saved-order"
-          selectedOrderSettlement={{ orderId: "saved-order", projection }}
+          selectedOrder={selectedOrder("saved-order")}
+          selectedOrderSettlement={{
+            order: selectedOrder("saved-order"),
+            projection,
+          }}
           allowAutomaticPayouts
           executionEnabled={false}
           startAutomatically
@@ -368,13 +382,13 @@ describe("Merchant automatic recovery session activation", () => {
     }
   )
 
-  it("permits an existing bound fee to resume when execution is available independently of checkout admission", () => {
+  it("keeps an existing bound fee visible but waits for its exact recovery before offering continuation", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkRecoveryPanel
         principalPubkey={"a".repeat(64)}
-        selectedOrderId="saved-order"
+        selectedOrder={selectedOrder("saved-order")}
         selectedOrderSettlement={{
-          orderId: "saved-order",
+          order: selectedOrder("saved-order"),
           projection: {
             creditVerified: true,
             merchantVerified: true,
@@ -388,8 +402,8 @@ describe("Merchant automatic recovery session activation", () => {
       />
     )
     expect(html).toContain("Payment verified")
-    expect(html).toContain("Continue this order")
-    expect(html).toContain("only this order")
+    expect(html).not.toContain("Continue this order")
+    expect(html).toContain("Coordination fee processing is paused")
     expect(html).not.toContain("Pay for order")
   })
 
@@ -429,22 +443,24 @@ describe("Merchant automatic recovery session activation", () => {
     expect(manual).toContain("void stopDiscovery()")
     expect(manual).toContain("captureMerchantCheckoutSparkRecoveryAction")
     expect(manual).toContain("isCurrent: hasCurrentSession")
-    expect(manual).toContain("reviewSelection.capture(orderId)")
+    expect(manual).toContain("captureCandidateSelection(candidate)")
+    expect(manual.indexOf("!isOrderCurrent()")).toBeLessThan(
+      manual.indexOf("generation.current += 1")
+    )
     expect(manual).toContain("isOrderCurrent()")
     expect(
       source.match(
-        /const current = beginManualAction\((?:reviewed\.)?candidate\.orderId(?:, true)?\)/g
+        /const current = beginManualAction\((?:reviewed\.)?candidate(?:, true)?\)/g
       )
     ).toHaveLength(8)
-    expect(source).toContain("assertAutomaticCurrent(candidate.orderId)")
+    expect(source).toContain("assertAutomaticCurrent(")
+    expect(source).toContain("candidateKeyForSelection(candidate)")
     expect(source).toContain(
       "executionRevision.current !== actionExecutionRevision"
     )
     expect(source).toContain("isDisplayCurrent: display.isCurrent")
     expect(
-      source.match(
-        /beginManualAction\((?:reviewed\.)?candidate\.orderId, true\)/g
-      )
+      source.match(/beginManualAction\((?:reviewed\.)?candidate, true\)/g)
     ).toHaveLength(6)
     expect(source).toContain("observationOnly: true")
     const actions = source.slice(

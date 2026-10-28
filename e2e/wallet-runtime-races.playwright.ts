@@ -20,6 +20,8 @@ const core = "/@fs" + path.resolve("packages/core/src/index.ts")
 const storage =
   "/@fs" + path.resolve("packages/core/src/wallets/wallet-storage.ts")
 const sparkSdk = "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts")
+const walletSync =
+  "/@fs" + path.resolve("packages/core/src/wallets/portable-wallet-sync.ts")
 const relay = "ws://127.0.0.1:" + process.env.PLAYWRIGHT_RELAY_PORT
 const apps = {
   market: "http://127.0.0.1:" + (process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"),
@@ -288,8 +290,9 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
     await saved(page)
     await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page.evaluate(
-      async ({ core, managerUrl }) => {
-        const { db } = await import(core)
+      async ({ core, managerUrl, walletSync }) => {
+        const { db, getAccountSigner } = await import(core)
+        const { getPortableWalletSync } = await import(walletSync)
         const { getSparkWalletManager } = await import(managerUrl)
         const manager = getSparkWalletManager()
         const read = manager.getBalance.bind(manager)
@@ -311,10 +314,17 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
           return balance
         }
         const wallet = (await db.wallets.toArray())[0]
-        await db.wallets.update(wallet.id, { label: "Reload gated wallet" })
+        const signer = getAccountSigner()
+        if (!signer) throw new Error("Controlled wallet signer is unavailable")
+        await getPortableWalletSync(signer).update(
+          wallet.id,
+          { name: "Reload gated wallet" },
+          { priority: "foreground" }
+        )
       },
       {
         core,
+        walletSync,
         managerUrl:
           "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
       }
@@ -368,8 +378,9 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
     await closeDefaultWalletSession(page)
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
     await page.evaluate(
-      async ({ core }) => {
-        const { db } = await import(core)
+      async ({ core, walletSync }) => {
+        const { db, getAccountSigner } = await import(core)
+        const { getPortableWalletSync } = await import(walletSync)
         const probe = (window as unknown as WalletFixtureWindow).__walletProbe
         probe.recoveryReads = 0
         probe.reloadHeld = false
@@ -385,9 +396,15 @@ test("wallet reload cannot overwrite a newer open state @market", async ({
           }
         }
         const wallet = (await db.wallets.toArray())[0]
-        await db.wallets.update(wallet.id, { label: "Reload gated wallet" })
+        const signer = getAccountSigner()
+        if (!signer) throw new Error("Controlled wallet signer is unavailable")
+        await getPortableWalletSync(signer).update(
+          wallet.id,
+          { name: "Reload gated wallet" },
+          { priority: "foreground" }
+        )
       },
-      { core, storage }
+      { core, storage, walletSync }
     )
     await expect
       .poll(() =>
@@ -435,8 +452,9 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
     await expect(page.getByText("Locked", { exact: true })).toHaveCount(1)
 
     await page.evaluate(
-      async ({ core, managerUrl }) => {
-        const { db } = await import(core)
+      async ({ core, managerUrl, walletSync }) => {
+        const { db, getAccountSigner } = await import(core)
+        const { getPortableWalletSync } = await import(walletSync)
         const { getSparkWalletManager } = await import(managerUrl)
         const manager = getSparkWalletManager()!
         const probe = (window as unknown as WalletRaceWindow).__walletProbe
@@ -466,12 +484,17 @@ test("wallet reload shows a newly native-open wallet while balance refresh is pe
           return balance
         }
         const wallet = (await db.wallets.toArray())[0]
-        await db.wallets.update(wallet.id, {
-          label: "Native-open reload wallet",
-        })
+        const signer = getAccountSigner()
+        if (!signer) throw new Error("Controlled wallet signer is unavailable")
+        await getPortableWalletSync(signer).update(
+          wallet.id,
+          { name: "Native-open reload wallet" },
+          { priority: "foreground" }
+        )
       },
       {
         core,
+        walletSync,
         storage,
         managerUrl:
           "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),

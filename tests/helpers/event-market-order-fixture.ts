@@ -26,6 +26,7 @@ export function createEventMarketOrderFixture(
     productDTag?: string
     productCreatedAt?: number
     price?: number
+    eventOnly?: boolean
     calendarEnd?: number
     calendarCreatedAt?: number
     newAssignment?: boolean
@@ -119,6 +120,16 @@ export function createEventMarketOrderFixture(
         ["title", "Coffee"],
         ["price", String(price), "SATS"],
         ["type", "simple", "physical"],
+        ...(options.eventOnly
+          ? [
+              ["visibility", "hidden"],
+              ["conduit_event_only", "1"],
+              [
+                "image",
+                "https://cdn.conduit.market/conduit-test/event-product.png",
+              ],
+            ]
+          : []),
         ...(options.newAssignment
           ? [["stock", "6"]]
           : [["a", marketCoordinate]]),

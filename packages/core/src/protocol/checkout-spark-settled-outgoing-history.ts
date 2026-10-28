@@ -2,6 +2,7 @@ import { decodeLightningInvoicePaymentHash } from "./lightning"
 import {
   deriveCheckoutSparkSettledTransferId,
   deriveCheckoutSparkSettledRenewalTransferId,
+  isCheckoutSparkNativeTreasuryPlan,
   type CheckoutSparkSettledPlan,
 } from "./checkout-spark-settled-router"
 import {
@@ -28,12 +29,12 @@ export function requireCheckoutSparkSettledExactOutgoingRequest(
   if (
     (plan.schemaVersion !== 3 &&
       plan.schemaVersion !== 4 &&
-      plan.schemaVersion !== 5) ||
+      plan.schemaVersion !== 5 &&
+      plan.schemaVersion !== 6) ||
     target.walletId !== plan.walletId ||
     target.network !== plan.network ||
     !recipient ||
-    ((plan.schemaVersion === 4 || plan.schemaVersion === 5) &&
-      recipient.kind === "conduit") ||
+    (isCheckoutSparkNativeTreasuryPlan(plan) && recipient.kind === "conduit") ||
     target.recipientId !== recipient.recipientId ||
     target.intent.legId !== recipient.legId ||
     (target.generation !== undefined &&

@@ -104,6 +104,56 @@ describe("Event timeline page scrolling", () => {
     expect(html).toContain('tabindex="0"')
   })
 
+  it("offers explicit show/hide history controls without rendering hidden past rows", () => {
+    const renderHistory = (count: number) =>
+      renderToStaticMarkup(
+        <EventTimelineViewport
+          scrollMode="page"
+          currentAndFutureEvents={<li>Current event</li>}
+          hiddenEarlierCount={count === 0 ? 14 : 2}
+          hiddenLaterCount={0}
+          nowAnchorRef={null}
+          onLoadEarlier={() => undefined}
+          onHideEarlier={() => undefined}
+          onLoadLater={() => undefined}
+          pageSize={12}
+          pastEvents={count > 0 ? <li>Past event</li> : null}
+          visiblePastCount={count}
+          viewportRef={null}
+        />
+      )
+    const hidden = renderHistory(0)
+    expect(hidden).toContain("Show past events")
+    expect(hidden).toContain('aria-expanded="false"')
+    expect(hidden).not.toContain("Hide past events")
+    expect(hidden).not.toContain("Past event</li>")
+    expect(hidden).toContain("Current event</li>")
+    const shown = renderHistory(12)
+    expect(shown).toContain("Hide past events")
+    expect(shown).toContain("Load 2 earlier events")
+    expect(shown).toContain("Past event</li>")
+  })
+
+  it("wires both timelines to a zero-past initial page and the explicit history controls", () => {
+    for (const app of ["market", "merchant"]) {
+      const name =
+        app === "market" ? "MarketEventsTimeline" : "MerchantEventsTimeline"
+      const source = readFileSync(
+        new URL(`../apps/${app}/src/components/${name}.tsx`, import.meta.url),
+        "utf8"
+      )
+      expect(source).toMatch(/earlier:\s*0/)
+      expect(source).not.toMatch(
+        /earlier:\s*(?:MARKET|MERCHANT)_EVENT_TIMELINE_PAGE_SIZE/
+      )
+      expect(source).toContain("onHideEarlier={hideEarlier}")
+      expect(source).toContain("visiblePastCount={presentation.past.length}")
+      expect(source).toContain(
+        "pastEvents={renderMixedEntries(presentation.past)}"
+      )
+    }
+  })
+
   it("chooses the desktop main scroller, not the non-scrolling timeline", () => {
     const fixture = scrollFixture()
     fixture.overflow.set(fixture.main, "auto")

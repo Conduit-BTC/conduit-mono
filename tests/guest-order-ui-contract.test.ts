@@ -60,6 +60,9 @@ describe("guest order UI contracts", () => {
     const publisher = await Bun.file(
       "packages/core/src/protocol/merchant-order-publish.ts"
     ).text()
+    const contactNotice = await Bun.file(
+      "apps/merchant/src/components/MerchantOrderContactNotice.tsx"
+    ).text()
 
     expect(source).toContain("assertBuyerHasNostrInbox()")
     expect(source).toContain("delivery: operationalDelivery")
@@ -68,7 +71,10 @@ describe("guest order UI contracts", () => {
     expect(source).toContain("isMerchantGuestOrder")
     expect(orderIdentity).toContain('"guest_ephemeral"')
     expect(source).toContain("return false")
-    expect(source).toContain("This guest has no Nostr reply inbox")
+    expect(source).toMatch(
+      /<MerchantOrderContactNotice\s+buyerInboxKnown=\{buyerInboxKnown\}\s+isGuestOrder=\{isGuestOrder\}\s+order=\{selectedOrder\}/
+    )
+    expect(contactNotice).toContain("This guest has no Nostr reply inbox")
     expect(source).toContain("assertPaidForFulfillment()")
     expect(source).not.toContain("{!isGuestOrder && (")
     expect(publisher).toContain(

@@ -6,6 +6,7 @@ import {
   buildCheckoutSparkRecoveryRumor,
   EVENT_KINDS,
   GUEST_ORDER_LOCAL_RETENTION_MS,
+  getCheckoutSparkBuyerTakeoverAt,
   parseCheckoutSparkRecoveryRumor,
   buildCheckoutSparkOrganizerRecoveryRumor,
   parseCheckoutSparkOrganizerRecoveryRumor,
@@ -351,7 +352,8 @@ export function createGuestCheckoutSparkRecoverySigner(
           payload.schemaVersion === 1 ||
           (payload.plan.schemaVersion !== 3 &&
             payload.plan.schemaVersion !== 4 &&
-            payload.plan.schemaVersion !== 5) ||
+            payload.plan.schemaVersion !== 5 &&
+            payload.plan.schemaVersion !== 6) ||
           (organizerScope !== null &&
             ((payload.schemaVersion !== 4 && payload.schemaVersion !== 5) ||
               payload.organizerPubkey !== organizerScope.organizerPubkey ||
@@ -370,13 +372,24 @@ export function createGuestCheckoutSparkRecoverySigner(
       } catch {
         throw scopeError()
       }
-      assertActive(payload.plan.takeoverAt)
+      const deadline =
+        payload.plan.schemaVersion === 6
+          ? payload.type === "checkout_spark_recovery" ||
+            payload.type === "checkout_spark_organizer_recovery"
+            ? payload.plan.funding.expiresAt
+            : getCheckoutSparkBuyerTakeoverAt(
+                payload.plan,
+                payload.state.buyerActivation
+              )
+          : payload.plan.takeoverAt
+      if (deadline === null) throw scopeError()
+      assertActive(deadline)
       const ciphertext = await signer.encryptNip44(
         recoveryRecipient,
         JSON.stringify(canonicalRumor)
       )
-      assertActive(payload.plan.takeoverAt)
-      pendingSeals.set(ciphertext, payload.plan.takeoverAt)
+      assertActive(deadline)
+      pendingSeals.set(ciphertext, deadline)
       return ciphertext
     },
     signEvent: async (event) => {

@@ -1,4 +1,7 @@
 import * as eventMarketProtocol from "../packages/core/src/protocol/event-market"
+import * as commerceProtocol from "../packages/core/src/protocol/commerce"
+import * as rosterProtocol from "../packages/core/src/protocol/event-market-roster-read"
+import * as authorizationProtocol from "../packages/core/src/protocol/event-market-authorization-read"
 import { installMerchantAcceptanceTestSession } from "./helpers/merchant-acceptance-session"
 import { __resetProtectedReadSigner } from "../packages/core/src/protocol/protected-read-authorization"
 import { openMerchantAcceptanceEvidence } from "../packages/core/src/protocol/merchant-acceptance-privacy"
@@ -26,7 +29,11 @@ import {
   buildEventMarketCalendarDraft,
   parseEventMarketCalendarEvent,
 } from "../packages/core/src/protocol/event-market"
-import { acceptMerchantOccurrenceOrder } from "../packages/core/src/protocol/merchant-occurrence-workflow"
+import {
+  acceptMerchantOccurrenceOrder,
+  saveMerchantOccurrenceAssignment,
+} from "../packages/core/src/protocol/merchant-occurrence-workflow"
+import { resolveEventMarketAuthorization } from "../packages/core/src/protocol/event-market-authorization"
 import { commitLocalProductWrite } from "../packages/core/src/protocol/local-product-write"
 import { prepareProductListingDeliveryJob } from "../packages/core/src/protocol/product-listing-delivery"
 import {
@@ -146,6 +153,294 @@ const session = {
   authenticatedPubkey: merchant,
   shouldContinue: () => true,
 }
+
+async function prepareEventOnlyAcceptance() {
+  const f = createEventMarketOrderFixture({
+    mode: "merchant_present",
+    newAssignment: true,
+    eventOnly: true,
+  })
+  const verified = await admitFixtureEvent(f.fulfillment.product.signedEvent)
+  const product = parseProductEvent(verified)
+  await db.products.put(projectSignedProductListingForLocalCommit(verified))
+  await initializeMerchantInventoryProduct({
+    db,
+    merchantPubkey: f.merchant,
+    productCoordinate: product.id,
+    stock: 6,
+    signedProductEvent: verified,
+  })
+  await commitMerchantInventoryAssignment({
+    db,
+    productCoordinate: product.id,
+    assignmentCoordinate: f.fulfillment.occurrenceAssignment!.coordinate,
+    marketCoordinate: f.fulfillment.market.coordinate,
+    occurrenceCoordinate: f.fulfillment.calendar.coordinate,
+    inventory: { mode: "tracked", quantity: 6 },
+    state: "active",
+    fulfillmentMethods: ["pickup"],
+    expectedRevision: null,
+    mutationId: "event-only-initial-allocation",
+    context: {
+      kind: "validated-event-market-assignment",
+      productEventId: verified.id,
+      marketEventId: f.fulfillment.market.eventId,
+      occurrenceEventId: f.fulfillment.calendar.eventId,
+      grantEventId: f.fulfillment.grant.eventId,
+      occurrenceEndMs: f.fulfillment.calendar.end,
+      terminal: false,
+    },
+  })
+  await retainEventMarketCommerceEvidence(
+    f.fulfillment.market.coordinate,
+    f.events.filter((event) => event.kind !== 30402)
+  )
+  return {
+    ...f,
+    product,
+    session: {
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+    },
+  }
+}
+
+it("exact assigned Event-only acceptance consumes its allocation once without admitting ordinary checkout", async () => {
+  const f = await prepareEventOnlyAcceptance()
+  const ordinary = orderSchema.parse({
+    ...f.order,
+    id: "event-only-ordinary",
+    items: [{ ...f.order.items[0], fulfillment: undefined }],
+  })
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      ...f.session,
+      order: ordinary,
+      products: [f.product],
+    })
+  ).rejects.toThrow("not currently sellable")
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  const result = await acceptMerchantOccurrenceOrder({
+    ...f.session,
+    order: f.order,
+    products: [f.product],
+  })
+  expect(result.replayed).toBe(false)
+  expect(result.order.items[0]?.method).toBe("pickup")
+  expect((await db.merchantInventoryProducts.get(f.product.id))?.stock).toBe(5)
+  db.close({ disableAutoOpen: false })
+  await db.open()
+  expect(
+    (
+      await acceptMerchantOccurrenceOrder({
+        ...f.session,
+        order: f.order,
+        products: [],
+      })
+    ).replayed
+  ).toBe(true)
+  expect((await db.merchantInventoryProducts.get(f.product.id))?.stock).toBe(5)
+})
+
+it("Event-only legacy hint, malformed and unmarked hidden orders do not gain acceptance authority", async () => {
+  const f = createEventMarketOrderFixture({
+    mode: "merchant_present",
+    newAssignment: false,
+    eventOnly: true,
+  })
+  const verified = await admitFixtureEvent(f.fulfillment.product.signedEvent)
+  const product = parseProductEvent(verified)
+  await db.products.put(projectSignedProductListingForLocalCommit(verified))
+  await expect(
+    acceptMerchantOccurrenceOrder({
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+      order: f.order,
+      products: [product],
+    })
+  ).rejects.toThrow()
+  expect(await db.merchantInventoryAcceptedOrders.count()).toBe(0)
+  for (const [index, marker] of [
+    [],
+    [["conduit_event_only", "invalid"]],
+  ].entries()) {
+    const raw = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: 100,
+        content: "",
+        tags: [
+          ["d", `ordinary-hidden-${index}`],
+          ["title", "Hidden"],
+          ["type", "simple", "physical"],
+          ["price", "10", "SATS"],
+          ["stock", "4"],
+          ["visibility", "hidden"],
+          ...marker,
+        ],
+      },
+      secret
+    )
+    const p = await setup(raw)
+    installMerchantAcceptanceTestSession(merchant)
+    const purchase = orderSchema.parse({
+      id: `ordinary-hidden-${index}`,
+      merchantPubkey: merchant,
+      buyerPubkey: "a".repeat(64),
+      items: [
+        {
+          productId: p.id,
+          title: p.title,
+          format: "physical",
+          quantity: 1,
+          priceAtPurchase: 10,
+          currency: "SATS",
+        },
+      ],
+      subtotal: 10,
+      currency: "SATS",
+      createdAt: Date.now(),
+    })
+    await expect(
+      acceptMerchantOccurrenceOrder({
+        ...session,
+        order: purchase,
+        products: [p],
+      })
+    ).rejects.toThrow("not currently sellable")
+    expect((await db.merchantInventoryProducts.get(p.id))?.stock).toBe(4)
+  }
+})
+
+it("variation assignment management reads its hidden Event-only parent without relaxing exact parent checks", async () => {
+  const f = createEventMarketOrderFixture({
+    mode: "merchant_present",
+    newAssignment: true,
+    eventOnly: true,
+  })
+  const parentCoordinate = `30402:${f.merchant}:event-only-family`
+  const parent = finalizeEvent(
+    {
+      kind: 30402,
+      created_at: 90,
+      content: "Family",
+      tags: [
+        ["d", "event-only-family"],
+        ["title", "Family"],
+        ["type", "variable", "physical"],
+        ["price", "100", "SATS"],
+        ["visibility", "hidden"],
+        ["conduit_event_only", "1"],
+      ],
+    },
+    f.merchantSecret
+  )
+  const original = f.fulfillment.product.signedEvent!
+  const child = finalizeEvent(
+    {
+      ...original,
+      tags: [
+        ...original.tags.filter((tag) => tag[0] !== "type"),
+        ["type", "variation", "physical"],
+        ["a", parentCoordinate],
+      ],
+    },
+    f.merchantSecret
+  )
+  const childProduct = parseProductEvent(await admitFixtureEvent(child)),
+    parentProduct = parseProductEvent(await admitFixtureEvent(parent))
+  const env = source([
+    ...f.events.filter((event) => event.id !== original.id),
+    parent,
+    child,
+  ])
+  const current = await readEventMarketRoster(
+    { reference: f.fulfillment.market.coordinate },
+    env.deps
+  )
+  const roster = spyOn(
+    rosterProtocol,
+    "readEventMarketRoster"
+  ).mockResolvedValue(current)
+  const transitions = await Promise.all(
+    f.events.filter((event) => event.kind === 3841).map(admitFixtureEvent)
+  )
+  const approval = spyOn(
+    authorizationProtocol,
+    "readEventMarketAuthorization"
+  ).mockResolvedValue({
+    marketCoordinate: f.fulfillment.market.coordinate,
+    merchantPubkey: f.merchant,
+    resolution: resolveEventMarketAuthorization({
+      marketCoordinate: f.fulfillment.market.coordinate,
+      merchantPubkey: f.merchant,
+      transitions,
+      deletions: [],
+    }),
+    actionable: true,
+    coverage: "complete",
+    retained: true,
+    observedEvidence: transitions,
+  })
+  const reads: boolean[] = []
+  let invalidParent = false
+  const listings = spyOn(
+    commerceProtocol,
+    "getProductsByIds"
+  ).mockImplementation(async (ids, options) => {
+    const value =
+      ids[0] === parentCoordinate
+        ? invalidParent
+          ? { ...parentProduct, type: "simple" as const }
+          : parentProduct
+        : childProduct
+    if (ids[0] === parentCoordinate)
+      reads.push(options?.includeMarketHidden === true)
+    return {
+      data: options?.includeMarketHidden
+        ? [{ addressId: value.id, product: value }]
+        : [],
+      meta: {},
+    } as never
+  })
+  try {
+    const result = await saveMerchantOccurrenceAssignment({
+      merchantPubkey: f.merchant,
+      authenticatedPubkey: f.merchant,
+      shouldContinue: () => true,
+      marketReference: f.fulfillment.market.coordinate,
+      product: childProduct,
+      occurrenceCoordinate: f.fulfillment.calendar.coordinate,
+      quantity: 2,
+      remove: false,
+    })
+    expect(result.productCoordinate).toBe(childProduct.id)
+    expect(result.inventory).toEqual({ mode: "tracked", quantity: 2 })
+    expect(reads).toEqual([true])
+    invalidParent = true
+    await expect(
+      saveMerchantOccurrenceAssignment({
+        merchantPubkey: f.merchant,
+        authenticatedPubkey: f.merchant,
+        shouldContinue: () => true,
+        marketReference: f.fulfillment.market.coordinate,
+        product: childProduct,
+        occurrenceCoordinate: f.fulfillment.calendar.coordinate,
+        quantity: 1,
+        remove: false,
+      })
+    ).rejects.toThrow("signed parent could not be verified")
+    expect(
+      (await db.merchantInventoryAssignments.get(result.coordinate))?.inventory
+    ).toEqual({ mode: "tracked", quantity: 2 })
+  } finally {
+    listings.mockRestore()
+    approval.mockRestore()
+    roster.mockRestore()
+  }
+})
 function job(event: ReturnType<typeof listing>) {
   return prepareProductListingDeliveryJob({
     merchantPubkey: merchant,

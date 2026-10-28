@@ -1,13 +1,19 @@
 import { describe, expect, it } from "bun:test"
 import type { NDKSigner } from "@nostr-dev-kit/ndk"
+import { IDBKeyRange, indexedDB } from "fake-indexeddb"
+import { ConduitDB } from "@conduit/core/db"
 import {
+  DexieCheckoutSparkSettledRepository,
   calculateCheckoutSparkSettledGrossFundingSats,
   calculateConduitCheckoutFeeSats,
   checkoutSparkConduitFeeRecipient,
   createCheckoutSparkMerchantSettlementRecord,
   createCheckoutSparkSettledReconciliation,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
+  deriveCheckoutSparkNativeTreasuryInvoiceId,
 } from "@conduit/core"
+import { nativeTreasuryFixture } from "./support/checkout-spark-native-treasury-fixture"
 import {
   createCheckoutSparkSettledFundingBridge,
   type CheckoutSparkSettledFundingDependencies,
@@ -79,8 +85,8 @@ function deferred() {
   return { promise, resolve }
 }
 
-function fixture() {
-  const plan = freezeCheckoutSparkSettledPlan({
+function fixture(payActivation = false) {
+  const legacyPlan = freezeCheckoutSparkSettledPlan({
     checkoutId: "checkout-external-funding",
     orderId: "order-external-funding",
     merchantPubkey: MERCHANT,
@@ -137,6 +143,24 @@ function fixture() {
       },
     ],
   })
+  const treasury = nativeTreasuryFixture().plan.nativeTreasury!
+  const { takeoverAt: _historicalCutoff, ...untimed } = legacyPlan
+  void _historicalCutoff
+  const plan = payActivation
+    ? freezeCheckoutSparkSettledTreasuryPlan({
+        ...untimed,
+        executionTiming: { type: "pay_activation_v1", windowMs: 120_000 },
+        nativeTreasury: {
+          ...treasury,
+          invoiceId: deriveCheckoutSparkNativeTreasuryInvoiceId({
+            ...legacyPlan,
+            sparkAddress: treasury.sparkAddress,
+            receiverIdentityPublicKey: treasury.receiverIdentityPublicKey,
+            senderIdentityPublicKey: RECEIVER,
+          }),
+        },
+      })
+    : legacyPlan
   let state = createCheckoutSparkSettledReconciliation(plan)
   let revision = 1
   let now = NOW + 1_000
@@ -314,6 +338,7 @@ function fixture() {
     events,
     metadata,
     bridge,
+    state: () => state,
     run: (overrides: Partial<CheckoutSparkSettledFundingPaymentInput> = {}) =>
       bridge().fund({ ...input, ...overrides }),
     counts: () => ({ payerCalls, creditRecords, beforeSendCalls }),
@@ -352,6 +377,243 @@ function fixture() {
     },
   }
 }
+
+describe("one-time Pay activation before funding admission", () => {
+  it("does not reserve or enter the connected payer when acknowledgement outlives the invoice", async () => {
+    const test = fixture(true)
+    await expect(
+      test.run({
+        exposeExternalInvoice: false,
+        paymentTarget: {
+          type: "wallet",
+          providerId: "nwc",
+          walletId: "test-payer",
+        },
+        acknowledgeRecoverySnapshot: async () => {
+          test.setNow(test.plan.funding.expiresAt)
+        },
+      })
+    ).rejects.toThrow("expired")
+    expect(test.state().buyerActivation).not.toBeNull()
+    expect(test.metadata().fundingSubmissionState).toBe("not_started")
+    expect(test.counts().payerCalls).toBe(0)
+  })
+
+  it("retains the same IndexedDB activation across competing tabs and a reopened connection", async () => {
+    const test = fixture(true)
+    const name = `pay-activation-funding-${crypto.randomUUID()}`
+    let database = new ConduitDB(name, { indexedDB, IDBKeyRange })
+    let repository = new DexieCheckoutSparkSettledRepository(database)
+    const released = deferred()
+    try {
+      await repository.create(test.plan)
+      test.dependencies.repository = repository
+      test.dependencies.loadAuthorized = async () => {
+        const saved = await repository.load(
+          test.plan.checkoutId,
+          test.plan.planDigest
+        )
+        if (saved.status !== "active") throw new Error("Saved plan unavailable")
+        return { ...test.prepared, state: saved.state }
+      }
+      const entered = deferred()
+      const first = test.run({
+        acknowledgeRecoverySnapshot: async (state) => {
+          expect(state.buyerActivation?.activatedAt).toBe(NOW + 1_000)
+          entered.resolve()
+          await released.promise
+        },
+      })
+      await Promise.race([entered.promise, first])
+      await expect(
+        test.run({
+          acknowledgeRecoverySnapshot: async () => {
+            throw new Error("Competing tab must not acknowledge")
+          },
+        })
+      ).rejects.toThrow("another tab")
+      expect(test.metadata().externalFundingExposedAt).toBeUndefined()
+      released.resolve()
+      expect((await first).status).toBe("external_ready")
+      const original = await repository.load(
+        test.plan.checkoutId,
+        test.plan.planDigest
+      )
+      expect(original.status).toBe("active")
+      database.close()
+      database = new ConduitDB(name, { indexedDB, IDBKeyRange })
+      repository = new DexieCheckoutSparkSettledRepository(database)
+      test.dependencies.repository = repository
+      test.setNow(NOW + 40_000)
+      const reopened = await test.run({
+        acknowledgeRecoverySnapshot: async (state) => {
+          if (original.status !== "active")
+            throw new Error("Original plan unavailable")
+          expect(state.buyerActivation).toEqual(original.state.buyerActivation)
+        },
+      })
+      expect(reopened.status).toBe("external_ready")
+      if (reopened.status === "external_ready") {
+        expect(reopened.externalInvoice.takeoverAt).toBe(NOW + 121_000)
+      }
+      expect(test.counts().payerCalls).toBe(0)
+    } finally {
+      released.resolve()
+      await database.delete()
+    }
+  })
+
+  it("starts only at Pay and waits for saved activation ACK before external disclosure", async () => {
+    const test = fixture(true)
+    test.setNow(NOW + 180_000)
+    const entered = deferred()
+    const released = deferred()
+    const pending = test.run({
+      acknowledgeRecoverySnapshot: async (state) => {
+        expect(test.state().buyerActivation).toEqual(state.buyerActivation)
+        expect(state.buyerActivation?.activatedAt).toBe(NOW + 180_000)
+        expect(test.metadata().externalFundingExposedAt).toBeUndefined()
+        entered.resolve()
+        await released.promise
+      },
+    })
+    await Promise.race([entered.promise, pending])
+    expect(test.state().buyerActivation?.takeoverAt).toBe(NOW + 300_000)
+    expect(test.metadata().fundingSubmissionState).toBe("not_started")
+    released.resolve()
+    const result = await pending
+    expect(result.status).toBe("external_ready")
+    if (result.status === "external_ready") {
+      expect(result.externalInvoice.takeoverAt).toBe(NOW + 300_000)
+    }
+    expect(test.counts().payerCalls).toBe(0)
+  })
+
+  it("keeps the activation fixed across failed ACK and a fresh bridge retry", async () => {
+    const test = fixture(true)
+    await expect(
+      test.run({
+        acknowledgeRecoverySnapshot: async () => {
+          throw new Error("Recovery not acknowledged")
+        },
+      })
+    ).rejects.toThrow("Recovery not acknowledged")
+    const activation = test.state().buyerActivation
+    expect(activation?.activatedAt).toBe(NOW + 1_000)
+    expect(test.metadata().fundingSubmissionState).toBe("not_started")
+    test.setNow(NOW + 40_000)
+    let acknowledged = false
+    const result = await test.run({
+      acknowledgeRecoverySnapshot: async (state) => {
+        expect(state.buyerActivation).toEqual(activation)
+        acknowledged = true
+      },
+    })
+    expect(acknowledged).toBe(true)
+    expect(result.status).toBe("external_ready")
+    expect(test.state().buyerActivation).toEqual(activation)
+  })
+
+  it("cannot activate from passive inspection or a manual rail without disclosure", async () => {
+    const test = fixture(true)
+    expect((await test.run({ inspectionOnly: true })).status).toBe(
+      "manual_required"
+    )
+    expect(test.state().buyerActivation).toBeNull()
+    test.dependencies.payInvoice = async () => ({
+      status: "manual_required",
+      reason: "Select a payment method",
+    })
+    expect((await test.run({ exposeExternalInvoice: false })).status).toBe(
+      "manual_required"
+    )
+    expect(test.state().buyerActivation).toBeNull()
+  })
+
+  it("holds new funding without an activation delivery callback", async () => {
+    const test = fixture(true)
+    await expect(test.run()).rejects.toThrow("activation")
+    expect(test.state().buyerActivation).toBeNull()
+    expect(test.metadata().externalFundingExposedAt).toBeUndefined()
+    expect(test.counts().payerCalls).toBe(0)
+  })
+
+  it("saves and ACKs before any connected payer call and never resets after a definite pre-send refusal", async () => {
+    const test = fixture(true)
+    let acknowledged = false
+    let calls = 0
+    test.dependencies.payInvoice = async (input) => {
+      expect(acknowledged).toBe(true)
+      expect(test.state().buyerActivation).not.toBeNull()
+      await input.beforeSend?.()
+      calls += 1
+      return {
+        status: "retryable_failure",
+        reason: "Provider unavailable before submission",
+        phase: "before_publish",
+      }
+    }
+    const input = {
+      exposeExternalInvoice: false,
+      paymentTarget: {
+        type: "wallet" as const,
+        providerId: "nwc",
+        walletId: "test-payer",
+      },
+      acknowledgeRecoverySnapshot: async () => {
+        acknowledged = true
+      },
+    }
+    expect((await test.run(input)).status).toBe("payment_retryable")
+    const activation = test.state().buyerActivation
+    expect(test.metadata().fundingSubmissionState).toBe("not_started")
+    test.setNow(NOW + 30_000)
+    expect((await test.run(input)).status).toBe("payment_retryable")
+    expect(test.state().buyerActivation).toEqual(activation)
+    expect(calls).toBe(2)
+  })
+
+  it("does not ACK or disclose if activation cannot be durably saved", async () => {
+    const test = fixture(true)
+    let acknowledged = false
+    test.dependencies.repository!.save = async () => {
+      throw new Error("Activation storage failed")
+    }
+    await expect(
+      test.run({
+        acknowledgeRecoverySnapshot: async () => {
+          acknowledged = true
+        },
+      })
+    ).rejects.toThrow("Activation storage failed")
+    expect(acknowledged).toBe(false)
+    expect(test.metadata().externalFundingExposedAt).toBeUndefined()
+  })
+
+  it("does not disclose when the Buyer session is revoked during activation ACK", async () => {
+    const test = fixture(true)
+    await expect(
+      test.run({
+        acknowledgeRecoverySnapshot: async () => {
+          test.setActive(false)
+        },
+      })
+    ).rejects.toThrow("buyer session")
+    expect(test.metadata().externalFundingExposedAt).toBeUndefined()
+    expect(test.counts().payerCalls).toBe(0)
+  })
+
+  it("leaves historical funding terms unchanged", async () => {
+    const test = fixture()
+    const result = await test.run({
+      acknowledgeRecoverySnapshot: async () => {
+        throw new Error("Historical funding must not activate")
+      },
+    })
+    expect(result.status).toBe("external_ready")
+    expect(test.state().buyerActivation).toBeUndefined()
+  })
+})
 
 describe("settled external funding disclosure", () => {
   it.each(["sender_changed", "session_revoked"] as const)(

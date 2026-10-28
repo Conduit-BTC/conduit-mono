@@ -38,6 +38,19 @@ An active grant with validated observed ancestry and a current roster row are bo
 
 A merchant's kind `30402` product may carry a discovery hint for the market with `["a", "30409:<organizer>:<market-d>"]`. That tag establishes no assignment authority. The ordinary product carries no independent event pickup, booth, handler, or fee. Merchant product publication, edits, untagging, visibility, price, inventory, and payment destination remain under the merchant's signature. No organizer product acceptance occurs. Earlier experimental version-1 `30409` revisions do not imply grants.
 
+Merchants may explicitly choose **Sell only at events** for a physical product.
+Conduit emits Open Markets `["visibility", "hidden"]` together with its own
+`["conduit_event_only", "1"]` extension. This is hidden public listing data,
+not encrypted publication. The option excludes ordinary feeds, storefronts,
+direct ordinary purchases and legacy pickup exceptions; it permits Event
+eligibility only with a verified current occurrence assignment and the usual
+grant, date, stock, product/deletion and handout checks. A hint or the flag alone
+is never admission. Duplicate, unsupported or contradictory marker terms fail
+closed. An older hidden product without this explicit flag remains hidden.
+Ordinary assigned products remain ordinary until deliberately edited; no
+existing product, accepted order or funded snapshot is migrated. Variations
+require compatible signed parent visibility as well as their own exact terms.
+
 ### Occurrence assignments and durable acceptance
 
 The implemented merchant-pickup slice follows experimental proposal revision `8aa6d83331c750be22bf01413a1f932778e64568`. A merchant signs kind `30410` for the exact market, concrete occurrence and existing sellable product tuple. Its deterministic `d` is SHA-256 of compact UTF-8 JSON `[market, occurrence, product]`. A variation uses its own sellable coordinate. Product market tags cannot synthesize assignment authority. Current signed roster, causal grant, selected date, product and assignment evidence remain required for new purchases; retained revocation, deletion and conflict evidence dominates stale positives.
@@ -102,9 +115,11 @@ bytes. Unrelated open/close, booth and merchant-approval/revocation edits preser
 existing fee tags, including unsupported versions, rather than silently
 dropping them. Disabling or revoking is an explicit newly signed revision.
 New or deliberately edited fee settings are percentage-only: emit minimum zero
-and omit expiry. Offer the organizer's selected profile receiving address as an
-explicit shortcut, alongside custom entry; saving freezes the actual normalized
-destination rather than a live profile reference. Existing minimum/expiry terms
+and omit expiry. Prefill a new blank fee destination from the organizer's selected
+profile receiving address only after the shared receiver-capability check qualifies
+it. Keep explicit custom entry and never overwrite a typed destination or existing
+signed fee. Saving freezes the actual normalized destination rather than a live
+profile reference. Existing minimum/expiry terms
 remain visible and unchanged until deliberately edited. Retained signed expiry
 must be later than that revision's signing time. Current financial admission
 checks signed creation time and exclusive expiry when present; historical parsing
@@ -311,17 +326,42 @@ Handoff delivery retains exact encrypted operations for retry. Completed deliver
 
 Finite recurrence and event pickup versus ordinary shipping compose with these workflows. New event-context purchases are event pickup: catalog, product, cart and checkout do not offer a switch to shipping. Ordinary storefront shipping and historical saved fulfillment remain readable and keep their original terms. New assignment purchases permit pseudonymous contact-free pickup without a separate product opt-in until the selected date ends; the buyer must retain their private receipt. Historical pre-assignment immediate pickup retains its currently-occurring-date and merchant opt-in checks. Ordinary contact-based pickup and shipping contact requirements remain available. Organizer fees and checkout-wallet recovery require the exact payment-router and stock authority described above; a historical physical-release receipt alone does not imply those capabilities.
 
-Contact-free buyers may retain the visible private receipt (including its code)
-as a screenshot or save a readable text export; a raw JSON download is not
-required. They must explicitly confirm keeping it before ordering. Original
-JSON exports remain verifiable. The code is a bearer possession proof bound to
-the exact merchant, order and signed commitment, never proof of payment or an
-automatic refund or stock-release authorization. Receipt verification accepts
-the private file or code only against the selected order. Receipt codes and QR
-images must not enter diagnostics, telemetry or public demo evidence. For
-contact-based pickup, a visible country choice supports locally parsed phone
-numbers without a network lookup; explicit international numbers remain valid
-independently of the selected country.
+New Event pickup orders retain a private receipt through a verified browser
+write/readback before order submission; the buyer need not download it or
+confirm a pre-payment checkbox. The buyer-facing pickup receipt appears after
+the required payment or zero-cost verification. Signed-in and guest buyers
+may use the same bounded QR/code possession check. The new optional
+`pickupReceiptCommitment` binds the private code to the exact Merchant order
+for an explicit buyer identity and Event pickup only; it must agree with an
+existing contact-free commitment when both are present. Historical guest
+commitments and readable/JSON receipt exports remain verifiable.
+
+Receipt-only storage expires exactly 24 hours after the selected signed
+occurrence ends, regardless of later calendar edits. It stores no signing key,
+contact details, invoice or payment status. Guests retain the independent
+same-tab 24-hour signing/lifecycle deadline. A failed write/readback is a
+visible retention failure, never a promise of browser recovery. Optional
+private export and explicit Delete are available. Delete removes the private
+code, retaining only a minimal replay marker until the original expiry so a
+stale tab cannot restore it. Startup/access expiry pruning removes expired
+receipt records and markers without changing orders, payments or stock.
+After guest signing expires, a separate local saved-receipt view may retrieve,
+export or delete that private copy. It must state that payment status is
+unavailable, never restore a guest signer/inbox or payment action, and never
+present receipt possession as paid or as handout authority.
+
+The code is bearer possession evidence, not proof of payment, a refund or
+stock-release authorization. A Merchant or already-authorized Organizer must
+still verify the exact order's required payment/zero-cost evidence, existing
+handout authority and once-only claim before handing over goods. QR matching
+does not expand Organizer visibility to the Merchant's full order. Receipt
+matching on the Merchant's full order and the Organizer's existing opaque
+handoff-claim check remain distinct: the full private v1 receipt or original
+Merchant order identity must not be forwarded to the Organizer as a QR payload.
+Receipt codes and QR images must not enter diagnostics, telemetry or public demo
+evidence. For contact-based pickup, a visible country choice supports locally
+parsed phone numbers without a network lookup; explicit international numbers
+remain valid independently of the selected country.
 
 ## Validation boundary
 

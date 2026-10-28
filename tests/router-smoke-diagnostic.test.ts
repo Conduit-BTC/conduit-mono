@@ -18,6 +18,68 @@ import {
 } from "../scripts/ci/router_smoke_diagnostic"
 
 describe("runner-owned router phase evidence", () => {
+  it("accepts fixed retained Buyer handoff checkpoints without payment content", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "retained Buyer remains mounted through merchant handoff",
+      "retained Buyer waits past cutoff before funding",
+      "retained Buyer has no payment authority after merchant handoff",
+      "retained Buyer refreshes saved status without replay",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        lifecycle: "body",
+        body: "running",
+      })
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+          payment: "unapproved field",
+        })
+      ).toBeUndefined()
+    }
+  })
+
+  it("accepts the fixed Event Pay and private receipt checkpoints without adding content fields", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event external Pay action ready",
+      "event external Pay activation",
+      "event external funding QR",
+      "event external funding visible",
+      "event first Pay preserves its exact acknowledged activation",
+      "event buyer paid pickup receipt",
+      "event signed-in pickup receipt reload",
+    ] as const) {
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+        })?.phase
+      ).toBe(phase)
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        lifecycle: "body",
+        body: "running",
+      })
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+          receipt: "unapproved field",
+        })
+      ).toBeUndefined()
+    }
+  })
+
   it("distinguishes Event Buyer completion checks without transaction data", () => {
     const annotations: Array<{ type: string; description?: string }> = []
     const recorder = createRouterSmokeRecorder(annotations)

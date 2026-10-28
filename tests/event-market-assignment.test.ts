@@ -59,6 +59,81 @@ function signedMutation(
 }
 
 describe("experimental occurrence product assignment", () => {
+  it("admits explicit event-only listings only for their exact active assignment", async () => {
+    const parsedAssignment = parseEventMarketAssignmentEvent(assignment())!
+    const makeProduct = async (extra: string[][]) =>
+      parseProductEvent(
+        await admitFixtureEvent(
+          finalizeEvent(
+            {
+              kind: 30402,
+              created_at: 101,
+              content: "Soap",
+              tags: [
+                ["d", "soap"],
+                ["title", "Soap"],
+                ["price", "12", "USD"],
+                ["type", "simple", "physical"],
+                ["stock", "4"],
+                ...extra,
+              ],
+            },
+            merchantSecret
+          )
+        )
+      )
+    const product = await makeProduct([
+      ["visibility", "hidden"],
+      ["conduit_event_only", "1"],
+    ])
+    expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: parsedAssignment,
+        product,
+      })
+    ).toBe(true)
+    expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: { ...parsedAssignment, state: "removed" },
+        product,
+      })
+    ).toBe(false)
+    expect(
+      isEventMarketAssignmentProductSuitable({
+        assignment: {
+          ...parsedAssignment,
+          productCoordinate: "30402:" + merchant + ":other",
+        },
+        product,
+      })
+    ).toBe(false)
+    for (const tags of [
+      [["visibility", "hidden"]],
+      [["conduit_event_only", "1"]],
+      [
+        ["visibility", "hidden"],
+        ["conduit_event_only", "unknown"],
+      ],
+      [
+        ["visibility", "hidden"],
+        ["conduit_event_only", "1"],
+        ["conduit_event_only", "1"],
+      ],
+      [
+        ["visibility", "hidden"],
+        ["visibility", "public"],
+        ["conduit_event_only", "1"],
+      ],
+    ]) {
+      expect(
+        isEventMarketAssignmentProductSuitable({
+          assignment: parsedAssignment,
+          product: await makeProduct(tags),
+        })
+      ).toBe(false)
+    }
+  })
+
   it("matches the frozen tuple hash vector", () => {
     expect(
       computeEventMarketAssignmentDTag({

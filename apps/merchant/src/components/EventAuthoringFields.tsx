@@ -105,6 +105,7 @@ export function EventBannerField({
   disabled = false,
   onChange,
   onBusyChange,
+  showPreview = true,
 }: {
   id: string
   value: string
@@ -113,6 +114,7 @@ export function EventBannerField({
   disabled?: boolean
   onChange: (url: string) => void
   onBusyChange?: (busy: boolean) => void
+  showPreview?: boolean
 }) {
   const upload = useProductImageUpload()
   const input = useRef<HTMLInputElement>(null)
@@ -159,7 +161,7 @@ export function EventBannerField({
       <p className="text-sm font-medium text-[var(--text-primary)]">
         Event banner (optional)
       </p>
-      {value ? (
+      {value && showPreview ? (
         <img
           src={value}
           alt={`${title || "Event"} banner preview`}

@@ -36,6 +36,23 @@ const controls = {
   onRetryHandout: () => {},
 }
 
+it("keeps an inactive routed purchase waiting for Pay instead of inventing a recovery deadline", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      waitingForBuyer
+      buyerNotStarted
+    />
+  )
+  expect(markup).toContain("Waiting for buyer to start payment")
+  expect(markup).toContain("Recovery timing starts when the buyer chooses Pay")
+  expect(markup).not.toContain("buyer still has time to finish routing")
+  const button = markup.match(
+    /<button\b[^>]*>Continue this order<\/button>/
+  )?.[0]
+  expect(button).toContain('disabled=""')
+})
+
 it("shows one actionable incomplete-history notice rather than claiming the inbox is empty", () => {
   for (const selectionCount of [0, 1]) {
     const markup = renderToStaticMarkup(

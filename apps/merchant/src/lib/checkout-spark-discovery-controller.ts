@@ -42,6 +42,7 @@ export function startMerchantCheckoutSparkDiscovery(options: DiscoveryOptions) {
   let finished = false
   let inFlight = false
   let session: DiscoverySession | null = null
+  let unsubscribeRecoveryChanges: (() => void) | null = null
   let cancelTimer: (() => void) | null = null
   let retryCount = 0
   let exhausted = false
@@ -97,6 +98,8 @@ export function startMerchantCheckoutSparkDiscovery(options: DiscoveryOptions) {
     if (!disposed) options.onStatus(status)
   }
   const releaseSession = () => {
+    unsubscribeRecoveryChanges?.()
+    unsubscribeRecoveryChanges = null
     session?.dispose()
     session = null
   }
@@ -123,6 +126,17 @@ export function startMerchantCheckoutSparkDiscovery(options: DiscoveryOptions) {
           return
         }
         session = opened
+        if (opened.subscribeToRecoveryChanges) {
+          // Local hints are advisory. Slow/unavailable local storage cannot
+          // hold the authoritative scan or its disposal drain hostage.
+          void opened.subscribeToRecoveryChanges(requestRescan).then(
+            (unsubscribe) => {
+              if (disposed || session !== opened) unsubscribe()
+              else unsubscribeRecoveryChanges = unsubscribe
+            },
+            () => {}
+          )
+        }
       }
       // Visibility can change while signer/session creation is pending.
       if (!active || disposed) return
@@ -190,6 +204,13 @@ export function startMerchantCheckoutSparkDiscovery(options: DiscoveryOptions) {
     cancelTimer = null
     releaseSession()
   }
+  function requestRescan() {
+    if (disposed || finished || rescanRequested) return
+    rescanRequested = true
+    // Core retains private evidence and only permits restart after all sources
+    // finish. First drain remaining pages serially, then restart in step().
+    if (active && !inFlight) queue(NEXT_PAGE_DELAY_MS)
+  }
 
   return {
     setActive(next: boolean) {
@@ -202,13 +223,7 @@ export function startMerchantCheckoutSparkDiscovery(options: DiscoveryOptions) {
         queue(session || rescanRequested ? NEXT_PAGE_DELAY_MS : 0)
     },
     /** Request a fresh bounded sweep without draining the caller's own work. */
-    requestRescan() {
-      if (disposed || finished || rescanRequested) return
-      rescanRequested = true
-      // Core retains private evidence and only permits restart after all sources
-      // finish. First drain remaining pages serially, then restart in step().
-      if (active && !inFlight) queue(NEXT_PAGE_DELAY_MS)
-    },
+    requestRescan,
     dispose,
     /** Stop new work and drain the bounded logical read before a manual action. */
     async stopAndDrain() {
