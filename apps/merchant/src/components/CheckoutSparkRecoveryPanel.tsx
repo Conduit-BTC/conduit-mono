@@ -6,6 +6,7 @@ import {
   hasCheckoutSparkProviderSendWindow,
   startMerchantCheckoutSparkReconciliation,
   type CheckoutSparkMerchantSettlementProjection,
+  type CheckoutSparkNativeRetirementObservation,
   type MerchantCheckoutSparkRecoveryCandidate,
   type MerchantCheckoutSparkRecoveryDiscoveryResult,
   type MerchantCheckoutSparkReconciliationSummary,
@@ -1095,8 +1096,15 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     if (current === null) return
     setNotice(null)
     const isPayoutSelectionCurrent = captureCandidateSelection(candidate)
-    const showObservation = (observation: unknown) => {
+    let recoveryCheckpoint: unknown
+    const showObservation = (
+      observation:
+        | CheckoutSparkNativeRetirementObservation
+        | { phase: "waiting_for_current_check"; status: "not_verified" }
+    ) => {
       if (!current.isCurrent() || !isPayoutSelectionCurrent()) return
+      if (observation.phase === "recovery_delivery")
+        recoveryCheckpoint = observation.recoveryCheckpoint
       const message = formatMerchantCheckoutSparkNativeObservation(observation)
       if (message)
         setLastPayoutObservation({
@@ -1122,7 +1130,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       )
       if (!current.isCurrent()) return
       const resultMessage = formatMerchantCheckoutSparkPayoutObservation(
-        continued.payout
+        continued.payout,
+        recoveryCheckpoint
       )
       setLastPayoutObservation(
         resultMessage

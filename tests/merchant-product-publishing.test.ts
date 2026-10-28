@@ -4,7 +4,10 @@ import {
   setFixturePublisher,
   resetFixturePublishers,
 } from "./helpers/plain-publisher"
-import { setTestAccountSigner as setSigner } from "./helpers/plain-signer"
+import {
+  clearTestAccountSigner,
+  setTestAccountSigner as setSigner,
+} from "./helpers/plain-signer"
 import { admitFixture } from "./helpers/public-event"
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
@@ -24,6 +27,7 @@ import {
   config,
   db,
   EVENT_KINDS,
+  getAccountSigner,
   getCachedMerchantStorefront,
   projectSignedProductListingForLocalCommit,
   planProductDeletionRelays,
@@ -422,6 +426,7 @@ beforeEach(async () => {
 })
 
 afterEach(() => {
+  clearTestAccountSigner()
   restoreBrowser?.()
   restoreBrowser = undefined
   config.commerceRelayUrls = [...originalCommerceRelayUrls]
@@ -429,6 +434,7 @@ afterEach(() => {
   resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetNdkTestState()
+  expect(getAccountSigner()).toBeUndefined()
 })
 
 describe("merchant product event delivery", () => {
