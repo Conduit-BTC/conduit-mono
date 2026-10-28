@@ -5429,7 +5429,6 @@ test("organizer fee edits use saved addresses and collapse only after signed pub
   test.setTimeout(120_000)
   const relay = createRelayHarness()
   await installSyntheticEnvironment(page, relay)
-  await fulfillSyntheticOrganizerFeeReceiver(page)
   const createdAt = Math.floor(Date.now() / 1_000) - 10
   const calendar = signEvent(ORGANIZER_SECRET, {
     ...buildEventMarketCalendarDraft({
