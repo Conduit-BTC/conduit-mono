@@ -28,6 +28,18 @@ function product(overrides: Partial<Product> = {}): Product {
 }
 
 describe("listing availability", () => {
+  it("keeps event-only and malformed policy out of ordinary and legacy hidden reads", () => {
+    for (const listing of [
+      product({ visibility: "private", eventOnly: true }),
+      product({ eventOnly: true }),
+      product({ eventOnlyMalformed: true }),
+    ]) {
+      const availability = evaluateListingAvailability(listing)
+      expect(availability.marketVisible).toBe(false)
+      expect(availability.purchasable).toBe(false)
+      expect(isMerchantHiddenOnlyListingAvailable(availability)).toBe(false)
+    }
+  })
   it("admits formerly flagged and blocked content when the listing is renderable", () => {
     const examples = [
       product({ tags: ["adult"] }),

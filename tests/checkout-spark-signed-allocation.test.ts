@@ -107,6 +107,38 @@ function admit(
 }
 
 describe("signed checkout Spark supplier allocation", () => {
+  it("rejects event-only signed terms in ordinary funding even if the projection drops the flag", () => {
+    const event = finalizeEvent(
+      {
+        kind: 30402,
+        created_at: CREATED_AT,
+        content: "Event listing",
+        tags: [
+          ["d", "event-only"],
+          ["title", "Event listing"],
+          ["price", "100", "SAT"],
+          ["type", "simple", "physical"],
+          ["visibility", "hidden"],
+          ["conduit_event_only", "1"],
+        ],
+      },
+      MERCHANT_SECRET
+    )
+    const product = { ...parseProductEvent(event), sourceEventId: event.id }
+    const quote = quoteFor([{ product, quantity: 1, unitSats: 100 }])
+    for (const projection of [
+      product,
+      { ...product, eventOnly: false, visibility: "public" as const },
+    ]) {
+      expect(() =>
+        deriveCheckoutSparkSignedCommerceObligations({
+          quote,
+          products: [projection],
+          merchantPubkey: MERCHANT,
+        })
+      ).toThrow()
+    }
+  })
   it("rejects irrelevant digital shipping evidence and fabricated selection facts", () => {
     const product = signedProduct("irrelevant", 1_000)
     const quote = quoteFor([{ product, quantity: 1, unitSats: 1_000 }])

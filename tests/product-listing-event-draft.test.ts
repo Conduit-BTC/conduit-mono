@@ -55,6 +55,60 @@ function expectTag(tags: string[][], expected: string[]): void {
 }
 
 describe("product listing event drafts", () => {
+  it("round trips explicit event-only intent without enabling legacy hidden listings", async () => {
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({ visibility: "private", eventOnly: true }),
+      dTag: "event-only",
+    })
+    expect(draft.tags).toContainEqual(["visibility", "hidden"])
+    expect(draft.tags).toContainEqual(["conduit_event_only", "1"])
+    const parsed = parseProductEvent(
+      await signFixture({ ...draft, created_at: 100 })
+    )
+    expect(parsed).toMatchObject({ visibility: "private", eventOnly: true })
+    const legacy = buildProductListingEventDraft({
+      product: baseProduct({ visibility: "private" }),
+      dTag: "legacy-hidden",
+    })
+    expect(legacy.tags.some(([name]) => name === "conduit_event_only")).toBe(
+      false
+    )
+    expect(
+      parseProductEvent(await signFixture({ ...legacy, created_at: 100 }))
+        .eventOnly
+    ).not.toBe(true)
+  })
+
+  it("rejects contradictory event-only publication and does not trust JSON opt-in", async () => {
+    for (const product of [
+      baseProduct({ eventOnly: true }),
+      baseProduct({
+        visibility: "private",
+        eventOnly: true,
+        format: "digital",
+      }),
+      baseProduct({ visibility: "private", eventOnlyMalformed: true }),
+    ]) {
+      expect(() =>
+        buildProductListingEventDraft({ product, dTag: "invalid" })
+      ).toThrow()
+    }
+    const draft = buildProductListingEventDraft({
+      product: baseProduct({ visibility: "private" }),
+      dTag: "legacy-json",
+    })
+    const parsed = parseProductEvent(
+      await signFixture({
+        ...draft,
+        content: JSON.stringify(
+          baseProduct({ visibility: "private", eventOnly: true })
+        ),
+        created_at: 100,
+      })
+    )
+    expect(parsed.eventOnly).not.toBe(true)
+  })
+
   it.each(["BGN", "XYZ"])(
     "rejects %s new listings even when a retained source has cached sats",
     (currency) => {

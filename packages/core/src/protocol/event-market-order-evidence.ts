@@ -4,6 +4,7 @@ import {
   type OrderSchema,
 } from "../schemas"
 import { parseEventMarketCalendarEvent } from "./event-market"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import { resolveEventMarketAuthorization } from "./event-market-authorization"
 import { parseEventMarketRosterEvent } from "./event-market-roster"
 import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
@@ -263,7 +264,8 @@ export function verifyEventMarketOrderEvidence(input: {
       product.id !== item.productId ||
       product.pubkey !== order.merchantPubkey ||
       product.format !== "physical" ||
-      product.visibility !== "public" ||
+      !hasEventMarketListingVisibility(product) ||
+      (product.eventOnly === true && !item.fulfillment.occurrenceAssignment) ||
       (product.sourcePrice?.amount ?? product.price) !==
         (item.sourcePrice?.amount ?? item.priceAtPurchase) ||
       normalizeCurrencyIdentity(
@@ -298,7 +300,7 @@ export function verifyEventMarketOrderEvidence(input: {
           if (
             parent.id !== parentEvidence.coordinate ||
             parent.type !== "variable" ||
-            parent.visibility !== "public"
+            !hasEventMarketListingVisibility(parent)
           )
             return { status: "invalid", reason: "product" }
         } catch {

@@ -4,7 +4,12 @@ import { normalizePublicMediaUrl } from "../network-target-safety"
 export type ListingAvailabilityState = "active" | "hidden" | "unsupported"
 
 export interface ListingAvailabilityReason {
-  code: "merchant_hidden" | "missing_market_image" | "unsupported_product_type"
+  code:
+    | "merchant_hidden"
+    | "event_only"
+    | "invalid_event_visibility"
+    | "missing_market_image"
+    | "unsupported_product_type"
   label: string
   detail: string
   merchantAction: string
@@ -38,6 +43,22 @@ export function evaluateListingAvailability(
   context: ListingAvailabilityContext = {}
 ): ListingAvailabilityEvaluation {
   const reasons: ListingAvailabilityReason[] = []
+  if (product.eventOnlyMalformed) {
+    reasons.push({
+      code: "invalid_event_visibility",
+      label: "Invalid event-only setting",
+      detail: "This listing has conflicting event-only publication terms.",
+      merchantAction: "Review and republish the listing visibility setting.",
+    })
+  } else if (product.eventOnly) {
+    reasons.push({
+      code: "event_only",
+      label: "Events only",
+      detail:
+        "This listing is available only through an approved event assignment.",
+      merchantAction: "Assign it to an event, or turn off Sell only at events.",
+    })
+  }
   if (product.visibility !== "public") {
     reasons.push({
       code: "merchant_hidden",

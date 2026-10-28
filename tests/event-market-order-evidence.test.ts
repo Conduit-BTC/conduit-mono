@@ -47,6 +47,7 @@ import {
 } from "@conduit/core"
 import { assertCreatedEventMarketPickupTerms } from "../apps/market/src/lib/order-pickup-retry"
 import { admitPublicEvent } from "@conduit/core/protocol/verified-public-event"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 
 afterEach(async () => {
   await cleanupPrivateInboxTestReads()
@@ -195,6 +196,23 @@ async function admittedVerifier(
 }
 
 describe("created future Event Market order evidence", () => {
+  it("accepts event-only exact assigned terms but not an unassigned historical hint", async () => {
+    for (const newAssignment of [true, false]) {
+      const fixture = createEventMarketOrderFixture({
+        eventOnly: true,
+        newAssignment,
+        mode: "merchant_present",
+      })
+      expect(
+        (
+          await admittedVerifier({
+            order: fixture.order,
+            events: fixture.events,
+          })
+        ).status
+      ).toBe(newAssignment ? "verified" : "invalid")
+    }
+  })
   it("binds selected variation specifications to the exact signed product", async () => {
     const variation = finalizeEvent(
       {

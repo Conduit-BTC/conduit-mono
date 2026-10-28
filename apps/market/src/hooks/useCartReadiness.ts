@@ -73,7 +73,8 @@ export function merchantCartAvailabilityQueryKey(
   merchantPubkey: string,
   productIds: readonly string[],
   merchantHiddenProductIds: readonly string[] = [],
-  relayScope?: string | null
+  relayScope?: string | null,
+  eventOnlyProductIds: readonly string[] = []
 ): readonly unknown[] {
   return [
     "merchant-cart-availability",
@@ -81,6 +82,7 @@ export function merchantCartAvailabilityQueryKey(
     productIds,
     merchantHiddenProductIds,
     ...(relayScope ? [relayScope] : []),
+    ...(eventOnlyProductIds.length ? [eventOnlyProductIds] : []),
   ]
 }
 
@@ -96,11 +98,29 @@ export function getCartMerchantHiddenProductIds(
   ).sort()
 }
 
+/** Data retrieval only. Submit re-verifies the full current signed assignment. */
+export function getCartEventOnlyProductIds(
+  items: readonly CartItem[]
+): string[] {
+  return Array.from(
+    new Set(
+      items
+        .filter(
+          (item) =>
+            item.fulfillment?.type === "event_market_pickup" &&
+            item.fulfillment.occurrenceAssignment !== undefined
+        )
+        .map((item) => item.productId)
+    )
+  ).sort()
+}
+
 export type CartAvailabilityReadScope = {
   purchaseId: string
   merchantPubkey: string
   productIds: string[]
   merchantHiddenProductIds: string[]
+  eventOnlyProductIds: string[]
 }
 
 export function getCartAvailabilityReadScopes(
@@ -113,6 +133,7 @@ export function getCartAvailabilityReadScopes(
       new Set(group.items.map((item) => item.productId))
     ).sort(),
     merchantHiddenProductIds: getCartMerchantHiddenProductIds(group.items),
+    eventOnlyProductIds: getCartEventOnlyProductIds(group.items),
   }))
 }
 
@@ -150,12 +171,14 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
           scope.merchantPubkey,
           scope.productIds,
           scope.merchantHiddenProductIds,
-          session.relayScope
+          session.relayScope,
+          scope.eventOnlyProductIds
         ),
         queryFn: () =>
           readinessReadLimiter(() =>
             getProductsByIds(scope.productIds, {
               includeMerchantHiddenProductIds: scope.merchantHiddenProductIds,
+              includeEventOnlyProductIds: scope.eventOnlyProductIds,
               authenticatedPubkey,
               shouldContinue: () =>
                 authGenerationRef.current === readAuthGeneration,

@@ -4,7 +4,7 @@ import {
 } from "./helpers/private-inbox"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, describe, expect, it } from "bun:test"
-import { NDKEvent, type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
+import { type NDKFilter, type NDKSigner } from "@nostr-dev-kit/ndk"
 import {
   finalizeEvent,
   generateSecretKey,
@@ -839,6 +839,30 @@ describe("future organizer exact merchandise", () => {
     expect(isVerifiedEventMarketReceiptMerchandiseResolution(resolution)).toBe(
       false
     )
+  })
+
+  it("can describe exact event-only physical receipt merchandise without granting handout authority", async () => {
+    const base = productEvent("event-only", "Event item")
+    const product = finalizeEvent(
+      {
+        kind: base.kind,
+        created_at: base.created_at,
+        content: base.content,
+        tags: [
+          ...base.tags,
+          ["visibility", "hidden"],
+          ["conduit_event_only", "1"],
+        ],
+      },
+      MERCHANT_SECRET
+    )
+    const result = resolveFutureMarketReceiptMerchandiseEvidence({
+      receipt: receiptFor([product]),
+      events: [await admitted(product)],
+      coverage: COVERAGE,
+    })
+    expect(result.state).toBe("verified")
+    expect(isVerifiedEventMarketReceiptMerchandiseResolution(result)).toBe(true)
   })
 
   it("rejects hidden or private exact merchandise without substituting a newer revision", async () => {

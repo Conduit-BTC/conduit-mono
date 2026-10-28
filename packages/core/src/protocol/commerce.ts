@@ -118,6 +118,7 @@ import {
   type ListingAvailabilityContext,
   type ListingAvailabilityEvaluation,
 } from "./listing-availability"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import {
   prepareProductCatalog,
   type PreparedProductFamily,
@@ -368,6 +369,7 @@ interface RetainedProductFamilyContext {
   records: CommerceProductRecord[]
   includeMarketHidden?: boolean
   includeMerchantHiddenProductIds?: readonly string[]
+  includeEventOnlyProductIds?: readonly string[]
 }
 
 export interface MarketplaceProductsQuery {
@@ -443,6 +445,8 @@ export interface ProductsByIdsOptions {
    * images and unsupported product structures remain filtered.
    */
   includeMerchantHiddenProductIds?: readonly string[]
+  /** Data-only exact read for current Event carts; never admission or ordinary checkout. */
+  includeEventOnlyProductIds?: readonly string[]
   /**
    * Coordinate-scoped routing hints supplied by a signed reference. Hints only
    * extend bounded relay discovery; listing, author, and deletion checks remain
@@ -2134,10 +2138,18 @@ function filterExactProductRecordsForRead(
       .map((id) => getProductLookupIds(id).addressId)
       .filter((id): id is string => !!id)
   )
+  const eventOnlyAddresses = new Set(
+    (options.includeEventOnlyProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
   for (const context of contexts.values()) {
     context.includeMerchantHiddenProductIds = context.records
       .map((record) => record.addressId)
       .filter((address) => hiddenAddresses.has(address))
+    context.includeEventOnlyProductIds = context.records
+      .map((record) => record.addressId)
+      .filter((address) => eventOnlyAddresses.has(address))
   }
   return selected.map((record) => {
     const parentAddress = familyAddress(record)
@@ -2169,12 +2181,25 @@ function selectExactProductRecordsForRead(
       .map((productId) => getProductLookupIds(productId).addressId)
       .filter((addressId): addressId is string => !!addressId)
   )
+  const eventOnlyAddresses = new Set(
+    (options.includeEventOnlyProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
+  const eventOnlyByAddress =
+    eventOnlyAddresses.size > 0
+      ? prepareMerchantHiddenExactRecords(records, eventOnlyAddresses, true)
+      : new Map<string, CommerceProductRecord>()
   const merchantHiddenByAddress =
     merchantHiddenAddresses.size > 0
       ? prepareMerchantHiddenExactRecords(records, merchantHiddenAddresses)
       : new Map<string, CommerceProductRecord>()
 
   return targets.flatMap((target) => {
+    if (eventOnlyAddresses.has(target.addressId)) {
+      const allowed = eventOnlyByAddress.get(target.addressId)
+      return allowed ? [allowed] : []
+    }
     if (merchantHiddenAddresses.has(target.addressId)) {
       const allowed = merchantHiddenByAddress.get(target.addressId)
       return allowed ? [allowed] : []
@@ -2209,8 +2234,18 @@ function selectExactProductRecordsForRead(
 
 function isMerchantHiddenExactRecordAllowed(
   record: CommerceProductRecord,
-  context?: ListingAvailabilityContext
+  context?: ListingAvailabilityContext,
+  allowEventOnly = false
 ): boolean {
+  if (allowEventOnly) {
+    return (
+      hasEventMarketListingVisibility(record.product) &&
+      evaluateListingAvailability(record.product, context).reasons.every(
+        (reason) =>
+          reason.code === "event_only" || reason.code === "merchant_hidden"
+      )
+    )
+  }
   return isMerchantHiddenOnlyListingAvailable(
     evaluateListingAvailability(record.product, context)
   )
@@ -2218,7 +2253,8 @@ function isMerchantHiddenExactRecordAllowed(
 
 function prepareMerchantHiddenExactRecords(
   records: CommerceProductRecord[],
-  allowedAddresses: ReadonlySet<string>
+  allowedAddresses: ReadonlySet<string>,
+  allowEventOnly = false
 ): Map<string, CommerceProductRecord> {
   const prepared = new Map<string, CommerceProductRecord>()
   const catalog = prepareProductCatalog(records, {
@@ -2235,7 +2271,11 @@ function prepareMerchantHiddenExactRecords(
     if (item.kind === "simple") {
       if (
         allowedAddresses.has(item.record.addressId) &&
-        isMerchantHiddenExactRecordAllowed(item.record)
+        isMerchantHiddenExactRecordAllowed(
+          item.record,
+          undefined,
+          allowEventOnly
+        )
       ) {
         prepared.set(item.record.addressId, item.record)
       }
@@ -2248,7 +2288,13 @@ function prepareMerchantHiddenExactRecords(
       variationGroupRole: "parent",
       hasGroupImage: true,
     }
-    if (!isMerchantHiddenExactRecordAllowed(parent, structuralContext)) {
+    if (
+      !isMerchantHiddenExactRecordAllowed(
+        parent,
+        structuralContext,
+        allowEventOnly
+      )
+    ) {
       continue
     }
 
@@ -2259,10 +2305,15 @@ function prepareMerchantHiddenExactRecords(
     const structurallyAllowedChildren = item.family.children.filter(
       (child) =>
         allowedAddresses.has(child.addressId) &&
-        isMerchantHiddenExactRecordAllowed(child, ownImageChildContext)
+        isMerchantHiddenExactRecordAllowed(
+          child,
+          ownImageChildContext,
+          allowEventOnly
+        )
     )
     const hasGroupImage =
-      (parentAllowed && hasMarketProductImage(parent.product)) ||
+      ((parentAllowed || allowEventOnly) &&
+        hasMarketProductImage(parent.product)) ||
       structurallyAllowedChildren.some((child) =>
         hasMarketProductImage(child.product)
       )
@@ -2272,16 +2323,16 @@ function prepareMerchantHiddenExactRecords(
     }
     const children = structurallyAllowedChildren
       .filter((child) =>
-        isMerchantHiddenExactRecordAllowed(child, childContext)
+        isMerchantHiddenExactRecordAllowed(child, childContext, allowEventOnly)
       )
       .map((child) => ({
         ...child,
         availability: evaluateListingAvailability(child.product, childContext),
       }))
 
-    // An accepted child can be rendered atomically without accepting its
-    // parent. The parent still proves family structure and availability, but an
-    // unaccepted parent or sibling cannot donate an image or enter the result.
+    // The exact Event leaf may inherit its validated structural parent's image,
+    // but not a sibling's. The legacy hidden-pickup exception still requires
+    // explicit parent acceptance. Neither returns an unrequested parent.
     for (const child of children) {
       prepared.set(child.addressId, child)
     }
@@ -2291,7 +2342,10 @@ function prepareMerchantHiddenExactRecords(
       variationGroupRole: "parent",
       hasGroupImage,
     }
-    if (!isMerchantHiddenExactRecordAllowed(parent, parentContext)) continue
+    if (
+      !isMerchantHiddenExactRecordAllowed(parent, parentContext, allowEventOnly)
+    )
+      continue
 
     const rebuilt = prepareProductCatalog(
       [
@@ -2356,6 +2410,8 @@ function toCachedProduct(record: CommerceProductRecord) {
     shippingCountries: product.shippingCountries,
     shippingCountryRules: product.shippingCountryRules,
     visibility: product.visibility,
+    eventOnly: product.eventOnly,
+    eventOnlyMalformed: product.eventOnlyMalformed,
     stock: product.stock,
     images: getProductProtocolImages(product),
     tags: canonicalizeProductTags(product.tags),
@@ -2430,6 +2486,8 @@ function fromCachedProduct(row: CachedProduct): CommerceProductRecord {
     shippingCountries: row.shippingCountries,
     shippingCountryRules: row.shippingCountryRules,
     visibility: row.visibility ?? "public",
+    eventOnly: row.eventOnly,
+    eventOnlyMalformed: row.eventOnlyMalformed,
     stock: row.stock,
     images: getProductProtocolImages({ images: row.images ?? [] }),
     tags,
@@ -7763,7 +7821,10 @@ export async function getCachedProductDetail(
  */
 export async function getCachedProductsByIds(
   productIds: readonly string[],
-  options: CachedProductReadOptions = { includeStale: true }
+  options: CachedProductReadOptions &
+    Pick<ProductsByIdsOptions, "includeEventOnlyProductIds"> = {
+    includeStale: true,
+  }
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
   const lookups = productIds.map(getProductLookupIds)
   const authors = uniqueStrings(
@@ -7783,8 +7844,31 @@ export async function getCachedProductsByIds(
     includeMarketHidden: options.includeMarketHidden,
     groupVariations: true,
   })
+  const requestedEventIds = new Set(
+    (options.includeEventOnlyProductIds ?? [])
+      .map((id) => getProductLookupIds(id).addressId)
+      .filter((id): id is string => !!id)
+  )
+  const eventTargets = new Set(
+    lookups.flatMap(({ addressId }) =>
+      addressId && requestedEventIds.has(addressId) ? [addressId] : []
+    )
+  )
+  const eventRecords = new Map(
+    (eventTargets.size > 0
+      ? filterExactProductRecordsForRead(cached, eventTargets, {
+          includeEventOnlyProductIds: [...eventTargets],
+        })
+      : []
+    ).map((record) => [record.addressId, record])
+  )
   const records = new Map<string, CommerceProductRecord>()
   for (const { decodedId, addressId } of lookups) {
+    if (addressId && eventTargets.has(addressId)) {
+      const record = eventRecords.get(addressId)
+      if (record) records.set(record.addressId, record)
+      continue
+    }
     const record = findProductDetailRecord(
       cached,
       [decodedId, addressId].filter((id): id is string => !!id),

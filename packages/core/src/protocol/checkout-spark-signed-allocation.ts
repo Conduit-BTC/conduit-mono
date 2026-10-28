@@ -172,6 +172,11 @@ export function deriveCheckoutSparkSignedCommerceObligations(
     if (
       signedProduct.id !== product.id ||
       signedProduct.priceEvidenceMalformed ||
+      signedProduct.eventOnlyMalformed ||
+      (signedProduct.eventOnly === true && !input.eventMarket) ||
+      Boolean(product.eventOnly) !== Boolean(signedProduct.eventOnly) ||
+      Boolean(product.eventOnlyMalformed) !==
+        Boolean(signedProduct.eventOnlyMalformed) ||
       product.priceEvidenceMalformed ||
       product.currency !== signedProduct.currency ||
       signedProduct.price !== product.price ||

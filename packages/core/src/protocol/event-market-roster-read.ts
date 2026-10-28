@@ -1,4 +1,5 @@
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import {
   observeEventMarketWriteScope,
   type EventMarketWriteObservation,
@@ -2064,7 +2065,7 @@ function catalogCandidates(input: {
     try {
       const product = parseProductEvent(revision)
       if (
-        product.visibility !== "public" ||
+        !hasEventMarketListingVisibility(product) ||
         product.format !== "physical" ||
         product.priceEvidenceMalformed
       )
@@ -2953,6 +2954,8 @@ export async function previewEventMarketMerchantProducts(
       const product = parseProductEvent(head)
       if (
         product.visibility === "public" &&
+        !product.eventOnly &&
+        !product.eventOnlyMalformed &&
         product.format === "physical" &&
         !product.priceEvidenceMalformed
       )

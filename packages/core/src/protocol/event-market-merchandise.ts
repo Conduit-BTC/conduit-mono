@@ -16,6 +16,7 @@ import {
   type ProductDeletionEvidence,
 } from "./product-deletion"
 import { parseProductEvent } from "./products"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import { getRelayLists } from "./relay-list"
 import { planRelayReads } from "./relay-planner"
 import { normalizeOwnerSelectedRelayUrls } from "./relay-settings"
@@ -213,7 +214,8 @@ export function resolveEventMarketReceiptMerchandiseEvidence(
         parsed.createdAt !== receiptItem.product.createdAt ||
         parsed.priceEvidenceMalformed ||
         (input.receiptRevisionPolicy === "historical_physical_receipt" &&
-          (parsed.format !== "physical" || parsed.visibility !== "public"))
+          (parsed.format !== "physical" ||
+            !hasEventMarketListingVisibility(parsed)))
       ) {
         throw new Error("Exact receipt product metadata is invalid.")
       }

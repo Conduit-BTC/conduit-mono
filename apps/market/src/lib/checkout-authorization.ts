@@ -281,6 +281,22 @@ export async function authorizeCurrentCheckoutItems(input: {
   )
     return { status: "changed" }
 
+  // A saved cart cannot reinterpret event-only signed terms as shipping,
+  // ordinary pickup or a historical Event lane without occurrence authority.
+  for (const item of [...input.rawItems, ...input.reviewedItems]) {
+    const product = input.refreshedProducts.find(
+      (entry) =>
+        entry.id === item.productId && entry.pubkey === item.merchantPubkey
+    )
+    if (
+      product?.eventOnlyMalformed ||
+      (product?.eventOnly === true &&
+        (item.fulfillment?.type !== "event_market_pickup" ||
+          !item.fulfillment.occurrenceAssignment))
+    )
+      return { status: "changed" }
+  }
+
   const futureSnapshots = await resolveCurrentFutureEventMarketFulfillments(
     {
       items: input.rawItems,

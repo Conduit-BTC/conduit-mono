@@ -5,6 +5,7 @@ import type {
   EventMarketOrganizerStockWriter,
 } from "../db"
 import { CommerceInboxStore } from "./commerce-inbox-store"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import { parseEventMarketAssignmentEvent } from "./event-market-assignment"
 import {
   isEventMarketStockAuthorityRumor,
@@ -413,7 +414,7 @@ export async function startMerchantOrganizerStockGrant(
     product.pubkey !== grant.merchantPubkey ||
     product.format !== "physical" ||
     product.type === "variable" ||
-    product.visibility !== "public" ||
+    !hasEventMarketListingVisibility(product) ||
     product.stock === undefined ||
     product.stock < grant.quantity ||
     isEventMarketAddressableRevisionDeleted(
@@ -442,7 +443,7 @@ export async function startMerchantOrganizerStockGrant(
     if (
       !parent ||
       parent.type !== "variable" ||
-      parent.visibility !== "public" ||
+      !hasEventMarketListingVisibility(parent) ||
       isEventMarketAddressableRevisionDeleted(
         {
           coordinate: parent.id,

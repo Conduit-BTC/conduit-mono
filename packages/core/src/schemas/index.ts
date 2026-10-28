@@ -335,6 +335,9 @@ export const productSchema = z.object({
   eventMarketRefs: z.array(z.string()).optional(),
   /** Merchant-signed Conduit opt-in for immediate event handoff only. */
   eventGuestContactOptional: z.boolean().optional(),
+  /** Explicit Conduit event-only intent; hidden alone does not grant Event access. */
+  eventOnly: z.boolean().optional(),
+  eventOnlyMalformed: z.boolean().optional(),
   /** Read-side shipping details. Canonical checkout requires explicit resolution. */
   shippingCountries: z.array(z.string()).optional(),
   shippingCountryRules: z
