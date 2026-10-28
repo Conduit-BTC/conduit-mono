@@ -371,6 +371,11 @@ Check out the recorded tested SHA, match the CI browser image, use fresh app
 servers, and match the case ID to distinguish those cases. Local results do not
 replace hosted Linux/WebKit or physical-device evidence.
 
+Local-signer and mobile-baseline browser-operation failures also retain file-bound
+error categories and fixed auto-wait observation booleans from the original error.
+Error text is inspected only in memory; these observations do not prove the final
+control state or a root cause, and never change the original failure or test limits.
+
 The direct-route surface audit uses a fresh browser context for each route,
 with the same project/device options, signer and theme setup, and assertions.
 This isolates route shells from WebKit network-process failures observed during
