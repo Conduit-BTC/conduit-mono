@@ -121,6 +121,108 @@ describe("composed smoke evidence", () => {
     }
   })
 
+  it("retains acceptance start-wait facts without changing the failed first-attempt verdict", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "conduit-acceptance-start-evidence-")
+    )
+    const sentinel = "private-" + crypto.randomUUID()
+    const kind = "event-stock-acceptance"
+    const observations = [
+      {
+        phase: "start_wait",
+        errorCategory: "timeout",
+        observationAvailable: true,
+        pageClosed: false,
+        matchingButtons: 2,
+        enabledButtons: 1,
+        visibleButtons: 1,
+        inViewportButtons: 1,
+        unobstructedButtons: 1,
+      },
+      {
+        phase: "start_wait",
+        errorCategory: "other",
+        observationAvailable: false,
+        pageClosed: true,
+      },
+    ]
+    try {
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        join(directory, "e2e/event-market.playwright.ts"),
+        [
+          `import { test } from ${JSON.stringify(playwrightImport)}`,
+          `import { recordSmokeDiagnostic } from ${JSON.stringify(smokeDiagnosticsImport)}`,
+          `for (const [index, observation] of ${JSON.stringify(observations)}.entries()) {`,
+          "  test(`controlled acceptance start ${index} @market`, ({}, info) => {",
+          `    recordSmokeDiagnostic(info, ${JSON.stringify(kind)}, { ...observation, orderId: ${JSON.stringify(sentinel)}, message: ${JSON.stringify(sentinel)}, dom: { text: ${JSON.stringify(sentinel)} } });`,
+          `    throw new Error(${JSON.stringify(sentinel)});`,
+          "  });",
+          "}",
+        ].join("\n")
+      )
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      const progress = join(directory, "progress.log")
+      const config = join(directory, "playwright.config.ts")
+      writeFileSync(
+        config,
+        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
+      )
+      const run = (args: string[]) =>
+        spawnSync(
+          process.execPath,
+          [playwrightCli, "test", "-c", config, ...args],
+          {
+            cwd: directory,
+            encoding: "utf8",
+            timeout: 15000,
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+          }
+        )
+      const discovery = run(["--list", "--reporter=json"])
+      expect(discovery.status).toBe(0)
+      const manifest = buildPlaywrightSmokeManifest(
+        JSON.parse(discovery.stdout),
+        ["market"],
+        evidence
+      )
+      expect(manifest.selectedTestCount).toBe(2)
+      expect(run([]).status).toBe(1)
+      const reportText = readFileSync(output, "utf8")
+      const artifactText = readFileSync(artifact, "utf8")
+      const progressText = readFileSync(progress, "utf8")
+      expect(reportText + artifactText + progressText).not.toContain(sentinel)
+      const retained = JSON.parse(artifactText)
+      expect(retained.schemaVersion).toBe(2)
+      expect(retained.status).toBe("failed")
+      expect(retained.timing.completedAttempts).toBe(2)
+      expect(retained.tests).toHaveLength(2)
+      for (const [index, observation] of observations.entries()) {
+        const attempts = retained.tests[index].tests[0].results
+        expect(attempts).toHaveLength(1)
+        expect(attempts[0].retry).toBe(0)
+        expect(attempts[0].status).toBe("failed")
+        expect(attempts[0].diagnostics).toEqual([{ kind, ...observation }])
+      }
+      expect(progressText).toContain('"phase":"start_wait"')
+      let rejected = false
+      try {
+        validatePlaywrightSmokeExecution(
+          JSON.parse(reportText),
+          manifest,
+          ["market"],
+          evidence
+        )
+      } catch {
+        rejected = true
+      }
+      expect(rejected).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("keeps event prepaid confirmation observations private through the real reporter and verifier", () => {
     const directory = mkdtempSync(
       join(tmpdir(), "conduit-event-prepaid-evidence-")

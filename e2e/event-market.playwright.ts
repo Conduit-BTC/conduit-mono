@@ -8214,7 +8214,30 @@ async function acceptPickupOrder(
   await page.getByRole("button", { name: "Accept order", exact: true }).click()
   // A click starts the async action; settle it before checking durable readback.
   // Accept the saved control as the start signal when the action finishes quickly.
-  await pending.or(saved).first().waitFor({ state: "visible" })
+  try {
+    await pending.or(saved).first().waitFor({ state: "visible" })
+  } catch (cause) {
+    let observationTimer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const observation = await Promise.race([
+        observeStockAcceptance(pending.or(saved)),
+        new Promise<undefined>((resolve) => {
+          observationTimer = setTimeout(() => resolve(undefined), 250)
+        }),
+      ])
+      recordSmokeDiagnostic(test.info(), "event-stock-acceptance", {
+        phase: "start_wait",
+        errorCategory: classifyStockAcceptanceError(cause).errorCategory,
+        ...(observation ?? { observationAvailable: false }),
+        pageClosed: page.isClosed(),
+      })
+    } catch {
+      // Diagnostics must not replace the original wait failure.
+    } finally {
+      if (observationTimer !== undefined) clearTimeout(observationTimer)
+    }
+    throw cause
+  }
   await pending.waitFor({ state: "hidden" })
   if (interruptSigning)
     await expect(

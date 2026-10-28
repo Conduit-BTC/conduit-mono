@@ -623,6 +623,76 @@ describe("event prepaid confirmation diagnostic privacy", () => {
 })
 
 describe("privacy-safe Playwright smoke reporter", () => {
+  it("keeps acceptance start-wait observations bounded without reclassifying click state", () => {
+    const file = "e2e/event-market.playwright.ts"
+    const kind = "event-stock-acceptance"
+    const sentinel = "private-" + crypto.randomUUID()
+    const observations = [
+      {
+        phase: "start_wait",
+        errorCategory: "timeout",
+        observationAvailable: true,
+        pageClosed: false,
+        matchingButtons: 2,
+        enabledButtons: 1,
+        visibleButtons: 1,
+        inViewportButtons: 1,
+        unobstructedButtons: 1,
+      },
+      {
+        phase: "start_wait",
+        errorCategory: "other",
+        observationAvailable: false,
+        pageClosed: true,
+      },
+    ]
+    for (const observation of observations) {
+      const expected = [{ kind, ...observation }]
+      const values = {
+        ...observation,
+        orderId: sentinel,
+        message: sentinel,
+        url: sentinel,
+        dom: { text: sentinel },
+        duration: 123456,
+      }
+      const retained = safeSmokeDiagnostics(file, [
+        { type: `smoke:${kind}`, description: JSON.stringify(values) },
+      ])
+      expect(retained).toEqual(expected)
+      expect(safeRetainedSmokeDiagnostics(file, [{ kind, ...values }])).toEqual(
+        expected
+      )
+      expect(JSON.stringify(retained)).not.toContain(sentinel)
+      for (const field of [
+        "disabledDuringClick",
+        "obstructedDuringClick",
+        "detachedDuringClick",
+      ])
+        expect(retained[0]).not.toHaveProperty(field)
+      expect(
+        safeSmokeDiagnostics("e2e/commerce.playwright.ts", [
+          { type: `smoke:${kind}`, description: JSON.stringify(values) },
+        ])
+      ).toEqual([])
+    }
+    expect(
+      safeSmokeDiagnostics(file, [
+        {
+          type: `smoke:${kind}`,
+          description: JSON.stringify({
+            phase: sentinel,
+            errorCategory: sentinel,
+            observationAvailable: sentinel,
+            pageClosed: sentinel,
+            matchingButtons: 32769,
+            visibleButtons: sentinel,
+          }),
+        },
+      ])
+    ).toEqual([])
+  })
+
   it("retains only bounded stock acceptance observations for the owning test file", () => {
     const file = "e2e/event-market.playwright.ts"
     const privateValue = "private-" + crypto.randomUUID()

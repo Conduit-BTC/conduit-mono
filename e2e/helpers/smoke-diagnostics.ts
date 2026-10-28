@@ -650,7 +650,7 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
     "event-stock-acceptance": {
       file: "e2e/event-market.playwright.ts",
       fields: {
-        phase: ["click", "failure", "complete"],
+        phase: ["click", "failure", "complete", "start_wait"],
         errorCategory: ["strict_locator", "target_closed", "timeout", "other"],
         disabledDuringClick: "boolean",
         obstructedDuringClick: "boolean",
