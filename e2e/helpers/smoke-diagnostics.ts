@@ -18,6 +18,85 @@ export function classifySmokeBrowserError(error: unknown): string {
   return "unknown"
 }
 
+/** Classify only original reporter errors; never retain messages or call logs. */
+export function smokeBrowserOperationFailure(
+  file: string,
+  error: unknown,
+  errorSource: "primary" | "matched_leaf"
+): Record<string, string | number | boolean> | undefined {
+  const kind =
+    file === "e2e/local-key-signer.playwright.ts"
+      ? "local-signer-browser"
+      : file === "e2e/mobile-safari-baseline.playwright.ts"
+        ? "mobile-baseline-browser"
+        : undefined
+  if (!kind) return undefined
+  try {
+    const fields =
+      error && typeof error === "object"
+        ? (error as Record<string, unknown>)
+        : undefined
+    const rawMessage = fields?.message
+    const messageAvailable = typeof rawMessage === "string"
+    const message = messageAvailable ? rawMessage.slice(0, 32768) : ""
+    const normalized = new Error(message)
+    if (
+      fields?.name === "TimeoutError" ||
+      /\b(?:Timeout \d+ms exceeded|Test timeout of \d+ms exceeded)\b/i.test(
+        message
+      )
+    )
+      normalized.name = "TimeoutError"
+    let errorCategory = classifySmokeBrowserError(normalized)
+    if (errorCategory === "unknown" && /\binternal error\b/i.test(message))
+      errorCategory = "browser_internal"
+    if (
+      errorCategory === "unknown" &&
+      /\b(?:ERR_ABORTED|NSURLErrorCancelled)\b|\b(?:navigation|load|request) (?:was )?(?:aborted|cancelled|canceled)\b/i.test(
+        message
+      )
+    )
+      errorCategory = "navigation_aborted"
+    if (
+      errorCategory === "unknown" &&
+      /\b(?:page|target|browser)(?: has)? crashed\b/i.test(message)
+    )
+      errorCategory = "browser_crashed"
+    const values = {
+      operation: /^page\.goto:/i.test(message)
+        ? "navigation"
+        : /^(?:locator|page)\.click:/i.test(message)
+          ? "click"
+          : "other",
+      errorCategory,
+      errorSource,
+      messageAvailable,
+      messageTruncated: messageAvailable && rawMessage.length > 32768,
+      locatorWaitObserved: /\bwaiting for (?:locator|getBy[A-Za-z]+)\(/.test(
+        message
+      ),
+      notVisibleObserved: /\belement is not visible\b/i.test(message),
+      notEnabledObserved: /\belement is not enabled\b/i.test(message),
+      notStableObserved: /\belement is not stable\b/i.test(message),
+      pointerInterceptionObserved: /\bintercepts pointer events\b/i.test(
+        message
+      ),
+      detachedObserved: /\belement was detached from the DOM\b/i.test(message),
+      navigationWaitObserved:
+        /\bwaiting for scheduled navigations to finish\b/i.test(message),
+    }
+    return safeSmokeDiagnostics(file, [
+      {
+        type: `smoke:${kind}`,
+        description: JSON.stringify(values),
+      },
+    ])[0]
+  } catch {
+    // Malformed IPC data or accessors must not replace the original failure.
+    return undefined
+  }
+}
+
 // Observe the original gesture and dialog lifetime without changing either.
 // No labels, message contents, identifiers, or coordinates leave the page.
 export async function observeMessagesDialogTrigger(page: Page) {
@@ -345,6 +424,32 @@ export type PopulatedAuditPhase = (typeof populatedAuditPhases)[number]
 
 type Rule = "number" | "boolean" | readonly string[]
 
+const browserOperationFields: Record<string, Rule> = {
+  operation: ["navigation", "click", "other"],
+  errorCategory: [
+    "navigation_interrupted",
+    "connection_refused",
+    "connection_reset",
+    "name_resolution",
+    "target_closed",
+    "timeout",
+    "unknown",
+    "browser_internal",
+    "navigation_aborted",
+    "browser_crashed",
+  ],
+  errorSource: ["primary", "matched_leaf"],
+  messageAvailable: "boolean",
+  messageTruncated: "boolean",
+  locatorWaitObserved: "boolean",
+  notVisibleObserved: "boolean",
+  notEnabledObserved: "boolean",
+  notStableObserved: "boolean",
+  pointerInterceptionObserved: "boolean",
+  detachedObserved: "boolean",
+  navigationWaitObserved: "boolean",
+}
+
 // The evaluator receives DialogContent; the signed-action status is a direct
 // child of its form. Other live regions retain earlier announcements.
 export function classifyProductSubmitValidation(dialog: Element): string {
@@ -534,6 +639,14 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "local-signer-browser": {
+      file: "e2e/local-key-signer.playwright.ts",
+      fields: browserOperationFields,
+    },
+    "mobile-baseline-browser": {
+      file: "e2e/mobile-safari-baseline.playwright.ts",
+      fields: browserOperationFields,
+    },
     "event-stock-acceptance": {
       file: "e2e/event-market.playwright.ts",
       fields: {

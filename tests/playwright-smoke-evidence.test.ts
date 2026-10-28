@@ -32,6 +32,95 @@ const playwrightImport = require.resolve("@playwright/test")
 const smokeDiagnosticsImport = resolve("e2e/helpers/smoke-diagnostics.ts")
 
 describe("composed smoke evidence", () => {
+  it("keeps browser failure observations file-bound and the original failed verdict red", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "conduit-browser-operation-evidence-")
+    )
+    const sentinel = "private-" + crypto.randomUUID()
+    const observation = {
+      operation: "click",
+      errorCategory: "timeout",
+      errorSource: "primary",
+      messageAvailable: true,
+      messageTruncated: false,
+      locatorWaitObserved: true,
+      notVisibleObserved: false,
+      notEnabledObserved: false,
+      notStableObserved: false,
+      pointerInterceptionObserved: false,
+      detachedObserved: false,
+      navigationWaitObserved: false,
+    }
+    try {
+      mkdirSync(join(directory, "e2e"))
+      writeFileSync(
+        join(directory, "e2e/local-key-signer.playwright.ts"),
+        [
+          `import { test } from ${JSON.stringify(playwrightImport)}`,
+          'test("controlled browser operation @market", ({}, info) => {',
+          `info.annotations.push({ type: "smoke:local-signer-browser", description: ${JSON.stringify(JSON.stringify({ ...observation, message: sentinel, stack: sentinel, url: sentinel, dom: sentinel }))} });`,
+          `throw new Error(${JSON.stringify(sentinel)});`,
+          "});",
+        ].join("\n")
+      )
+      const output = join(directory, "results.json")
+      const artifact = join(directory, "evidence.json")
+      const progress = join(directory, "progress.log")
+      const config = join(directory, "playwright.config.ts")
+      writeFileSync(
+        config,
+        `export default { testDir: "./e2e", testMatch: "*.playwright.ts", retries: 0, workers: 1, metadata: { smokeEvidence: ${JSON.stringify(evidence)} }, reporter: [[${JSON.stringify(reporterPath)}, { outputFile: ${JSON.stringify(output)}, evidenceFile: ${JSON.stringify(artifact)}, progressFile: ${JSON.stringify(progress)}, evidence: ${JSON.stringify(evidence)} }]], projects: [{ name: "mobile-webkit" }] }`
+      )
+      const run = (args: string[]) =>
+        spawnSync(
+          process.execPath,
+          [playwrightCli, "test", "-c", config, ...args],
+          {
+            cwd: directory,
+            encoding: "utf8",
+            timeout: 15000,
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+          }
+        )
+      const discovery = run(["--list", "--reporter=json"])
+      expect(discovery.status).toBe(0)
+      const manifest = buildPlaywrightSmokeManifest(
+        JSON.parse(discovery.stdout),
+        ["market"],
+        evidence
+      )
+      expect(manifest.selectedTestCount).toBe(1)
+      expect(run([]).status).toBe(1)
+      const reportText = readFileSync(output, "utf8")
+      const artifactText = readFileSync(artifact, "utf8")
+      const progressText = readFileSync(progress, "utf8")
+      expect(
+        (reportText + artifactText + progressText).includes(sentinel)
+      ).toBe(false)
+      const retained = JSON.parse(artifactText)
+      expect(retained.status).toBe("failed")
+      expect(retained.tests[0].tests[0].results[0].status).toBe("failed")
+      expect(retained.tests[0].tests[0].results[0].retry).toBe(0)
+      expect(retained.tests[0].tests[0].results[0].diagnostics).toEqual([
+        { kind: "local-signer-browser", ...observation },
+      ])
+      let rejected = false
+      try {
+        validatePlaywrightSmokeExecution(
+          JSON.parse(reportText),
+          manifest,
+          ["market"],
+          evidence
+        )
+      } catch {
+        rejected = true
+      }
+      expect(rejected).toBe(true)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("keeps event prepaid confirmation observations private through the real reporter and verifier", () => {
     const directory = mkdtempSync(
       join(tmpdir(), "conduit-event-prepaid-evidence-")

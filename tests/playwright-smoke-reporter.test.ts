@@ -23,6 +23,7 @@ import type {
   TestCase,
   TestError,
   TestResult,
+  TestStep,
 } from "@playwright/test/reporter"
 
 import {
@@ -34,6 +35,7 @@ import {
   safeRetainedSmokeDiagnostics,
   safeRetainedSmokeFailureContext,
   safeSmokeDiagnostics,
+  smokeBrowserOperationFailure,
   smokeFailureContextFromAnnotations,
 } from "../e2e/helpers/smoke-diagnostics"
 
@@ -44,6 +46,307 @@ import {
   serializeSmokeEvidence,
 } from "../scripts/ci/playwright_smoke_reporter"
 import { classifyStockAcceptanceError } from "../e2e/helpers/stock-acceptance-diagnostics"
+
+describe("file-bound browser operation failure evidence", () => {
+  it("bounds malformed reporter errors and drops unapproved diagnostic fields", () => {
+    const file = "e2e/local-key-signer.playwright.ts"
+    const sentinel = "private-" + crypto.randomUUID()
+    for (const field of ["message", "name"]) {
+      const error = Object.defineProperty(
+        { message: "locator.click: timeout" },
+        field,
+        {
+          get: () => {
+            throw new Error(sentinel)
+          },
+        }
+      )
+      expect(
+        smokeBrowserOperationFailure(file, error, "primary")
+      ).toBeUndefined()
+    }
+    const unavailable = smokeBrowserOperationFailure(file, undefined, "primary")
+    expect(unavailable?.messageAvailable).toBe(false)
+    expect(unavailable?.errorCategory).toBe("unknown")
+    const bounded = smokeBrowserOperationFailure(
+      file,
+      { message: "a".repeat(32768) + sentinel },
+      "primary"
+    )
+    expect(bounded?.messageTruncated).toBe(true)
+    expect(JSON.stringify(bounded).includes(sentinel)).toBe(false)
+    expect(
+      safeSmokeDiagnostics(file, [
+        {
+          type: "smoke:local-signer-browser",
+          description: JSON.stringify({
+            operation: "click",
+            errorCategory: sentinel,
+            message: sentinel,
+            stack: sentinel,
+            notVisibleObserved: sentinel,
+            wallet: sentinel,
+          }),
+        },
+      ])
+    ).toEqual([{ kind: "local-signer-browser", operation: "click" }])
+  })
+
+  it("keeps hard timeouts attributed to the active operation and ignores recovered errors", () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), "conduit-browser-attribution-")
+    )
+    try {
+      const sourceDirectory = join(directory, "e2e")
+      mkdirSync(sourceDirectory)
+      const outputFile = join(directory, "results.json")
+      const evidenceFile = join(directory, "evidence.json")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        evidenceFile,
+      })
+      const samples = [
+        { file: "local-key-signer", status: "timedOut", category: "pw:api" },
+        { file: "local-key-signer", status: "failed", category: "expect" },
+        { file: "local-key-signer", status: "passed", category: "pw:api" },
+        { file: "commerce", status: "failed", category: "pw:api" },
+      ]
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => samples } as unknown as Suite
+      )
+      for (const [index, sample] of samples.entries()) {
+        const sourceFile = join(sourceDirectory, `${sample.file}.playwright.ts`)
+        const title = "controlled operation @market"
+        writeFileSync(
+          sourceFile,
+          `test(${JSON.stringify(title)}, async () => {})`
+        )
+        const testCase = {
+          id: `controlled-operation-${index}`,
+          title,
+          location: { file: sourceFile, line: 1, column: 1 },
+          parent: { project: () => ({ name: "mobile-webkit" }) },
+          tags: ["@market"],
+          expectedStatus: "passed",
+          outcome: () =>
+            sample.status === "passed" ? "expected" : "unexpected",
+          ok: () => sample.status === "passed",
+        } as unknown as TestCase
+        const original = { message: "Test timeout of 30000ms exceeded." }
+        const result = {
+          status: sample.status,
+          duration: 30000,
+          retry: 0,
+          annotations: [],
+          error: original,
+          errors: [original],
+        } as unknown as TestResult
+        const recovered = {
+          category: "pw:api",
+          title: "discarded",
+          error: { message: "page.goto: Page crashed" },
+          location: { file: sourceFile, line: 1, column: 1 },
+        } as unknown as TestStep
+        reporter.onStepBegin(testCase, result, recovered)
+        reporter.onStepEnd(testCase, result, recovered)
+        const active = {
+          category: sample.category,
+          title: "current",
+          location: { file: sourceFile, line: 1, column: 1 },
+        } as unknown as TestStep
+        reporter.onStepBegin(testCase, result, active)
+        reporter.onTestEnd(testCase, result)
+      }
+      reporter.onEnd({ status: "failed" } as FullResult)
+      const attempts = JSON.parse(readFileSync(evidenceFile, "utf8")).tests.map(
+        (test: { tests: Array<{ results: unknown[] }> }) =>
+          test.tests[0].results[0]
+      )
+      expect(attempts[0].status).toBe("timedOut")
+      expect(attempts[0].failure.failedStep.category).toBe("browser-operation")
+      expect(attempts[0].diagnostics).toMatchObject([
+        {
+          kind: "local-signer-browser",
+          errorCategory: "timeout",
+          errorSource: "primary",
+          operation: "other",
+        },
+      ])
+      expect(
+        attempts[0].diagnostics[0].errorCategory === "browser_crashed"
+      ).toBe(false)
+      for (const attempt of attempts.slice(1))
+        expect(attempt.diagnostics).toBeUndefined()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("distinguishes fixed navigation failures without widening file authority", () => {
+    const file = "e2e/mobile-safari-baseline.playwright.ts"
+    const sentinel = "private-" + crypto.randomUUID()
+    for (const [message, category] of [
+      [`page.goto: net::ERR_ABORTED ${sentinel}`, "navigation_aborted"],
+      [`page.goto: NSURLErrorCancelled ${sentinel}`, "navigation_aborted"],
+      [`page.goto: Page crashed ${sentinel}`, "browser_crashed"],
+      [
+        `page.goto: Navigation interrupted by another navigation ${sentinel}`,
+        "navigation_interrupted",
+      ],
+      [
+        `page.goto: net::ERR_CONNECTION_REFUSED ${sentinel}`,
+        "connection_refused",
+      ],
+      [`page.goto: net::ERR_CONNECTION_RESET ${sentinel}`, "connection_reset"],
+      [`page.goto: net::ERR_NAME_NOT_RESOLVED ${sentinel}`, "name_resolution"],
+      [`page.goto: Target page closed ${sentinel}`, "target_closed"],
+      [`page.goto: Test timeout of 30000ms exceeded ${sentinel}`, "timeout"],
+      [`page.goto: ${sentinel}`, "unknown"],
+    ]) {
+      for (const error of [new Error(message), { message }]) {
+        const observation = smokeBrowserOperationFailure(file, error, "primary")
+        expect(observation?.errorCategory).toBe(category)
+        expect(JSON.stringify(observation).includes(sentinel)).toBe(false)
+      }
+    }
+    expect(
+      smokeBrowserOperationFailure(
+        "e2e/commerce.playwright.ts",
+        new Error(sentinel),
+        "primary"
+      )
+    ).toBeUndefined()
+    expect(
+      safeSmokeDiagnostics("e2e/local-key-signer.playwright.ts", [
+        {
+          type: "smoke:mobile-baseline-browser",
+          description: JSON.stringify({ operation: "navigation" }),
+        },
+      ])
+    ).toEqual([])
+  })
+
+  it("records only fixed auto-wait observations from the original click error", () => {
+    const sentinel = "private-" + crypto.randomUUID()
+    const observation = smokeBrowserOperationFailure(
+      "e2e/local-key-signer.playwright.ts",
+      {
+        message: `locator.click: Timeout 30000ms exceeded.\nCall log:\n- waiting for getByRole(${sentinel})\n- element is not visible\n- element is not enabled\n- element is not stable\n- ${sentinel} intercepts pointer events\n- element was detached from the DOM, retrying\n- waiting for scheduled navigations to finish`,
+        stack: sentinel,
+      },
+      "primary"
+    )
+    expect(observation).toEqual({
+      kind: "local-signer-browser",
+      operation: "click",
+      errorCategory: "timeout",
+      errorSource: "primary",
+      messageAvailable: true,
+      messageTruncated: false,
+      locatorWaitObserved: true,
+      notVisibleObserved: true,
+      notEnabledObserved: true,
+      notStableObserved: true,
+      pointerInterceptionObserved: true,
+      detachedObserved: true,
+      navigationWaitObserved: true,
+    })
+    expect(JSON.stringify(observation).includes(sentinel)).toBe(false)
+  })
+
+  it("retains an original IPC navigation error category without retaining its content", () => {
+    const directory = mkdtempSync(join(tmpdir(), "conduit-browser-failure-"))
+    try {
+      const sourceDirectory = join(directory, "e2e")
+      mkdirSync(sourceDirectory)
+      const sourceFile = join(
+        sourceDirectory,
+        "mobile-safari-baseline.playwright.ts"
+      )
+      const title = "controlled browser failure @market"
+      writeFileSync(
+        sourceFile,
+        `test(${JSON.stringify(title)}, async () => {})`
+      )
+      const outputFile = join(directory, "results.json")
+      const evidenceFile = join(directory, "evidence.json")
+      const progressFile = join(directory, "progress.log")
+      const reporter = new PrivacySafeSmokeReporter({
+        outputFile,
+        evidenceFile,
+        progressFile,
+      })
+      const testCase = {
+        id: "controlled-browser-navigation",
+        title,
+        location: { file: sourceFile, line: 1, column: 1 },
+        parent: { project: () => ({ name: "mobile-webkit" }) },
+        tags: ["@market"],
+        expectedStatus: "passed",
+        outcome: () => "unexpected",
+        ok: () => false,
+      } as unknown as TestCase
+      const sentinel = "private-" + crypto.randomUUID()
+      const originalError = {
+        message: `page.goto: An internal error was encountered ${sentinel}`,
+        stack: sentinel,
+      }
+      const result = {
+        status: "failed",
+        duration: 100,
+        retry: 0,
+        annotations: [],
+        error: originalError,
+        errors: [originalError],
+      } as unknown as TestResult
+      const step = {
+        category: "pw:api",
+        title: sentinel,
+        location: { file: sourceFile, line: 1, column: 1 },
+        error: originalError,
+      } as unknown as TestStep
+      reporter.onBegin(
+        { metadata: {} } as FullConfig,
+        { allTests: () => [testCase] } as unknown as Suite
+      )
+      reporter.onStepBegin(testCase, result, step)
+      reporter.onStepEnd(testCase, result, step)
+      reporter.onTestEnd(testCase, result)
+      reporter.onEnd({ status: "failed" } as FullResult)
+      const reportText = readFileSync(outputFile, "utf8")
+      const evidenceText = readFileSync(evidenceFile, "utf8")
+      const progressText = readFileSync(progressFile, "utf8")
+      const artifact = JSON.parse(evidenceText)
+      const attempt = artifact.tests[0].tests[0].results[0]
+      expect(attempt.status).toBe("failed")
+      expect(attempt.retry).toBe(0)
+      expect(attempt.failure.failedStep.category).toBe("browser-operation")
+      expect(attempt.diagnostics).toEqual([
+        {
+          kind: "mobile-baseline-browser",
+          operation: "navigation",
+          errorCategory: "browser_internal",
+          errorSource: "matched_leaf",
+          messageAvailable: true,
+          messageTruncated: false,
+          locatorWaitObserved: false,
+          notVisibleObserved: false,
+          notEnabledObserved: false,
+          notStableObserved: false,
+          pointerInterceptionObserved: false,
+          detachedObserved: false,
+          navigationWaitObserved: false,
+        },
+      ])
+      expect(
+        (reportText + evidenceText + progressText).includes(sentinel)
+      ).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})
 
 describe("event stock control failure diagnostic privacy", () => {
   const file = "e2e/event-market.playwright.ts"
