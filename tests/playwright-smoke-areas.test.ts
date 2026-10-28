@@ -84,46 +84,75 @@ describe("Playwright smoke area validation", () => {
     expect(() => buildPlaywrightSmokeDiscoveryArgs(undefined, "")).toThrow()
   })
 
-  it("requires separate candidate-bound router evidence inside the commerce CI job", () => {
+  it("requires separate candidate-bound router evidence outside ordinary Commerce", () => {
+    const jobs = Bun.YAML.parse(ciWorkflow).jobs as Record<
+      string,
+      {
+        needs?: string[]
+        env?: Record<string, string>
+        steps: Array<{
+          name?: string
+          if?: string
+          run?: string
+          env?: Record<string, string>
+        }>
+      }
+    >
+    const router = jobs["e2e-router"]!
+    expect(router).toBeDefined()
+    const ordinary = jobs["e2e-smoke-shard"]!
     const steps = [
       "Validate isolated router smoke selection",
       "Run isolated router Playwright smoke tests",
       "Verify executed isolated router smoke evidence",
     ].map((name) => {
-      const start = ciWorkflow.indexOf(`      - name: ${name}\n`)
-      expect(start).toBeGreaterThan(0)
-      const next = ciWorkflow.indexOf("      - name:", start + 1)
-      return ciWorkflow.slice(start, next < 0 ? undefined : next)
+      const matches = router.steps.filter((step) => step.name === name)
+      expect(matches).toHaveLength(1)
+      expect(ordinary.steps.some((step) => step.name === name)).toBe(false)
+      return matches[0]!
     })
     for (const step of steps) {
-      expect(step).toContain("matrix.job.area == 'commerce'")
-      expect(step).toContain("playwright.router.config.ts")
-      expect(step).toContain("PLAYWRIGHT_ROUTER_NATIVE_PROFILE: ordinary")
+      expect(step.if).not.toContain("matrix.")
+      expect(step.run).toContain("playwright.router.config.ts")
+      expect(step.env?.PLAYWRIGHT_ROUTER_NATIVE_PROFILE).toBe("ordinary")
     }
-    expect(steps[0]).toContain("--manifest-output")
-    expect(steps[0]).toContain("playwright-router-smoke-manifest.json")
-    expect(steps[1]).toContain(
+    expect(steps[0]!.run).toContain("--manifest-output")
+    expect(steps[0]!.env?.PLAYWRIGHT_SMOKE_MANIFEST).toBe(
+      "playwright-router-smoke-manifest.json"
+    )
+    expect(steps[1]!.run).toContain(
       "--config playwright.router.config.ts >/dev/null 2>&1"
     )
-    expect(steps[1]).toContain("playwright-router-smoke-results.json")
-    expect(steps[1]).toContain("umask 077")
+    expect(steps[1]!.env?.PLAYWRIGHT_SMOKE_RESULT_FILE).toBe(
+      "${{ runner.temp }}/playwright-router-smoke-results.json"
+    )
+    expect(steps[1]!.run).toContain("umask 077")
     for (const field of ["BASE_SHA", "SOURCE_HEAD_SHA", "TESTED_SHA"]) {
-      expect(steps[0]).toContain(`PLAYWRIGHT_SMOKE_${field}:`)
-      expect(steps[1]).toContain(`PLAYWRIGHT_SMOKE_${field}:`)
+      for (const step of steps.slice(0, 2))
+        expect(
+          step.env?.[`PLAYWRIGHT_SMOKE_${field}`] ??
+            router.env?.[`PLAYWRIGHT_SMOKE_${field}`]
+        ).toBeDefined()
     }
-    expect(steps[2]).toContain("if: always() && matrix.job.area == 'commerce'")
-    expect(steps[2]).toContain("--expected-manifest")
-    expect(steps[2]).toContain("--execution-report")
-    const cleanup = ciWorkflow.slice(
-      ciWorkflow.indexOf("      - name: Remove raw Playwright output"),
-      ciWorkflow.indexOf("\n  e2e-smoke:\n")
-    )
-    expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_RESULT_FILE"')
-    expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_PROGRESS_FILE"')
-    expect(cleanup).toContain('"$PLAYWRIGHT_ROUTER_MANIFEST"')
-    expect(ciWorkflow).toContain(
-      "needs: [smoke-changes, e2e-smoke-shard, e2e-event-router]"
-    )
+    expect(steps[2]!.if).toBe("always()")
+    expect(steps[2]!.run).toContain("--expected-manifest")
+    expect(steps[2]!.run).toContain("--execution-report")
+    const cleanup = router.steps.find(
+      (step) => step.name === "Remove raw Playwright output"
+    )!
+    expect(cleanup.if).toBe("always()")
+    expect(cleanup.run).toContain('"$PLAYWRIGHT_ROUTER_RESULT_FILE"')
+    expect(cleanup.run).toContain('"$PLAYWRIGHT_ROUTER_PROGRESS_FILE"')
+    expect(cleanup.run).toContain('"$PLAYWRIGHT_ROUTER_MANIFEST"')
+    const ordinaryCleanup = ordinary.steps.find(
+      (step) => step.name === "Remove raw Playwright output"
+    )!
+    expect(JSON.stringify(ordinaryCleanup)).not.toContain("PLAYWRIGHT_ROUTER_")
+    expect(jobs["e2e-smoke"]!.needs).toContain("e2e-router")
+    expect(jobs["e2e-smoke"]!.needs).toContain("e2e-event-router")
+    expect(
+      ordinary.steps.map((step) => step.run ?? "").join("\n")
+    ).not.toContain("--config playwright.router.config.ts")
   })
 
   it("requires an exact project-aware multiset across smoke shards", () => {
@@ -427,23 +456,54 @@ describe("Playwright smoke area validation", () => {
       'rm -rf -- "$GITHUB_WORKSPACE/playwright-report" "$GITHUB_WORKSPACE/test-results"'
     )
     expect(ciWorkflow).not.toContain("Upload Playwright artifacts")
-    const uploads = (
-      Bun.YAML.parse(ciWorkflow).jobs["e2e-smoke-shard"].steps as Array<{
-        uses?: string
-        with?: Record<string, string>
-      }>
-    ).filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
-    expect(uploads).toHaveLength(3)
-    expect(uploads.map((step) => step.with?.path).sort()).toEqual(
+    const jobs = Bun.YAML.parse(ciWorkflow).jobs as Record<
+      string,
+      {
+        steps: Array<{
+          if?: string
+          uses?: string
+          with?: Record<string, string | number>
+        }>
+      }
+    >
+    for (const [job, paths] of [
       [
-        "${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json",
-        "${{ runner.temp }}/playwright-router-smoke-evidence.json",
-        "${{ runner.temp }}/playwright-router-receiver-setup-evidence.json",
-      ].sort()
-    )
-    for (const upload of uploads) {
-      expect(upload.with?.["if-no-files-found"]).toBe("error")
-      expect(upload.with?.["retention-days"]).toBe(7)
+        "e2e-smoke-shard",
+        [
+          "${{ runner.temp }}/playwright-smoke-${{ matrix.job.id }}-evidence.json",
+        ],
+      ],
+      [
+        "e2e-router",
+        [
+          "${{ runner.temp }}/playwright-router-smoke-evidence.json",
+          "${{ runner.temp }}/playwright-router-receiver-setup-evidence.json",
+        ],
+      ],
+      [
+        "e2e-event-router",
+        ["${{ runner.temp }}/playwright-event-router-smoke-evidence.json"],
+      ],
+    ] as const) {
+      const uploads = jobs[job]!.steps.filter((step) =>
+        step.uses?.startsWith("actions/upload-artifact@")
+      )
+      expect(uploads).toHaveLength(paths.length)
+      expect(uploads.map((step) => step.with?.path).sort()).toEqual(
+        [...paths].sort()
+      )
+      for (const upload of uploads) {
+        expect(upload.uses).toBe(
+          "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+        )
+        expect(upload.if).toBe(
+          job === "e2e-smoke-shard"
+            ? "always() && matrix.job.area != 'none'"
+            : "always()"
+        )
+        expect(upload.with?.["if-no-files-found"]).toBe("error")
+        expect(upload.with?.["retention-days"]).toBe(7)
+      }
     }
     expect(playwrightConfig).toContain("retries: 0")
     expect(smokeAreaValidator).not.toContain("result.stderr.trim()")

@@ -306,14 +306,14 @@ evaluates to an empty string. The Actions runner converts that definition to no
 job container, so the no-op step runs on the host without pulling an image.
 The aggregate gate still requires successful selection and shard execution.
 Keep Bash as the container step shell because smoke steps use Bash arrays and
-`pipefail`. Market and Merchant jobs have a 20-minute limit. Commerce has a
-25-minute limit for its serial ordinary, ordinary native-router, and receiver setup
-lanes. Event native-router cases run in a separate parallel, 25-minute job with
-independent app, relay, wallet, signer and browser-storage state. Both jobs remain
-required whenever commerce is selected. Limits include setup, evidence upload,
-and cleanup. Individual test deadlines
-remain unchanged. Job cancellation still fails the aggregate gate, even when
-all test artifacts were uploaded successfully.
+`pipefail`. Market and Merchant jobs have a 20-minute limit. Ordinary Commerce
+retains its 25-minute limit. Ordinary native-router and receiver setup run serially
+in their own parallel, 25-minute job; Event native-router cases retain a separate
+parallel, 25-minute job. Each job owns independent app, relay, wallet, signer and
+browser-storage state. All three jobs remain required whenever commerce is
+selected. Limits include setup, evidence upload and cleanup. Individual test
+deadlines remain unchanged. Job cancellation still fails the aggregate gate,
+even when all test artifacts were uploaded successfully.
 
 A retry-dependent pass still fails the smoke gate. Required CI runs use zero
 automatic retries; a separate diagnostic rerun cannot turn a failed first
@@ -340,8 +340,11 @@ policy. Before execution, project-aware discovery verifies that the ordinary and
 Event native profiles form the exact full native manifest with no omissions or
 overlap. The default local router profile still runs the complete native set;
 `PLAYWRIGHT_ROUTER_NATIVE_PROFILE=ordinary` or `event` selects a CI partition.
-Each lane runs after an earlier lane fails only when its own setup and selection
-succeeded. A later passing lane does not replace an earlier failure.
+Ordinary Commerce and both isolated router jobs depend only on successful smoke
+selection, not each other's execution. Within the ordinary-router job, receiver
+setup still runs after a native-lane failure only when its own setup and selection
+succeeded and the job was not cancelled. A later passing lane does not replace an
+earlier failure.
 
 Schema version 2 retains timing only as fixed duration buckets: `under-1s`,
 `1-5s`, `5-15s`, `15-30s`, `30-60s`, `1-5m`, `5-15m`, and `15m-plus`.
