@@ -204,6 +204,7 @@ import {
   captureOrderStockRevision,
   prepareOrderStockUpdate,
 } from "../lib/order-stock-fulfillment"
+import { getOrderStockUpdateErrorMessage } from "../lib/order-stock-feedback"
 import {
   applyOrderStockTarget,
   buildOrderStockAdjustments,
@@ -3590,13 +3591,11 @@ function OrdersWorkspace() {
     signerReadiness,
     stockUpdateMutation,
   ])
-  const stockUpdateErrorMessage =
-    stockUpdateMutation.error &&
-    !(stockUpdateMutation.error instanceof SignedProductDeliveryError)
-      ? stockUpdateMutation.error instanceof Error
-        ? stockUpdateMutation.error.message
-        : "Failed to update listing stock"
-      : null
+  const stockUpdateErrorMessage = getOrderStockUpdateErrorMessage(
+    stockUpdateMutation.error,
+    stockUpdateMutation.variables,
+    selectedStockDelivery
+  )
 
   function updateStock(
     adjustment: OrderStockAdjustment,
