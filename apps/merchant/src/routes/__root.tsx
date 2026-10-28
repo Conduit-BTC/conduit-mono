@@ -319,7 +319,11 @@ function AuthGateGrace() {
   )
 }
 
-function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
+function AuthRestoring({
+  method,
+}: {
+  method: "nip07" | "nip46" | "local" | null
+}) {
   return (
     <div className="flex min-h-[50vh] items-center justify-center">
       <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-4 text-center shadow-sm">
@@ -330,7 +334,9 @@ function AuthRestoring({ method }: { method: "nip07" | "nip46" | null }) {
         <div className="mt-1 text-sm text-[var(--text-secondary)]">
           {method === "nip46"
             ? "Reconnecting to your remote signer."
-            : "Waiting for your browser extension."}
+            : method === "local"
+              ? "Restoring the signer saved on this device."
+              : "Waiting for your browser extension."}
         </div>
       </div>
     </div>
@@ -447,6 +453,8 @@ function ConnectGate() {
     status,
     method,
     connect,
+    localKeyEnabled,
+    pasteLocalKey,
     cancelConnect,
     disconnect,
     error,
@@ -460,7 +468,7 @@ function ConnectGate() {
   const isProbablyMobileBrowser = useMemo(isMobileSignerEnvironment, [])
   const extensionNotice =
     !extensionAvailable && !isProbablyMobileBrowser
-      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
+      ? "Open or unlock your browser extension, then try again."
       : null
 
   useEffect(() => {
@@ -481,17 +489,12 @@ function ConnectGate() {
         <SignerConnectPanel
           logoSrc="/images/logo/merchant-logo-full.svg"
           title="Sign in to Conduit"
-          description="Use your Nostr account to open your merchant workspace."
-          helperText={
-            isProbablyMobileBrowser
-              ? "Approve sign-in in your app, then return here."
-              : "Choose a browser extension or remote signer."
-          }
-          unlockLabel="UNLOCK YOUR COMMAND CENTER"
+          description="Open your merchant workspace."
+          unlockLabel="Your merchant workspace"
           unlockItems={[
             "Create your store and start publishing products.",
-            "Handle orders, customer messages, and product comments from one workspace.",
-            "Sell through Conduit, your own storefront, and the wider Nostr network.",
+            "Handle orders, customer messages, and product comments in one place.",
+            "Sell through Conduit, your own storefront, and beyond.",
           ]}
           error={error}
           authUrl={authUrl}
@@ -500,6 +503,11 @@ function ConnectGate() {
           connectingMethod={status === "restoring" ? null : method}
           extensionNotice={extensionNotice}
           mobile={isProbablyMobileBrowser}
+          localKeyEnabled={localKeyEnabled}
+          onPasteLocalKey={pasteLocalKey}
+          onImportLocalKey={(localKeyInput) =>
+            connect({ method: "local", localKeyInput })
+          }
           extensionAvailable={extensionAvailable}
           connectPending={authPending}
           connectDisabled={authPending}

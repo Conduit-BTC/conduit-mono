@@ -103,7 +103,17 @@ const protectedSmokeFiles = new Set([
 ])
 
 function credentialRulesForFile(file: string): readonly StaticCredentialRule[] {
-  const baseRules = staticCredentialRules
+  // These tightly scoped import fixtures generate disposable identities at
+  // runtime. Encoding is the behavior under test; fixed credential rules still
+  // apply, including to every authored commit. Protected smoke is unchanged.
+  const runtimeImportFixture = new Set([
+    "tests/local-key-signer.test.ts",
+    "tests/local-key-lifecycle-regression.test.ts",
+    "e2e/helpers/local-key-test-identity.ts",
+  ]).has(file)
+  const baseRules = runtimeImportFixture
+    ? staticCredentialRules.filter(({ rule }) => rule !== "secret-key encoding")
+    : staticCredentialRules
   return protectedSmokeFiles.has(file)
     ? [...baseRules, ...protectedAccountReferenceRules, fixed32ByteHexRule]
     : baseRules
@@ -631,6 +641,17 @@ describe("Playwright smoke credential fixtures", () => {
         credentialRulesForFile("e2e/harmless.playwright.ts")
       )
     ).toEqual(expectedStaticRuleSnapshots)
+    for (const file of [
+      "tests/local-key-signer.test.ts",
+      "tests/local-key-lifecycle-regression.test.ts",
+      "e2e/helpers/local-key-test-identity.ts",
+    ]) {
+      expect(snapshotCredentialRules(credentialRulesForFile(file))).toEqual(
+        expectedStaticRuleSnapshots.filter(
+          ([rule]) => rule !== "secret-key encoding"
+        )
+      )
+    }
     expect(
       findStaticCredentialFixtures(
         "e2e/public-identifiers.playwright.ts",
@@ -754,7 +775,15 @@ describe("Playwright smoke credential fixtures", () => {
     for await (const file of glob.scan({ cwd: ".", onlyFiles: true })) {
       const source = await Bun.file(file).text()
       scannedSourceCount += 1
-      findings.push(...findStaticCredentialFixtures(file, source))
+      findings.push(
+        ...findStaticCredentialFixtures(
+          file,
+          source,
+          undefined,
+          1,
+          credentialRulesForFile(file)
+        )
+      )
     }
 
     findings.sort(

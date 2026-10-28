@@ -675,12 +675,10 @@ test("account changes away from checkout cannot revive a guest source after relo
     )
   ).toBe(true)
   await page
-    .getByRole("button", { name: /^Connect$/ })
+    .getByRole("button", { name: /^Sign In$/ })
     .first()
     .click()
-  await page
-    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
-    .click()
+  await page.getByRole("button", { name: /Sign in with Extension/i }).click()
   const accountMenu = page.getByRole("button", { name: "Open account menu" })
   await expect(accountMenu).toBeVisible()
   await expect
@@ -693,7 +691,7 @@ test("account changes away from checkout cannot revive a guest source after relo
   await accountMenu.click()
   await page.getByRole("menuitem", { name: "Disconnect", exact: true }).click()
   await expect(
-    page.getByRole("button", { name: /^Connect$/ }).first()
+    page.getByRole("button", { name: /^Sign In$/ }).first()
   ).toBeVisible()
   await page.reload()
   await page.goto(checkoutUrl)

@@ -109,6 +109,16 @@ for (const mode of ["create", "import"] as const)
       await installRealTestSigner(page, identity, relay)
       await page.goto(apps.market + "/wallet")
       await installControlledWallet(page)
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            Boolean(
+              (window as unknown as WalletFixtureWindow)
+                .__controlledWalletController
+            )
+          )
+        )
+        .toBe(true)
       await page.evaluate(async () => {
         await (
           window as unknown as WalletFixtureWindow

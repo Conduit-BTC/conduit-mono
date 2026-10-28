@@ -2,8 +2,10 @@
 
 `AuthProvider` remains the account lifecycle owner. `AccountSigner` is the
 operation contract, and `SessionSigner` remains the single active signing owner.
-Relay clients do not own account authority. This extraction does not enable a
-local account provider or change the current NIP-07/NIP-46 custody policy.
+Relay clients do not own account authority. NIP-07, NIP-46 and the contained
+local-key adapter share this owner. The optional browser/PWA local path
+is enabled in preview and production browser tabs and installed apps;
+see the [local signer contract](local-signer-security-review.md).
 
 ## Responsibilities
 
@@ -12,10 +14,12 @@ local account provider or change the current NIP-07/NIP-46 custody policy.
 | `auth-session.ts`                             | Version-1 public metadata, legacy NIP-07 parsing, storage keys, authority revision claims, synchronous revocation, exact-session metadata cleanup, restoration method selection and installed-session authority checks |
 | `auth-operation-lock.ts`                      | Browser-wide serialization; existing IndexedDB lock namespace retained for compatibility with open tabs, without reading credential records                                                                            |
 | `AuthProvider`                                | Attempt epoch, cancellation, restoration pending state, account identity, transactional installation, React state and cleanup dispatch                                                                                 |
+| `auth-connection.ts`                          | Pending-to-installed live resource ownership, attempt fencing, exact signer/read-lease retirement and synchronous handoff                                                                                              |
 | `session-signer.ts`                           | Account/revision binding, operation queue, capabilities, signature/template validation, pending-operation cancellation and single active owner                                                                         |
-| `auth-session-lifecycle.ts`                   | Fixed provider credential-retirement dispatch after shared metadata verification                                                                                                                                       |
+| `auth-session-lifecycle.ts`                   | Fixed provider credential-retirement dispatch with shared metadata verification and method-specific cleanup ordering                                                                                                   |
 | `nip46-auth-session.ts`                       | NIP-46 metadata validation and stable credential identity                                                                                                                                                              |
 | `remote-signer.ts` / `remote-signer-vault.ts` | Pairing, route verification/recovery, NIP-46 client credential storage, persistence/rollback, provider invalidation and credential retirement                                                                          |
+| `local-key/`                                  | Existing-account import, NIP-19 decoding, exclusive secret ownership, IndexedDB persistence, restoration, crypto operations and exact-revision deletion                                                                |
 | Protected-read lifecycle                      | Exact installed account lease, recipient scope and synchronous relay-read revocation                                                                                                                                   |
 
 The persisted session is a restoration candidate, never an authority grant by
@@ -27,54 +31,93 @@ provider. Unknown provider metadata remains unsupported.
 
 ## Installation and cleanup
 
-The connection attempt owns provider resources until installation succeeds.
-After the final attempt/revision fence, `installAccountSigner` installs the
-protected-read lease before publishing the existing `SessionSigner` owner.
-Installation failure revokes the candidate lease and signer. `AuthProvider`
-commits its session/connection refs only after this succeeds.
+`AuthProvider` retains one pending `AuthConnection` until installation succeeds,
+then transfers that same connection to its installed owner. The connection owns
+the provider adapter, `SessionSigner` and its exact protected-read lease together.
+After the attempt/revision fence, `installAccountSigner` installs the read lease
+before publishing the signer. While local promotion awaits storage, both exposed
+capabilities also require the pending attempt's epoch and cancellation authority.
+Cancellation, disconnect, cross-tab displacement and unmount synchronously retire
+those resources, including captured capabilities and pending operation results.
+Late acquisition is retired on arrival; late completion cannot hand off ownership.
+
+Successful promotion is followed by one synchronous handoff. Installed authority
+then depends on the saved session/revision, independently of the completed dialog
+attempt. Each connection retires only its exact signer and read lease, so stale
+cleanup cannot revoke a replacement. A failed new local import synchronously
+rolls back its public metadata and records removal retry before awaiting storage,
+so a reload during delayed promotion cannot restore it. Exact credential deletion
+still runs under the browser auth lock. Restore interruption preserves
+its saved credential; failed new imports retain their existing exact-candidate
+rollback and removal-retry behavior.
 
 A failed new NIP-46 install rolls back newly persisted metadata/client credentials
 and abandons the connection. A failed restored install preserves its existing
 metadata/key and closes the transient transport. Unreadable rollback metadata
 must not become permission to delete a possibly referenced key.
 
-Shared retirement verifies metadata removal under the browser auth lock before
-calling provider credential cleanup. It preserves a replacement's metadata.
-NIP-46 also preserves a replacement using the same client key. Explicit logout
-can retire the exact expected credential when metadata verification fails, while
-still reporting failure. Synchronous local and cross-tab authority revocation
-precedes asynchronous cleanup. Cleanup errors cannot install or revive a signer.
+Shared retirement uses the browser auth lock and preserves a replacement's
+metadata. NIP-46 verifies metadata removal before provider credential cleanup,
+and preserves a replacement using the same client key. Explicit logout can
+retire the exact expected credential when metadata verification fails, while
+still reporting failure.
 
-## Provider integration handoff
+Local-key retirement first verifies public-only removal retry metadata, then
+conditionally deletes the exact local-key revision. Only committed deletion
+allows its removal journal and saved public session metadata to be cleared.
+Failed deletion retains retry information and blocks automatic restoration;
+stale cleanup preserves a later import. This also covers failed new imports
+before active-session metadata was saved. Synchronous local and cross-tab
+authority revocation precedes asynchronous cleanup. Cleanup errors cannot
+install or revive a signer. A failed journal write falls back to an exact-session
+removal marker in the existing public auth record. If all durable mutations and
+key deletion fail, the UI reports that restart safety remains unresolved;
+live revocation alone is not durable removal.
 
-Adapt a provider to `NostrKeySigner` and bind it with the existing
-`SessionSigner`. `AuthProvider` remains the only account lifecycle owner. This
-foundation does not choose a new provider's custody, storage or transport model.
-The current account-key boundary and separate-origin imported-key exception in
-[`docs/specs/protocol.md`](../specs/protocol.md#authentication) remain unchanged.
-Any change to that policy requires a separate maintainer decision before
-implementation; this note does not authorize app-origin account-key custody.
+Replacement imports stage one candidate beside the active key, then install
+public metadata and shared session authority before atomic promotion. Failed
+installation restores the previous public session only while the failed
+candidate still owns that metadata, and deletes only that candidate. Restart
+reconciliation uses the saved public session to retain or discard staging.
 
-- Keep provider credential revisions distinct from the app's `authClaim`.
-  Shared metadata contains public identity and provider references, never an
-  account private key or independently usable unwrapping material. A stale
-  session cannot adopt or remove a replacement provider credential.
-- Map `signEvent`, `encryptNip44`, `decryptNip44` and decrypt-only legacy
-  operations to the existing contract. Preserve `SessionSigner`'s exact-template
-  and signature validation, scheduling, capabilities and typed failures.
-- Keep transient invalidation separate from durable removal. Failed restoration
-  closes transient provider resources while preserving durable credentials.
-  Explicit logout synchronously revokes account authority before conditionally
-  retiring the exact captured credential. Failed cleanup stays failed and
-  retryable; it cannot revive authority or report successful removal.
-- Add any approved provider through explicit connect, restore and credential
-  retirement branches. Review protected-read, Network publication and recipient
-  relay AUTH eligibility together. Guest keys remain purpose-scoped and
-  ineligible. Never impersonate `window.nostr`.
+## In-process local-key integration
+
+The local-key implementation lives inside `@conduit/core`, directly behind
+`NostrKeySigner`. The existing `SessionSigner` binds it; `AuthProvider`
+remains the only account lifecycle owner. There is no standalone signer runtime,
+iframe, cross-origin transport, separately deployed origin or package dependency.
+
+- The implementation owns existing-NSEC input, NIP-19 decoding/validation,
+  secret-byte storage, key operations and best-effort buffer clearing. It consumes
+  and clears import text inside that area; ordinary application code never
+  receives a private key or an NSEC getter/export capability.
+- Shared auth metadata contains only public identity and a local credential
+  revision, distinct from the app's `authClaim`. The adapter verifies the exact
+  record before and after asynchronous operations; an old
+  session cannot adopt or remove a later import.
+- `signEvent`, `encryptNip44`, `decryptNip44` and the required decrypt-only
+  legacy operation use the pinned mature crypto implementation and preserve
+  `SessionSigner`'s exact-template/signature checks,
+  current foreground/background scheduling and typed failures.
+- Transient invalidation remains separate from durable removal. Failed restoration
+  or app unmount clears accessible key buffers and pending results but preserves
+  the stored record. Explicit logout synchronously revokes account authority,
+  then conditionally deletes the exact local record. Failed deletion remains
+  failed cleanup with a retry path; it never reports successful logout.
+- The named local auth method has fixed connect/restore/credential-retirement
+  branches. Account eligibility includes protected reads, Network publication
+  and recipient relay AUTH. Guest keys remain purpose-scoped and ineligible.
+  The adapter does not impersonate `window.nostr`.
 
 Provider implementation, import/onboarding UI, persistence changes and activation
 belong to a separate integration. Real-signer, composed Market/Merchant and
 physical-device evidence remain distinct from this shared-lifecycle extraction.
+
+Contained import UI, persistence and composed Market/Merchant coverage use the
+existing publication, NIP-17/NIP-59 and inbox owners. Managed preview and
+production builds enable this same flow in browser tabs and installed apps.
+Record physical iPhone storage/logout validation separately; emulated coverage
+does not establish physical-device behavior.
 
 ## Wallet recovery boundary
 
