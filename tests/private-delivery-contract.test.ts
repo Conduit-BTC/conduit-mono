@@ -520,6 +520,65 @@ describe("private delivery composed contract", () => {
     expect(publications).toBe(0)
   })
 
+  it("does not acquire a retained retry claim after cancellation during claim lookup", async () => {
+    const fixture = await setup()
+    const { id, wrap } = await stageFailedRecipientWrap(fixture)
+    const table = fixture.database.commerceInboxDeliveries
+    const before = await table.get(fixture.store.key(id))
+    const signs = fixture.signCalls()
+    const originalGet = table.get.bind(table)
+    let current = true
+    let publications = 0
+    const publisher = (async (event, options) => {
+      expect(JSON.stringify(event) === JSON.stringify(wrap)).toBe(true)
+      expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
+      publications++
+      return acknowledged(RECIPIENT_RELAY)
+    }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+    const updates = spyOn(table, "update")
+    const lookup = spyOn(table, "get").mockImplementationOnce((async (
+      ...args: Parameters<typeof table.get>
+    ) => {
+      const row = await originalGet(...args)
+      current = false
+      return row
+    }) as typeof table.get)
+    try {
+      await expect(
+        retryForFixture(
+          fixture,
+          fixture.sender,
+          publisher,
+          id,
+          fixture.store,
+          undefined,
+          { shouldContinue: () => current }
+        )
+      ).rejects.toThrow("signer session changed")
+      expect(updates.mock.calls.length).toBe(0)
+    } finally {
+      lookup.mockRestore()
+      updates.mockRestore()
+    }
+    expect(publications).toBe(0)
+    expect(
+      isDeepStrictEqual(await table.get(fixture.store.key(id)), before)
+    ).toBe(true)
+    current = true
+    await retryForFixture(
+      fixture,
+      fixture.sender,
+      publisher,
+      id,
+      fixture.store,
+      undefined,
+      { shouldContinue: () => current }
+    )
+    expect(publications).toBe(1)
+    expect(fixture.signCalls()).toBe(signs)
+    expect((await table.get(fixture.store.key(id)))?.state).toBe("accepted")
+  })
+
   it.each(["same", "different"] as const)(
     "blocks a %s-identity session replacement during retained starting work",
     async (identity) => {
