@@ -1,4 +1,4 @@
-import { Check, Copy } from "lucide-react"
+import { Check, Copy, Radio, ChevronDown } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
 import { Button } from "./Button"
 import { SignerAppChoices, type SignerApp } from "./SignerAppChoices"
@@ -32,7 +32,7 @@ export function RemoteSignerConnect({
 }) {
   const otherWaysId = useId()
   const hasAppChoices = platform === "ios" || platform === "android"
-  const [showOtherWays, setShowOtherWays] = useState(!hasAppChoices)
+  const [showOtherWays, setShowOtherWays] = useState(false)
   const [activeTab, setActiveTab] = useState("qr")
   const [selectedApp, setSelectedApp] = useState<SignerApp | null>(null)
   const [userStartedPairing, setUserStartedPairing] = useState(false)
@@ -181,22 +181,33 @@ export function RemoteSignerConnect({
         </div>
       )}
 
-      {hasAppChoices && (
+      {(!hasAppChoices || userStartedPairing || nostrConnectUri || error) && (
         <Button
           type="button"
-          variant="ghost"
-          className="h-11 w-full"
+          variant={hasAppChoices ? "ghost" : "outline"}
+          className="min-h-12 w-full justify-start gap-3 rounded-[var(--radius-md)] px-4 text-sm font-medium"
           aria-expanded={showOtherWays}
           aria-controls={otherWaysId}
           onClick={() => {
-            if (showOtherWays && activeTab === "bunker") {
+            if (showOtherWays) {
               cancel()
               setActiveTab("qr")
             }
             setShowOtherWays(!showOtherWays)
           }}
         >
-          {showOtherWays ? "Hide other ways" : "Other ways to connect"}
+          {!hasAppChoices && <Radio className="size-5" aria-hidden="true" />}
+          {hasAppChoices
+            ? showOtherWays
+              ? "Hide other ways"
+              : "Other ways to connect"
+            : "Remote Sign In"}
+          <ChevronDown
+            className={
+              showOtherWays ? "ml-auto size-4 rotate-180" : "ml-auto size-4"
+            }
+            aria-hidden="true"
+          />
         </Button>
       )}
 

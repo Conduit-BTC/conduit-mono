@@ -661,7 +661,7 @@ async function exerciseProfileDraftSignerSwitch(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Open account menu" }).click()
   await page.getByRole("menuitem", { name: "Disconnect" }).click()
   await expect(
-    page.getByRole("button", { name: "Connect", exact: true })
+    page.getByRole("button", { name: "Sign In", exact: true })
   ).toBeVisible()
 
   await page.evaluate((signerPubkey) => {
@@ -686,8 +686,8 @@ async function exerciseProfileDraftSignerSwitch(page: Page): Promise<void> {
     })
   }, secondPubkey)
 
-  await page.getByRole("button", { name: "Connect", exact: true }).click()
-  await page.getByRole("button", { name: "Connect Extension (NIP-07)" }).click()
+  await page.getByRole("button", { name: "Sign In", exact: true }).click()
+  await page.getByRole("button", { name: "Sign in with Extension" }).click()
   await expect(
     page.getByText("Second account", { exact: true }).first()
   ).toBeVisible({
@@ -1975,12 +1975,10 @@ test("market checkout claims a guest draft when a signer connects @market", asyn
     throw new Error("Guest checkout draft was not stored")
 
   await page
-    .getByRole("button", { name: /^Connect$/ })
+    .getByRole("button", { name: /^Sign In$/ })
     .first()
     .click()
-  await page
-    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
-    .click()
+  await page.getByRole("button", { name: /Sign in with Extension/i }).click()
 
   await expect(
     page.getByRole("button", { name: "Open account menu" })
@@ -2074,7 +2072,7 @@ test("market authenticated checkout draft survives reload and clears across iden
   await page.getByRole("button", { name: "Open account menu" }).click()
   await page.getByRole("menuitem", { name: "Disconnect" }).click()
   await expect(
-    page.getByRole("button", { name: /^Connect$/ }).first()
+    page.getByRole("button", { name: /^Sign In$/ }).first()
   ).toBeVisible()
   await expect(firstName).toHaveValue("")
   await expect(street).toHaveValue("")
@@ -2096,12 +2094,10 @@ test("market authenticated checkout draft survives reload and clears across iden
     })
   }, secondBuyerPubkey)
   await page
-    .getByRole("button", { name: /^Connect$/ })
+    .getByRole("button", { name: /^Sign In$/ })
     .first()
     .click()
-  await page
-    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
-    .click()
+  await page.getByRole("button", { name: /Sign in with Extension/i }).click()
 
   await expect(
     page.getByRole("button", { name: "Open account menu" })
@@ -2210,7 +2206,7 @@ test("market checkout clears an identity draft after cross-tab auth replacement 
   }, replacementPubkey)
 
   await expect(
-    page.getByRole("button", { name: /^Connect$/ }).first()
+    page.getByRole("button", { name: /^Sign In$/ }).first()
   ).toBeVisible()
   await expect(street).toHaveValue("")
   await expect
@@ -2322,7 +2318,7 @@ test("market wallet route remains available without a Nostr signer @market", asy
     page.getByRole("heading", { name: "Wallets", exact: true })
   ).toBeVisible()
   await expect(
-    page.getByRole("button", { name: "Connect", exact: true })
+    page.getByRole("button", { name: "Sign In", exact: true })
   ).toBeVisible()
 })
 

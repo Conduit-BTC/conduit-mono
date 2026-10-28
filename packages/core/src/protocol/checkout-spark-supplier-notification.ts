@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
+import { isAccountAuthMethod } from "./auth-session"
 import {
   restoreCheckoutSparkMerchantSettlementRecord,
   type CheckoutSparkMerchantSettlementRecord,
@@ -111,7 +112,7 @@ export type CheckoutSparkSupplierNotificationTransport = Pick<
   | "waitForSignerVisibility"
 >
 
-/** Auth metadata comes from the current external account signer, never a guess. */
+/** Auth metadata comes from the current shared account signer, never a guess. */
 export function captureCheckoutSparkSupplierNotificationSession(input: {
   merchantPubkey: string
   assertCurrent: () => void
@@ -124,7 +125,7 @@ export function captureCheckoutSparkSupplierNotificationSession(input: {
     !signer ||
     !authorization ||
     authorization.signer !== signer ||
-    (relayAuthMethod !== "nip07" && relayAuthMethod !== "nip46")
+    !isAccountAuthMethod(relayAuthMethod)
   )
     return null
   return {

@@ -139,7 +139,7 @@ describe("guest order signing identity", () => {
     expect("revision" in identity.signer).toBe(false)
     expect(() =>
       installProtectedReadSigner(identity.signer, identity.pubkey, () => true)
-    ).toThrow("Protected reads require a NIP-07 or NIP-46 account signer")
+    ).toThrow("Protected reads require an account signer")
   })
 
   it("rejects public events and messages outside the guest order scope", async () => {

@@ -1,4 +1,4 @@
-import { Check, ExternalLink, KeyRound, ShieldCheck } from "lucide-react"
+import { Check, ExternalLink, KeyRound, Puzzle } from "lucide-react"
 import {
   useEffect,
   useEffectEvent,
@@ -9,6 +9,7 @@ import {
   type Ref,
 } from "react"
 import { Button } from "./Button"
+import { LocalKeyImportForm } from "./LocalKeyImportForm"
 import {
   Dialog,
   DialogContent,
@@ -38,8 +39,14 @@ export interface SignerSwitchProps {
   pubkeyDetailLabel?: string | null
   error?: string | null
   authUrl?: string | null
-  signerMethod?: "nip07" | "nip46" | null
-  rememberedMethod?: "nip07" | "nip46" | null
+  signerMethod?: "nip07" | "nip46" | "local" | null
+  rememberedMethod?: "nip07" | "nip46" | "local" | null
+  localKeyEnabled?: boolean
+  onImportLocalKey?: (input: HTMLInputElement) => Promise<void> | void
+  onPasteLocalKey?: (
+    input: HTMLInputElement,
+    signal: AbortSignal
+  ) => Promise<boolean>
   extensionAvailable: boolean
   connectedDescription: string
   connectDescription: string
@@ -61,17 +68,22 @@ export interface SignerConnectPanelProps {
   logoSrc?: string
   title?: string
   description: string
-  helperText: string
   unlockLabel?: string
   unlockItems: readonly string[]
   error?: string | null
   authUrl?: string | null
-  rememberedMethod?: "nip07" | "nip46" | null
-  connectingMethod?: "nip07" | "nip46" | null
+  rememberedMethod?: "nip07" | "nip46" | "local" | null
+  connectingMethod?: "nip07" | "nip46" | "local" | null
   pendingSwitch?: boolean
   extensionNotice?: string | null
   mobile?: boolean
   platform?: SignerPlatform
+  localKeyEnabled?: boolean
+  onImportLocalKey?: (input: HTMLInputElement) => Promise<void> | void
+  onPasteLocalKey?: (
+    input: HTMLInputElement,
+    signal: AbortSignal
+  ) => Promise<boolean>
   extensionAvailable: boolean
   connectPending?: boolean
   connectDisabled?: boolean
@@ -86,34 +98,7 @@ export interface SignerConnectPanelProps {
   onForget?: () => Promise<void> | void
 }
 
-function ConduitLogoLockup({
-  className = "h-10",
-  logoSrc = "/images/logo/logo-full.svg",
-}: {
-  className?: string
-  logoSrc?: string
-}) {
-  return (
-    <div className="mb-5 flex justify-center">
-      <img
-        src={logoSrc}
-        alt="Conduit"
-        className={`${className} w-auto select-none object-contain`}
-        draggable="false"
-      />
-    </div>
-  )
-}
-
-function SignerGlyph({ className = "h-5 w-5" }: { className?: string }) {
-  return <KeyRound className={className} aria-hidden="true" />
-}
-
 const NSTART_URL = "https://nstart.me"
-const ALBY_URL = "https://getalby.com/"
-const NOSTR_GET_STARTED_URL = "https://grownostr.org/get-started"
-const signerConnectButtonClassName =
-  "h-14 w-full justify-center gap-3 rounded-[var(--radius-md)] bg-primary-500 text-base font-semibold text-[var(--on-primary)]  hover:bg-primary-600 focus-visible:ring-primary-400 disabled:brightness-75"
 export function isMobileSignerEnvironment(
   input?: SignerEnvironmentInput
 ): boolean {
@@ -133,126 +118,87 @@ function SignerHeader({
 }) {
   return (
     <DialogHeader className="mx-auto max-w-md items-center text-center">
-      <ConduitLogoLockup className="h-11" logoSrc={logoSrc} />
       <DialogTitle
         ref={titleRef}
         tabIndex={-1}
-        className="mt-4 flex items-center gap-2 text-2xl font-semibold text-[var(--text-primary)] focus:outline-none sm:text-[2rem]"
+        className="mt-5 flex flex-wrap items-center justify-center gap-2 text-2xl font-semibold text-balance text-[var(--text-primary)] focus:outline-none"
       >
-        <span>{title}</span>
+        {title === "Sign in to Conduit" ? (
+          <SignInHeading logoSrc={logoSrc} />
+        ) : (
+          title
+        )}
       </DialogTitle>
-      <DialogDescription className="max-w-md text-[15px] leading-6 text-[var(--text-secondary)]">
+      <DialogDescription className="text-sm text-pretty text-[var(--text-secondary)]">
         {description}
       </DialogDescription>
     </DialogHeader>
   )
 }
 
+function SignInHeading({
+  logoSrc = "/images/logo/logo-full.svg",
+}: {
+  logoSrc?: string
+}) {
+  return (
+    <>
+      <span>Sign in to</span>
+      <img
+        src={logoSrc}
+        alt="Conduit"
+        className="h-9 w-auto max-w-36 object-contain"
+        draggable="false"
+      />
+    </>
+  )
+}
+
 function ExtensionConnectButton({
   connectPending,
   connectDisabled,
-  label,
-  secondary = false,
   onConnect,
 }: {
   connectPending: boolean
   connectDisabled: boolean
-  label?: string
-  secondary?: boolean
   onConnect: () => Promise<void> | void
 }) {
   return (
     <Button
       type="button"
-      variant={secondary ? "outline" : "primary"}
+      variant="outline"
       onClick={() => void Promise.resolve(onConnect()).catch(() => undefined)}
       disabled={connectDisabled}
-      className={
-        secondary
-          ? "h-12 w-full justify-center gap-3 rounded-[var(--radius-md)]"
-          : signerConnectButtonClassName
-      }
+      className="min-h-12 w-full justify-start gap-3 rounded-[var(--radius-md)] px-4 text-sm font-medium"
     >
-      <SignerGlyph />
-      {connectPending
-        ? "Connecting..."
-        : (label ?? "Connect Extension (NIP-07)")}
+      <Puzzle className="size-5" aria-hidden="true" />
+      {connectPending ? "Connecting..." : "Sign in with Extension"}
     </Button>
   )
 }
 
 export function NoSignerSetupGuide({ className }: { className?: string }) {
   return (
-    <div
+    <p
       className={cn(
-        "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 text-left sm:p-6",
+        "py-1 text-center text-sm text-pretty text-[var(--text-secondary)]",
         className
       )}
     >
-      <div className="text-sm font-semibold text-[var(--text-primary)]">
-        Need a signer?
-      </div>
-      <ol className="mt-5 space-y-5 text-[15px] leading-6 text-[var(--text-secondary)]">
-        <li className="flex gap-4">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-primary-500/70 text-sm font-medium text-[var(--text-primary)]">
-            1
-          </span>
-          <span className="pt-1">
-            Start at{" "}
-            <a
-              href={NSTART_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline rounded-sm font-medium text-primary-400 underline underline-offset-4 transition-colors hover:text-primary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
-            >
-              nstart.me
-            </a>{" "}
-            to set up your Nostr identity.
-          </span>
-        </li>
-        <li className="flex gap-4">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-primary-500/70 text-sm font-medium text-[var(--text-primary)]">
-            2
-          </span>
-          <span className="pt-1">
-            Set up the{" "}
-            <a
-              href={ALBY_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline rounded-sm font-medium text-primary-400 underline underline-offset-4 transition-colors hover:text-primary-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--surface-elevated)]"
-            >
-              Alby
-            </a>{" "}
-            browser extension as your signer and wallet.
-          </span>
-        </li>
-        <li className="flex gap-4">
-          <span className="flex size-8 shrink-0 items-center justify-center rounded-full border border-primary-500/70 text-sm font-medium text-[var(--text-primary)]">
-            3
-          </span>
-          <span className="pt-1">Return to Conduit and connect.</span>
-        </li>
-      </ol>
-      <div className="mt-6">
-        <Button
-          asChild
-          variant="outline"
-          size="md"
-          className="border-primary-500/70 px-5 text-[var(--text-secondary)] hover:border-primary-400 hover:text-[var(--text-primary)]"
-        >
-          <a
-            href={NOSTR_GET_STARTED_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label="Learn more about getting started with Nostr"
-          >
-            Learn more
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          </a>
-        </Button>
-      </div>
-    </div>
+      <span className="block font-medium text-[var(--text-primary)]">
+        Need a Secret Key?
+      </span>
+      Go to{" "}
+      <a
+        href={NSTART_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-primary-400 underline underline-offset-4"
+      >
+        nstart.me
+      </a>{" "}
+      to set up your identity.
+    </p>
   )
 }
 
@@ -266,21 +212,15 @@ export function SignerUnlockCard({
   className?: string
 }) {
   return (
-    <div
-      className={cn(
-        "rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-5 sm:p-6",
-        className
-      )}
-    >
-      <div className="flex items-center gap-2 text-xs uppercase text-[var(--text-muted)]">
-        <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+    <div className={cn("border-t border-[var(--border)] pt-4", className)}>
+      <div className="text-sm font-medium text-[var(--text-muted)]">
         {label}
       </div>
-      <ul className="mt-5 space-y-4 text-[15px] leading-6 text-[var(--text-secondary)]">
+      <ul className="mt-3 space-y-2 text-sm text-[var(--text-secondary)]">
         {unlockItems.map((item) => (
-          <li key={item} className="flex items-start gap-4">
+          <li key={item} className="flex items-start gap-2">
             <Check
-              className="mt-0.5 h-5 w-5 shrink-0 text-primary-400"
+              className="mt-0.5 size-4 shrink-0 text-primary-400"
               aria-hidden="true"
             />
             <span>{item}</span>
@@ -292,7 +232,6 @@ export function SignerUnlockCard({
 }
 
 function SignerDisconnectedContent({
-  helperText,
   unlockLabel,
   unlockItems,
   error,
@@ -303,7 +242,9 @@ function SignerDisconnectedContent({
   extensionNotice,
   mobile,
   platform: requestedPlatform,
-  extensionAvailable,
+  localKeyEnabled,
+  onImportLocalKey,
+  onPasteLocalKey,
   connectPending = false,
   connectDisabled = false,
   bodyClassName,
@@ -319,9 +260,12 @@ function SignerDisconnectedContent({
   const platform =
     requestedPlatform ?? (mobile === false ? "desktop" : getSignerPlatform())
   const isMobile = mobile ?? platform !== "desktop"
-  const reconnectOnly = rememberedMethod === "nip46"
+  const localAvailable = !!localKeyEnabled && !!onImportLocalKey
+  const reconnectOnly =
+    rememberedMethod === "nip46" || rememberedMethod === "local"
   const pairing = useSignerPairing({
-    autoPrepare: platform === "ios" || platform === "android",
+    autoPrepare:
+      !localAvailable && (platform === "ios" || platform === "android"),
     connectPending,
     connectDisabled,
     rememberedMethod,
@@ -330,14 +274,15 @@ function SignerDisconnectedContent({
     onConnect: onConnectNostrConnect,
     onCancel: onCancelConnect,
   })
-  const browserSignerLabel =
-    platform === "ios" ? "Use a Safari extension" : "Use a browser signer"
+  const [extensionAttempted, setExtensionAttempted] = useState(false)
   const browserSignerDisabled =
     connectDisabled && !(connectPending && connectingMethod === "nip46")
-  const connectBrowserSigner = () =>
-    connectPending && connectingMethod === "nip46"
+  const connectBrowserSigner = () => {
+    setExtensionAttempted(true)
+    return connectPending && connectingMethod === "nip46"
       ? pairing.cancelAndRun(onConnectExtension)
       : onConnectExtension()
+  }
   const browserError =
     connectingMethod === "nip07" ||
     (rememberedMethod === "nip07" && connectingMethod !== "nip46")
@@ -373,34 +318,35 @@ function SignerDisconnectedContent({
           </Button>
         )}
 
-        {rememberedMethod === "nip46" && onForget && (
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() =>
-              void Promise.resolve(onForget()).catch(() => undefined)
-            }
-            disabled={connectDisabled}
-            className="h-10 w-full justify-center"
-          >
-            Forget remote signer
-          </Button>
+        {(rememberedMethod === "nip46" || rememberedMethod === "local") &&
+          onForget && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() =>
+                void Promise.resolve(onForget()).catch(() => undefined)
+              }
+              disabled={connectDisabled}
+              className="h-10 w-full justify-center"
+            >
+              {rememberedMethod === "local"
+                ? "Remove saved local signer"
+                : "Forget remote signer"}
+            </Button>
+          )}
+
+        {localAvailable && onImportLocalKey && (
+          <LocalKeyImportForm
+            disabled={connectDisabled || connectPending}
+            onPaste={onPasteLocalKey}
+            onImport={(input) => pairing.run(() => onImportLocalKey(input))}
+          />
         )}
 
         {!reconnectOnly && (!isMobile || rememberedMethod !== "nip07") && (
           <ExtensionConnectButton
             connectPending={connectPending && connectingMethod === "nip07"}
-            connectDisabled={
-              browserSignerDisabled || (!isMobile && !extensionAvailable)
-            }
-            label={
-              isMobile
-                ? extensionAvailable
-                  ? "Continue with browser signer"
-                  : browserSignerLabel
-                : undefined
-            }
-            secondary={isMobile && !extensionAvailable}
+            connectDisabled={browserSignerDisabled}
             onConnect={connectBrowserSigner}
           />
         )}
@@ -436,17 +382,7 @@ function SignerDisconnectedContent({
           </div>
         )}
 
-        {!isMobile && (
-          <p className="px-4 pt-2 text-center text-[15px] leading-6 text-[var(--text-secondary)]">
-            {helperText}
-          </p>
-        )}
-
-        <p className="px-4 text-center text-sm leading-5 text-[var(--text-muted)]">
-          Your account keys stay in your signer app. Conduit cannot recover
-          them.
-        </p>
-        {!isMobile && <NoSignerSetupGuide />}
+        <NoSignerSetupGuide />
       </div>
 
       <div className={cn("mx-auto mt-4 grid max-w-md gap-4", bodyClassName)}>
@@ -465,7 +401,7 @@ function SignerDisconnectedContent({
         </div>
       )}
 
-      {extensionNotice && (
+      {extensionAttempted && extensionNotice && (
         <div
           className={cn(
             "mx-auto mt-4 max-w-md rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] p-4 text-[15px] leading-6 text-[var(--text-secondary)]",
@@ -483,7 +419,6 @@ export function SignerConnectPanel({
   logoSrc,
   title = "Sign in to Conduit",
   description,
-  helperText,
   unlockLabel,
   unlockItems,
   error,
@@ -494,6 +429,9 @@ export function SignerConnectPanel({
   extensionNotice,
   mobile,
   platform,
+  localKeyEnabled,
+  onImportLocalKey,
+  onPasteLocalKey,
   extensionAvailable,
   connectPending,
   connectDisabled,
@@ -519,20 +457,22 @@ export function SignerConnectPanel({
     >
       <div className="relative px-5 py-5 sm:px-6 sm:py-6">
         <div className="mx-auto max-w-md text-center">
-          <ConduitLogoLockup className="h-11" logoSrc={logoSrc} />
           <h1
             id={titleId}
-            className="mt-4 text-2xl font-semibold text-balance text-[var(--text-primary)] sm:text-[2rem]"
+            className="mt-5 flex flex-wrap items-center justify-center gap-2 text-2xl font-semibold text-balance text-[var(--text-primary)]"
           >
-            {title}
+            {title === "Sign in to Conduit" ? (
+              <SignInHeading logoSrc={logoSrc} />
+            ) : (
+              title
+            )}
           </h1>
-          <p className="mt-2 text-[15px] leading-6 text-pretty text-[var(--text-secondary)]">
+          <p className="mt-2 text-sm text-pretty text-[var(--text-secondary)]">
             {description}
           </p>
         </div>
 
         <SignerDisconnectedContent
-          helperText={helperText}
           unlockLabel={unlockLabel}
           unlockItems={unlockItems}
           error={error}
@@ -543,6 +483,9 @@ export function SignerConnectPanel({
           extensionNotice={extensionNotice}
           mobile={mobile}
           platform={platform}
+          localKeyEnabled={localKeyEnabled}
+          onImportLocalKey={onImportLocalKey}
+          onPasteLocalKey={onPasteLocalKey}
           extensionAvailable={extensionAvailable}
           connectPending={connectPending}
           connectDisabled={connectDisabled}
@@ -569,6 +512,9 @@ export function SignerSwitch({
   authUrl,
   signerMethod,
   rememberedMethod,
+  localKeyEnabled,
+  onImportLocalKey,
+  onPasteLocalKey,
   extensionAvailable,
   connectedDescription,
   connectDescription,
@@ -595,7 +541,7 @@ export function SignerSwitch({
   const authPending = status === "connecting" || status === "restoring"
   const extensionNotice =
     !extensionAvailable && !mobile
-      ? "No complete NIP-07 signer detected yet. Install or unlock a signer such as Alby or nos2x, then try Connect signer again."
+      ? "Open or unlock your browser extension, then try again."
       : null
 
   function setOpen(nextOpen: boolean): void {
@@ -606,7 +552,7 @@ export function SignerSwitch({
   const triggerLabel = useMemo(() => {
     if (authPending) return "Connecting..."
     if (connected) return `Signer: ${pubkeyLabel}`
-    return "Connect"
+    return "Sign In"
   }, [authPending, connected, pubkeyLabel])
 
   const finishSignIn = useEffectEvent(() => setOpen(false))
@@ -657,7 +603,7 @@ export function SignerSwitch({
       )}
 
       <DialogContent
-        className="max-h-[calc(100dvh-1.5rem)] max-w-xl touch-pan-y overflow-y-auto overscroll-contain border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] [-webkit-overflow-scrolling:touch]"
+        className="max-h-[calc(100dvh-1.5rem)] max-w-lg touch-pan-y overflow-y-auto overscroll-contain border-[var(--border)] bg-[var(--surface-dialog)] p-0 text-[var(--text-primary)] shadow-[var(--shadow-dialog)] [-webkit-overflow-scrolling:touch]"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           titleRef.current?.focus({ preventScroll: true })
@@ -705,7 +651,6 @@ export function SignerSwitch({
                 )}
                 {isOpen && !isWorking && (
                   <SignerDisconnectedContent
-                    helperText="Choose a browser extension or remote signer."
                     unlockItems={unlockItems}
                     error={error}
                     authUrl={authUrl}
@@ -715,6 +660,9 @@ export function SignerSwitch({
                     }
                     extensionNotice={extensionNotice}
                     mobile={mobile}
+                    localKeyEnabled={localKeyEnabled}
+                    onImportLocalKey={onImportLocalKey}
+                    onPasteLocalKey={onPasteLocalKey}
                     extensionAvailable={extensionAvailable}
                     connectPending={authPending || isWorking}
                     connectDisabled={isWorking || authPending}

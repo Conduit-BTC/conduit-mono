@@ -236,6 +236,7 @@ function AccountControl({
   authPending,
   onConnect,
   onDisconnect,
+  localSigner,
 }: {
   connected: boolean
   displayName: string
@@ -244,19 +245,19 @@ function AccountControl({
   authPending: boolean
   onConnect: () => void
   onDisconnect: () => void
+  localSigner: boolean
 }) {
   const [open, setOpen] = useState(false)
 
   if (!connected) {
     return (
-      // eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes.
-      <button
+      <Button
         type="button"
         className={cn(
           accountControlClassName,
           "size-11 px-0 sm:w-auto sm:min-w-[5.25rem] sm:px-3"
         )}
-        aria-label="Connect"
+        aria-label="Sign In"
         aria-busy={authPending}
         onClick={onConnect}
       >
@@ -268,8 +269,8 @@ function AccountControl({
         ) : (
           <CircleUser className="size-5 sm:hidden" aria-hidden="true" />
         )}
-        <span className="hidden sm:inline">Connect</span>
-      </button>
+        <span className="hidden sm:inline">Sign In</span>
+      </Button>
     )
   }
 
@@ -340,7 +341,7 @@ function AccountControl({
         <DropdownMenuSeparator className="mx-0 my-2 bg-[var(--border)]" />
         <AccountMenuItem
           icon={<LogOut className="size-4" />}
-          label="Disconnect"
+          label={localSigner ? "Sign out and remove key" : "Disconnect"}
           variant="danger"
           onSelect={() => {
             setOpen(false)
@@ -357,7 +358,7 @@ export function MarketHeader({
 }: {
   chromeState: MarketChromeState
 }) {
-  const { pubkey, status, disconnect, authGeneration } = useAuth()
+  const { pubkey, status, disconnect, authGeneration, method } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
     authGenerationRef.current = authGeneration
@@ -729,7 +730,8 @@ export function MarketHeader({
             avatarUrl={profile?.picture}
             authPending={authPending}
             onConnect={() => setConnectOpen(true)}
-            onDisconnect={disconnect}
+            onDisconnect={() => void disconnect().catch(() => undefined)}
+            localSigner={method === "local"}
           />
         </div>
       </div>
