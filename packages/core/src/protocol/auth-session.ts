@@ -11,6 +11,7 @@ import {
 export const AUTH_STORAGE_KEY = "conduit:auth"
 export const AUTH_REVISION_STORAGE_KEY = "conduit:auth:revision"
 const AUTH_SESSION_REVOCATION_STORAGE_PREFIX = "conduit:auth:revoked:"
+const LOCAL_KEY_REMOVAL_STORAGE_KEY = "conduit:auth:local-removal"
 export const AUTH_SESSION_VERSION = 1 as const
 export type AuthMethod = AuthSession["type"]
 export type AuthSessionDisposition = "retain_for_restore" | "discard"
@@ -52,7 +53,14 @@ export interface Nip07AuthSession extends AuthSessionMetadata {
   type: "nip07"
 }
 
-export type AuthSession = Nip07AuthSession | Nip46AuthSession
+export interface LocalKeyAuthSession extends AuthSessionMetadata {
+  type: "local"
+  localKeyRevision: string
+  removalPending?: true
+}
+
+export type AuthSession =
+  Nip07AuthSession | Nip46AuthSession | LocalKeyAuthSession
 
 export interface AuthStorage {
   getItem(key: string): string | null
@@ -89,6 +97,25 @@ export function parseAuthSession(raw: string | null): AuthSession | null {
       }
     }
 
+    if (
+      record.type === "local" &&
+      isHexKey(record.userPubkey) &&
+      typeof record.localKeyRevision === "string" &&
+      /^[a-zA-Z0-9-]{1,80}$/.test(record.localKeyRevision)
+    ) {
+      return {
+        version: AUTH_SESSION_VERSION,
+        type: "local",
+        userPubkey: record.userPubkey,
+        localKeyRevision: record.localKeyRevision,
+        ...(record.removalPending === true
+          ? { removalPending: true as const }
+          : {}),
+        ...(typeof record.authClaim === "string"
+          ? { authClaim: record.authClaim }
+          : {}),
+      }
+    }
     return parseNip46AuthSession(record)
   } catch {
     return null
@@ -104,6 +131,9 @@ function getAuthSessionRevocationStorageKey(session: AuthSession): string {
           type: session.type,
           userPubkey: session.userPubkey,
           authClaim: session.authClaim ?? null,
+          ...(session.type === "local"
+            ? { localKeyRevision: session.localKeyRevision }
+            : {}),
         }
   const digest = bytesToHex(
     sha256(new TextEncoder().encode(JSON.stringify(identity)))
@@ -115,8 +145,20 @@ export function isAuthSessionRevoked(
   session: AuthSession,
   storage: AuthStorage | undefined = getDefaultAuthStorage()
 ): boolean {
+  if (session.type === "local" && session.removalPending) return true
   if (!storage) return false
   try {
+    if (session.type === "local") {
+      const pending = parseAuthSession(
+        storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY)
+      )
+      if (
+        pending?.type === "local" &&
+        pending.userPubkey === session.userPubkey &&
+        pending.localKeyRevision === session.localKeyRevision
+      )
+        return true
+    }
     return storage.getItem(getAuthSessionRevocationStorageKey(session)) === "1"
   } catch {
     return true
@@ -149,14 +191,87 @@ export function readAuthSession(
   }
 }
 
+/** A failed local deletion remains removable after restart, never restorable. */
+export function readPendingLocalKeyRemoval(
+  storage: AuthStorage | undefined = getDefaultAuthStorage()
+): LocalKeyAuthSession | null {
+  if (!storage) return null
+  try {
+    const pending = parseAuthSession(
+      storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY)
+    )
+    if (pending?.type === "local") return pending
+    const session = parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
+    return session?.type === "local" && isAuthSessionRevoked(session, storage)
+      ? session
+      : null
+  } catch {
+    return null
+  }
+}
+
+/** Public removal journal; never contains key bytes or an import representation. */
+export function writePendingLocalKeyRemoval(
+  session: LocalKeyAuthSession,
+  storage: AuthStorage | undefined = getDefaultAuthStorage()
+): boolean {
+  if (!storage) return false
+  try {
+    const publicSession = parseAuthSession(JSON.stringify(session))
+    const encoded = JSON.stringify(publicSession)
+    storage.setItem(LOCAL_KEY_REMOVAL_STORAGE_KEY, encoded)
+    if (storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY) === encoded) return true
+  } catch {
+    // A quota/partial failure can reject a new journal entry while allowing
+    // replacement of the existing auth record. Preserve exact public retry
+    // identity there, and verify it; never overwrite a concurrent account.
+  }
+  try {
+    const current = parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
+    if (
+      current?.type !== "local" ||
+      current.localKeyRevision !== session.localKeyRevision ||
+      current.userPubkey !== session.userPubkey
+    )
+      return false
+    const encoded = JSON.stringify({ ...current, removalPending: true })
+    storage.setItem(AUTH_STORAGE_KEY, encoded)
+    return storage.getItem(AUTH_STORAGE_KEY) === encoded
+  } catch {
+    return false
+  }
+}
+
+export function clearPendingLocalKeyRemoval(
+  session: LocalKeyAuthSession,
+  storage: AuthStorage | undefined = getDefaultAuthStorage()
+): boolean {
+  if (!storage) return false
+  try {
+    const pending = parseAuthSession(
+      storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY)
+    )
+    if (
+      pending?.type !== "local" ||
+      pending.localKeyRevision !== session.localKeyRevision ||
+      pending.userPubkey !== session.userPubkey
+    )
+      return true
+    storage.removeItem(LOCAL_KEY_REMOVAL_STORAGE_KEY)
+    return storage.getItem(LOCAL_KEY_REMOVAL_STORAGE_KEY) === null
+  } catch {
+    return false
+  }
+}
+
 type AuthSessionStorageSnapshot =
   | { status: "empty" }
   | { status: "invalid" }
   | { status: "session"; session: AuthSession }
 
-function inspectAuthSessionStorage(
-  storage: AuthStorage | undefined,
-  operation: string
+export function inspectAuthSessionStorage(
+  storage: AuthStorage | undefined = getDefaultAuthStorage(),
+  operation = "verify saved signer session"
 ): AuthSessionStorageSnapshot {
   if (!storage) {
     throw new AuthSessionError(
@@ -186,7 +301,13 @@ export function authSessionsEqual(
   left: AuthSession | null,
   right: AuthSession | null
 ): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+  // A removal marker changes restoration eligibility, not credential identity.
+  const identity = (session: AuthSession | null) => {
+    if (session?.type !== "local") return session
+    const { removalPending: _removalPending, ...rest } = session
+    return rest
+  }
+  return JSON.stringify(identity(left)) === JSON.stringify(identity(right))
 }
 
 export function shouldRetireAuthSessionAfterAuthorityChange(
@@ -226,15 +347,39 @@ export function writeAuthSession(
 export type InvalidatedAuthSessionCleanupStatus =
   "removed" | "absent" | "replacement"
 
+/** Roll back only this failed install; a concurrent replacement owns its data. */
+export function rollbackAuthSession(
+  expected: AuthSession,
+  previous: AuthSession | null,
+  storage: AuthStorage | undefined = getDefaultAuthStorage()
+): boolean {
+  if (!storage) return false
+  try {
+    const current = parseAuthSession(storage.getItem(AUTH_STORAGE_KEY))
+    if (!authSessionsEqual(current, expected)) return true
+    if (previous) storage.setItem(AUTH_STORAGE_KEY, JSON.stringify(previous))
+    else storage.removeItem(AUTH_STORAGE_KEY)
+    return authSessionsEqual(
+      parseAuthSession(storage.getItem(AUTH_STORAGE_KEY)),
+      previous
+    )
+  } catch {
+    return false
+  }
+}
+
 export interface InvalidatedAuthSessionCleanupOptions {
   storage?: AuthStorage
   retireCredentials: (
     expected: AuthSession,
-    replacement: AuthSession | null
+    replacement: AuthSession | null,
+    metadataVerified: boolean
   ) => Promise<void>
   withLock?: <T>(task: () => Promise<T>) => Promise<T>
-  /** Explicit logout only, when the caller owns the exact expected session. */
+  /** Logout or failed installation, when the caller owns the exact session. */
   retireExpectedCredentialsOnMetadataFailure?: boolean
+  /** Local keys retain revoked public removal metadata until deletion commits. */
+  retireCredentialsBeforeMetadata?: boolean
 }
 
 /**
@@ -251,6 +396,22 @@ export async function cleanupInvalidatedAuthSession(
 
   return withLock(async () => {
     const operation = "retire invalidated signer session"
+    if (options.retireCredentialsBeforeMetadata) {
+      let replacement: AuthSession | null = null
+      let metadataVerified = false
+      try {
+        const snapshot = inspectAuthSessionStorage(storage, operation)
+        metadataVerified = true
+        if (
+          snapshot.status === "session" &&
+          !authSessionsEqual(snapshot.session, expected)
+        )
+          replacement = snapshot.session
+      } catch (error) {
+        if (!options.retireExpectedCredentialsOnMetadataFailure) throw error
+      }
+      await options.retireCredentials(expected, replacement, metadataVerified)
+    }
     let status: InvalidatedAuthSessionCleanupStatus = "absent"
     let metadataError: unknown = null
     let replacement: AuthSession | null = null
@@ -300,7 +461,8 @@ export async function cleanupInvalidatedAuthSession(
       throw metadataError
     }
 
-    await options.retireCredentials(expected, replacement)
+    if (!options.retireCredentialsBeforeMetadata)
+      await options.retireCredentials(expected, replacement, !metadataError)
 
     if (metadataError) throw metadataError
     return status
@@ -376,8 +538,22 @@ export function revokeAuthSessionAuthority(
   options: AuthSessionAuthorityRevocationOptions = {}
 ): AuthSessionAuthorityRevocation {
   const claim = claimAuthRevision(storage)
+  // Preserve exact retry identity before a failed revocation-marker write can
+  // fall back to removing the auth record. In particular, overwriting the
+  // existing record may still work when allocating a new storage key fails.
+  if (
+    expected.type === "local" &&
+    options.sessionDisposition === "discard" &&
+    writePendingLocalKeyRemoval(expected, storage)
+  ) {
+    return {
+      freshRevisionPersisted: claim.persisted,
+      authorityRevoked: true,
+      sessionRetained: false,
+    }
+  }
   if (options.sessionDisposition !== "discard" && claim.persisted) {
-    let sessionRetained = false
+    let sessionRetained: boolean
     try {
       const snapshot = inspectAuthSessionStorage(
         storage,
@@ -489,4 +665,8 @@ export function hasAuthSessionAuthority(
   return (
     !metadataPersisted || authSessionsEqual(readAuthSession(storage), expected)
   )
+}
+
+export function isAccountAuthMethod(value: unknown): value is AuthMethod {
+  return value === "nip07" || value === "nip46" || value === "local"
 }

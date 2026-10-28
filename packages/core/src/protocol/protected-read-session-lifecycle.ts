@@ -21,7 +21,7 @@ export interface ProtectedReadSessionLifecycleDependencies {
 }
 
 /**
- * Own the exact protected-read lease for one AuthProvider instance. Replacing
+ * Own the exact protected-read lease for one auth connection. Replacing
  * or clearing the session revokes the prior lease synchronously before the new
  * session can expose account-scoped relay state.
  */

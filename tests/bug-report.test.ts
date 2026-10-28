@@ -17,6 +17,7 @@ const buildInfo: ConduitBuildInfo = {
     quantumRouterEnabled: true,
     quantumRouterExecutionEnabled: true,
     breezLightningAddressEnabled: false,
+    localKeySignerEnabled: true,
   },
 }
 

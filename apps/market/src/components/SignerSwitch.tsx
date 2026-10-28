@@ -17,6 +17,8 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
     authUrl,
     nostrConnectUri,
     connect,
+    localKeyEnabled,
+    pasteLocalKey,
     cancelConnect,
     disconnect,
   } = useAuth()
@@ -33,13 +35,19 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       nostrConnectUri={nostrConnectUri}
       signerMethod={method}
       rememberedMethod={rememberedMethod}
+      localKeyEnabled={localKeyEnabled}
+      onPasteLocalKey={pasteLocalKey}
+      onImportLocalKey={(localKeyInput) =>
+        connect({ method: "local", localKeyInput })
+      }
       extensionAvailable={extensionAvailable}
       connectedDescription="Orders, zap out, and follow-up are ready."
-      connectDescription="Use your Nostr account to shop and stay in touch."
+      connectDescription="Shop and stay in touch."
       connectedUseDescription="This signer will be used for buyer actions in Conduit."
       unlockItems={[
-        "Send orders tied to your pubkey.",
-        "See merchant replies and order updates later.",
+        "Place orders with your account.",
+        "Message merchants about your orders.",
+        "Return to your order history anytime.",
       ]}
       onConnectExtension={() => connect({ method: "nip07" })}
       onConnectNostrConnect={() =>

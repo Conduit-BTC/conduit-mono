@@ -2975,7 +2975,7 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
 
     expect(() =>
       installProtectedReadSigner(signer, PUBKEY_A, () => true)
-    ).toThrow("NIP-07 or NIP-46")
+    ).toThrow("account signer")
   })
 
   it("counts malformed, duplicate, and filter-mismatched events without returning them", async () => {

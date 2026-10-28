@@ -534,6 +534,23 @@ export function recordSmokeFailureContext(
 
 const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
   {
+    "event-stock-acceptance": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        phase: ["click", "failure", "complete"],
+        errorCategory: ["strict_locator", "target_closed", "timeout", "other"],
+        disabledDuringClick: "boolean",
+        obstructedDuringClick: "boolean",
+        detachedDuringClick: "boolean",
+        observationAvailable: "boolean",
+        pageClosed: "boolean",
+        matchingButtons: "number",
+        enabledButtons: "number",
+        visibleButtons: "number",
+        inViewportButtons: "number",
+        unobstructedButtons: "number",
+      },
+    },
     "event-stock-control": {
       file: "e2e/event-market.playwright.ts",
       fields: {
@@ -1386,6 +1403,7 @@ export function safeRetainedSmokeDiagnostics(
 export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
+    | "event-stock-acceptance"
     | "event-stock-control"
     | "wallet-import-menu"
     | "wallet-foreground-open"

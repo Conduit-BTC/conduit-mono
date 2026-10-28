@@ -14,7 +14,7 @@ mandatory startup read. Versions and commands come from manifests, not this file
   never relay, network, or Dexie side effects. Core must not depend on UI or apps.
 - Apply the protocol and wallet contracts selected by `AGENTS.md`. Preserve
   connected-signer authority for account-owned actions and the distinct bounded
-  guest-order, NIP-46 client-key, separate-origin signer, and wallet exceptions.
+  guest-order, NIP-46 client-key, contained local-signer, and wallet boundaries.
 - Keep Nostr operations in shared core helpers. Preserve source-aware relay
   evidence, NIP-44 compatibility, non-custodial payments, and allowlisted,
   content-free telemetry and diagnostics.

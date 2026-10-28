@@ -235,7 +235,7 @@ this bounded event is the only approved client-error capture path.
 ### `signer_connected`
 
 Emitted when Market or Merchant reaches a connected browser signer state. It may
-record signer method class, such as `nip07`, but must not include signer
+record signer method class (`nip07`, `nip46`, `local`), but must not include signer
 identity or pubkey data.
 
 <!-- telemetry-event: signer_disconnected properties=event_name,app,page_url,page_path,method,status,count,time_bucket -->
@@ -243,7 +243,7 @@ identity or pubkey data.
 ### `signer_disconnected`
 
 Emitted when Market or Merchant transitions from a connected browser signer
-state to disconnected. It may record signer method class, such as `nip07`, but
+state to disconnected. It may record signer method class (`nip07`, `nip46`, `local`), but
 must not include signer identity or pubkey data.
 
 <!-- telemetry-event: cart_add properties=event_name,app,page_url,page_path,surface,action,status,count_bucket,product_type,time_bucket -->
