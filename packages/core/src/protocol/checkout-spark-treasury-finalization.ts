@@ -923,6 +923,29 @@ export async function runCheckoutSparkNativeTreasuryStep(
   } catch {
     return result("wait", "provider_evidence_unavailable")
   }
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    state.plan,
+    state.buyerActivation
+  )
+  if (
+    input.actor === "merchant" &&
+    takeoverAt !== null &&
+    state.updatedAt < takeoverAt &&
+    state.treasuryFinalization!.status === "prepared" &&
+    state.treasuryFinalization!.providerTransferId === null
+  ) {
+    // A Buyer may prepare this exact intent before takeover. Record the fresh
+    // Merchant reconciliation durably before its post-handoff snapshot, without
+    // changing the intent, payment observations or the fixed authority window.
+    const checkedAt = input.now()
+    if (checkedAt < takeoverAt) return result("wait", "authority_not_started")
+    await persist(
+      restoreCheckoutSparkSettledReconciliation({
+        ...state,
+        updatedAt: checkedAt,
+      })
+    )
+  }
   try {
     // The positively unsent terminal marker is device-execution evidence only.
     // Do not publish it as cross-device proof or roll signed progress back. The
