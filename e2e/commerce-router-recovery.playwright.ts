@@ -2830,9 +2830,10 @@ async function rehearseRouter(
       .click()
     await expect(partialReceipt).toBeVisible()
     await expect(
-      partialReceipt.getByText("Payments are still being completed.", {
-        exact: true,
-      })
+      partialReceipt.getByText(
+        "This device does not have records for every checkout payment.",
+        { exact: true }
+      )
     ).toBeVisible()
     await expect(
       partialReceipt.getByText("Unspent from recorded checkout credit", {
@@ -2883,9 +2884,10 @@ async function rehearseRouter(
         .click()
       await expect(partialReceipt).toBeVisible()
       await expect(
-        partialReceipt.getByText("Payments are still being completed.", {
-          exact: true,
-        })
+        partialReceipt.getByText(
+          "This device does not have records for every checkout payment.",
+          { exact: true }
+        )
       ).toBeVisible()
       setStage("partial execution stop preserves verified commerce")
       await expect(
