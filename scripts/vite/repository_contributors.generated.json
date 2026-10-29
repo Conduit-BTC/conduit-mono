@@ -1,15 +1,15 @@
 {
   "status": "available",
   "methodology": "merged-pr-activity-v1",
-  "generatedAt": "2026-10-19T08:40:23.311Z",
-  "sourceRevision": "f8ed7c452966d2622ade7e113810d0573e260d2d",
+  "generatedAt": "2026-10-26T08:43:15.041Z",
+  "sourceRevision": "0dc7b8ee18e62554a428e2876452df4c97e702bd",
   "contributors": [
     {
       "login": "ericfj2140",
       "avatarUrl": "https://avatars.githubusercontent.com/u/25217030?u=f1bf95458b7164d3cab7be98a5a6bf1d3773529c&v=4",
       "profileUrl": "https://github.com/ericfj2140",
-      "mergedPullRequests": 236,
-      "commits": 1075
+      "mergedPullRequests": 252,
+      "commits": 1153
     },
     {
       "login": "dylangolow",
@@ -22,8 +22,8 @@
       "login": "JamesTsetsekas",
       "avatarUrl": "https://avatars.githubusercontent.com/u/8147662?u=78fa61afccc0321136a563cc215f56063f435a3c&v=4",
       "profileUrl": "https://github.com/JamesTsetsekas",
-      "mergedPullRequests": 69,
-      "commits": 446
+      "mergedPullRequests": 71,
+      "commits": 501
     },
     {
       "login": "d3vv3",
