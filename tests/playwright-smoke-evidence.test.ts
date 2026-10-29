@@ -126,8 +126,8 @@ describe("composed smoke evidence", () => {
       join(tmpdir(), "conduit-acceptance-start-evidence-")
     )
     const sentinel = "private-" + crypto.randomUUID()
-    const kind = "event-stock-acceptance"
-    const observations = [
+    const kind = "event-stock-acceptance-start"
+    const startWaitObservations = [
       {
         phase: "start_wait",
         errorCategory: "timeout",
@@ -146,6 +146,29 @@ describe("composed smoke evidence", () => {
         pageClosed: true,
       },
     ]
+    const observations = [
+      {
+        phase: "start_wait",
+        observationAvailable: true,
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        acceptCardinality: "single",
+        acceptVisible: true,
+        acceptEnabled: true,
+        pendingCardinality: "absent",
+        pendingVisible: false,
+        savedCardinality: "absent",
+        savedVisible: false,
+        alertVisible: false,
+        acceptanceReadAvailable: true,
+        acceptanceCardinality: "single",
+      },
+      {
+        phase: "start_wait",
+        observationAvailable: false,
+      },
+    ]
     try {
       mkdirSync(join(directory, "e2e"))
       writeFileSync(
@@ -153,8 +176,10 @@ describe("composed smoke evidence", () => {
         [
           `import { test } from ${JSON.stringify(playwrightImport)}`,
           `import { recordSmokeDiagnostic } from ${JSON.stringify(smokeDiagnosticsImport)}`,
+          `const startWaitObservations = ${JSON.stringify(startWaitObservations)}`,
           `for (const [index, observation] of ${JSON.stringify(observations)}.entries()) {`,
           "  test(`controlled acceptance start ${index} @market`, ({}, info) => {",
+          "    recordSmokeDiagnostic(info, 'event-stock-acceptance', startWaitObservations[index]);",
           `    recordSmokeDiagnostic(info, ${JSON.stringify(kind)}, { ...observation, orderId: ${JSON.stringify(sentinel)}, message: ${JSON.stringify(sentinel)}, dom: { text: ${JSON.stringify(sentinel)} } });`,
           `    throw new Error(${JSON.stringify(sentinel)});`,
           "  });",
@@ -203,7 +228,10 @@ describe("composed smoke evidence", () => {
         expect(attempts).toHaveLength(1)
         expect(attempts[0].retry).toBe(0)
         expect(attempts[0].status).toBe("failed")
-        expect(attempts[0].diagnostics).toEqual([{ kind, ...observation }])
+        expect(attempts[0].diagnostics).toEqual([
+          { kind: "event-stock-acceptance", ...startWaitObservations[index] },
+          { kind, ...observation },
+        ])
       }
       expect(progressText).toContain('"phase":"start_wait"')
       let rejected = false

@@ -664,6 +664,26 @@ const schemas: Record<string, { file: string; fields: Record<string, Rule> }> =
         unobstructedButtons: "number",
       },
     },
+    "event-stock-acceptance-start": {
+      file: "e2e/event-market.playwright.ts",
+      fields: {
+        phase: ["click", "start_wait"],
+        observationAvailable: "boolean",
+        pointerDownOnTrigger: "boolean",
+        pointerUpOnTrigger: "boolean",
+        clickOnTrigger: "boolean",
+        acceptCardinality: ["absent", "single", "multiple"],
+        acceptVisible: "boolean",
+        acceptEnabled: "boolean",
+        pendingCardinality: ["absent", "single", "multiple"],
+        pendingVisible: "boolean",
+        savedCardinality: ["absent", "single", "multiple"],
+        savedVisible: "boolean",
+        alertVisible: "boolean",
+        acceptanceReadAvailable: "boolean",
+        acceptanceCardinality: ["absent", "single", "multiple"],
+      },
+    },
     "event-stock-control": {
       file: "e2e/event-market.playwright.ts",
       fields: {
@@ -1517,6 +1537,7 @@ export function recordSmokeDiagnostic(
   info: TestInfo,
   kind:
     | "event-stock-acceptance"
+    | "event-stock-acceptance-start"
     | "event-stock-control"
     | "wallet-import-menu"
     | "wallet-foreground-open"

@@ -117,7 +117,7 @@ export function getMerchantFulfillmentBlockReason(input: {
   if (!input.inventoryAcceptanceReady || !input.pickupAuthorityVerified)
     return "Verify this order's inventory and pickup authority before fulfillment or new stock updates."
   if (!input.organizerHandoutVerified)
-    return "Wait for the organizer's exact handout confirmation before completing this order or publishing new stock updates."
+    return "Organizer handout is not verified here yet. If the organizer has already recorded it, open the Event > Organizer-held stock, choose Check for stock updates, then Reconcile accepted order stock. Completion and new stock updates stay locked until verification."
   return null
 }
 
