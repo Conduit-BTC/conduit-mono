@@ -597,12 +597,20 @@ export async function routeCheckoutSparkOrganizerOrder(
               return result
             },
             send: async (target) => {
-              const request = await nativeRequest(target)
-              if (
-                expected.treasuryFinalization?.status !== "submitted" ||
-                !preparedAdmissions.delete(JSON.stringify(target))
-              )
+              // Claim this exact live preflight admission before any awaited
+              // guard so another local call cannot consume it concurrently.
+              if (!preparedAdmissions.delete(JSON.stringify(target)))
                 throw new Error("Organizer native payment was not admitted.")
+              let request: Awaited<ReturnType<typeof nativeRequest>>
+              try {
+                request = await nativeRequest(target)
+                if (expected.treasuryFinalization?.status !== "submitted")
+                  throw new Error("Organizer native payment was not admitted.")
+              } catch {
+                // Only this owned local admission stopped before wallet entry.
+                // Core still requires guarded durable cancellation/readback.
+                return { status: "not_sent" }
+              }
               const result = await wallet.nativeTreasury!.sendCheckoutTreasury({
                 ...request,
                 priorSendMayHaveOccurred: false,

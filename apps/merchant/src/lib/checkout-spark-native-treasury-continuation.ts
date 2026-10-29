@@ -498,13 +498,23 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
             return status
           },
           send: async (target) => {
-            await assertDurable()
-            const value = request(target)
-            if (
-              expectedState.treasuryFinalization?.status !== "submitted" ||
-              !preparedAdmissions.delete(admissionKey(target))
-            )
+            // Claim this exact live preflight admission before any awaited
+            // guard so another local call cannot consume it concurrently.
+            if (!preparedAdmissions.delete(admissionKey(target)))
               throw new Error("Checkout Spark native payment was not admitted.")
+            let value: ReturnType<typeof request>
+            try {
+              await assertDurable()
+              value = request(target)
+              if (expectedState.treasuryFinalization?.status !== "submitted")
+                throw new Error(
+                  "Checkout Spark native payment was not admitted."
+                )
+            } catch {
+              // Only this owned local admission stopped before wallet entry.
+              // Core still requires guarded durable cancellation/readback.
+              return { status: "not_sent" }
+            }
             const sent = await treasury.sendCheckoutTreasury({
               ...value,
               priorSendMayHaveOccurred: false,

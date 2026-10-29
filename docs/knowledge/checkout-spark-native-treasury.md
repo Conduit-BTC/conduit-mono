@@ -60,6 +60,15 @@ unknown fee pauses; the client does not reduce the amount or silently switch
 rails. Prepared and possible-send snapshots are durably saved and their private
 recovery packages acknowledged before submission.
 
+An actor adapter can itself classify a thrown local check as `not_sent` only after
+synchronously consuming its exact live, one-use preflight admission and failing
+before entering the wallet method. Missing admission still fails closed. The
+wallet call and its own final checks stay outside this catch: an uncaught
+wallet-call error remains uncertain. Existing positive `not_sent` results from
+the wallet adapter are unchanged. Core must still record the cancellation and
+read back the exact intent and revision before granting its process-local retry
+capability. A pause or deadline that prevents that write does not grant retry.
+
 Once submission may have occurred, reload and merchant recovery query the same
 request and actual provider transfer. Absence or a timeout does not authorize
 another send. A finalized invoice query alone is insufficient: exact sender,

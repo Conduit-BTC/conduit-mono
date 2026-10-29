@@ -556,6 +556,106 @@ async function importBuyerPreparedOrganizerIntent(
 }
 
 describe("designated organizer automatic routing", () => {
+  it("pre-wallet admission classification: Organizer transient local read does not enter wallet", async () => {
+    const f = await fixture(0)
+    const load = f.repository.load.bind(f.repository)
+    const loadSettlement = f.repository.loadMerchantSettlement.bind(
+      f.repository
+    )
+    const openWallet = f.dependencies.openWallet
+    let readsAfterSubmittedProof: number | null = null
+    let admittedIntent: string | undefined
+    let failedRead = false
+    let walletCalls = 0
+    let readyPreflights = 0
+    let processing = true
+    let pausedAtBackoff = false
+    f.repository.loadMerchantSettlement = async (...args) => {
+      const record = await loadSettlement(...args)
+      const saved = await load(f.plan.checkoutId, f.plan.planDigest)
+      if (
+        record &&
+        saved.status === "active" &&
+        saved.state.treasuryFinalization?.status === "submitted" &&
+        readsAfterSubmittedProof === null
+      ) {
+        readsAfterSubmittedProof = 0
+        admittedIntent = JSON.stringify(saved.state.treasuryFinalization.intent)
+      }
+      return record
+    }
+    f.repository.load = async (...args) => {
+      if (!failedRead && readsAfterSubmittedProof !== null) {
+        readsAfterSubmittedProof++
+        // After the real submitted commerce/history proof, Core rereads its
+        // snapshot once. Fail only the next read in nativeRequest, before
+        // wallet entry; stored data and payment inputs remain unchanged.
+        if (readsAfterSubmittedProof === 2) {
+          failedRead = true
+          throw new Error("Temporary local read unavailable")
+        }
+      }
+      return load(...args)
+    }
+    f.dependencies.openWallet = async (input) => {
+      const wallet = await openWallet(input)
+      const treasury = wallet.nativeTreasury
+      return {
+        ...wallet,
+        nativeTreasury: {
+          ...treasury,
+          preflightCheckoutTreasury: async (request) => {
+            const status = await treasury.preflightCheckoutTreasury(request)
+            if (status === "ready") readyPreflights++
+            return status
+          },
+          sendCheckoutTreasury: async (request) => {
+            walletCalls++
+            return treasury.sendCheckoutTreasury(request)
+          },
+        },
+      }
+    }
+    try {
+      await expect(
+        routeCheckoutSparkOrganizerOrder(
+          { ...f.session, shouldContinue: () => processing },
+          {
+            ...f.dependencies,
+            wait: async (milliseconds) => {
+              if (failedRead) {
+                // Pause only after the first classification has finished so
+                // this tracer never advances to another payment attempt.
+                pausedAtBackoff = true
+                processing = false
+                return
+              }
+              await f.dependencies.wait(milliseconds)
+            },
+          }
+        )
+      ).rejects.toThrow("Organizer payment processing is no longer active.")
+      expect(failedRead).toBe(true)
+      expect(readsAfterSubmittedProof).toBe(2)
+      expect(readyPreflights).toBe(1)
+      expect(pausedAtBackoff).toBe(true)
+      expect(walletCalls).toBe(0)
+      expect(f.observations.native).toBe(0)
+      const saved = await load(f.plan.checkoutId, f.plan.planDigest)
+      if (saved.status !== "active") throw new Error("Expected active")
+      expect(saved.state.treasuryFinalization!.status).toBe("terminal_failure")
+      expect(saved.state.treasuryFinalization!.providerTransferId).toBeNull()
+      expect(admittedIntent !== undefined).toBe(true)
+      expect(
+        JSON.stringify(saved.state.treasuryFinalization!.intent) ===
+          admittedIntent
+      ).toBe(true)
+    } finally {
+      f.repository.load = load
+      f.repository.loadMerchantSettlement = loadSettlement
+      await f.cleanup()
+    }
+  }, 60_000)
   it("retains only an admitted native reference after Pause without further provider checks or recovery acknowledgments", async () => {
     const f = await fixture(0)
     let release!: () => void

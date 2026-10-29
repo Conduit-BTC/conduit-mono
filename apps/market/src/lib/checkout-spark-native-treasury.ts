@@ -380,12 +380,21 @@ export function createBuyerCheckoutSparkNativeTreasuryProvider(input: {
       return status
     },
     async send(target) {
-      const { saved, request: value } = await request(target)
-      if (
-        saved.state.treasuryFinalization?.status !== "submitted" ||
-        !preparedAdmissions.delete(admissionKey(target))
-      )
+      // Own this run's exact admission before awaiting local guards. Another
+      // caller cannot consume it and then be mistaken for an unsent attempt.
+      if (!preparedAdmissions.delete(admissionKey(target)))
         throw new Error("Checkout Spark native payment was not admitted.")
+      let value: Awaited<ReturnType<typeof request>>["request"]
+      try {
+        const current = await request(target)
+        if (current.saved.state.treasuryFinalization?.status !== "submitted")
+          throw new Error("Checkout Spark native payment was not admitted.")
+        value = current.request
+      } catch {
+        // Only local admission failed; the wallet method was never entered.
+        // Core still requires guarded durable cancellation and exact readback.
+        return { status: "not_sent" }
+      }
       const result = await manager.sendCheckoutTreasury(target.walletId, {
         ...value,
         priorSendMayHaveOccurred: false,
