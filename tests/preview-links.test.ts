@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import {
   extractUrlsFromCommentBody,
+  fetchPreviewManifest,
   listPublicCloudflareCheckRuns,
   resolveProjectUrls,
   resolveProjectUrlsFromChecks,
@@ -26,10 +27,10 @@ function cloudflareComment({
 <code>${revision}</code>
 </td></tr>
 <tr><td><strong>Preview URL:</strong></td><td>
-<a href='https://${revision}.${project}.pages.dev'>commit</a>
+<a href='https://1234abcd.${PROJECTS[project === "conduit-market" ? "market" : "merchant"].previewHostname}'>commit</a>
 </td></tr>
 <tr><td><strong>Branch Preview URL:</strong></td><td>
-<a href='https://dependabot-${branchSuffix}.${project}.pages.dev'>branch</a>
+<a href='https://dependabot-${branchSuffix}.${PROJECTS[project === "conduit-market" ? "market" : "merchant"].previewHostname}'>branch</a>
 </td></tr></table>`,
   }
 }
@@ -89,8 +90,8 @@ describe("preview link resolution", () => {
     })
 
     expect(extractUrlsFromCommentBody(comment.body)).toEqual({
-      commitUrl: "https://75ede52.conduit-market.pages.dev",
-      branchUrl: "https://dependabot-market-y7u6.conduit-market.pages.dev",
+      commitUrl: "https://1234abcd.conduit-market-coo.pages.dev",
+      branchUrl: "https://dependabot-market-y7u6.conduit-market-coo.pages.dev",
     })
   })
 
@@ -105,6 +106,7 @@ describe("preview link resolution", () => {
       resolveProjectUrls({
         comments: [comment],
         projectName: "conduit-market",
+        previewHostname: PROJECTS.market.previewHostname,
         headSha: HEAD_SHA,
       })
     ).toEqual({ commitUrl: null, branchUrl: null })
@@ -133,8 +135,8 @@ describe("preview link resolution", () => {
 
     expect(calls).toBe(3)
     expect(result.rows.map((row) => row.branchUrl)).toEqual([
-      "https://dependabot-market-y7u6.conduit-market.pages.dev",
-      "https://dependabot-merchant-lknh.conduit-merchant.pages.dev",
+      "https://dependabot-market-y7u6.conduit-market-coo.pages.dev",
+      "https://dependabot-merchant-lknh.conduit-merchant-33n.pages.dev",
     ])
   })
 
@@ -572,4 +574,430 @@ describe("fixed public Cloudflare check read", () => {
     expect(script).not.toContain("createComment")
     expect(script).not.toContain("updateComment")
   })
+})
+
+describe("shared preview URL policy", () => {
+  const validBranch = "https://dependabot-fixture.conduit-market-coo.pages.dev"
+  const invalidUrls = [
+    "http://dependabot-fixture.conduit-market-coo.pages.dev",
+    "javascript:alert(1)",
+    "//dependabot-fixture.conduit-market-coo.pages.dev",
+    `${validBranch}.example.invalid`,
+    "https://dependabot-fixture.conduit-merchant-33n.pages.dev",
+    "https://dependabot-fixture.conduit-market.pages.dev",
+    "https://nested.dependabot-fixture.conduit-market-coo.pages.dev",
+    "https://fixture-user@dependabot-fixture.conduit-market-coo.pages.dev",
+    "https://conduit-market-coo.pages.dev@unapproved.example.invalid",
+    `${validBranch}:443`,
+    `${validBranch}/other`,
+    `${validBranch}?other=1`,
+    `${validBranch}#other`,
+    `${validBranch}/\\unapproved.example.invalid`,
+  ]
+
+  function resolveComment(
+    body: string,
+    previewHostname = PROJECTS.market.previewHostname
+  ) {
+    return resolveProjectUrls({
+      comments: [
+        { user: { login: "cloudflare-workers-and-pages[bot]" }, body },
+      ],
+      projectName: PROJECTS.market.project,
+      previewHostname,
+      headSha: HEAD_SHA,
+    })
+  }
+
+  it.each(invalidUrls)(
+    "never returns rejected comment evidence %s",
+    (invalid) => {
+      const comment = cloudflareComment({
+        project: "conduit-market",
+        branchSuffix: "fixture",
+      })
+      const result = resolveComment(comment.body.replace(validBranch, invalid))
+      expect(result.branchUrl).toBeNull()
+      expect(Object.values(result)).not.toContain(invalid)
+    }
+  )
+
+  it("requires a configured host and exact comment project/revision", () => {
+    const comment = cloudflareComment({
+      project: "conduit-market",
+      branchSuffix: "fixture",
+    })
+    expect(resolveComment(comment.body, "")).toEqual(MISSING_URLS)
+    expect(
+      resolveComment(
+        comment.body.replace(
+          "Deploying conduit-market",
+          "Deploying conduit-market-other"
+        )
+      )
+    ).toEqual(MISSING_URLS)
+    expect(
+      resolveComment(
+        comment.body.replace(HEAD_SHA.slice(0, 7), "deadbee") +
+          `<code>${HEAD_SHA}</code>`
+      )
+    ).toEqual(MISSING_URLS)
+    expect(
+      resolveProjectUrls({
+        comments: [{ ...comment, user: { login: "candidate" } }],
+        projectName: PROJECTS.market.project,
+        previewHostname: PROJECTS.market.previewHostname,
+        headSha: HEAD_SHA,
+      })
+    ).toEqual(MISSING_URLS)
+  })
+
+  it.each(["missing", "invalid"])(
+    "preserves a valid branch with an optional %s commit link",
+    async (state) => {
+      const comments = Object.values(PROJECTS).map((project) => {
+        const comment = cloudflareComment({
+          project: project.project as "conduit-market" | "conduit-merchant",
+          branchSuffix: "fixture",
+        })
+        comment.body =
+          state === "missing"
+            ? comment.body.replace(
+                "<strong>Preview URL:</strong>",
+                "<strong>Unavailable:</strong>"
+              )
+            : comment.body.replace("https://1234abcd.", "http://1234abcd.")
+        return comment
+      })
+      const { rows } = await waitForProjectRows({
+        projects: PROJECTS,
+        headSha: HEAD_SHA,
+        listComments: async () => comments,
+      })
+      expect(rows.every((row) => row.branchUrl && row.commitUrl === null)).toBe(
+        true
+      )
+    }
+  )
+
+  it("uses valid checks after rejecting comments without retaining rejected fallback links", async () => {
+    const comments = Object.values(PROJECTS).map((project) => {
+      const comment = cloudflareComment({
+        project: project.project as "conduit-market" | "conduit-merchant",
+        branchSuffix: "fixture",
+      })
+      comment.body = comment.body.replaceAll("https://", "http://")
+      return comment
+    })
+    let checkReads = 0
+    const { rows } = await waitForProjectRows({
+      projects: PROJECTS,
+      headSha: HEAD_SHA,
+      attempts: 1,
+      listComments: async () => comments,
+      listChecks: async () => {
+        checkReads += 1
+        return [cloudflareCheck("market"), cloudflareCheck("merchant")]
+      },
+    })
+    expect(checkReads).toBe(1)
+    expect(
+      rows.every(
+        (row) =>
+          row.branchUrl?.startsWith("https://feature-preview.") &&
+          row.commitUrl?.startsWith("https://1234abcd.")
+      )
+    ).toBe(true)
+  })
+})
+
+describe("preview manifest destination", () => {
+  const request = {
+    branchUrl: "https://feature-preview.conduit-market-coo.pages.dev",
+    previewHostname: PROJECTS.market.previewHostname,
+    headSha: HEAD_SHA,
+    attempt: 1,
+  }
+
+  it("fetches only the admitted manifest without credentials or redirects", async () => {
+    let reads = 0
+    const result = await fetchPreviewManifest({
+      ...request,
+      fetchImpl: (async (input, options) => {
+        reads += 1
+        expect(String(input)).toBe(
+          `${request.branchUrl}/.well-known/conduit-deployment.json?commit=${HEAD_SHA}&attempt=1`
+        )
+        expect(options?.method).toBe("GET")
+        expect(options?.credentials).toBe("omit")
+        expect(options?.redirect).toBe("error")
+        expect(options?.cache).toBe("no-store")
+        expect(options?.signal).toBeInstanceOf(AbortSignal)
+        expect(options?.headers).toBeUndefined()
+        return Response.json({ schemaVersion: 1 })
+      }) as typeof fetch,
+    })
+    expect(reads).toBe(1)
+    expect(result.manifestUrl.origin).toBe(request.branchUrl)
+    expect(await result.response.json()).toEqual({ schemaVersion: 1 })
+  })
+
+  it.each([301, 302, 303, 307, 308])(
+    "rejects HTTP %s without fetching its Location",
+    async (status) => {
+      let reads = 0
+      await expect(
+        fetchPreviewManifest({
+          ...request,
+          fetchImpl: (async () => {
+            reads += 1
+            return new Response(null, {
+              status,
+              headers: {
+                Location: "https://unapproved.example.invalid/manifest",
+              },
+            })
+          }) as typeof fetch,
+        })
+      ).rejects.toThrow("Preview manifest could not be read safely")
+      expect(reads).toBe(1)
+    }
+  )
+
+  it("rejects already-followed responses and sanitizes remote error details", async () => {
+    const redirected = Response.json({ schemaVersion: 1 })
+    Object.defineProperty(redirected, "redirected", { value: true })
+    for (const fetchImpl of [
+      async () => redirected,
+      async () => {
+        throw new Error("https://unapproved.example.invalid/private-details")
+      },
+    ]) {
+      await expect(
+        fetchPreviewManifest({
+          ...request,
+          fetchImpl: fetchImpl as typeof fetch,
+        })
+      ).rejects.toThrow("Preview manifest could not be read safely.")
+    }
+  })
+
+  it.each([
+    { branchUrl: "http://feature-preview.conduit-market-coo.pages.dev" },
+    {
+      branchUrl:
+        "https://feature-preview.conduit-market-coo.pages.dev.example.invalid",
+    },
+    { previewHostname: "" },
+    { headSha: "short" },
+    { attempt: 0 },
+  ])(
+    "rejects invalid prepared requests before any fetch %#",
+    async (change) => {
+      let reads = 0
+      await expect(
+        fetchPreviewManifest({
+          ...request,
+          ...change,
+          fetchImpl: (async () => {
+            reads += 1
+            return Response.json({})
+          }) as typeof fetch,
+        })
+      ).rejects.toThrow("Invalid preview manifest request")
+      expect(reads).toBe(0)
+    }
+  )
+})
+
+// Execute the actual workflow script with isolated evidence and network seams.
+// No dummy destination is contacted, and retries run without wall-clock waits.
+async function runPreviewWorkflow({
+  source,
+  mutate = () => {},
+  redirect = false,
+  optionalCommit = false,
+}: {
+  source: "comments" | "checks"
+  mutate?: (manifest: Record<string, unknown>) => void
+  redirect?: boolean
+  optionalCommit?: boolean
+}) {
+  const workflow = Bun.YAML.parse(
+    await Bun.file(".github/workflows/ci.yml").text()
+  )
+  const script = workflow.jobs["preview-links"].steps.find(
+    (step: { name?: string }) => step.name === "Verify mainnet preview links"
+  ).with.script
+  const profiles = await Bun.file("deploy/pages-profiles.json").json()
+  const comments = Object.values(PROJECTS).map((project) => {
+    const comment = cloudflareComment({
+      project: project.project as "conduit-market" | "conduit-merchant",
+      branchSuffix: "fixture",
+    })
+    if (optionalCommit)
+      comment.body = comment.body.replace(
+        "<strong>Preview URL:</strong>",
+        "<strong>Unavailable:</strong>"
+      )
+    return comment
+  })
+  let summary = ""
+  let reads = 0
+  const fetchImpl = (async (
+    input: string | URL | Request,
+    options?: RequestInit
+  ) => {
+    reads += 1
+    expect(options?.redirect).toBe("error")
+    expect(options?.credentials).toBe("omit")
+    const url = new URL(String(input))
+    expect(url.pathname).toBe("/.well-known/conduit-deployment.json")
+    expect(url.searchParams.get("commit")).toBe(HEAD_SHA)
+    const app = url.hostname.endsWith(`.${PROJECTS.market.previewHostname}`)
+      ? "market"
+      : "merchant"
+    expect(url.hostname.endsWith(`.${PROJECTS[app].previewHostname}`)).toBe(
+      true
+    )
+    if (redirect)
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://unapproved.example.invalid" },
+      })
+    const manifest = {
+      schemaVersion: 1,
+      app,
+      deploymentProfile: "preview",
+      commitSha: HEAD_SHA,
+      publicConfigDigest: "fixture-digest",
+      publicFeatures: profiles.profiles.preview.publicFeatures,
+    }
+    mutate(manifest)
+    return Response.json(manifest)
+  }) as typeof fetch
+  const loadModule = async (path: string) =>
+    path.endsWith("preview_links.mjs")
+      ? {
+          waitForProjectRows,
+          listPublicCloudflareCheckRuns: async () => [
+            cloudflareCheck("market"),
+            cloudflareCheck("merchant"),
+          ],
+          fetchPreviewManifest: (
+            options: Parameters<typeof fetchPreviewManifest>[0]
+          ) => fetchPreviewManifest({ ...options, fetchImpl }),
+        }
+      : import("node:fs/promises")
+  const summaryWriter = {
+    addRaw: (value: string) => {
+      summary = value
+      return { write: async () => {} }
+    },
+  }
+  const execute = new Function(
+    "loadModule",
+    "process",
+    "context",
+    "github",
+    "core",
+    "setTimeout",
+    `return (async () => {${script.replaceAll("await import(", "await loadModule(")} })()`
+  )
+  let error: unknown
+  try {
+    await execute(
+      loadModule,
+      {
+        env: {
+          GITHUB_WORKSPACE: process.cwd(),
+          EXPECTED_PUBLIC_CONFIG_DIGEST: "fixture-digest",
+        },
+      },
+      {
+        payload: {
+          pull_request: {
+            head: { sha: HEAD_SHA },
+            body: "<!-- preview:show-commit-links-cloudflare --> - [x]",
+          },
+        },
+        serverUrl: "https://github.com",
+        repo: { owner: "Conduit-BTC", repo: "conduit-mono" },
+        runId: 1,
+        issue: { number: 1 },
+      },
+      {
+        paginate: async () => (source === "comments" ? comments : []),
+        rest: { issues: { listComments: {} } },
+      },
+      { info: () => {}, summary: summaryWriter },
+      (callback: () => void) => callback()
+    )
+  } catch (caught) {
+    error = caught
+  }
+  return { summary, reads, error }
+}
+
+describe.each(["comments", "checks"] as const)(
+  "preview workflow from %s",
+  (source) => {
+    it("displays only verified branch and commit evidence", async () => {
+      const result = await runPreviewWorkflow({ source })
+      expect(result.error).toBeUndefined()
+      expect(result.reads).toBe(2)
+      expect(result.summary).toContain("## Preview Deploys")
+      expect(result.summary).toContain(
+        "https://1234abcd.conduit-market-coo.pages.dev"
+      )
+      expect(result.summary).toContain(
+        "https://1234abcd.conduit-merchant-33n.pages.dev"
+      )
+    })
+
+    it("never publishes a redirect as fallback evidence", async () => {
+      const result = await runPreviewWorkflow({ source, redirect: true })
+      expect(String(result.error)).toContain(
+        "Preview manifest could not be read safely"
+      )
+      expect(String(result.error)).not.toContain("unapproved.example.invalid")
+      expect(result.summary).toBe("")
+      expect(result.reads).toBe(60)
+    })
+
+    it.each([
+      ["schemaVersion", 2],
+      ["app", "store-builder"],
+      ["deploymentProfile", "production"],
+      ["commitSha", "0".repeat(40)],
+      ["publicConfigDigest", "other"],
+      ["publicFeatures", {}],
+    ])(
+      "rejects mismatched manifest %s before displaying any evidence",
+      async (field, value) => {
+        const result = await runPreviewWorkflow({
+          source,
+          mutate: (manifest) => {
+            manifest[String(field)] = value
+          },
+        })
+        expect(String(result.error)).toContain(
+          `mismatched ${field === "publicFeatures" ? "dmCompatibilityOrderRoutingEnabled" : field}`
+        )
+        expect(result.summary).toBe("")
+        expect(result.reads).toBe(60)
+      }
+    )
+  }
+)
+
+it("displays pending optional commit evidence while still verifying both branch manifests", async () => {
+  const result = await runPreviewWorkflow({
+    source: "comments",
+    optionalCommit: true,
+  })
+  expect(result.error).toBeUndefined()
+  expect(result.reads).toBe(2)
+  expect(result.summary).toContain("| Market | _pending_ |")
+  expect(result.summary).toContain("| Merchant | _pending_ |")
 })
