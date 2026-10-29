@@ -29,6 +29,7 @@ import {
 } from "@conduit/core/protocol/event-market-stock-handout"
 import { formatEventMarketPickupClaimCode } from "@conduit/core/protocol/event-market-handoff"
 import { routeCheckoutSparkOrganizerOrder } from "../apps/merchant/src/lib/checkout-spark-organizer-routing"
+import { CheckoutSparkOrganizerRoutingTimeoutError } from "../apps/merchant/src/lib/checkout-spark-organizer-routing-observation"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
 import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
@@ -775,12 +776,55 @@ describe("designated organizer automatic routing", () => {
           },
         }
       }
-      await expect(
-        routeCheckoutSparkOrganizerOrder(f.session, f.dependencies)
-      ).rejects.toThrow("Organizer payment processing is no longer active.")
+      const failure = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      ).catch((error: unknown) => error)
+      expect(failure).toMatchObject({
+        name: "CheckoutSparkOrganizerRoutingTimeoutError",
+        diagnostic: {
+          stage: "Opening the checkout wallet",
+          elapsedMs: expect.any(Number),
+          writerChecks: expect.any(Number),
+          writerCheckMs: expect.any(Number),
+        },
+      })
       expect(invoiceRequests).toBe(0)
       expect(f.observations).toEqual({ lightning: 0, native: 0 })
     } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("measures delayed writer rechecks without exposing recovery data or extending the deadline", async () => {
+    const f = await fixture(0)
+    const decrypt = f.organizerSigner.decryptNip44.bind(f.organizerSigner)
+    try {
+      f.organizerSigner.decryptNip44 = async (...args) => {
+        const result = await decrypt(...args)
+        f.clock.now += 4_000
+        return result
+      }
+      const failure = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      ).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(CheckoutSparkOrganizerRoutingTimeoutError)
+      if (!(failure instanceof CheckoutSparkOrganizerRoutingTimeoutError))
+        throw new Error("Expected the bounded recovery timeout")
+      expect(failure.diagnostic.elapsedMs).toBeGreaterThanOrEqual(120_000)
+      expect(failure.diagnostic.writerChecks).toBeGreaterThan(1)
+      expect(failure.diagnostic.writerCheckMs).toBeGreaterThan(80_000)
+      expect(Object.keys(failure.diagnostic).sort()).toEqual([
+        "elapsedMs",
+        "stage",
+        "writerCheckMs",
+        "writerChecks",
+      ])
+      expect(Object.isFrozen(failure.diagnostic)).toBe(true)
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+    } finally {
+      f.organizerSigner.decryptNip44 = decrypt
       await f.cleanup()
     }
   }, 60_000)

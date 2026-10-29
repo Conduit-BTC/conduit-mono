@@ -1,5 +1,9 @@
 import { useMemo, useRef, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query"
 import type { EventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   acceptCheckoutSparkOrganizerStockOrder,
@@ -36,6 +40,10 @@ import {
   Input,
   useTimeBoundaryNow,
 } from "@conduit/ui"
+import {
+  CheckoutSparkOrganizerRoutingTimeoutError,
+  type CheckoutSparkOrganizerRoutingDiagnostic,
+} from "../lib/checkout-spark-organizer-routing-observation"
 
 /** The UI's common continuation does not create a financial plan for free goods. */
 export async function continueEventMarketOrganizerPickup(
@@ -48,33 +56,53 @@ export async function continueEventMarketOrganizerPickup(
       typeof acceptCheckoutSparkOrganizerStockOrder
     >[0]["delivery"]
     now?: () => number
+    stockQuery?: {
+      client: QueryClient
+      authGeneration: number
+      isCurrent(): boolean
+    }
   } = {}
 ) {
   input = { ...input }
   const purchase = assertEventMarketOrganizerPurchaseAuthority(input.authority)
-  await acceptCheckoutSparkOrganizerStockOrder({
-    ...input,
-    delivery: dependencies.delivery,
-    nowMs: dependencies.now?.(),
-  })
-  if (purchase.kind === "free") {
-    const commerceProof = await proveEventMarketFreeOrganizerCommerce({
-      authority: input.authority as EventMarketFreePurchaseAuthority,
-      assertCurrent: () => {
-        if (!input.shouldContinue())
-          throw new Error("Organizer pickup session changed.")
-        assertEventMarketOrganizerPurchaseAuthority(input.authority)
-      },
-      now: dependencies.now,
+  try {
+    await acceptCheckoutSparkOrganizerStockOrder({
+      ...input,
+      delivery: dependencies.delivery,
+      nowMs: dependencies.now?.(),
     })
-    return { status: "complete" as const, commerceProof, reason: undefined }
+    if (purchase.kind === "free") {
+      const commerceProof = await proveEventMarketFreeOrganizerCommerce({
+        authority: input.authority as EventMarketFreePurchaseAuthority,
+        assertCurrent: () => {
+          if (!input.shouldContinue())
+            throw new Error("Organizer pickup session changed.")
+          assertEventMarketOrganizerPurchaseAuthority(input.authority)
+        },
+        now: dependencies.now,
+      })
+      return { status: "complete" as const, commerceProof, reason: undefined }
+    }
+    const { routeCheckoutSparkOrganizerOrder } =
+      await import("../lib/checkout-spark-organizer-routing")
+    return await routeCheckoutSparkOrganizerOrder({
+      ...input,
+      authority: input.authority as CheckoutSparkOrganizerRecoveryAuthority,
+    })
+  } finally {
+    // Acceptance is durable before delivery/routing can fail. Refresh only the
+    // saved-stock view after the attempt settles, never repeat the operation.
+    const stockQuery = dependencies.stockQuery
+    if (stockQuery?.isCurrent())
+      await stockQuery.client.invalidateQueries({
+        queryKey: [
+          "event-stock-panel",
+          input.authenticatedPubkey,
+          purchase.eventMarket.marketCoordinate,
+        ],
+        predicate: (query) => query.queryKey[4] === stockQuery.authGeneration,
+      })
   }
-  const { routeCheckoutSparkOrganizerOrder } =
-    await import("../lib/checkout-spark-organizer-routing")
-  return routeCheckoutSparkOrganizerOrder({
-    ...input,
-    authority: input.authority as CheckoutSparkOrganizerRecoveryAuthority,
-  })
 }
 
 export function EventMarketOrganizerPickupForm(props: {
@@ -93,6 +121,7 @@ export function EventMarketOrganizerPickupForm(props: {
   claimCode: string
   error?: string
   notice?: string
+  diagnostic?: CheckoutSparkOrganizerRoutingDiagnostic
   onClaimCode(value: string): void
   onContinue(): void
   onPause(): void
@@ -284,6 +313,25 @@ export function EventMarketOrganizerPickupForm(props: {
           {props.error}
         </p>
       ) : null}
+      {props.diagnostic ? (
+        <details className="text-sm text-[var(--text-secondary)]">
+          <summary>Recovery check details</summary>
+          <p className="mt-2">
+            Timing for this attempt, not payment confirmation. Writer counts
+            exclude opening recovery.
+          </p>
+          <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
+            <dt>Last stage</dt>
+            <dd>{props.diagnostic.stage}</dd>
+            <dt>Elapsed</dt>
+            <dd>{props.diagnostic.elapsedMs} ms</dd>
+            <dt>Writer checks</dt>
+            <dd>{props.diagnostic.writerChecks}</dd>
+            <dt>Writer check time</dt>
+            <dd>{props.diagnostic.writerCheckMs} ms</dd>
+          </dl>
+        </details>
+      ) : null}
     </section>
   )
 }
@@ -293,12 +341,15 @@ export function EventMarketOrganizerPickupCard(props: {
   authenticatedPubkey: string
   onBusy?(busy: boolean): void
 }) {
+  const queryClient = useQueryClient()
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [commerceProof, setCommerceProof] =
     useState<CheckoutSparkOrganizerCommerceProof | null>(null)
   const [claimCode, setClaimCode] = useState("")
   const [routing, setRouting] = useState(false)
   const [error, setError] = useState("")
+  const [diagnostic, setDiagnostic] =
+    useState<CheckoutSparkOrganizerRoutingDiagnostic | null>(null)
   const [notice, setNotice] = useState("")
   const [waitingReason, setWaitingReason] = useState<string | undefined>()
   const running = useRef(false),
@@ -387,16 +438,26 @@ export function EventMarketOrganizerPickupCard(props: {
     paused.current = false
     setRouting(true)
     setError("")
+    setDiagnostic(null)
     setNotice("")
     setWaitingReason(undefined)
     try {
       const input = session()
       if (action === "route") {
         setCommerceProof(null)
-        const result = await continueEventMarketOrganizerPickup({
-          ...input,
-          authority: props.authority,
-        })
+        const result = await continueEventMarketOrganizerPickup(
+          {
+            ...input,
+            authority: props.authority,
+          },
+          {
+            stockQuery: {
+              client: queryClient,
+              authGeneration,
+              isCurrent: () => isAuthGenerationCurrent(authGeneration),
+            },
+          }
+        )
         if (current()) {
           setCommerceProof(result.commerceProof)
           setWaitingReason(
@@ -436,7 +497,12 @@ export function EventMarketOrganizerPickupCard(props: {
           )
       }
     } catch (cause) {
-      if (isAuthGenerationCurrent(authGeneration))
+      if (isAuthGenerationCurrent(authGeneration)) {
+        setDiagnostic(
+          cause instanceof CheckoutSparkOrganizerRoutingTimeoutError
+            ? cause.diagnostic
+            : null
+        )
         setError(
           paused.current
             ? purchase.kind === "free"
@@ -444,6 +510,7 @@ export function EventMarketOrganizerPickupCard(props: {
               : "This order is paused. A possibly sent payment is checked before any continuation."
             : message(cause)
         )
+      }
     } finally {
       if (isAuthGenerationCurrent(authGeneration)) await saved.refetch()
       running.current = false
@@ -485,6 +552,7 @@ export function EventMarketOrganizerPickupCard(props: {
           : undefined)
       }
       notice={notice}
+      diagnostic={diagnostic ?? undefined}
       onClaimCode={setClaimCode}
       onContinue={() => void run("route")}
       onPause={() => {
