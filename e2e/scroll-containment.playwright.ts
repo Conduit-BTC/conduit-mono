@@ -20,7 +20,6 @@ async function mountLongForm(page: Page) {
   await expect(page.locator("main > *").first()).toBeVisible()
   await page.evaluate(async (path) => {
     const container = document.createElement("div")
-    container.dataset.testid = "scroll-containment-fixture"
     document.querySelector("main")!.append(container)
     const fixture = await import(/* @vite-ignore */ path)
     fixture.mountScrollContainmentHarness(container)
