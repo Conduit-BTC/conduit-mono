@@ -623,6 +623,68 @@ describe("event prepaid confirmation diagnostic privacy", () => {
 })
 
 describe("privacy-safe Playwright smoke reporter", () => {
+  it("allowlists stock acceptance start gesture and exact-count facts only for its owning file", () => {
+    const file = "e2e/event-market.playwright.ts"
+    const kind = "event-stock-acceptance-start"
+    const sentinel = "private-" + crypto.randomUUID()
+    const observations = [
+      {
+        phase: "start_wait",
+        observationAvailable: true,
+        pointerDownOnTrigger: true,
+        pointerUpOnTrigger: false,
+        clickOnTrigger: false,
+        acceptCardinality: "single",
+        acceptVisible: true,
+        acceptEnabled: true,
+        pendingCardinality: "absent",
+        pendingVisible: false,
+        savedCardinality: "single",
+        savedVisible: false,
+        alertVisible: false,
+        acceptanceReadAvailable: true,
+        acceptanceCardinality: "single",
+      },
+      { phase: "click", observationAvailable: false },
+      { observationAvailable: true, acceptanceReadAvailable: false },
+    ]
+    for (const observation of observations) {
+      const values = {
+        ...observation,
+        orderId: sentinel,
+        rows: [{ payload: sentinel }],
+        dom: sentinel,
+        coordinates: [1, 2],
+        elapsedSeconds: 0.1,
+      }
+      const annotations = [
+        { type: `smoke:${kind}`, description: JSON.stringify(values) },
+      ]
+      const expected = [{ kind, ...observation }]
+      expect(safeSmokeDiagnostics(file, annotations)).toEqual(expected)
+      expect(safeRetainedSmokeDiagnostics(file, [{ kind, ...values }])).toEqual(
+        expected
+      )
+      for (const wrongFile of ["e2e/commerce.playwright.ts", `${file}/extra`]) {
+        expect(safeSmokeDiagnostics(wrongFile, annotations)).toEqual([])
+        expect(
+          safeRetainedSmokeDiagnostics(wrongFile, [{ kind, ...values }])
+        ).toEqual([])
+      }
+      const malformed = Object.fromEntries(
+        Object.keys(observation).map((key) => [key, sentinel])
+      )
+      expect(
+        safeSmokeDiagnostics(file, [
+          { type: `smoke:${kind}`, description: JSON.stringify(malformed) },
+        ])
+      ).toEqual([])
+      expect(
+        JSON.stringify(safeSmokeDiagnostics(file, annotations))
+      ).not.toContain(sentinel)
+    }
+  })
+
   it("keeps acceptance start-wait observations bounded without reclassifying click state", () => {
     const file = "e2e/event-market.playwright.ts"
     const kind = "event-stock-acceptance"

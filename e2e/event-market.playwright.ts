@@ -34,6 +34,7 @@ import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-chec
 import {
   classifyStockAcceptanceError,
   observeStockAcceptance,
+  observeStockAcceptanceStart,
 } from "./helpers/stock-acceptance-diagnostics"
 import { recordEventStockControlFailure } from "./helpers/smoke-diagnostics"
 
@@ -8211,32 +8212,44 @@ async function acceptPickupOrder(
     name: "Retry acceptance publication",
     exact: true,
   })
-  await page.getByRole("button", { name: "Accept order", exact: true }).click()
-  // A click starts the async action; settle it before checking durable readback.
-  // Accept the saved control as the start signal when the action finishes quickly.
+  const startObservation = await observeStockAcceptanceStart(page)
+  let startPhase: "click" | "start_wait" = "click"
   try {
-    await pending.or(saved).first().waitFor({ state: "visible" })
-  } catch (cause) {
-    let observationTimer: ReturnType<typeof setTimeout> | undefined
+    await page
+      .getByRole("button", { name: "Accept order", exact: true })
+      .click()
+    startPhase = "start_wait"
+    // A click starts the async action; settle it before checking durable readback.
+    // Accept the saved control as the start signal when the action finishes quickly.
     try {
-      const observation = await Promise.race([
-        observeStockAcceptance(pending.or(saved)),
-        new Promise<undefined>((resolve) => {
-          observationTimer = setTimeout(() => resolve(undefined), 250)
-        }),
-      ])
-      recordSmokeDiagnostic(test.info(), "event-stock-acceptance", {
-        phase: "start_wait",
-        errorCategory: classifyStockAcceptanceError(cause).errorCategory,
-        ...(observation ?? { observationAvailable: false }),
-        pageClosed: page.isClosed(),
-      })
-    } catch {
-      // Diagnostics must not replace the original wait failure.
-    } finally {
-      if (observationTimer !== undefined) clearTimeout(observationTimer)
+      await pending.or(saved).first().waitFor({ state: "visible" })
+    } catch (cause) {
+      let observationTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const observation = await Promise.race([
+          observeStockAcceptance(pending.or(saved)),
+          new Promise<undefined>((resolve) => {
+            observationTimer = setTimeout(() => resolve(undefined), 250)
+          }),
+        ])
+        recordSmokeDiagnostic(test.info(), "event-stock-acceptance", {
+          phase: "start_wait",
+          errorCategory: classifyStockAcceptanceError(cause).errorCategory,
+          ...(observation ?? { observationAvailable: false }),
+          pageClosed: page.isClosed(),
+        })
+      } catch {
+        // Diagnostics must not replace the original wait failure.
+      } finally {
+        if (observationTimer !== undefined) clearTimeout(observationTimer)
+      }
+      throw cause
     }
+  } catch (cause) {
+    await startObservation.recordFailure(test.info(), orderId, startPhase)
     throw cause
+  } finally {
+    await startObservation.dispose()
   }
   await pending.waitFor({ state: "hidden" })
   if (interruptSigning)
