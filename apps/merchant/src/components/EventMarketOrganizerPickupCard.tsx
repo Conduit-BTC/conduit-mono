@@ -317,11 +317,12 @@ export function EventMarketOrganizerPickupForm(props: {
         <details className="text-sm text-[var(--text-secondary)]">
           <summary>Recovery check details</summary>
           <p className="mt-2">
-            Timing for this attempt, not payment confirmation. Writer counts
-            exclude opening recovery.
+            Each value is the last observation at its own check, not payment
+            confirmation or the cause of the timeout. Writer counts exclude
+            opening recovery. Backoff is scheduled, not measured.
           </p>
-          <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
-            <dt>Last stage</dt>
+          <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 [&_dd]:break-words">
+            <dt>Last observed stage</dt>
             <dd>{props.diagnostic.stage}</dd>
             <dt>Elapsed</dt>
             <dd>{props.diagnostic.elapsedMs} ms</dd>
@@ -329,6 +330,26 @@ export function EventMarketOrganizerPickupForm(props: {
             <dd>{props.diagnostic.writerChecks}</dd>
             <dt>Writer check time</dt>
             <dd>{props.diagnostic.writerCheckMs} ms</dd>
+            <dt>Last observed exact payout</dt>
+            <dd>{props.diagnostic.lastPayoutObservation}</dd>
+            <dt>Last observed recipient check</dt>
+            <dd>{props.diagnostic.lastRecipientObservation}</dd>
+            <dt>Last observed progress acknowledgment</dt>
+            <dd>{props.diagnostic.lastProgressAck}</dd>
+            <dt>Last observed Conduit check</dt>
+            <dd>{props.diagnostic.lastNativeObservation}</dd>
+            <dt>Last observed Conduit preflight</dt>
+            <dd>{props.diagnostic.lastNativePreflight}</dd>
+            <dt>Last observed Conduit send response</dt>
+            <dd>{props.diagnostic.lastNativeSend}</dd>
+            <dt>Last observed workflow outcome</dt>
+            <dd>{props.diagnostic.lastWorkflowOutcome}</dd>
+            <dt>Last observed workflow wait reason</dt>
+            <dd>{props.diagnostic.lastWorkflowWaitReason}</dd>
+            <dt>Completed workflow steps</dt>
+            <dd>{props.diagnostic.completedWorkflowSteps}</dd>
+            <dt>Scheduled backoff</dt>
+            <dd>{props.diagnostic.scheduledBackoffMs} ms</dd>
           </dl>
         </details>
       ) : null}

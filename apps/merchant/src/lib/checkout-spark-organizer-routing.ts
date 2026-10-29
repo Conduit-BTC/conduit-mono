@@ -379,6 +379,11 @@ export async function routeCheckoutSparkOrganizerOrder(
                 },
                 transport: dependencies.progressTransport,
               })
+            routingObservation.progressAck(
+              delivery.merchantAccepted && delivery.selfAccepted
+                ? "accepted"
+                : "missing"
+            )
             await load()
             if (!delivery.merchantAccepted || !delivery.selfAccepted)
               throw new OrganizerProgressAckUnavailableError(
@@ -391,6 +396,8 @@ export async function routeCheckoutSparkOrganizerOrder(
             try {
               await acknowledgeExact(state)
             } catch (error) {
+              if (error instanceof RelayPublishDiagnosticsError)
+                routingObservation.progressAck("unavailable")
               if (
                 !(error instanceof RelayPublishDiagnosticsError) &&
                 !(error instanceof OrganizerProgressAckUnavailableError)
@@ -436,14 +443,18 @@ export async function routeCheckoutSparkOrganizerOrder(
               return saved
             },
           }
-          const inspect = (target: CheckoutSparkSettledOutgoingTarget) => {
+          const inspect = async (
+            target: CheckoutSparkSettledOutgoingTarget
+          ) => {
             routingObservation.stage("payout")
-            return inspectExactMerchantPayout(
+            const result = await inspectExactMerchantPayout(
               plan,
               target,
               wallet,
               assertCurrent
             )
+            routingObservation.payout(result.status)
+            return result
           }
           let dispatchTarget: CheckoutSparkSettledOutgoingTarget | null = null
           const provider = createCheckoutSparkSettledNativeOutgoingProvider({
@@ -479,6 +490,13 @@ export async function routeCheckoutSparkOrganizerOrder(
             const result = await verifyCheckoutSparkInvoiceRecipient(
               { plan, target, now: now(), assertCurrent },
               dependencies.receiverDependencies
+            )
+            routingObservation.recipient(
+              result.status === "verified"
+                ? result.settled
+                  ? "verified_settled"
+                  : "verified_unsettled"
+                : result.status
             )
             await check()
             if (result.status !== "verified" || !result.settled) return false
@@ -530,6 +548,13 @@ export async function routeCheckoutSparkOrganizerOrder(
                 await wallet.nativeTreasury!.inspectCheckoutTreasury(
                   await nativeRequest(target)
                 )
+              routingObservation.nativeObservation(
+                result.status === "pending" && result.pendingPhase
+                  ? result.pendingPhase === "sender"
+                    ? "pending_sender"
+                    : "pending_receiver"
+                  : result.status
+              )
               await check()
               if (result.status === "paid") {
                 await proveMerchantCheckoutSparkNativeCommerce({
@@ -558,6 +583,7 @@ export async function routeCheckoutSparkOrganizerOrder(
               if (!admissible()) return "unavailable"
               const result =
                 await wallet.nativeTreasury!.preflightCheckoutTreasury(request)
+              routingObservation.nativePreflight(result)
               await load()
               if (!admissible()) return "unavailable"
               if (result === "ready")
@@ -587,6 +613,7 @@ export async function routeCheckoutSparkOrganizerOrder(
                     throw new Error("Organizer final payment amount changed.")
                 },
               })
+              routingObservation.nativeSend(result.status)
               return result
             },
           }
@@ -776,6 +803,14 @@ export async function routeCheckoutSparkOrganizerOrder(
                   },
                 }
               )
+              routingObservation.workflow(
+                result.status === "outgoing_step"
+                  ? result.step.outcome
+                  : result.status,
+                result.status === "outgoing_step"
+                  ? result.step.reason
+                  : undefined
+              )
               await load()
               if (progressFailure.failed) throw progressFailure.error
               if (result.status === "outgoing_step" && result.step.reason)
@@ -853,7 +888,9 @@ export async function routeCheckoutSparkOrganizerOrder(
                 throw error
             }
             routingObservation.stage("waiting")
-            await wait(Math.min(5_000, 1_000 * 2 ** Math.min(step, 2)))
+            const backoffMs = Math.min(5_000, 1_000 * 2 ** Math.min(step, 2))
+            routingObservation.backoff(backoffMs)
+            await wait(backoffMs)
           }
           await proveGoods()
           return {
