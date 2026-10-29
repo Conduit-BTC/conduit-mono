@@ -336,6 +336,10 @@ export function EventMarketOrganizerPickupForm(props: {
             <dd>{props.diagnostic.lastRecipientObservation}</dd>
             <dt>Last observed progress acknowledgment</dt>
             <dd>{props.diagnostic.lastProgressAck}</dd>
+            <dt>Last loaded Conduit state</dt>
+            <dd>{props.diagnostic.lastLoadedNativeStatus}</dd>
+            <dt>Last loaded Conduit transfer reference</dt>
+            <dd>{props.diagnostic.lastLoadedNativeTransferReference}</dd>
             <dt>Last observed Conduit check</dt>
             <dd>{props.diagnostic.lastNativeObservation}</dd>
             <dt>Last observed Conduit preflight</dt>

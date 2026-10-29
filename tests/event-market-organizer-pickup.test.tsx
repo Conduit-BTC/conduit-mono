@@ -153,6 +153,8 @@ it("shows only fixed last-observed recovery verdicts and timing in collapsed che
     lastPayoutObservation: "paid",
     lastRecipientObservation: "verified_unsettled",
     lastProgressAck: "accepted",
+    lastLoadedNativeStatus: "submitted",
+    lastLoadedNativeTransferReference: "absent",
     lastNativeObservation: "pending_sender",
     lastNativePreflight: "ready",
     lastNativeSend: "submitted",
@@ -187,6 +189,10 @@ it("shows only fixed last-observed recovery verdicts and timing in collapsed che
     "Last observed progress acknowledgment</dt><dd>accepted"
   )
   expect(markup).toContain("Last observed Conduit check</dt><dd>pending_sender")
+  expect(markup).toContain("Last loaded Conduit state</dt><dd>submitted")
+  expect(markup).toContain(
+    "Last loaded Conduit transfer reference</dt><dd>absent"
+  )
   expect(markup).toContain("Last observed Conduit preflight</dt><dd>ready")
   expect(markup).toContain(
     "Last observed Conduit send response</dt><dd>submitted"

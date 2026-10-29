@@ -40,6 +40,18 @@ const nativeObservations = [
   "pending_sender",
   "pending_receiver",
 ] as const
+const nativeDurableStatuses = [
+  "not_observed",
+  "unprepared",
+  "prepared",
+  "submitted",
+  "ambiguous",
+  "lookup_unavailable",
+  "conflicting_evidence",
+  "paid",
+  "terminal_failure",
+] as const
+const nativeTransferReferences = ["not_observed", "present", "absent"] as const
 const nativePreflights = [
   "not_observed",
   "ready",
@@ -105,6 +117,8 @@ export interface CheckoutSparkOrganizerRoutingDiagnostic {
   lastPayoutObservation: (typeof payoutObservations)[number]
   lastRecipientObservation: (typeof recipientObservations)[number]
   lastProgressAck: (typeof progressAcks)[number]
+  lastLoadedNativeStatus: (typeof nativeDurableStatuses)[number]
+  lastLoadedNativeTransferReference: (typeof nativeTransferReferences)[number]
   lastNativeObservation: (typeof nativeObservations)[number]
   lastNativePreflight: (typeof nativePreflights)[number]
   lastNativeSend: (typeof nativeSends)[number]
@@ -140,6 +154,14 @@ export class CheckoutSparkOrganizerRoutingTimeoutError extends Error {
         diagnostic.lastRecipientObservation
       ),
       lastProgressAck: fixedValue(progressAcks, diagnostic.lastProgressAck),
+      lastLoadedNativeStatus: fixedValue(
+        nativeDurableStatuses,
+        diagnostic.lastLoadedNativeStatus
+      ),
+      lastLoadedNativeTransferReference: fixedValue(
+        nativeTransferReferences,
+        diagnostic.lastLoadedNativeTransferReference
+      ),
       lastNativeObservation: fixedValue(
         nativeObservations,
         diagnostic.lastNativeObservation
@@ -177,6 +199,10 @@ export function createCheckoutSparkOrganizerRoutingObservation(
     "not_observed"
   let lastProgressAck: CheckoutSparkOrganizerRoutingDiagnostic["lastProgressAck"] =
     "not_observed"
+  let lastLoadedNativeStatus: CheckoutSparkOrganizerRoutingDiagnostic["lastLoadedNativeStatus"] =
+    "not_observed"
+  let lastLoadedNativeTransferReference: CheckoutSparkOrganizerRoutingDiagnostic["lastLoadedNativeTransferReference"] =
+    "not_observed"
   let lastNativeObservation: CheckoutSparkOrganizerRoutingDiagnostic["lastNativeObservation"] =
     "not_observed"
   let lastNativePreflight: CheckoutSparkOrganizerRoutingDiagnostic["lastNativePreflight"] =
@@ -209,6 +235,17 @@ export function createCheckoutSparkOrganizerRoutingObservation(
       value: CheckoutSparkOrganizerRoutingDiagnostic["lastProgressAck"]
     ) {
       if (progressAcks.includes(value)) lastProgressAck = value
+    },
+    nativeLoadedState(
+      status: CheckoutSparkOrganizerRoutingDiagnostic["lastLoadedNativeStatus"],
+      hasTransferReference: boolean
+    ) {
+      if (nativeDurableStatuses.includes(status))
+        lastLoadedNativeStatus = status
+      if (typeof hasTransferReference === "boolean")
+        lastLoadedNativeTransferReference = hasTransferReference
+          ? "present"
+          : "absent"
     },
     nativeObservation(
       value: CheckoutSparkOrganizerRoutingDiagnostic["lastNativeObservation"]
@@ -259,6 +296,8 @@ export function createCheckoutSparkOrganizerRoutingObservation(
         lastPayoutObservation,
         lastRecipientObservation,
         lastProgressAck,
+        lastLoadedNativeStatus,
+        lastLoadedNativeTransferReference,
         lastNativeObservation,
         lastNativePreflight,
         lastNativeSend,
