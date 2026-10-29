@@ -30,6 +30,7 @@ import {
 } from "@conduit/core/protocol/event-market-stock-handout"
 import { formatEventMarketPickupClaimCode } from "@conduit/core/protocol/event-market-handoff"
 import { routeCheckoutSparkOrganizerOrder } from "../apps/merchant/src/lib/checkout-spark-organizer-routing"
+import { inspectCheckoutSparkOrganizerNativeHistory } from "../apps/merchant/src/lib/checkout-spark-organizer-history"
 import { CheckoutSparkOrganizerRoutingTimeoutError } from "../apps/merchant/src/lib/checkout-spark-organizer-routing-observation"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
@@ -377,6 +378,94 @@ async function fixture(commerceTotalSats = 1_000) {
     },
   }
 }
+
+it("inspects native history through existing Organizer authority without changing recovery or payments", async () => {
+  const f = await fixture(0)
+  try {
+    expect(
+      (await routeCheckoutSparkOrganizerOrder(f.session, f.dependencies)).status
+    ).toBe("complete")
+    const before = await f.repository.load(f.plan.checkoutId, f.plan.planDigest)
+    const stockBefore =
+      await f.database.eventMarketOrganizerStockEntries.toArray()
+    const sendsBefore = f.progressSends.length
+    const paymentsBefore = { ...f.observations }
+    let inspections = 0
+    const result = await inspectCheckoutSparkOrganizerNativeHistory(f.session, {
+      repository: f.repository,
+      inspect: async (input) => {
+        inspections++
+        input.assertCurrent()
+        await input.checkCurrent()
+        expect(input.request.nativeTreasury).toEqual(f.plan.nativeTreasury!)
+        expect(input.fundingIdentityPublicKey).toBe(
+          f.plan.funding.receiverIdentityPublicKey
+        )
+        return "exact_commit_and_finalized_invoice"
+      },
+    })
+    expect(result).toBe("exact_commit_and_finalized_invoice")
+    expect(inspections).toBe(1)
+    expect(
+      await f.repository.load(f.plan.checkoutId, f.plan.planDigest)
+    ).toEqual(before)
+    expect(await f.database.eventMarketOrganizerStockEntries.toArray()).toEqual(
+      stockBefore
+    )
+    expect(f.progressSends.length).toBe(sendsBefore)
+    expect(f.observations).toEqual(paymentsBefore)
+  } finally {
+    await f.cleanup()
+  }
+}, 60_000)
+
+it("keeps native history inspection unavailable before any saved fee intent exists", async () => {
+  const f = await fixture(0)
+  try {
+    let inspections = 0
+    expect(
+      await inspectCheckoutSparkOrganizerNativeHistory(f.session, {
+        repository: f.repository,
+        inspect: async () => {
+          inspections++
+          return "unavailable"
+        },
+      })
+    ).toBe("unavailable")
+    expect(inspections).toBe(0)
+    expect(f.observations).toEqual({ lightning: 0, native: 0 })
+  } finally {
+    await f.cleanup()
+  }
+}, 60_000)
+
+it("bounds native history inspection even when the initial signer read stays pending", async () => {
+  const f = await fixture(0)
+  try {
+    let inspections = 0
+    const result = await inspectCheckoutSparkOrganizerNativeHistory(
+      {
+        ...f.session,
+        signer: {
+          ...f.session.signer,
+          getPublicKey: () => new Promise<string>(() => {}),
+        },
+      },
+      {
+        timeoutMs: 10,
+        inspect: async () => {
+          inspections++
+          return "unavailable"
+        },
+      }
+    )
+    expect(result).toBe("unavailable")
+    expect(inspections).toBe(0)
+    expect(f.observations).toEqual({ lightning: 0, native: 0 })
+  } finally {
+    await f.cleanup()
+  }
+}, 60_000)
 
 /** A real resolved Buyer intent, imported without its device-local origin by default. */
 async function importBuyerPreparedOrganizerIntent(

@@ -379,6 +379,132 @@ function exactCheckoutTreasuryTransfer(
     : { invoiceId, status: "conflicting_evidence" }
 }
 
+/** Diagnostic observations only: none grants settlement, retry or spend authority. */
+export type CheckoutSparkNativeTreasuryHistoryDiagnostic =
+  | "unavailable"
+  | "no_exact_match_in_bounded_history"
+  | "multiple_matches"
+  | "exact_pending"
+  | "exact_returned"
+  | "history_commit_invoice_unresolved"
+  | "exact_commit_and_finalized_invoice"
+  | "conflicting"
+
+export interface CheckoutSparkNativeTreasuryHistoryDiagnosticInput {
+  readonly codec: CheckoutSparkNativeTreasurySdkCodec
+  readonly network: CheckoutSparkNativeTreasurySdkNetwork
+  readonly request: CheckoutSparkNativeTreasurySdkInput
+  readonly walletIdentityPublicKey: string
+  readonly invoiceQuery: CheckoutSparkNativeTreasurySdkInvoiceQuery | null
+  /** Caller-owned bounded authenticated history, not a complete-absence proof. */
+  readonly transfers: readonly CheckoutSparkNativeTreasurySdkTransfer[] | null
+  /** Fresh exact-ID read; caller enforces session, network and read deadlines. */
+  getTransfer(
+    id: string
+  ): Promise<CheckoutSparkNativeTreasurySdkTransfer | undefined>
+}
+
+/**
+ * Inspect a frozen native attempt without changing its financial state. Raw
+ * provider records stay within this invocation; only a content-free enum leaves
+ * it. The caller owns authenticated reads, pagination bounds and session checks.
+ */
+export async function inspectCheckoutSparkNativeTreasuryHistory(
+  input: CheckoutSparkNativeTreasuryHistoryDiagnosticInput
+): Promise<CheckoutSparkNativeTreasuryHistoryDiagnostic> {
+  let exact: CheckoutSparkNativeTreasurySdkInput
+  let candidate: CheckoutSparkNativeTreasurySdkTransfer
+  let candidateStatus: CheckoutSparkNativeTreasuryObservation["status"]
+  let invoiceStatus: number
+  let queriedTransferId: string | null = null
+  try {
+    exact = validateCheckoutTreasuryInput(
+      input.codec,
+      input.network,
+      input.request
+    )
+    if (
+      input.walletIdentityPublicKey !==
+      exact.nativeTreasury.senderIdentityPublicKey
+    )
+      return "conflicting"
+    if (input.invoiceQuery === null || input.transfers === null)
+      return "unavailable"
+    const entries = input.invoiceQuery.invoiceStatuses
+    if (!Array.isArray(entries) || entries.length !== 1) return "conflicting"
+    const entry = entries[0]!
+    if (
+      entry.invoice !== exact.nativeTreasury.invoiceRequest ||
+      ![0, 1, 2, 4].includes(entry.status)
+    )
+      return "conflicting"
+    invoiceStatus = entry.status
+    if (entry.status === 0) {
+      if (entry.transferType) return "conflicting"
+    } else {
+      if (entry.transferType?.$case !== "satsTransfer") return "conflicting"
+      queriedTransferId = nativeTransferIdFromBytes(
+        input.codec,
+        entry.transferType.satsTransfer.transferId
+      )
+    }
+    const matches = new Map<string, CheckoutSparkNativeTreasurySdkTransfer>()
+    for (const transfer of input.transfers) {
+      if (transfer.sparkInvoice !== exact.nativeTreasury.invoiceRequest)
+        continue
+      const previous = matches.get(transfer.id)
+      if (previous && JSON.stringify(previous) !== JSON.stringify(transfer))
+        return "conflicting"
+      matches.set(transfer.id, transfer)
+    }
+    if (matches.size === 0) return "no_exact_match_in_bounded_history"
+    if (matches.size !== 1) return "multiple_matches"
+    candidate = structuredClone(matches.values().next().value!)
+    if (
+      input.codec.parseTransferId(candidate.id).toString() !== candidate.id ||
+      (exact.providerTransferId && exact.providerTransferId !== candidate.id) ||
+      (queriedTransferId && queriedTransferId !== candidate.id)
+    )
+      return "conflicting"
+    candidateStatus = exactCheckoutTreasuryTransfer(
+      exact,
+      candidate.id,
+      candidate
+    ).status
+    if (candidateStatus === "conflicting_evidence") return "conflicting"
+  } catch {
+    return "conflicting"
+  }
+  let fresh: CheckoutSparkNativeTreasurySdkTransfer | undefined
+  try {
+    fresh = await input.getTransfer(candidate.id)
+  } catch {
+    return "unavailable"
+  }
+  if (!fresh) return "unavailable"
+  try {
+    const observed = exactCheckoutTreasuryTransfer(exact, candidate.id, fresh)
+    if (
+      (candidateStatus === "paid" || candidateStatus === "terminal_failure") &&
+      observed.status !== candidateStatus
+    )
+      return "conflicting"
+    if (observed.status === "terminal_failure")
+      return invoiceStatus === 2 ? "conflicting" : "exact_returned"
+    if (observed.status === "pending" && [0, 1].includes(invoiceStatus))
+      return "exact_pending"
+    if (observed.status === "paid" && invoiceStatus === 0)
+      return "history_commit_invoice_unresolved"
+    return observed.status === "paid" &&
+      invoiceStatus === 2 &&
+      queriedTransferId === candidate.id
+      ? "exact_commit_and_finalized_invoice"
+      : "conflicting"
+  } catch {
+    return "conflicting"
+  }
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }

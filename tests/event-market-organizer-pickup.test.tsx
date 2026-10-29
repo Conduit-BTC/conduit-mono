@@ -44,6 +44,49 @@ const controls = {
   onRetryHandout: () => {},
 }
 
+it("keeps native history inspection separate from routing and handout", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      paymentVerified
+      inspectingHistory
+      onInspectHistory={() => {}}
+    />
+  )
+  expect(markup).toContain("No payment is being sent")
+  expect(markup).toContain("does not send a payment")
+  expect(markup).not.toContain("Confirm code and hand out once")
+  expect(markup).not.toContain(">Recheck payments<")
+  expect(
+    markup.match(/<button\b[^>]*>Inspect saved Conduit transfer<\/button>/)?.[0]
+  ).toContain('disabled=""')
+})
+
+it("describes native history inspection as evidence rather than a saved payment update", () => {
+  const render = (
+    historyDiagnostic:
+      | "no_exact_match_in_bounded_history"
+      | "exact_commit_and_finalized_invoice"
+      | "history_commit_invoice_unresolved"
+  ) =>
+    renderToStaticMarkup(
+      <EventMarketOrganizerPickupForm
+        {...controls}
+        onInspectHistory={() => {}}
+        historyDiagnostic={historyDiagnostic}
+      />
+    )
+  expect(render("no_exact_match_in_bounded_history")).toContain(
+    "payment remains unresolved"
+  )
+  expect(render("exact_commit_and_finalized_invoice")).toContain(
+    "this check changed no saved status"
+  )
+  expect(render("history_commit_invoice_unresolved")).toContain(
+    "Keep this payment held"
+  )
+})
+
 it("keeps an inactive routed purchase waiting for Pay instead of inventing a recovery deadline", () => {
   const markup = renderToStaticMarkup(
     <EventMarketOrganizerPickupForm
