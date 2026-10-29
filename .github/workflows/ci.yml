@@ -781,7 +781,7 @@ jobs:
           EXPECTED_PUBLIC_CONFIG_DIGEST: ${{ needs.build-mainnet.outputs.public-config-digest }}
         with:
           script: |
-            const { listPublicCloudflareCheckRuns, waitForProjectRows } = await import(
+            const { fetchPreviewManifest, listPublicCloudflareCheckRuns, waitForProjectRows } = await import(
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/preview_links.mjs`
             );
             const headSha = context.payload.pull_request.head.sha;
@@ -847,16 +847,15 @@ jobs:
             });
 
             async function verifyDeployedPreview(row) {
-              const manifestUrl = new URL("/.well-known/conduit-deployment.json", row.branchUrl);
               let lastFailure = "deployment manifest was not available";
 
               for (let attempt = 1; attempt <= 30; attempt += 1) {
-                manifestUrl.searchParams.set("commit", headSha);
-                manifestUrl.searchParams.set("attempt", String(attempt));
                 try {
-                  const response = await fetch(manifestUrl, {
-                    cache: "no-store",
-                    signal: AbortSignal.timeout(10_000),
+                  const { response, manifestUrl } = await fetchPreviewManifest({
+                    branchUrl: row.branchUrl,
+                    previewHostname: PROJECTS[row.app].previewHostname,
+                    headSha,
+                    attempt,
                   });
                   if (!response.ok) {
                     lastFailure = `HTTP ${response.status}`;

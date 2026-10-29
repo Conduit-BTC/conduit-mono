@@ -1424,7 +1424,6 @@ test.describe("CND-162 mobile browser baseline", () => {
     page,
   }) => {
     await seedMarketCart(page)
-    await page.goto(`${marketUrl}/products`)
     await page.goto(`${marketUrl}/checkout`)
 
     await expect(
