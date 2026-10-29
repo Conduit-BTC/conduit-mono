@@ -816,7 +816,17 @@ describe("designated organizer automatic routing", () => {
       expect(failure.diagnostic.writerChecks).toBeGreaterThan(1)
       expect(failure.diagnostic.writerCheckMs).toBeGreaterThan(80_000)
       expect(Object.keys(failure.diagnostic).sort()).toEqual([
+        "completedWorkflowSteps",
         "elapsedMs",
+        "lastNativeObservation",
+        "lastNativePreflight",
+        "lastNativeSend",
+        "lastPayoutObservation",
+        "lastProgressAck",
+        "lastRecipientObservation",
+        "lastWorkflowOutcome",
+        "lastWorkflowWaitReason",
+        "scheduledBackoffMs",
         "stage",
         "writerCheckMs",
         "writerChecks",
@@ -825,6 +835,214 @@ describe("designated organizer automatic routing", () => {
       expect(f.observations).toEqual({ lightning: 0, native: 0 })
     } finally {
       f.organizerSigner.decryptNip44 = decrypt
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("retains an exact payout lookup verdict when the following writer check times out", async () => {
+    const f = await fixture(0)
+    const decrypt = f.organizerSigner.decryptNip44.bind(f.organizerSigner)
+    try {
+      await importBuyerPreparedOrganizerIntent(f, { possibleSend: true })
+      const startedAt = f.clock.now
+      const controls = { observed: false }
+      const openWallet = f.dependencies.openWallet
+      f.dependencies.openWallet = async (input) => ({
+        ...(await openWallet(input)),
+        getTransferFromSsp: async () => {
+          controls.observed = true
+          throw new Error("Controlled lookup unavailable")
+        },
+      })
+      f.organizerSigner.decryptNip44 = async (...args) => {
+        const result = await decrypt(...args)
+        if (controls.observed) f.clock.now = startedAt + 120_000
+        return result
+      }
+      const failure = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      ).catch((error: unknown) => error)
+      expect(failure).toMatchObject({
+        name: "CheckoutSparkOrganizerRoutingTimeoutError",
+        diagnostic: { lastPayoutObservation: "lookup_unavailable" },
+      })
+      expect(controls.observed).toBe(true)
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+    } finally {
+      f.organizerSigner.decryptNip44 = decrypt
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it("distinguishes paid exact history from an unsettled recipient before a later writer timeout", async () => {
+    const f = await fixture(0)
+    const decrypt = f.organizerSigner.decryptNip44.bind(f.organizerSigner)
+    try {
+      const startedAt = f.clock.now
+      const controls = { observed: false }
+      const fetchVerify = f.dependencies.receiverDependencies.fetchVerify
+      f.dependencies.receiverDependencies.fetchVerify = async (url) => {
+        const result = await fetchVerify(url)
+        if (f.observations.lightning > 0) controls.observed = true
+        return { ...result, settled: false, preimage: null }
+      }
+      f.organizerSigner.decryptNip44 = async (...args) => {
+        const result = await decrypt(...args)
+        if (controls.observed) f.clock.now = startedAt + 120_000
+        return result
+      }
+      const failure = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      ).catch((error: unknown) => error)
+      expect(failure).toMatchObject({
+        name: "CheckoutSparkOrganizerRoutingTimeoutError",
+        diagnostic: {
+          lastPayoutObservation: "paid",
+          lastRecipientObservation: "verified_unsettled",
+        },
+      })
+      expect(controls.observed).toBe(true)
+      expect(f.observations).toEqual({ lightning: 1, native: 0 })
+    } finally {
+      f.organizerSigner.decryptNip44 = decrypt
+      await f.cleanup()
+    }
+  }, 60_000)
+
+  it.each(["accepted", "unavailable"] as const)(
+    "retains the %s progress acknowledgment before a later writer timeout",
+    async (ack) => {
+      const f = await fixture(0)
+      const decrypt = f.organizerSigner.decryptNip44.bind(f.organizerSigner)
+      try {
+        const startedAt = f.clock.now
+        const controls = { observed: false }
+        const publish = f.dependencies.progressTransport.publishFn
+        f.transportHooks.failOnce = ack === "unavailable"
+        f.dependencies.progressTransport.publishFn = async (event) => {
+          const result = await publish(event)
+          controls.observed = true
+          return result
+        }
+        f.organizerSigner.decryptNip44 = async (...args) => {
+          const result = await decrypt(...args)
+          if (controls.observed) f.clock.now = startedAt + 120_000
+          return result
+        }
+        const failure = await routeCheckoutSparkOrganizerOrder(
+          f.session,
+          f.dependencies
+        ).catch((error: unknown) => error)
+        expect(failure).toBeInstanceOf(
+          CheckoutSparkOrganizerRoutingTimeoutError
+        )
+        if (!(failure instanceof CheckoutSparkOrganizerRoutingTimeoutError))
+          throw new Error("Expected the bounded recovery timeout")
+        expect(failure.diagnostic.lastProgressAck).toBe(ack)
+        expect(controls.observed).toBe(true)
+        expect(f.observations).toEqual({ lightning: 0, native: 0 })
+      } finally {
+        f.organizerSigner.decryptNip44 = decrypt
+        await f.cleanup()
+      }
+    },
+    60_000
+  )
+
+  it.each(["paid", "pending_sender"] as const)(
+    "retains the exact native %s verdict independently of send acceptance at timeout",
+    async (verdict) => {
+      const f = await fixture(0)
+      const decrypt = f.organizerSigner.decryptNip44.bind(f.organizerSigner)
+      try {
+        const startedAt = f.clock.now
+        const controls = { observed: false }
+        f.control.setNativeSenderCommitment(verdict === "paid")
+        const openWallet = f.dependencies.openWallet
+        f.dependencies.openWallet = async (input) => {
+          const wallet = await openWallet(input)
+          return {
+            ...wallet,
+            nativeTreasury: {
+              ...wallet.nativeTreasury,
+              inspectCheckoutTreasury: async (
+                request: Parameters<
+                  typeof wallet.nativeTreasury.inspectCheckoutTreasury
+                >[0]
+              ) => {
+                const result =
+                  await wallet.nativeTreasury.inspectCheckoutTreasury(request)
+                if (f.observations.native > 0) controls.observed = true
+                return result
+              },
+            },
+          }
+        }
+        f.organizerSigner.decryptNip44 = async (...args) => {
+          const result = await decrypt(...args)
+          if (controls.observed) f.clock.now = startedAt + 120_000
+          return result
+        }
+        const failure = await routeCheckoutSparkOrganizerOrder(
+          f.session,
+          f.dependencies
+        ).catch((error: unknown) => error)
+        expect(failure).toBeInstanceOf(
+          CheckoutSparkOrganizerRoutingTimeoutError
+        )
+        if (!(failure instanceof CheckoutSparkOrganizerRoutingTimeoutError))
+          throw new Error("Expected the bounded recovery timeout")
+        expect(failure.diagnostic).toMatchObject({
+          lastNativeObservation: verdict,
+          lastNativePreflight: "ready",
+          lastNativeSend: "submitted",
+        })
+        expect(f.observations).toEqual({ lightning: 1, native: 1 })
+      } finally {
+        f.organizerSigner.decryptNip44 = decrypt
+        await f.cleanup()
+      }
+    },
+    60_000
+  )
+
+  it("retains the completed workflow wait reason and scheduled backoff at the next authority timeout", async () => {
+    const f = await fixture(0)
+    try {
+      await importBuyerPreparedOrganizerIntent(f, { possibleSend: true })
+      const startedAt = f.clock.now
+      const openWallet = f.dependencies.openWallet
+      f.dependencies.openWallet = async (input) => ({
+        ...(await openWallet(input)),
+        getTransferFromSsp: async () => {
+          throw new Error("Controlled lookup unavailable")
+        },
+      })
+      const waits: number[] = []
+      f.dependencies.wait = async (milliseconds) => {
+        waits.push(milliseconds)
+        f.clock.now = startedAt + 120_000
+      }
+      const failure = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      ).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(CheckoutSparkOrganizerRoutingTimeoutError)
+      if (!(failure instanceof CheckoutSparkOrganizerRoutingTimeoutError))
+        throw new Error("Expected the bounded recovery timeout")
+      expect(failure.diagnostic).toMatchObject({
+        lastPayoutObservation: "lookup_unavailable",
+        lastRecipientObservation: "not_observed",
+        lastWorkflowOutcome: "wait",
+        lastWorkflowWaitReason: "provider_evidence_unavailable",
+        completedWorkflowSteps: 1,
+        scheduledBackoffMs: 1_000,
+      })
+      expect(waits).toEqual([1_000])
+      expect(f.observations).toEqual({ lightning: 0, native: 0 })
+    } finally {
       await f.cleanup()
     }
   }, 60_000)

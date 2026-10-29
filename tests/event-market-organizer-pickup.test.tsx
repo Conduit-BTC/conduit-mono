@@ -20,7 +20,10 @@ import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purc
 import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
 import { createInMemoryInboxDeclarationEvidenceRepository } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { admitFixture } from "./helpers/public-event"
-import { CheckoutSparkOrganizerRoutingTimeoutError } from "../apps/merchant/src/lib/checkout-spark-organizer-routing-observation"
+import {
+  CheckoutSparkOrganizerRoutingTimeoutError,
+  createCheckoutSparkOrganizerRoutingObservation,
+} from "../apps/merchant/src/lib/checkout-spark-organizer-routing-observation"
 
 const databases: ConduitDB[] = []
 afterEach(async () => {
@@ -139,12 +142,24 @@ it("renders safe zero counts when older discovery fixtures omit read details", (
   expect(markup).not.toContain("<button")
 })
 
-it("shows only fixed recovery timing fields in collapsed check details", () => {
+it("shows only fixed last-observed recovery verdicts and timing in collapsed check details", () => {
   const timeout = new CheckoutSparkOrganizerRoutingTimeoutError({
+    ...createCheckoutSparkOrganizerRoutingObservation(() => 0, 0).timeout()
+      .diagnostic,
     stage: "Verifying the original funding",
     elapsedMs: 120_300,
     writerChecks: 12,
     writerCheckMs: 4_500,
+    lastPayoutObservation: "paid",
+    lastRecipientObservation: "verified_unsettled",
+    lastProgressAck: "accepted",
+    lastNativeObservation: "pending_sender",
+    lastNativePreflight: "ready",
+    lastNativeSend: "submitted",
+    lastWorkflowOutcome: "wait",
+    lastWorkflowWaitReason: "provider_evidence_unavailable",
+    completedWorkflowSteps: 2,
+    scheduledBackoffMs: 3_000,
   })
   const diagnostic = {
     ...timeout.diagnostic,
@@ -164,6 +179,27 @@ it("shows only fixed recovery timing fields in collapsed check details", () => {
   expect(markup).toContain("120300 ms")
   expect(markup).toContain("Writer checks</dt><dd>12")
   expect(markup).toContain("4500 ms")
+  expect(markup).toContain("Last observed exact payout</dt><dd>paid")
+  expect(markup).toContain(
+    "Last observed recipient check</dt><dd>verified_unsettled"
+  )
+  expect(markup).toContain(
+    "Last observed progress acknowledgment</dt><dd>accepted"
+  )
+  expect(markup).toContain("Last observed Conduit check</dt><dd>pending_sender")
+  expect(markup).toContain("Last observed Conduit preflight</dt><dd>ready")
+  expect(markup).toContain(
+    "Last observed Conduit send response</dt><dd>submitted"
+  )
+  expect(markup).toContain("Last observed workflow outcome</dt><dd>wait")
+  expect(markup).toContain(
+    "Last observed workflow wait reason</dt><dd>provider_evidence_unavailable"
+  )
+  expect(markup).toContain("Completed workflow steps</dt><dd>2")
+  expect(markup).toContain("3000 ms")
+  expect(markup).toContain(
+    "not payment confirmation or the cause of the timeout"
+  )
   expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|\s|>)/)
   expect(markup).not.toContain("unused-provider-detail")
   expect(markup).not.toContain("unused-private-detail")
