@@ -52,6 +52,7 @@ import {
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 import { assertCheckoutSparkRecoveryDestination } from "./checkout-spark-recovery-policy"
 import { verifySavedMerchantCheckoutSparkRecipients } from "./checkout-spark-invoice-recipient"
+import { createCheckoutSparkOrganizerRoutingObservation } from "./checkout-spark-organizer-routing-observation"
 
 export interface CheckoutSparkOrganizerRoutingInput {
   db: ConduitDB
@@ -100,6 +101,10 @@ export async function routeCheckoutSparkOrganizerOrder(
   const now = dependencies.now ?? Date.now
   const startedAt = now()
   const deadline = startedAt + 2 * 60_000
+  const routingObservation = createCheckoutSparkOrganizerRoutingObservation(
+    now,
+    startedAt
+  )
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository(input.db)
   const progressStore = new DexieCheckoutSparkOrganizerProgressRepository(
@@ -136,12 +141,13 @@ export async function routeCheckoutSparkOrganizerOrder(
   }
   const assertProcessing = () => {
     assertSession()
-    if (now() >= deadline)
-      throw new Error("Organizer payment processing is no longer active.")
+    if (now() >= deadline) throw routingObservation.timeout()
   }
   const assertWriter = async () => {
     assertProcessing()
-    await assertCheckoutSparkOrganizerRecoveryWriterCurrent(input.authority)
+    await routingObservation.checkWriter(() =>
+      assertCheckoutSparkOrganizerRecoveryWriterCurrent(input.authority)
+    )
     assertProcessing()
   }
   assertProcessing()
@@ -237,6 +243,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           )
           return saved
         }
+        routingObservation.stage("wallet")
         const wallet = await openWallet({
           mnemonic: initial.wallet.mnemonic,
           accountNumber: initial.wallet.accountNumber,
@@ -255,6 +262,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           )
             throw new Error("Organizer checkout wallet is unavailable.")
           const readFunding = async () => {
+            routingObservation.stage("funding")
             await check()
             const receive = await wallet.getLightningReceiveRequest(
               plan.funding.requestId
@@ -330,6 +338,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           // original invoice-resolution capability. Reuse the existing exact
           // receiver verifier; unavailable evidence never grants dispatch.
           await load()
+          routingObservation.stage("recipients")
           await verifySavedMerchantCheckoutSparkRecipients({
             state: expected,
             repository,
@@ -348,6 +357,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           const acknowledgeExact = async (
             state: CheckoutSparkSettledReconciliation
           ) => {
+            routingObservation.stage("progress")
             await load()
             if (JSON.stringify(state) !== JSON.stringify(expected))
               throw new CheckoutSparkSettledRepositoryConflictError()
@@ -426,8 +436,15 @@ export async function routeCheckoutSparkOrganizerOrder(
               return saved
             },
           }
-          const inspect = (target: CheckoutSparkSettledOutgoingTarget) =>
-            inspectExactMerchantPayout(plan, target, wallet, assertCurrent)
+          const inspect = (target: CheckoutSparkSettledOutgoingTarget) => {
+            routingObservation.stage("payout")
+            return inspectExactMerchantPayout(
+              plan,
+              target,
+              wallet,
+              assertCurrent
+            )
+          }
           let dispatchTarget: CheckoutSparkSettledOutgoingTarget | null = null
           const provider = createCheckoutSparkSettledNativeOutgoingProvider({
             plan,
@@ -458,6 +475,7 @@ export async function routeCheckoutSparkOrganizerOrder(
               { status: "paid" }
             >
           ) => {
+            routingObservation.stage("recipients")
             const result = await verifyCheckoutSparkInvoiceRecipient(
               { plan, target, now: now(), assertCurrent },
               dependencies.receiverDependencies
@@ -484,6 +502,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           const nativeRequest = async (
             target: CheckoutSparkNativeTreasuryTarget
           ) => {
+            routingObservation.stage("fee")
             await load()
             if (
               target.planDigest !== plan.planDigest ||
@@ -572,6 +591,7 @@ export async function routeCheckoutSparkOrganizerOrder(
             },
           }
           const proveGoods = async () => {
+            routingObservation.stage("goods")
             try {
               let issued = false
               const proof = await proveCheckoutSparkOrganizerCommerce({
@@ -604,6 +624,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           }
           let waitingReason = "bounded_reconciliation"
           for (let step = 0; step < plan.recipients.length * 3 + 12; step++) {
+            routingObservation.stage("routing")
             await load()
             progressFailure.failed = false
             delete progressFailure.error
@@ -633,10 +654,12 @@ export async function routeCheckoutSparkOrganizerOrder(
                   outgoing: {
                     reconcile: provider.reconcile,
                     preflight: (target) => {
+                      routingObservation.stage("preparation")
                       dispatchTarget = target
                       return provider.preflight(target)
                     },
                     send: (target) => {
+                      routingObservation.stage("payout")
                       dispatchTarget = target
                       return provider.send(target)
                     },
@@ -674,6 +697,7 @@ export async function routeCheckoutSparkOrganizerOrder(
                     acknowledgeRecoverySnapshot: acknowledge,
                     nowMs: now,
                     estimateFee: async (request) => {
+                      routingObservation.stage("preparation")
                       await check()
                       const value = await wallet.outgoing!.estimateFee({
                         paymentRequest: request.paymentRequest,
@@ -828,6 +852,7 @@ export async function routeCheckoutSparkOrganizerOrder(
               )
                 throw error
             }
+            routingObservation.stage("waiting")
             await wait(Math.min(5_000, 1_000 * 2 ** Math.min(step, 2)))
           }
           await proveGoods()
