@@ -818,6 +818,8 @@ describe("designated organizer automatic routing", () => {
       expect(Object.keys(failure.diagnostic).sort()).toEqual([
         "completedWorkflowSteps",
         "elapsedMs",
+        "lastLoadedNativeStatus",
+        "lastLoadedNativeTransferReference",
         "lastNativeObservation",
         "lastNativePreflight",
         "lastNativeSend",
@@ -951,6 +953,47 @@ describe("designated organizer automatic routing", () => {
     60_000
   )
 
+  it("retains loaded native state when its first provider read cannot finish", async () => {
+    const f = await fixture(0)
+    try {
+      const startedAt = f.clock.now
+      const openWallet = f.dependencies.openWallet
+      let attemptedRead = false
+      f.dependencies.openWallet = async (input) => {
+        const wallet = await openWallet(input)
+        return {
+          ...wallet,
+          nativeTreasury: {
+            ...wallet.nativeTreasury,
+            inspectCheckoutTreasury: async () => {
+              attemptedRead = true
+              f.clock.now = startedAt + 120_000
+              throw new Error("Controlled native read did not finish")
+            },
+          },
+        }
+      }
+      const failure = await routeCheckoutSparkOrganizerOrder(
+        f.session,
+        f.dependencies
+      ).catch((error: unknown) => error)
+      expect(failure).toMatchObject({
+        name: "CheckoutSparkOrganizerRoutingTimeoutError",
+        diagnostic: {
+          lastLoadedNativeStatus: "prepared",
+          lastLoadedNativeTransferReference: "absent",
+          lastNativeObservation: "not_observed",
+          lastNativePreflight: "not_observed",
+          lastNativeSend: "not_observed",
+        },
+      })
+      expect(attemptedRead).toBe(true)
+      expect(f.observations).toEqual({ lightning: 1, native: 0 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
   it.each(["paid", "pending_sender"] as const)(
     "retains the exact native %s verdict independently of send acceptance at timeout",
     async (verdict) => {
@@ -995,6 +1038,8 @@ describe("designated organizer automatic routing", () => {
         if (!(failure instanceof CheckoutSparkOrganizerRoutingTimeoutError))
           throw new Error("Expected the bounded recovery timeout")
         expect(failure.diagnostic).toMatchObject({
+          lastLoadedNativeStatus: "submitted",
+          lastLoadedNativeTransferReference: "present",
           lastNativeObservation: verdict,
           lastNativePreflight: "ready",
           lastNativeSend: "submitted",

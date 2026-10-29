@@ -533,6 +533,10 @@ export async function routeCheckoutSparkOrganizerOrder(
                 JSON.stringify(expected.treasuryFinalization?.intent)
             )
               throw new Error("Organizer native payment authority changed.")
+            routingObservation.nativeLoadedState(
+              expected.treasuryFinalization!.status,
+              expected.treasuryFinalization!.providerTransferId !== null
+            )
             return {
               network: plan.network,
               nativeTreasury: target.nativeTreasury,
