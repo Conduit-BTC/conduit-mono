@@ -60,6 +60,8 @@ export interface CheckoutSparkOrganizerRoutingInput {
   signer: AccountSigner
   authenticatedPubkey: string
   shouldContinue(): boolean
+  /** A process-local goods capability, independent of later fee reconciliation. */
+  onCommerceProof?(proof: CheckoutSparkOrganizerCommerceProof): void
 }
 export interface CheckoutSparkOrganizerRoutingDependencies {
   repository?: DexieCheckoutSparkSettledRepository
@@ -622,6 +624,7 @@ export async function routeCheckoutSparkOrganizerOrder(
             },
           }
           const proveGoods = async () => {
+            if (commerceProof) return
             routingObservation.stage("goods")
             try {
               let issued = false
@@ -652,11 +655,28 @@ export async function routeCheckoutSparkOrganizerOrder(
               await check()
               commerceProof = null
             }
+            if (commerceProof) input.onCommerceProof?.(commerceProof)
           }
           let waitingReason = "bounded_reconciliation"
           for (let step = 0; step < plan.recipients.length * 3 + 12; step++) {
             routingObservation.stage("routing")
             await load()
+            // Paid projections only schedule fresh proof work. The existing
+            // prover still checks funding, exact payouts and their receivers;
+            // fee waiting must not swallow an independently issued capability.
+            if (
+              !commerceProof &&
+              plan.recipients.every(
+                (recipient) =>
+                  (recipient.kind !== "merchant" &&
+                    recipient.kind !== "supplier") ||
+                  expected.legs.some(
+                    (leg) =>
+                      leg.legId === recipient.legId && leg.status === "paid"
+                  )
+              )
+            )
+              await proveGoods()
             progressFailure.failed = false
             delete progressFailure.error
             try {

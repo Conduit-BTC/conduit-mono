@@ -22,6 +22,7 @@ import {
   recordCheckoutSparkSettledCredit,
   recordCheckoutSparkSettledLegStatus,
   resolveCheckoutSparkLnurlInvoice,
+  type CheckoutSparkOrganizerCommerceProof,
 } from "@conduit/core"
 import {
   acceptCheckoutSparkOrganizerStockOrder,
@@ -577,6 +578,69 @@ describe("designated organizer automatic routing", () => {
       await f.cleanup()
     }
   }, 60_000)
+  it("delivers independently verified goods before a native fee wait reaches the processing deadline", async () => {
+    const f = await fixture()
+    try {
+      const startedAt = f.clock.now
+      const proofs: CheckoutSparkOrganizerCommerceProof[] = []
+      let nativeWaits = 0
+      f.control.setNativeSenderCommitment(false)
+      const input = {
+        ...f.session,
+        onCommerceProof: (proof: CheckoutSparkOrganizerCommerceProof) => {
+          proofs.push(proof)
+        },
+      }
+      await expect(
+        routeCheckoutSparkOrganizerOrder(input, {
+          ...f.dependencies,
+          wait: async (milliseconds) => {
+            if (f.observations.native === 1) nativeWaits++
+            f.clock.now =
+              nativeWaits === 2
+                ? startedAt + 2 * 60_000
+                : f.clock.now + milliseconds
+          },
+        })
+      ).rejects.toBeInstanceOf(CheckoutSparkOrganizerRoutingTimeoutError)
+      expect(nativeWaits).toBe(2)
+      expect(proofs).toHaveLength(1)
+      expect(() =>
+        assertCheckoutSparkOrganizerCommerceProof(proofs[0]!, {
+          organizerPubkey: f.organizerPubkey,
+          initialHandoffId: f.initial.handoffId,
+          order: f.order,
+        })
+      ).not.toThrow()
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      if (saved.status !== "active") throw new Error("Expected saved routing")
+      expect(saved.state.treasuryFinalization!.status).toBe("ambiguous")
+      expect(f.observations).toEqual({ lightning: 3, native: 1 })
+      const purchase = assertCheckoutSparkOrganizerRecoveryAuthority(
+        f.authority
+      )
+      await confirmOrganizerStockOrderHandout({
+        ...f.session,
+        commerceProof: proofs[0]!,
+        enteredClaimCode: formatEventMarketPickupClaimCode(purchase.claimRef),
+        physicalReleaseConfirmed: true,
+        delivery: f.dependencies.progressTransport,
+        nowMs: f.clock.now,
+      })
+      expect(
+        (await f.database.eventMarketOrganizerStockEntries.toArray()).every(
+          (entry) => entry.handout !== undefined
+        )
+      ).toBe(true)
+      expect(f.observations).toEqual({ lightning: 3, native: 1 })
+    } finally {
+      await f.cleanup()
+    }
+  }, 60_000)
+
   it("retains an actual completed goods proof after the processing deadline while the original authority is current", async () => {
     const f = await fixture()
     try {

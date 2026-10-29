@@ -215,6 +215,43 @@ it("shows only fixed last-observed recovery verdicts and timing in collapsed che
   ).not.toContain("Recovery check details")
 })
 
+it("keeps independently verified goods ready after a separate payment check timeout", () => {
+  const timeout = createCheckoutSparkOrganizerRoutingObservation(
+    () => 120_000,
+    0
+  ).timeout()
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      paymentVerified
+      historyReady
+      needsAttention
+      error={timeout.message}
+      diagnostic={timeout.diagnostic}
+      claimCode="EXAMPLE-PICKUP-CODE"
+      merchandise={{
+        state: "ready",
+        lines: [
+          {
+            productCoordinate: "fixture-item",
+            title: "Fixture apples",
+            quantity: 1,
+            specifications: [],
+          },
+        ],
+      }}
+    />
+  )
+  expect(markup).toContain("Ready for pickup")
+  expect(markup).toContain("Goods payment verified")
+  expect(markup).toContain(timeout.message)
+  const handout = markup.match(
+    /<button\b[^>]*>Confirm code and hand out once<\/button>/
+  )?.[0]
+  expect(handout).toBeDefined()
+  expect(handout).not.toContain('disabled=""')
+})
+
 it("shows each exact pickup product, selected variation and quantity before handout", () => {
   const merchandise = {
     state: "ready" as const,

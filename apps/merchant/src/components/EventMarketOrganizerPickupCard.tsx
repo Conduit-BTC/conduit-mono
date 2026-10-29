@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   useQuery,
   useQueryClient,
@@ -56,6 +56,7 @@ export async function continueEventMarketOrganizerPickup(
       typeof acceptCheckoutSparkOrganizerStockOrder
     >[0]["delivery"]
     now?: () => number
+    onCommerceProof?(proof: CheckoutSparkOrganizerCommerceProof): void
     stockQuery?: {
       client: QueryClient
       authGeneration: number
@@ -81,6 +82,7 @@ export async function continueEventMarketOrganizerPickup(
         },
         now: dependencies.now,
       })
+      dependencies.onCommerceProof?.(commerceProof)
       return { status: "complete" as const, commerceProof, reason: undefined }
     }
     const { routeCheckoutSparkOrganizerOrder } =
@@ -88,6 +90,7 @@ export async function continueEventMarketOrganizerPickup(
     return await routeCheckoutSparkOrganizerOrder({
       ...input,
       authority: input.authority as CheckoutSparkOrganizerRecoveryAuthority,
+      onCommerceProof: dependencies.onCommerceProof,
     })
   } finally {
     // Acceptance is durable before delivery/routing can fail. Refresh only the
@@ -379,6 +382,13 @@ export function EventMarketOrganizerPickupCard(props: {
   const [waitingReason, setWaitingReason] = useState<string | undefined>()
   const running = useRef(false),
     paused = useRef(false)
+  const mounted = useRef(false)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   let purchase: ReturnType<
     typeof assertEventMarketOrganizerPurchaseAuthority
   > | null = null
@@ -469,13 +479,15 @@ export function EventMarketOrganizerPickupCard(props: {
     try {
       const input = session()
       if (action === "route") {
-        setCommerceProof(null)
         const result = await continueEventMarketOrganizerPickup(
           {
             ...input,
             authority: props.authority,
           },
           {
+            onCommerceProof: (proof) => {
+              if (mounted.current && current()) setCommerceProof(proof)
+            },
             stockQuery: {
               client: queryClient,
               authGeneration,
@@ -484,7 +496,7 @@ export function EventMarketOrganizerPickupCard(props: {
           }
         )
         if (current()) {
-          setCommerceProof(result.commerceProof)
+          if (result.commerceProof) setCommerceProof(result.commerceProof)
           setWaitingReason(
             result.status === "waiting" ? result.reason : undefined
           )
