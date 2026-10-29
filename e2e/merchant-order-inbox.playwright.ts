@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type Locator, type Page } from "@playwright/test"
 import { getEventHash, nip19 } from "nostr-tools"
 import { createWrap } from "nostr-tools/nip59"
 import type { InboxProjection } from "@conduit/core/protocol/commerce-inbox-store"
@@ -486,6 +486,8 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
   browser,
 }, testInfo) => {
   test.setTimeout(180_000)
+  const activate = (control: Locator) =>
+    testInfo.project.use.hasTouch ? control.tap() : control.click()
   const identities = Array.from({ length: 4 }, () =>
     createRuntimeSignerIdentity()
   )
@@ -692,7 +694,7 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
         .filter({ hasText: scenario.targetLabel, visible: true })
         .first()
       await expect(target).toBeVisible()
-      await target.click()
+      await activate(target)
       await expect
         .poll(() => new URL(page.url()).searchParams.get("counterparty"))
         .toBe(scenario.target.pubkey)
@@ -718,16 +720,17 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
         const browse = page.getByRole("button", { name: "Browse", exact: true })
         const compact = await browse.isVisible()
         const filterOrders = async (query: string) => {
-          if (compact) await browse.click()
+          if (compact) await activate(browse)
           await page
             .getByRole("searchbox", { name: "Search orders" })
             .filter({ visible: true })
             .fill(query)
           if (compact) {
-            await page
-              .getByRole("dialog", { name: "Your orders" })
-              .getByRole("button", { name: "Close", exact: true })
-              .click()
+            await activate(
+              page
+                .getByRole("dialog", { name: "Your orders" })
+                .getByRole("button", { name: "Close", exact: true })
+            )
           }
         }
         // A filter must not replace the participant named in the restored URL.
@@ -746,14 +749,14 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
           page.getByRole("button", { name: "Open messages", exact: true })
         ).toBeVisible()
       }
-      await page
-        .getByRole("button", { name: "Open messages", exact: true })
-        .click()
+      await activate(
+        page.getByRole("button", { name: "Open messages", exact: true })
+      )
       const dialog = page.getByRole("dialog", { name: "Messages" })
       await expect(dialog).toBeVisible()
       const reply = `participant collision reply ${scenario.app}`
       await dialog.getByRole("textbox", { name: "Message" }).fill(reply)
-      await dialog.getByRole("button", { name: "Send message" }).click()
+      await activate(dialog.getByRole("button", { name: "Send message" }))
       const deliveredReplies = async (
         recipient: typeof buyer,
         content = reply
@@ -819,9 +822,13 @@ test("Same-ID orders keep selection and encrypted replies bound to their partici
         ).toBe(targetThread)
         const messageReply = "participant collision Messages reply"
         await composer.fill(messageReply)
-        await page
-          .getByRole("button", { name: "Send message", exact: true })
-          .click()
+        await expect(composer).toHaveValue(messageReply)
+        const sendMessage = page.getByRole("button", {
+          name: "Send message",
+          exact: true,
+        })
+        await expect(sendMessage).toBeEnabled()
+        await activate(sendMessage)
         await expect(composer).toHaveValue("")
         await expect
           .poll(() => deliveredReplies(scenario.target, messageReply), {

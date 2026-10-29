@@ -1,6 +1,7 @@
 import {
   NostrSignerError,
   type NostrKeySigner,
+  type AccountSignerOperationOptions,
   type SignedNostrEvent,
   type UnsignedNostrEvent,
 } from "./nostr-event-signer"
@@ -109,8 +110,12 @@ export class Nip07SessionSigner implements NostrKeySigner {
     return pubkey
   }
 
-  async signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent> {
-    const { bridge, pubkey: expectedPubkey } = await this.assertLiveIdentity()
+  async signEvent(
+    event: UnsignedNostrEvent,
+    options: AccountSignerOperationOptions = {}
+  ): Promise<SignedNostrEvent> {
+    const { bridge, pubkey: expectedPubkey } =
+      await this.assertLiveIdentity(options)
     if (
       normalizePubkey(event.pubkey) !== expectedPubkey ||
       !Number.isSafeInteger(event.created_at) ||
@@ -139,6 +144,7 @@ export class Nip07SessionSigner implements NostrKeySigner {
       tags: expectedTags.map((tag) => [...tag]),
       content: event.content,
     }
+    this.assertOperationCurrent(options)
     const response = await bridge.signEvent(draft)
     if (!response || typeof response !== "object") {
       return this.invalidate(
@@ -172,36 +178,50 @@ export class Nip07SessionSigner implements NostrKeySigner {
       )
     }
 
-    await this.assertLiveIdentity()
+    await this.assertLiveIdentity(options)
     return signed
   }
 
-  async encryptNip44(peer: string, value: string): Promise<string> {
-    return this.keyOperation(peer, value, "nip44", "encrypt")
+  async encryptNip44(
+    peer: string,
+    value: string,
+    options: AccountSignerOperationOptions = {}
+  ): Promise<string> {
+    return this.keyOperation(peer, value, "nip44", "encrypt", options)
   }
 
-  async decryptNip44(peer: string, value: string): Promise<string> {
-    return this.keyOperation(peer, value, "nip44", "decrypt")
+  async decryptNip44(
+    peer: string,
+    value: string,
+    options: AccountSignerOperationOptions = {}
+  ): Promise<string> {
+    return this.keyOperation(peer, value, "nip44", "decrypt", options)
   }
 
-  async decryptLegacy(peer: string, value: string): Promise<string> {
-    return this.keyOperation(peer, value, "nip04", "decrypt")
+  async decryptLegacy(
+    peer: string,
+    value: string,
+    options: AccountSignerOperationOptions = {}
+  ): Promise<string> {
+    return this.keyOperation(peer, value, "nip04", "decrypt", options)
   }
 
   private async keyOperation(
     peer: string,
     value: string,
     scheme: "nip44" | "nip04",
-    operation: "encrypt" | "decrypt"
+    operation: "encrypt" | "decrypt",
+    options: AccountSignerOperationOptions
   ): Promise<string> {
-    const { bridge } = await this.assertLiveIdentity()
+    const { bridge } = await this.assertLiveIdentity(options)
     const lane = bridge[scheme]
     if (typeof lane?.[operation] !== "function")
       throw new NostrSignerError("unsupported_operation")
+    this.assertOperationCurrent(options)
     const result = await lane[operation](peer, value)
     if (typeof result !== "string" || (operation === "encrypt" && !result))
       throw new NostrSignerError("invalid_response")
-    await this.assertLiveIdentity()
+    await this.assertLiveIdentity(options)
     return result
   }
 
@@ -220,17 +240,26 @@ export class Nip07SessionSigner implements NostrKeySigner {
       : (window.nostr as Nip07Bridge | undefined)
   }
 
-  private async readReadyBridge(): Promise<{
+  private assertOperationCurrent(options: AccountSignerOperationOptions): void {
+    this.assertAvailableSession()
+    options.assertCurrent?.()
+  }
+
+  private async readReadyBridge(
+    options: AccountSignerOperationOptions = {}
+  ): Promise<{
     bridge: Nip07Bridge
     pubkey: string
   }> {
     const ready = await withTransientNip07ReadinessRetry(async () => {
+      this.assertOperationCurrent(options)
       const bridge = this.getCurrentBridge()
       if (!bridge || typeof bridge.getPublicKey !== "function") {
         throw new Error("NIP-07 extension not available")
       }
       return { bridge, rawPubkey: await bridge.getPublicKey() }
     }, this.readinessRetry)
+    this.assertOperationCurrent(options)
     const pubkey = normalizePubkey(ready.rawPubkey)
     if (!pubkey) {
       return this.invalidate(
@@ -241,11 +270,13 @@ export class Nip07SessionSigner implements NostrKeySigner {
     return { bridge: ready.bridge, pubkey }
   }
 
-  private async assertLiveIdentity(): Promise<{
+  private async assertLiveIdentity(
+    options: AccountSignerOperationOptions
+  ): Promise<{
     bridge: Nip07Bridge
     pubkey: string
   }> {
-    this.assertAvailableSession()
+    this.assertOperationCurrent(options)
 
     const expectedPubkey = this.sessionPubkey ?? (await this.getPublicKey())
     if (!expectedPubkey) {
@@ -255,7 +286,8 @@ export class Nip07SessionSigner implements NostrKeySigner {
       )
     }
 
-    const live = await this.readReadyBridge()
+    const live = await this.readReadyBridge(options)
+    this.assertOperationCurrent(options)
     if (live.pubkey !== expectedPubkey) {
       return this.invalidate(
         "identity_changed",
