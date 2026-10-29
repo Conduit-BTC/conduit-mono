@@ -21,6 +21,7 @@ import {
   retryOrganizerStockOrderHandout,
   useAuth,
   type CheckoutSparkOrganizerCommerceProof,
+  type CheckoutSparkNativeTreasuryHistoryDiagnostic,
   type CheckoutSparkOrganizerRecoveryAuthority,
   type CheckoutSparkOrganizerRecoveryReadDetails,
   type CheckoutSparkOrganizerRecoverySelection,
@@ -125,6 +126,9 @@ export function EventMarketOrganizerPickupForm(props: {
   error?: string
   notice?: string
   diagnostic?: CheckoutSparkOrganizerRoutingDiagnostic
+  inspectingHistory?: boolean
+  historyDiagnostic?: CheckoutSparkNativeTreasuryHistoryDiagnostic
+  onInspectHistory?(): void
   onClaimCode(value: string): void
   onContinue(): void
   onPause(): void
@@ -206,7 +210,11 @@ export function EventMarketOrganizerPickupForm(props: {
           handing out goods.
         </p>
       )}
-      {props.routing ? (
+      {props.inspectingHistory ? (
+        <p role="status" className="text-sm">
+          Checking the saved Conduit transfer history. No payment is being sent.
+        </p>
+      ) : props.routing ? (
         <>
           {props.free ? (
             <p role="status" className="text-sm">
@@ -316,6 +324,35 @@ export function EventMarketOrganizerPickupForm(props: {
           {props.error}
         </p>
       ) : null}
+      {!props.free && props.onInspectHistory ? (
+        <details className="text-sm text-[var(--text-secondary)]">
+          <summary>Conduit transfer inspection</summary>
+          <p className="mt-2">
+            Read only the existing checkout's bounded sender history. This does
+            not send a payment, change its saved status or authorize a retry.
+            Missing history does not prove that a payment was never sent.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-2"
+            disabled={
+              props.routing ||
+              props.inspectingHistory ||
+              props.waitingForBuyer ||
+              props.historyReady === false
+            }
+            onClick={props.onInspectHistory}
+          >
+            Inspect saved Conduit transfer
+          </Button>
+          {props.historyDiagnostic ? (
+            <p role="status" className="mt-2">
+              {nativeHistoryDescription(props.historyDiagnostic)}
+            </p>
+          ) : null}
+        </details>
+      ) : null}
       {props.diagnostic ? (
         <details className="text-sm text-[var(--text-secondary)]">
           <summary>Recovery check details</summary>
@@ -364,6 +401,29 @@ export function EventMarketOrganizerPickupForm(props: {
   )
 }
 
+function nativeHistoryDescription(
+  value: CheckoutSparkNativeTreasuryHistoryDiagnostic
+): string {
+  switch (value) {
+    case "exact_commit_and_finalized_invoice":
+      return "Exact sender commitment and finalized invoice observed. Receiver claim and wallet cleanup remain separate; this check changed no saved status."
+    case "history_commit_invoice_unresolved":
+      return "Sender history shows commitment, but the exact invoice check is unresolved. Keep this payment held; do not send again."
+    case "exact_pending":
+      return "The exact transfer is still pending. No new payment was sent."
+    case "exact_returned":
+      return "The exact transfer has a terminal return or failure. This does not prove spendable funds or authorize a retry."
+    case "no_exact_match_in_bounded_history":
+      return "No exact transfer was found in this bounded history read. The payment remains unresolved; do not send again."
+    case "multiple_matches":
+      return "More than one transfer matched the frozen invoice. Reconciliation is required; do not send again."
+    case "conflicting":
+      return "The exact provider evidence conflicts. Keep this payment held; do not send again."
+    default:
+      return "The exact history check could not be completed. No payment or saved status was changed."
+  }
+}
+
 export function EventMarketOrganizerPickupCard(props: {
   authority: EventMarketOrganizerPurchaseAuthority
   authenticatedPubkey: string
@@ -375,6 +435,16 @@ export function EventMarketOrganizerPickupCard(props: {
     useState<CheckoutSparkOrganizerCommerceProof | null>(null)
   const [claimCode, setClaimCode] = useState("")
   const [routing, setRouting] = useState(false)
+  const [inspectingHistory, setInspectingHistory] = useState(false)
+  const [historyDiagnostic, setHistoryDiagnostic] = useState<
+    | {
+        authority: EventMarketOrganizerPurchaseAuthority
+        authenticatedPubkey: string
+        authGeneration: number
+        value: CheckoutSparkNativeTreasuryHistoryDiagnostic
+      }
+    | undefined
+  >()
   const [error, setError] = useState("")
   const [diagnostic, setDiagnostic] =
     useState<CheckoutSparkOrganizerRoutingDiagnostic | null>(null)
@@ -383,6 +453,16 @@ export function EventMarketOrganizerPickupCard(props: {
   const running = useRef(false),
     paused = useRef(false)
   const mounted = useRef(false)
+  const inspectionScope = useRef({
+    authority: props.authority,
+    pubkey: props.authenticatedPubkey,
+    authGeneration,
+  })
+  inspectionScope.current = {
+    authority: props.authority,
+    pubkey: props.authenticatedPubkey,
+    authGeneration,
+  }
   useEffect(() => {
     mounted.current = true
     return () => {
@@ -466,6 +546,50 @@ export function EventMarketOrganizerPickupCard(props: {
       shouldContinue: current,
     }
   }
+  async function inspectHistory() {
+    if (running.current || !purchase || purchase.kind !== "routed") return
+    const scope = inspectionScope.current
+    const inspectionCurrent = () =>
+      mounted.current &&
+      current() &&
+      inspectionScope.current.authority === scope.authority &&
+      inspectionScope.current.pubkey === scope.pubkey &&
+      inspectionScope.current.authGeneration === scope.authGeneration
+    running.current = true
+    paused.current = false
+    props.onBusy?.(true)
+    setInspectingHistory(true)
+    setHistoryDiagnostic(undefined)
+    const recordResult = (
+      value: CheckoutSparkNativeTreasuryHistoryDiagnostic
+    ) => {
+      if (inspectionCurrent())
+        setHistoryDiagnostic({
+          authority: scope.authority,
+          authenticatedPubkey: scope.pubkey,
+          authGeneration: scope.authGeneration,
+          value,
+        })
+    }
+    try {
+      const input = session()
+      const { inspectCheckoutSparkOrganizerNativeHistory } =
+        await import("../lib/checkout-spark-organizer-history")
+      if (!inspectionCurrent()) return
+      const result = await inspectCheckoutSparkOrganizerNativeHistory({
+        ...input,
+        authority: scope.authority as CheckoutSparkOrganizerRecoveryAuthority,
+        shouldContinue: inspectionCurrent,
+      })
+      recordResult(result)
+    } catch {
+      recordResult("unavailable")
+    } finally {
+      running.current = false
+      if (mounted.current) setInspectingHistory(false)
+      props.onBusy?.(false)
+    }
+  }
   async function run(action: "route" | "handout" | "retry") {
     if (running.current || !purchase) return
     running.current = true
@@ -474,6 +598,7 @@ export function EventMarketOrganizerPickupCard(props: {
     setRouting(true)
     setError("")
     setDiagnostic(null)
+    setHistoryDiagnostic(undefined)
     setNotice("")
     setWaitingReason(undefined)
     try {
@@ -590,6 +715,17 @@ export function EventMarketOrganizerPickupCard(props: {
       }
       notice={notice}
       diagnostic={diagnostic ?? undefined}
+      inspectingHistory={inspectingHistory}
+      historyDiagnostic={
+        historyDiagnostic?.authority === props.authority &&
+        historyDiagnostic.authenticatedPubkey === props.authenticatedPubkey &&
+        historyDiagnostic.authGeneration === authGeneration
+          ? historyDiagnostic.value
+          : undefined
+      }
+      onInspectHistory={
+        purchase.kind === "routed" ? () => void inspectHistory() : undefined
+      }
       onClaimCode={setClaimCode}
       onContinue={() => void run("route")}
       onPause={() => {
