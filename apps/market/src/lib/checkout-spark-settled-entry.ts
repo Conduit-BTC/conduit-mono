@@ -89,7 +89,7 @@ export interface PrepareCheckoutSparkSettledOrderInput {
   guestContact?: OrderSchema["guestContact"]
   contactFreePickup?: OrderSchema["contactFreePickup"]
   shippingAddress?: OrderSchema["shippingAddress"]
-  relayAuthMethod?: "nip07" | "nip46"
+  relayAuthMethod?: "nip07" | "nip46" | "local"
   merchantPublicZapPolicy?: CheckoutSparkMerchantPublicZapPolicy
   anonymousPublicZap?: boolean
 }
@@ -667,7 +667,7 @@ export async function resumeCheckoutSparkSettledOrder(
     checkoutId: string
     buyer: CheckoutSparkRecoverySigningIdentity
     shouldContinue: () => boolean
-    relayAuthMethod?: "nip07" | "nip46"
+    relayAuthMethod?: "nip07" | "nip46" | "local"
   },
   dependencies: {
     now?: () => number

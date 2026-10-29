@@ -43,6 +43,7 @@ import {
   safePlaywrightRunnerError,
   serializeSmokeEvidence,
 } from "../scripts/ci/playwright_smoke_reporter"
+import { classifyStockAcceptanceError } from "../e2e/helpers/stock-acceptance-diagnostics"
 
 describe("event stock control failure diagnostic privacy", () => {
   const file = "e2e/event-market.playwright.ts"
@@ -319,6 +320,85 @@ describe("event prepaid confirmation diagnostic privacy", () => {
 })
 
 describe("privacy-safe Playwright smoke reporter", () => {
+  it("retains only bounded stock acceptance observations for the owning test file", () => {
+    const file = "e2e/event-market.playwright.ts"
+    const privateValue = "private-" + crypto.randomUUID()
+    const safe = {
+      phase: "failure",
+      errorCategory: "timeout",
+      disabledDuringClick: true,
+      obstructedDuringClick: false,
+      detachedDuringClick: false,
+      observationAvailable: true,
+      pageClosed: false,
+      matchingButtons: 2,
+      enabledButtons: 0,
+      visibleButtons: 2,
+      inViewportButtons: 1,
+      unobstructedButtons: 1,
+    }
+    const annotations = [
+      {
+        type: "smoke:event-stock-acceptance",
+        description: JSON.stringify({
+          ...safe,
+          message: privateValue,
+          url: privateValue,
+        }),
+      },
+    ]
+    const retained = safeSmokeDiagnostics(file, annotations)
+    expect(retained).toEqual([{ kind: "event-stock-acceptance", ...safe }])
+    expect(safeRetainedSmokeDiagnostics(file, retained)).toEqual(retained)
+    expect(
+      safeSmokeDiagnostics("e2e/commerce.playwright.ts", annotations)
+    ).toEqual([])
+    expect(JSON.stringify(retained)).not.toContain(privateValue)
+    const rejected = safeSmokeDiagnostics(file, [
+      {
+        type: "smoke:event-stock-acceptance",
+        description: JSON.stringify({
+          phase: privateValue,
+          errorCategory: privateValue,
+          matchingButtons: 32769,
+          enabledButtons: privateValue,
+          pageClosed: privateValue,
+        }),
+      },
+    ])
+    expect(rejected).toEqual([])
+  })
+
+  it("classifies stock click failures without retaining error text", () => {
+    const privateValue = "private-" + crypto.randomUUID()
+    const timeout = new Error(
+      `locator.click: ${privateValue}\nelement is not enabled\nintercepts pointer events\nelement was detached`
+    )
+    timeout.name = "TimeoutError"
+    expect(classifyStockAcceptanceError(timeout)).toEqual({
+      errorCategory: "timeout",
+      disabledDuringClick: true,
+      obstructedDuringClick: true,
+      detachedDuringClick: true,
+    })
+    expect(
+      classifyStockAcceptanceError(
+        new Error(`strict mode violation: ${privateValue}`)
+      ).errorCategory
+    ).toBe("strict_locator")
+    expect(
+      classifyStockAcceptanceError(
+        new Error(`Target page has been closed ${privateValue}`)
+      ).errorCategory
+    ).toBe("target_closed")
+    expect(classifyStockAcceptanceError(privateValue).errorCategory).toBe(
+      "other"
+    )
+    expect(JSON.stringify(classifyStockAcceptanceError(timeout))).not.toContain(
+      privateValue
+    )
+  })
+
   // The regular unit job does not install browser binaries. Run this bounded
   // DOM control in a Playwright-capable environment with CONDUIT_DOM_CONTROL=1.
   const browserIt = process.env.CONDUIT_DOM_CONTROL === "1" ? it : it.skip

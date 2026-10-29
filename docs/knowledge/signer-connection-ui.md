@@ -1,12 +1,28 @@
-# Mobile signer connection UI
+# Sign-in UI
 
-Market and Merchant share the sign-in panel in `@conduit/ui`. It presents browser
-signers and app choices before protocol terminology while preserving standard
-NIP-07 and NIP-46 connections.
+Market and Merchant share the sign-in panel in `@conduit/ui`. Its heading combines
+"Sign in to" with the app's Conduit logo; Merchant uses its flipped mark. Market's
+header action reads "Sign In". The preferred, always-expanded Secret Key card has
+a masked input, a clipboard button and a Sign In action. The extension and remote
+choices remain secondary. One nstart.me link provides identity setup; compact
+benefits describe each app without protocol terminology.
+
+Existing-key sign-in is visible in ordinary browser tabs and installed apps in
+preview and production. The uncontrolled input passes its element directly to
+the contained core import and clipboard boundary. Clipboard text never enters
+React state or application callbacks. Paste reads only after a user click and
+fills the field without submitting. Permission denial, unavailable clipboard APIs
+or empty text preserve the field and offer direct paste. Dismissal, editing,
+disabling or submitting invalidates a pending read so its result cannot refill
+a closed field or overwrite subsequent input.
+
+A successful import restores on later visits; explicit sign-out removes the key
+from this storage partition. Market, Merchant, other browsers and installed apps
+may need separate sign-ins. Clearing site data requires the user's own backup.
 
 ## Platform choices
 
-- iPhone and iPad: "Connect with Clave" preserves the established one-tap
+- iPhone and iPad: "Sign in with Clave" preserves the established native
   Universal Link setup. Conduit prepares a standard `nostrconnect://` request,
   including its client metadata and requested permissions, then percent-encodes
   that request once in `https://clave.casa/connect/?uri=...`. The Universal Link
@@ -16,26 +32,25 @@ NIP-07 and NIP-46 connections.
   lifetime, so a signer-issued `bunker://`
   connection remains the explicit same-device fallback when the direct handoff
   misses its acknowledgement. QR and copy remain cross-device fallbacks.
-- NIP-07 is the first visible mobile action. A detected signer appears as
-  "Continue with browser signer"; Clave or Amber is the second visible action.
-  On iOS, browser signers include Safari extensions such as Nostash;
+- "Sign in with Extension" follows the Secret Key card on every platform.
   Conduit checks `window.nostr` capabilities rather than identifying a brand.
-  If passive detection misses a late or newly enabled extension, "Use a Safari
-  extension" remains available and checks again when tapped. Choosing it cancels
-  an owned NIP-46 pairing before starting NIP-07. A remembered NIP-07 session
-  uses its reconnect action as the first choice, without a duplicate browser
-  signer button. Clave or Amber stays visible as the other choice.
-- Android: Amber uses a Chrome-compatible NIP-46 intent with the explicit package
+  The action checks again on click when passive detection misses a late or newly
+  enabled extension. Choosing it cancels an owned NIP-46 pairing before starting
+  NIP-07. A remembered NIP-07 session uses its reconnect action without a duplicate
+  extension button. Clave or Amber remains available as the third choice.
+- Android: "Sign in with Amber" uses a Chrome-compatible NIP-46 intent with the explicit package
   `com.greenart7c3.nostrsigner`. The request query is preserved byte-for-byte and
   the install link goes to F-Droid. No connection data is placed in an install
   fallback. NIP-55 is not exposed by this web UI; a native Android wrapper is a
   prerequisite for a meaningful same-device NIP-55 integration.
-- Desktop: browser extension access and manual remote connections remain available.
-  Unknown mobile environments retain manual connections without guessing an app.
+- Desktop and unknown mobile platforms: "Remote Sign In" reveals the existing
+  QR, copy-link and bunker options only when clicked. Closing it cancels owned
+  pairing work. Unknown mobile environments do not guess an app.
 - A remembered remote session offers only reconnect or forget. Starting a fresh
   pair requires intentionally forgetting the remembered session first.
 
-"Other ways to connect" keeps QR, copy, and bunker entry collapsed on mobile.
+On mobile, "Other ways to connect" becomes available after an app attempt or
+error and keeps QR, copy, and bunker entry collapsed until selected.
 The app choice handles preparation until its link is ready, with no extra setup
 button or repeated key-custody text. When preparation starts from the app button,
 the ready link says "Open Clave" or "Open Amber" and receives focus; its status
@@ -49,17 +64,21 @@ any compatible signer; the protocol does not attest app brands.
 
 ## Preparation and cancellation
 
-The iOS and Android panels prepare one request on their initial eligible mount.
-Preparation is suppressed during restoration or another operation, for a remembered
+The iOS and Android panels prepare one request on their initial eligible mount
+when local sign-in is unavailable. With nsec available, remote pairing starts
+only when chosen so it does not block local import. Preparation is also
+suppressed during restoration or another operation, for a remembered
 session, or while an error or existing request is present. The Clave Universal Link
 and Amber intent remain native anchors so the user's tap can open the app without
 an asynchronous redirect. Preparing a URI does not prove the signer is installed
-or the relay is ready. The Clave mark stays on the app action while preparing and
+or the relay is ready. The app action uses a phone icon while preparing and
 after cancellation. Mobile "Cancel pairing" appears only after the user starts
 or opens a pairing; background preparation does not add a cancel action to the
 initial choices.
 
-The panel owns its generated and pasted-bunker attempts. Closing it, canceling,
+The panel owns its generated, pasted-bunker and local-import attempts. Local
+import uses the same attempt owner synchronously, before awaiting locks or
+storage; dismissal aborts the exact pending attempt and rolls back its candidate. Closing it, canceling,
 or changing to bunker entry cancels owned work.
 StrictMode cleanup and late promise settlement cannot cancel a replacement
 attempt. Authentication state confirms success: a canceled core promise may
@@ -83,7 +102,7 @@ session is established, pairing-path UI no longer controls transport: the shared
 NIP-46 session health, relay negotiation, foreground recovery, and explicit
 reconnect model apply.
 
-The UI never asks users to transfer private keys. Browser app-opening settings and
+External signer paths never ask users to transfer private keys. Browser app-opening settings and
 missing apps have copy/manual/install recovery; there is no install detection.
 
 ## Evidence and required QA

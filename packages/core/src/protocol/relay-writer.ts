@@ -1,3 +1,4 @@
+import { isAccountAuthMethod } from "./auth-session"
 import { config } from "../config"
 import { getConfiguredIsolatedE2eRelayUrl } from "./relay-settings"
 import type { NostrEventSigner } from "./nostr-event-signer"
@@ -101,8 +102,7 @@ export function publishSignedEventFrameToRelay(input: {
     (!expectedAuthPubkey ||
       typeof authorization.sessionScope !== "object" ||
       authorization.sessionScope === null ||
-      (authorization.signer.authMethod !== "nip07" &&
-        authorization.signer.authMethod !== "nip46"))
+      !isAccountAuthMethod(authorization.signer.authMethod))
   ) {
     return Promise.resolve("timed_out")
   }

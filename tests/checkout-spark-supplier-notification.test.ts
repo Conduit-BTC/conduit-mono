@@ -79,7 +79,7 @@ const supplierSigner = plainTestSigner(
 )
 
 function accountSigner(
-  authMethod: "nip07" | "nip46",
+  authMethod: "nip07" | "nip46" | "local",
   hasAuthority: () => boolean,
   revision = "synthetic-revision"
 ) {
@@ -466,7 +466,7 @@ describe("verified supplier payment notifications", () => {
     })
   }
 
-  for (const authMethod of ["nip07", "nip46"] as const) {
+  for (const authMethod of ["nip07", "nip46", "local"] as const) {
     it(`enables account-bound NIP-42 writes for the active ${authMethod} signer`, async () => {
       const f = await fixture()
       let active = true

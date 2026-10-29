@@ -210,6 +210,9 @@ async function connectRemoteSigner(
   page: Page,
   remoteSignerPubkey: string
 ): Promise<void> {
+  await page
+    .getByRole("button", { name: "Remote Sign In", exact: true })
+    .click()
   await page.getByRole("tab", { name: "Paste bunker", exact: true }).click()
   await page
     .getByRole("textbox", { name: "Remote signer bunker URL" })
@@ -800,7 +803,7 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
         owner: buyerPubkey,
       }
     )
-    await page.getByRole("button", { name: "Connect", exact: true }).click()
+    await page.getByRole("button", { name: "Sign In", exact: true }).click()
     await connectRemoteSigner(page, getPublicKey(remoteSignerSecret))
     await expect(page.getByText(title, { exact: true })).toBeVisible({
       timeout: 20_000,
@@ -839,7 +842,7 @@ test("a recoverable remote signer error keeps the signed-in event audience @mark
     })
     expect(JSON.parse(retainedSession).userPubkey).toBe(buyerPubkey)
     await expect(
-      page.getByRole("button", { name: "Connect", exact: true })
+      page.getByRole("button", { name: "Sign In", exact: true })
     ).toBeVisible()
     await expect(
       page.getByRole("button", { name: "Refresh events", exact: true })

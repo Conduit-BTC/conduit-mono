@@ -1,11 +1,12 @@
+import { Smartphone } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { Button } from "./Button"
-import { ClaveConnectButton, ClaveMark } from "./ClaveConnectButton"
+import { ClaveConnectButton } from "./ClaveConnectButton"
 import { AMBER_INSTALL_URL, androidSignerConnectUrl } from "./signer-platform"
 
 export type SignerApp = "clave" | "amber"
 const primaryClassName =
-  "h-12 w-full rounded-[var(--radius-md)] text-base font-semibold"
+  "min-h-12 w-full justify-start gap-3 rounded-[var(--radius-md)] px-4 text-sm font-medium"
 
 export function SignerAppChoices({
   platform,
@@ -43,13 +44,12 @@ export function SignerAppChoices({
         ? `Open ${appName} again`
         : manualStart && nostrConnectUri
           ? `Open ${appName}`
-          : app === "clave"
-            ? "Connect with Clave"
-            : "Use Amber"
+          : `Sign in with ${appName}`
     if (!nostrConnectUri) {
       return (
         <Button
           type="button"
+          variant="outline"
           disabled={connectDisabled}
           onClick={() => {
             setManualStart(true)
@@ -57,7 +57,7 @@ export function SignerAppChoices({
           }}
           className={primaryClassName}
         >
-          {app === "clave" && <ClaveMark />}
+          <Smartphone className="size-5" aria-hidden="true" />
           {connectPending ? `Preparing ${appName}…` : label}
         </Button>
       )
@@ -67,18 +67,20 @@ export function SignerAppChoices({
         <ClaveConnectButton
           nostrConnectUri={nostrConnectUri}
           label={label}
+          secondary
           onClick={() => onSelectApp(app)}
           className={primaryClassName}
         />
       )
     }
     return (
-      <Button asChild className={primaryClassName}>
+      <Button asChild variant="outline" className={primaryClassName}>
         <a
           href={androidSignerConnectUrl(nostrConnectUri)}
           target="_self"
           onClick={() => onSelectApp(app)}
         >
+          <Smartphone className="size-5" aria-hidden="true" />
           {label}
         </a>
       </Button>
@@ -93,7 +95,7 @@ export function SignerAppChoices({
           ? `Ready. Open ${appName} to approve sign-in.`
           : ""}
       </p>
-      {platform === "android" && (
+      {platform === "android" && (manualStart || selectedApp) && (
         <p className="text-center text-sm leading-6 text-[var(--text-secondary)]">
           <a
             className="inline-flex min-h-11 items-center rounded-sm text-primary-400 underline underline-offset-4 focus-visible:outline focus-visible:outline-2"
