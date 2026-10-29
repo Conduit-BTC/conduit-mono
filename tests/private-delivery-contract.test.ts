@@ -481,14 +481,8 @@ describe("private delivery composed contract", () => {
       }
       const signs = fixture.signCalls()
       let current = true
-      let entered!: () => void
-      let release!: () => void
-      const starting = new Promise<void>((resolve) => {
-        entered = resolve
-      })
-      const held = new Promise<void>((resolve) => {
-        release = resolve
-      })
+      const starting = Promise.withResolvers<void>()
+      const held = Promise.withResolvers<void>()
       let publications = 0
       input.shouldContinue = () => current
       __setRelayPublishTestOverrides({
@@ -498,15 +492,15 @@ describe("private delivery composed contract", () => {
           fixture.inboxDeclarationEvidenceRepository,
         publishSignedEventFrameToRelay: async () => {
           publications++
-          entered()
-          await held
+          starting.resolve()
+          await held.promise
           return "acked"
         },
       })
       const operation = publishPrivateMessage(input)
-      await starting
+      await starting.promise
       current = false
-      release()
+      held.resolve()
       const result = await operation
       expect(result.recipientDelivery.successfulRelayUrls).toEqual([
         RECIPIENT_RELAY,
@@ -550,18 +544,12 @@ describe("private delivery composed contract", () => {
       const signs = fixture.signCalls()
       const before = await fixture.database.commerceInboxDeliveries.toArray()
       let current = true
-      let entered!: () => void
-      let release!: () => void
-      const starting = new Promise<void>((resolve) => {
-        entered = resolve
-      })
-      const held = new Promise<void>((resolve) => {
-        release = resolve
-      })
+      const starting = Promise.withResolvers<void>()
+      const held = Promise.withResolvers<void>()
       input.shouldContinue = () => current
       input.onRecipientDeliveryStarting = async () => {
-        entered()
-        await held
+        starting.resolve()
+        await held.promise
       }
       let publications = 0
       input.publishFn = (async (_event, options) => {
@@ -569,9 +557,9 @@ describe("private delivery composed contract", () => {
         return acknowledged(options.exclusiveRelayUrls![0]!)
       }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
       const operation = publishPrivateMessage(input)
-      await starting
+      await starting.promise
       current = false
-      release()
+      held.resolve()
       await expect(operation).rejects.toThrow("signer session changed")
       expect(publications).toBe(0)
       expect(fixture.signCalls()).toBe(signs)
@@ -599,22 +587,16 @@ describe("private delivery composed contract", () => {
     input.rumor = decoded
     input.selfCopy = false
     let current = true
-    let entered!: () => void
-    let release!: () => void
-    const reading = new Promise<void>((resolve) => {
-      entered = resolve
-    })
-    const held = new Promise<void>((resolve) => {
-      release = resolve
-    })
+    const reading = Promise.withResolvers<void>()
+    const held = Promise.withResolvers<void>()
     const table = fixture.database.commerceInboxDeliveries
     const original = table.get.bind(table)
     const lookup = spyOn(table, "get").mockImplementationOnce((async (
       ...args: Parameters<typeof table.get>
     ) => {
       const row = await original(...args)
-      entered()
-      await held
+      reading.resolve()
+      await held.promise
       return row
     }) as typeof table.get)
     let publications = 0
@@ -624,9 +606,9 @@ describe("private delivery composed contract", () => {
       return acknowledged(RECIPIENT_RELAY)
     }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
     const operation = publishPrivateMessage(input)
-    await reading
+    await reading.promise
     current = false
-    release()
+    held.resolve()
     try {
       await expect(operation).rejects.toThrow("signer session changed")
     } finally {
