@@ -21,10 +21,12 @@ function hasSameValue(left: unknown, right: unknown): boolean {
 const appCases = [
   {
     app: "market",
+    appName: "Conduit Market",
     url: `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`,
   },
   {
     app: "merchant",
+    appName: "Conduit Merchant Portal",
     url: `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`,
   },
 ] as const
@@ -134,7 +136,7 @@ test("merchant authenticated route errors retain account recovery actions @merch
   ).toBeVisible()
 })
 
-for (const { app, url } of appCases) {
+for (const { app, appName, url } of appCases) {
   for (const hostileCase of hostileBoundaryCases) {
     test(`${app} route boundary safely handles ${hostileCase} @${app}`, async ({
       page,
@@ -166,7 +168,25 @@ for (const { app, url } of appCases) {
   test(`${app} client-error telemetry covers runtime, boundary, and host gates @${app}`, async ({
     page,
   }) => {
+    // Loading the document and two animation frames do not imply that a lazy
+    // route has mounted its error listeners. Exercise that gap deliberately.
+    let delayedAboutComponents = 0
+    await page.route(
+      (url) =>
+        url.pathname.endsWith("/routes/about.tsx") &&
+        Boolean(url.searchParams.get("tsr-split")?.includes("component")),
+      async (route) => {
+        delayedAboutComponents += 1
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        await route.continue()
+      },
+      { times: 1 }
+    )
     await page.goto(`${url}/about`)
+    await expect(
+      page.getByRole("heading", { name: `About ${appName}`, exact: true })
+    ).toBeVisible()
+    expect(delayedAboutComponents).toBe(1)
     await waitForClientEffects(page)
     await dispatchRuntimeErrors(page)
 
@@ -247,6 +267,9 @@ for (const { app, url } of appCases) {
 
     const disallowedUrl = url.replace("127.0.0.1", "localhost")
     await page.goto(`${disallowedUrl}/about`)
+    await expect(
+      page.getByRole("heading", { name: `About ${appName}`, exact: true })
+    ).toBeVisible()
     await waitForClientEffects(page)
     await dispatchRuntimeErrors(page)
     await waitForClientEffects(page)
