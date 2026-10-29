@@ -234,6 +234,8 @@ import {
 import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
 import { useMerchantPaymentAutomation } from "../hooks/useMerchantPaymentAutomation"
 import { OrderStockPanel } from "../components/OrderStockPanel"
+import { OrderStockHistory } from "../components/OrderStockHistory"
+import { getOrderStockHistory } from "../lib/order-stock-history"
 import {
   confirmMerchantPayment,
   type MerchantPaymentConfirmationInput,
@@ -3960,6 +3962,11 @@ function OrdersWorkspace() {
                         />
                       </div>
                     </section>
+
+                    <OrderStockHistory
+                      key={selectedStockDecisionId}
+                      history={getOrderStockHistory(localStockJournalQuery)}
+                    />
 
                     {merchantOrderState.status === "complete" && (
                       <section className={panelCard}>
