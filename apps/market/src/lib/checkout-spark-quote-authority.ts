@@ -131,6 +131,12 @@ function requireMatchingProduct(
     resolved.stock !== listing.stock ||
     item.stock !== listing.stock ||
     resolved.visibility !== listing.visibility ||
+    Boolean(resolved.eventOnly) !== Boolean(listing.eventOnly) ||
+    Boolean(resolved.eventOnlyMalformed) !==
+      Boolean(listing.eventOnlyMalformed) ||
+    listing.eventOnlyMalformed ||
+    (listing.eventOnly === true &&
+      item.fulfillment?.type !== "event_market_pickup") ||
     resolved.publicZapEnabled !== listing.publicZapEnabled ||
     resolved.zapMessagePolicy !== listing.zapMessagePolicy ||
     resolved.publicZapPolicyKnown !== listing.publicZapPolicyKnown ||

@@ -19,7 +19,6 @@ import {
   getProductListingDelivery,
   getRejectedProductListingDeliveries,
   getStagedProductListingDeliveries,
-  getListingAvailabilityDisplay,
   getProductImageCandidates,
   getProductCardPriceDisplay,
   type SignedPublicNostrEvent,
@@ -75,6 +74,8 @@ import { ProductSupplierAllocationEditor } from "../components/ProductSupplierAl
 import { repairSupersededStagedProductWrite } from "../lib/product-staged-repair"
 import { ProductTagEditor } from "../components/ProductTagEditor"
 import { ProductFulfillmentEditor } from "../components/ProductFulfillmentEditor"
+import { ProductEventOnlyField } from "../components/ProductEventOnlyField"
+import { ListingAvailabilitySummary } from "../components/ListingAvailabilitySummary"
 import { ProductShippingMeasurements } from "../components/ProductShippingMeasurements"
 import {
   SharedVariationMeasurementsToggle,
@@ -170,6 +171,7 @@ import {
   buildProductRemovalDeletionTargets,
   deliverSignedProductWriteBundle,
   getProductPreservedFulfillmentFields,
+  projectProductEventOnlyChoice,
   type ProductPublicationFulfillmentIntent,
   getProductSignerRequestMessage,
   getRelayPublishDiagnosticsError,
@@ -298,6 +300,8 @@ function createEmptyProductForm(
     variations: createEmptyProductVariationForm(),
     currency: shippingPolicy?.currency ?? "USD",
     format: "physical",
+    eventOnly: false,
+    eventOnlyEdited: false,
     fulfillment: "ship",
     futureEventMarketReference: "",
     shippingPricingMode: shippingPolicy ? "weight_table" : "fixed",
@@ -443,6 +447,8 @@ function productToForm(
       ? String(product.shippingDimensionsCm.height)
       : "",
     fulfillment: "preserve",
+    eventOnly: product.eventOnly === true,
+    eventOnlyEdited: false,
     futureEventMarketReference: product.eventMarketRefs?.[0] ?? "",
     shippingCost:
       typeof sourceShippingCost?.amount === "number"
@@ -681,80 +687,6 @@ function getZapPolicyBadge(product: ProductSchema): {
   }
 }
 
-function ListingAvailabilitySummary({
-  item,
-  onEdit,
-}: {
-  item: MerchantProductFamily
-  onEdit?: () => void
-}) {
-  const display = getListingAvailabilityDisplay(item.availability)
-
-  if (item.product.type === "variable" && item.variationForm.supported) {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface-elevated)] px-3 py-2">
-        <StatusPill variant="info" className="text-[10px]">
-          Variable product
-        </StatusPill>
-        <span className="text-xs text-[var(--text-secondary)]">
-          {item.variations.length} variation
-          {item.variations.length === 1 ? "" : "s"}
-        </span>
-      </div>
-    )
-  }
-
-  if (!item.variationForm.supported) {
-    return (
-      <article className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 text-sm text-[var(--warning-text)]">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="font-semibold text-[var(--text-primary)]">
-              {item.product.title}
-            </div>
-            <p className="mt-2 leading-6">
-              {item.variationForm.reason ??
-                "This variation family cannot be edited safely."}
-            </p>
-          </div>
-          <StatusPill variant="warning" className="text-[10px]">
-            Read-only
-          </StatusPill>
-        </div>
-        <p className="mt-3 text-xs leading-5 text-[var(--text-secondary)]">
-          You can delete the known listing family, but editing is disabled to
-          avoid losing unsupported option data.
-        </p>
-      </article>
-    )
-  }
-
-  return (
-    <article className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4 text-sm text-[var(--warning-text)]">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="font-semibold text-[var(--text-primary)]">
-            {item.product.title}
-          </div>
-          <div className="mt-2 leading-6">{display.summary}</div>
-          <p className="mt-2 text-xs leading-5 text-[var(--text-secondary)]">
-            {display.merchantAction}
-          </p>
-        </div>
-        <StatusPill variant={display.tone} className="text-[10px]">
-          {display.label}
-        </StatusPill>
-      </div>
-
-      {onEdit && (
-        <Button variant="outline" size="sm" className="mt-3" onClick={onEdit}>
-          Fix listing
-        </Button>
-      )}
-    </article>
-  )
-}
-
 async function fetchCachedMerchantProducts(
   merchantPubkey: string
 ): Promise<CommerceResult<MerchantProduct[]>> {
@@ -862,7 +794,13 @@ async function publishProduct(
   } =
     preserveFulfillment && existing
       ? {
-          intent: { kind: "preserve_existing", baseline: existing.product },
+          intent: {
+            kind: "preserve_existing",
+            baseline: existing.product,
+            ...(form.eventOnlyEdited
+              ? { eventOnlyChange: form.eventOnly === true }
+              : {}),
+          },
           authoringCountries: [],
           metadata: {},
         }
@@ -943,10 +881,23 @@ async function publishProduct(
     ...(!isDigital ? getProductShippingMeasurements(form) : {}),
     ...shippingCost,
     ...shippingMetadata,
-    visibility: existing?.product.visibility ?? "public",
     ...(preserveFulfillment && existing
       ? getProductPreservedFulfillmentFields(existing.product)
       : {}),
+    ...projectProductEventOnlyChoice(
+      {
+        format:
+          preserveFulfillment && existing
+            ? existing.product.format
+            : isDigital
+              ? "digital"
+              : "physical",
+        visibility: existing?.product.visibility ?? "public",
+        eventOnly: existing?.product.eventOnly,
+        eventOnlyMalformed: existing?.product.eventOnlyMalformed,
+      },
+      form.eventOnlyEdited ? form.eventOnly === true : undefined
+    ),
     eventMarketRefs: existing?.product.eventMarketRefs,
     stock: parseProductStockInput(form.stock),
     images: prepareProductImages(form.images),
@@ -3639,6 +3590,21 @@ function ProductsPage() {
                 />
               </div>
 
+              <ProductEventOnlyField
+                checked={form.eventOnly === true}
+                format={form.format}
+                malformed={
+                  !form.eventOnlyEdited &&
+                  editing?.product.eventOnlyMalformed === true
+                }
+                onChange={(eventOnly) =>
+                  setForm((previous) => ({
+                    ...previous,
+                    eventOnly,
+                    eventOnlyEdited: true,
+                  }))
+                }
+              />
               <div className="grid gap-3 sm:grid-cols-4">
                 <div className="grid gap-1">
                   <Label htmlFor="product-price">

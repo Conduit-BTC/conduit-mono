@@ -1025,6 +1025,76 @@ function createMerchantTemplateProductEvent(createdAt: number): SignedEvent {
   })
 }
 
+test("Merchant explicitly enables and disables event-only selling without changing product identity @merchant @commerce @occurrence-orders", async ({
+  page,
+}) => {
+  test.setTimeout(120_000)
+  const relay = createRelayHarness()
+  await installSyntheticEnvironment(page, relay)
+  relay.seed(
+    createMerchantTemplateProductEvent(Math.floor(Date.now() / 1000) - 10)
+  )
+  await gotoAs(page, merchantUrl, "/network", "merchant")
+  await enablePrivateInbox(page)
+  await page.goto(`${merchantUrl}/products`)
+  for (const choice of [true, undefined, false]) {
+    const before = uniquePublishedEvents(relay.publications).filter(
+      (event) => event.kind === 30402
+    ).length
+    const edit = page.getByRole("button", { name: "Edit", exact: true }).first()
+    await expect(edit).toBeVisible()
+    await edit.evaluate((element) =>
+      element.scrollIntoView({ behavior: "instant", block: "center" })
+    )
+    await edit.click()
+    const dialog = page.getByRole("dialog", {
+      name: "Edit listing",
+      exact: true,
+    })
+    await expect(dialog).toBeVisible()
+    const eventOnly = dialog.getByRole("checkbox", {
+      name: "Sell only at events",
+      exact: true,
+    })
+    await expect(eventOnly).toBeChecked({ checked: choice !== true })
+    if (choice === undefined) {
+      await dialog
+        .getByLabel("Title", { exact: true })
+        .fill("Event-only mug revised")
+    } else {
+      await eventOnly.setChecked(choice)
+    }
+    await dialog
+      .getByRole("button", { name: "Save changes", exact: true })
+      .click()
+    await expect
+      .poll(
+        () =>
+          uniquePublishedEvents(relay.publications).filter(
+            (event) => event.kind === 30402
+          ).length
+      )
+      .toBe(before + 1)
+    await expect(dialog).toBeHidden()
+    const signed = uniquePublishedEvents(relay.publications)
+      .filter((event) => event.kind === 30402)
+      .at(-1)!
+    expect(eventCoordinate(signed)).toBe(
+      `30402:${MERCHANT_PUBKEY}:${MERCHANT_TEMPLATE_D_TAG}`
+    )
+    expect(
+      signed.tags.some((tag) => tag[0] === "visibility" && tag[1] === "hidden")
+    ).toBe(choice !== false)
+    expect(
+      signed.tags.some(
+        (tag) => tag[0] === "conduit_event_only" && tag[1] === "1"
+      )
+    ).toBe(choice !== false)
+    expect(signed.tags.find((tag) => tag[0] === "stock")?.[1]).toBe("9")
+    await page.reload()
+  }
+})
+
 function seedHistoricalEvent(relay: RelayHarness, title: string) {
   const createdAt = Math.floor(Date.now() / 1000) - 100
   const calendar = signEvent(ORGANIZER_SECRET, {

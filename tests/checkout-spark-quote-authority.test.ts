@@ -388,105 +388,126 @@ describe("checkout Spark quote authority", () => {
     ).toThrow("Current signed checkout evidence changed")
   })
 
-  it("freezes one current signed Event Market graph into an exact Spark quote", async () => {
-    const event = await createEventMarketCheckoutFixture()
-    const digital = product()
-    const eventItem = { ...event.item, quantity: 2 }
-    const items = [eventItem]
-    const authorization = await authorizeCurrentCheckoutItems({
-      mode: "direct_payment",
-      reviewedItems: items,
-      rawItems: items,
-      refreshedProducts: [event.product],
-      futureEventMarketDependencies: event.futureEventMarketDependencies,
-      readShippingOptions: async () => {
-        throw new Error("No shipping option required")
-      },
-      authorizePickupHandlers: async () => undefined,
-    })
-    if (authorization.status !== "ok") throw new Error("Expected checkout")
-    const bundle = buildCheckoutSparkQuoteAuthority({
-      authorization,
-      rateInput: null,
-    })
-    expect(bundle.lines).toEqual([
-      {
-        productCoordinate: event.product.id,
-        productEventId: event.product.sourceEventId,
-        merchantPubkey: event.merchant,
-        quantity: 2,
-      },
-    ])
-    expect(bundle.products.map((listing) => listing.id)).toEqual([
-      event.product.id,
-    ])
-    expect(bundle.pricing.totalSats).toBe(200)
-    expect(bundle.eventMarket).toMatchObject({
-      marketEventId: event.fulfillment.market.eventId,
-      occurrenceEventId: event.fulfillment.calendar.eventId,
-      organizerFeeSats: 0,
-      organizerFee: { state: "absent" },
-    })
-    expect(
-      bundle.pickupSourceEvents?.map((source) => source.id).sort()
-    ).toEqual(event.events.map((source) => source.id).sort())
-    expect(Object.isFrozen(bundle.eventMarket)).toBe(true)
-    expect(Object.isFrozen(bundle.pickupSourceEvents)).toBe(true)
-    const evidence = buildCheckoutSparkCommerceEvidence(bundle)
-    expect(evidence.lines[0]).toEqual({
-      ...bundle.lines[0],
-      unitMerchandiseSats: 100,
-      unitShippingSats: 0,
-    })
-    expect(evidence.commerceTotalSats).toBe(200)
-    expect(() =>
-      buildCheckoutSparkQuoteAuthority({
-        authorization: {
-          ...authorization,
-          items: [
-            ...authorization.items,
-            { ...createCartItemFromProduct(digital), quantity: 1 },
-          ],
-          listingReadProducts: [event.product, digital],
-          fulfillmentResolvedProducts: [event.product, digital],
+  it.each([false, true])(
+    "freezes one current signed Event Market graph into an exact Spark quote (event-only: %s)",
+    async (eventOnly) => {
+      const event = await createEventMarketCheckoutFixture({ eventOnly })
+      const digital = product()
+      const eventItem = { ...event.item, quantity: 2 }
+      const items = [eventItem]
+      const authorization = await authorizeCurrentCheckoutItems({
+        mode: "direct_payment",
+        reviewedItems: items,
+        rawItems: items,
+        refreshedProducts: [event.product],
+        futureEventMarketDependencies: event.futureEventMarketDependencies,
+        readShippingOptions: async () => {
+          throw new Error("No shipping option required")
         },
+        authorizePickupHandlers: async () => undefined,
+      })
+      if (authorization.status !== "ok") throw new Error("Expected checkout")
+      const bundle = buildCheckoutSparkQuoteAuthority({
+        authorization,
         rateInput: null,
       })
-    ).toThrow()
-
-    for (const fulfillment of [
-      {
-        ...event.fulfillment,
-        product: { ...event.fulfillment.product, eventId: "7".repeat(64) },
-      },
-      { ...event.fulfillment, payeePubkey: event.organizer },
-      { ...event.fulfillment, assignment: "Invented table" },
-      {
-        ...event.fulfillment,
-        grant: { ...event.fulfillment.grant, ancestryEventIds: [] },
-      },
-      {
-        ...event.fulfillment,
-        market: {
-          ...event.fulfillment.market,
-          signedEvent: {
-            ...event.fulfillment.market.signedEvent,
-            content: "Altered after signing",
-          },
+      expect(bundle.lines).toEqual([
+        {
+          productCoordinate: event.product.id,
+          productEventId: event.product.sourceEventId,
+          merchantPubkey: event.merchant,
+          quantity: 2,
         },
-      },
-    ]) {
+      ])
+      expect(bundle.products.map((listing) => listing.id)).toEqual([
+        event.product.id,
+      ])
+      expect(bundle.pricing.totalSats).toBe(200)
+      expect(bundle.eventMarket).toMatchObject({
+        marketEventId: event.fulfillment.market.eventId,
+        occurrenceEventId: event.fulfillment.calendar.eventId,
+        organizerFeeSats: 0,
+        organizerFee: { state: "absent" },
+      })
+      expect(
+        bundle.pickupSourceEvents?.map((source) => source.id).sort()
+      ).toEqual(event.events.map((source) => source.id).sort())
+      expect(Object.isFrozen(bundle.eventMarket)).toBe(true)
+      expect(Object.isFrozen(bundle.pickupSourceEvents)).toBe(true)
+      const evidence = buildCheckoutSparkCommerceEvidence(bundle)
+      expect(evidence.lines[0]).toEqual({
+        ...bundle.lines[0],
+        unitMerchandiseSats: 100,
+        unitShippingSats: 0,
+      })
+      expect(evidence.commerceTotalSats).toBe(200)
+      if (eventOnly) {
+        expect(event.product.eventOnly).toBe(true)
+        const ordinary = {
+          ...eventItem,
+          fulfillment: { type: "shipping" as const },
+        }
+        expect(
+          (
+            await authorizeCurrentCheckoutItems({
+              mode: "direct_payment",
+              reviewedItems: [ordinary],
+              rawItems: [ordinary],
+              refreshedProducts: [event.product],
+              readShippingOptions: async () => [],
+            })
+          ).status
+        ).toBe("changed")
+      }
       expect(() =>
         buildCheckoutSparkQuoteAuthority({
           authorization: {
             ...authorization,
-            items: [{ ...authorization.items[0]!, fulfillment }],
+            items: [
+              ...authorization.items,
+              { ...createCartItemFromProduct(digital), quantity: 1 },
+            ],
+            listingReadProducts: [event.product, digital],
+            fulfillmentResolvedProducts: [event.product, digital],
           },
           rateInput: null,
         })
-      ).toThrow("Current signed checkout evidence changed")
+      ).toThrow()
+
+      for (const fulfillment of [
+        {
+          ...event.fulfillment,
+          product: { ...event.fulfillment.product, eventId: "7".repeat(64) },
+        },
+        { ...event.fulfillment, payeePubkey: event.organizer },
+        { ...event.fulfillment, assignment: "Invented table" },
+        {
+          ...event.fulfillment,
+          grant: { ...event.fulfillment.grant, ancestryEventIds: [] },
+        },
+        {
+          ...event.fulfillment,
+          market: {
+            ...event.fulfillment.market,
+            signedEvent: {
+              ...event.fulfillment.market.signedEvent,
+              content: "Altered after signing",
+            },
+          },
+        },
+      ]) {
+        expect(() =>
+          buildCheckoutSparkQuoteAuthority({
+            authorization: {
+              ...authorization,
+              items: [{ ...authorization.items[0]!, fulfillment }],
+            },
+            rateInput: null,
+          })
+        ).toThrow("Current signed checkout evidence changed")
+      }
     }
-  })
+  )
 
   it("retains a positive signed organizer minimum on free goods without inventing a product charge", async () => {
     const event = await createEventMarketCheckoutFixture({

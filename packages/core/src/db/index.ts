@@ -159,6 +159,8 @@ export interface CachedProduct {
   shippingOptionRefs?: ProductShippingOptionReference[]
   collectionRefs?: string[]
   eventMarketRefs?: string[]
+  eventOnly?: boolean
+  eventOnlyMalformed?: boolean
   shippingCountries?: string[]
   shippingCountryRules?: Array<{
     code: string

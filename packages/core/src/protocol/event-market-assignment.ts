@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import type { ProductSchema } from "../schemas"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import {
   parseAddressableCoordinate,
   type EventMarketEventDraft,
@@ -429,7 +430,7 @@ export function isEventMarketAssignmentProductSuitable(input: {
       !organizerHandoff) ||
     product.id !== assignment.productCoordinate ||
     product.pubkey !== assignment.merchantPubkey ||
-    product.visibility !== "public" ||
+    !hasEventMarketListingVisibility(product) ||
     product.type === "variable" ||
     (assignment.inventory.mode === "tracked"
       ? product.stock === undefined ||
@@ -448,7 +449,7 @@ export function isEventMarketAssignmentProductSuitable(input: {
       parentProduct?.id !== parent.coordinate ||
       parentProduct.pubkey !== assignment.merchantPubkey ||
       parentProduct.type !== "variable" ||
-      parentProduct.visibility !== "public"
+      !hasEventMarketListingVisibility(parentProduct)
     )
       return false
   }

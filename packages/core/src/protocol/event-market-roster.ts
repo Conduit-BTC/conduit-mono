@@ -1,4 +1,5 @@
 import type { ProductSchema } from "../schemas"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import type { EventMarketAuthorizationResolution } from "./event-market-authorization"
 import {
   isEventMarketAssignmentProductSuitable,
@@ -442,7 +443,7 @@ export function resolveEventMarketProduct(input: {
     return { state: "unassigned" }
   try {
     const product = parseProductEvent(revision)
-    if (product.visibility !== "public") return { state: "hidden" }
+    if (!hasEventMarketListingVisibility(product)) return { state: "hidden" }
     if (
       product.priceEvidenceMalformed ||
       product.format !== "physical" ||

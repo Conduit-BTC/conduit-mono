@@ -23,6 +23,7 @@ import {
   applyProductFulfillmentIntentForPublication,
   getCanonicalProductWriteFingerprint,
   getProductPreservedFulfillmentFields,
+  projectProductEventOnlyChoice,
   resolveProductFulfillmentIntentForTarget,
   resolvePublishedProductFulfillmentIntentForTarget,
   type ProductPublicationFulfillmentIntent,
@@ -1790,6 +1791,8 @@ function buildVariationProduct(
     images: buildVariationImages(row, existing, parent),
     format: row.format === "inherit" ? parent.format : row.format,
     visibility: parent.visibility,
+    eventOnly: parent.eventOnly,
+    eventOnlyMalformed: parent.eventOnlyMalformed,
     ...(listingAreaMode === "apply" || !existing
       ? { location: parent.location, geohash: parent.geohash }
       : {}),
@@ -1946,7 +1949,7 @@ function buildPreservedProductFamilyChangePlan<
     product: input.baseProduct,
     merchantPubkey: root.product.pubkey,
     productDTag: input.parentDTag,
-    intent: { kind: "preserve_existing", baseline: root.product },
+    intent: { ...input.fulfillmentIntent, baseline: root.product },
   })
   const existingForm = getProductVariationFormState(root, variations)
   if (!existingForm.supported) {
@@ -1973,7 +1976,7 @@ function buildPreservedProductFamilyChangePlan<
           ? parentProduct.specifications
           : [],
       },
-      fulfillmentIntent: { kind: "preserve_existing", baseline: root.product },
+      fulfillmentIntent: { ...input.fulfillmentIntent, baseline: root.product },
       existing: root,
     },
   ]
@@ -2012,10 +2015,17 @@ function buildPreservedProductFamilyChangePlan<
       )
       desired.push({
         dTag: existing.dTag,
-        product,
+        product: {
+          ...product,
+          ...projectProductEventOnlyChoice(
+            product,
+            input.fulfillmentIntent.eventOnlyChange
+          ),
+        },
         fulfillmentIntent: {
           kind: "preserve_existing",
           baseline: existing.product,
+          eventOnlyChange: input.fulfillmentIntent.eventOnlyChange,
         },
         existing,
       })

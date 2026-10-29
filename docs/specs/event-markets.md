@@ -38,6 +38,19 @@ An active grant with validated observed ancestry and a current roster row are bo
 
 A merchant's kind `30402` product may carry a discovery hint for the market with `["a", "30409:<organizer>:<market-d>"]`. That tag establishes no assignment authority. The ordinary product carries no independent event pickup, booth, handler, or fee. Merchant product publication, edits, untagging, visibility, price, inventory, and payment destination remain under the merchant's signature. No organizer product acceptance occurs. Earlier experimental version-1 `30409` revisions do not imply grants.
 
+Merchants may explicitly choose **Sell only at events** for a physical product.
+Conduit emits Open Markets `["visibility", "hidden"]` together with its own
+`["conduit_event_only", "1"]` extension. This is hidden public listing data,
+not encrypted publication. The option excludes ordinary feeds, storefronts,
+direct ordinary purchases and legacy pickup exceptions; it permits Event
+eligibility only with a verified current occurrence assignment and the usual
+grant, date, stock, product/deletion and handout checks. A hint or the flag alone
+is never admission. Duplicate, unsupported or contradictory marker terms fail
+closed. An older hidden product without this explicit flag remains hidden.
+Ordinary assigned products remain ordinary until deliberately edited; no
+existing product, accepted order or funded snapshot is migrated. Variations
+require compatible signed parent visibility as well as their own exact terms.
+
 ### Occurrence assignments and durable acceptance
 
 The implemented merchant-pickup slice follows experimental proposal revision `8aa6d83331c750be22bf01413a1f932778e64568`. A merchant signs kind `30410` for the exact market, concrete occurrence and existing sellable product tuple. Its deterministic `d` is SHA-256 of compact UTF-8 JSON `[market, occurrence, product]`. A variation uses its own sellable coordinate. Product market tags cannot synthesize assignment authority. Current signed roster, causal grant, selected date, product and assignment evidence remain required for new purchases; retained revocation, deletion and conflict evidence dominates stale positives.

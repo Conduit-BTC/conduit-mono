@@ -1,4 +1,5 @@
 import type { CheckoutSparkCommerceQuote } from "./checkout-spark-reconciliation"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import {
   freezeCheckoutSparkEventMarketBinding,
   type CheckoutSparkEventMarketBinding,
@@ -203,7 +204,7 @@ export function assertCheckoutSparkSignedEventMarketSources(input: {
     )
     if (
       product.id !== line.productCoordinate ||
-      product.visibility !== "public" ||
+      !hasEventMarketListingVisibility(product) ||
       product.format !== "physical" ||
       product.type === "variable" ||
       product.priceEvidenceMalformed ||
@@ -248,7 +249,7 @@ export function assertCheckoutSparkSignedEventMarketSources(input: {
       const parent = parseCheckoutSparkSignedProductFields(parentEvent)
       if (
         parent.type !== "variable" ||
-        parent.visibility !== "public" ||
+        !hasEventMarketListingVisibility(parent) ||
         parent.id !== product.parentProductId ||
         parent.id !== line.parentProduct?.coordinate
       )

@@ -32,6 +32,7 @@ import {
   admitEmbeddedEventMarketOrderEvidence,
 } from "./event-market-order-evidence"
 import { parseProductEvent } from "./products"
+import { hasEventMarketListingVisibility } from "./product-event-visibility"
 import { getProductsByIds } from "./commerce"
 import { getAccountSigner } from "./session-signer"
 import { publishWithPlanner } from "./relay-publish"
@@ -321,6 +322,7 @@ export async function saveMerchantOccurrenceAssignment(
     )
   if (product.type === "variation") {
     const parents = await getProductsByIds([product.parentProductId ?? ""], {
+      includeMarketHidden: true,
       accountPubkey: input.merchantPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
@@ -627,10 +629,20 @@ export async function acceptMerchantOccurrenceOrder(
     const product = parseProductEvent(
       (await verifySignedEventBatches([source]))[0]!
     )
+    // Only the exact-assignment lane below may use the explicit Event opt-in.
+    // Historical hint-only and ordinary orders keep their public-product rule.
+    const eventAssignment =
+      fulfillment?.type === "event_market_pickup" &&
+      !!fulfillment.occurrenceAssignment
+    const visibilityAllowed = eventAssignment
+      ? hasEventMarketListingVisibility(product)
+      : product.visibility === "public" &&
+        !product.eventOnly &&
+        !product.eventOnlyMalformed
     if (
       product.pubkey !== input.merchantPubkey ||
       product.type === "variable" ||
-      product.visibility !== "public"
+      !visibilityAllowed
     )
       throw new Error("The product is not currently sellable.")
     if (

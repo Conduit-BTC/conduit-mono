@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixture"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { generateSparkMnemonic } from "../apps/market/src/lib/spark-recovery"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
@@ -36,6 +37,7 @@ import {
   getProductDetail,
   getProductsByIds,
   getCachedProductsByIds,
+  evaluateListingAvailability,
   getProfiles,
   freezeCheckoutSparkPlan,
   __resetRelayHealth,
@@ -475,6 +477,7 @@ function makeGammaProductEvent(params: {
   image?: boolean
   price?: number
   visibility?: "public" | "private"
+  eventOnly?: boolean
   collectionRefs?: string[]
   shippingOptionRefs?: string[]
 }) {
@@ -490,6 +493,7 @@ function makeGammaProductEvent(params: {
         ["price", String(params.price ?? 25_000), "SATS"],
         ["type", params.type, "physical"],
         ...(params.visibility === "private" ? [["visibility", "hidden"]] : []),
+        ...(params.eventOnly ? [["conduit_event_only", "1"]] : []),
         ...(params.parentProductId ? [["a", params.parentProductId]] : []),
         ...(params.collectionRefs ?? []).map((reference) => ["a", reference]),
         ...(params.shippingOptionRefs ?? []).map((reference) => [
@@ -735,6 +739,165 @@ afterEach(async () => {
 })
 
 describe("commerce gateway", () => {
+  it("uses only eligible Event visibility for the explicit Event exact read", async () => {
+    const merchant = fixturePubkeyForSecret(
+      crypto.getRandomValues(new Uint8Array(32))
+    )
+    const product = makeGammaProductEvent({
+      pubkey: merchant,
+      dTag: "legacy-hidden-event",
+      id: "legacy-hidden-event",
+      createdAt: 100,
+      title: "Hidden listing",
+      type: "simple",
+      visibility: "private",
+    })
+    const coordinate = `30402:${product.pubkey}:legacy-hidden-event`
+    __setCommerceTestOverrides({
+      fetchPublicEvents: async (filter) =>
+        matchFilter(filter, product) ? [product] : [],
+    })
+    expect(
+      (
+        await getProductsByIds([coordinate], {
+          includeEventOnlyProductIds: [coordinate],
+        })
+      ).data
+    ).toHaveLength(0)
+    expect(
+      (
+        await getProductsByIds([coordinate], {
+          includeMerchantHiddenProductIds: [coordinate],
+        })
+      ).data
+    ).toHaveLength(1)
+  })
+  it("reads an exact Event-only variation using its signed parent image without exposing the parent", async () => {
+    const merchant = fixturePubkeyForSecret(
+      crypto.getRandomValues(new Uint8Array(32))
+    )
+    const parentId = `30402:${merchant}:event-only-parent`
+    const childId = `30402:${merchant}:event-only-child`
+    const events = [
+      makeGammaProductEvent({
+        pubkey: merchant,
+        dTag: "event-only-parent",
+        id: "event-only-parent",
+        createdAt: 100,
+        title: "Event parent",
+        type: "variable",
+        visibility: "private",
+        eventOnly: true,
+      }),
+      makeGammaProductEvent({
+        pubkey: merchant,
+        dTag: "event-only-child",
+        id: "event-only-child",
+        createdAt: 100,
+        title: "Event child",
+        type: "variation",
+        visibility: "private",
+        eventOnly: true,
+        parentProductId: parentId,
+        size: "small",
+        image: false,
+        stock: 5,
+      }),
+    ]
+    __setCommerceTestOverrides({
+      fetchPublicEvents: async (filter) =>
+        events.filter((event) => matchFilter(filter, event)),
+    })
+    const childNaddr = encodeProductNaddr(childId)
+    const result = await getProductsByIds([childNaddr], {
+      includeEventOnlyProductIds: [childNaddr],
+    })
+    expect(result.data).toHaveLength(1)
+    expect(result.data[0]?.addressId === childId).toBe(true)
+    expect(
+      result.data[0]!.exactReadContext?.includeEventOnlyProductIds?.length
+    ).toBe(1)
+    expect(
+      result.data[0]!.exactReadContext?.includeEventOnlyProductIds?.[0] ===
+        childId
+    ).toBe(true)
+    expect(
+      result.data[0]!.availability?.reasons.map((reason) => reason.code)
+    ).toEqual(["event_only", "merchant_hidden"])
+    const retained = await getCachedProductsByIds([childNaddr], {
+      includeEventOnlyProductIds: [childNaddr],
+    })
+    expect(retained.data).toHaveLength(1)
+    expect(retained.data[0]?.addressId === childId).toBe(true)
+    expect((await getProductsByIds([childId])).data).toHaveLength(0)
+    expect(
+      (
+        await getProductsByIds([childId], {
+          includeMerchantHiddenProductIds: [childId],
+        })
+      ).data
+    ).toHaveLength(0)
+  })
+  it("keeps explicit event-only listings out of shop and legacy reads while retaining exact Event data", async () => {
+    const fixture = createEventMarketOrderFixture({
+      eventOnly: true,
+      newAssignment: true,
+    })
+    const event = fixture.events.find((candidate) => candidate.kind === 30402)!
+    const coordinate = fixture.fulfillment.product.coordinate
+    __setCommerceTestOverrides({
+      fetchPublicEvents: async (filter) =>
+        matchFilter(filter, event) ? [event] : [],
+    })
+    expect(
+      (await getMarketplaceProducts({ sort: "newest" })).data
+    ).toHaveLength(0)
+    expect(
+      (await getMerchantStorefront({ merchantPubkey: fixture.merchant })).data
+    ).toHaveLength(0)
+    expect((await getProductsByIds([coordinate])).data).toHaveLength(0)
+    expect(
+      (
+        await getProductsByIds([coordinate], {
+          includeMerchantHiddenProductIds: [coordinate],
+        })
+      ).data
+    ).toHaveLength(0)
+    const management = await getProductsByIds([coordinate], {
+      includeMarketHidden: true,
+    })
+    expect(management.data[0]?.product).toMatchObject({
+      eventOnly: true,
+      eventOnlyMalformed: false,
+      visibility: "private",
+      format: "physical",
+      images: [
+        { url: "https://cdn.conduit.market/conduit-test/event-product.png" },
+      ],
+    })
+    expect(
+      evaluateListingAvailability(management.data[0]!.product).reasons.map(
+        (reason) => reason.code
+      )
+    ).toEqual(["event_only", "merchant_hidden"])
+    const exact = await getProductsByIds([coordinate], {
+      includeEventOnlyProductIds: [coordinate],
+    })
+    expect(exact.diagnostics.map((entry) => entry.issue)).toEqual([null])
+    expect(exact.data).toHaveLength(1)
+    expect(exact.data[0]!.product.eventOnly).toBe(true)
+    expect(
+      (
+        await getCachedProductsByIds([coordinate], {
+          includeEventOnlyProductIds: [coordinate],
+        })
+      ).data[0]?.product.eventOnly
+    ).toBe(true)
+    expect(
+      (await getCachedMarketplaceProducts({ sort: "newest" })).data
+    ).toHaveLength(0)
+    expect((await getCachedProductsByIds([coordinate])).data).toHaveLength(0)
+  })
   it("uses a safe naddr source hint for an otherwise undiscoverable product", async () => {
     const sourceRelayUrl = "wss://source-only.conduit.market"
     const unsafeRelayUrl = "ws://127.0.0.1:7447"

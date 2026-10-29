@@ -43,6 +43,9 @@ export const MAX_PRODUCT_TAG_LENGTH = 40
 export type ProductFulfillmentChoice = "digital" | "ship" | "preserve"
 
 export interface ProductPublishFormValues {
+  eventOnly?: boolean
+  /** Absent/false preserves existing visibility; only an explicit option edit changes it. */
+  eventOnlyEdited?: boolean
   title: string
   price: string
   stock: string
@@ -347,6 +350,7 @@ export function reconcileProductFormShippingPreset(
 }
 
 export type ProductPublishFormField =
+  | "eventOnly"
   | "title"
   | "price"
   | "stock"
@@ -473,6 +477,7 @@ function firstError(
     errors.images ??
     errors.tags ??
     errors.variations ??
+    errors.eventOnly ??
     errors.shippingWeight ??
     errors.shippingCost ??
     errors.shippingZone ??
@@ -500,6 +505,12 @@ export function validateProductPublishForm(
     !isDigital &&
     form.shippingPricingMode === "fixed"
   const shippingCostInput = hasFixedShipping ? form.shippingCost.trim() : ""
+  if (form.eventOnly && isDigital)
+    addError(
+      errors,
+      "eventOnly",
+      "Event-only selling requires a physical product. Turn off Sell only at events before choosing digital fulfillment."
+    )
 
   if (!title) {
     addError(errors, "title", "Add a product title.")

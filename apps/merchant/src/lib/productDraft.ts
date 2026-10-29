@@ -225,6 +225,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
       (form.format !== "physical" && form.format !== "digital") ||
       (form.eventGuestContactOptional !== undefined &&
         typeof form.eventGuestContactOptional !== "boolean") ||
+      (form.eventOnly !== undefined && typeof form.eventOnly !== "boolean") ||
+      (form.eventOnlyEdited !== undefined &&
+        typeof form.eventOnlyEdited !== "boolean") ||
       typeof form.usePresetShippingZone !== "boolean" ||
       typeof form.publicZapEnabled !== "boolean" ||
       (form.zapMessagePolicy !== "generic_only" &&
@@ -496,6 +499,12 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
             : "",
         ...(typeof form.eventGuestContactOptional === "boolean"
           ? { eventGuestContactOptional: form.eventGuestContactOptional }
+          : {}),
+        ...(typeof form.eventOnly === "boolean"
+          ? { eventOnly: form.eventOnly }
+          : {}),
+        ...(typeof form.eventOnlyEdited === "boolean"
+          ? { eventOnlyEdited: form.eventOnlyEdited }
           : {}),
         shippingPricingMode,
         shippingCost,

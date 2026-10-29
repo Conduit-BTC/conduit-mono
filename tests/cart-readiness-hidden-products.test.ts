@@ -4,6 +4,7 @@ import type { CartItem } from "../apps/market/src/lib/cart-model"
 import {
   getCartAvailabilityReadScopes,
   getCartMerchantHiddenProductIds,
+  getCartEventOnlyProductIds,
   merchantCartAvailabilityQueryKey,
 } from "../apps/market/src/hooks/useCartReadiness"
 import {
@@ -61,6 +62,34 @@ function item(fulfillment: CartItem["fulfillment"], id = productId): CartItem {
 }
 
 describe("cart readiness hidden product scope", () => {
+  it("separates event-only data reads from legacy and ordinary checkout scope", () => {
+    const legacy = futureMarketFulfillment()!
+    if (legacy.type !== "event_market_pickup")
+      throw new Error("Expected Event fixture")
+    const current = {
+      ...legacy,
+      occurrenceAssignment: {
+        coordinate: `30410:${merchantPubkey}:assignment`,
+        eventId: "5".repeat(64),
+        createdAt: 100,
+      },
+    }
+    expect(
+      getCartEventOnlyProductIds([item({ type: "shipping" }), item(legacy)])
+    ).toEqual([])
+    expect(getCartEventOnlyProductIds([item(current)])).toEqual([productId])
+    expect(
+      merchantCartAvailabilityQueryKey(
+        merchantPubkey,
+        [productId],
+        [productId],
+        null,
+        [productId]
+      )
+    ).not.toEqual(
+      merchantCartAvailabilityQueryKey(merchantPubkey, [productId], [productId])
+    )
+  })
   it("opts only explicit event pickup coordinates into exact hidden reads", () => {
     const ordinary = item({ type: "shipping" }, ordinaryProductId)
     const eventPickup = item(futureMarketFulfillment())
