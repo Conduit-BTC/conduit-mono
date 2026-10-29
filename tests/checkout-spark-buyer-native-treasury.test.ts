@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, spyOn } from "bun:test"
 import { createHash } from "node:crypto"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
@@ -750,6 +750,77 @@ function holdNativeSenderCommitment(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 describe("Market native treasury composed provider evidence", () => {
+  it(
+    "pre-wallet admission classification: Buyer local stop does not enter wallet",
+    async () =>
+      run(async (f) => {
+        const settlement = await proveBuyerCheckoutSparkTreasuryCommerce(
+          f.proofInput()
+        )
+        const saved = await f.loadState()
+        const prepared = prepareCheckoutSparkNativeTreasury(saved.state, {
+          settlement,
+          preparedAt: f.now(),
+        })
+        const admitted = await f.repository.saveTreasuryPrepared(
+          prepared,
+          saved.revision,
+          settlement
+        )
+        if (admitted.status !== "active") throw new Error("Expected active")
+        const target: CheckoutSparkNativeTreasuryTarget = {
+          walletId: f.plan.walletId,
+          network: f.plan.network,
+          planDigest: f.plan.planDigest,
+          legId: f.plan.recipients[1]!.legId,
+          nativeTreasury: f.plan.nativeTreasury!,
+          intent: prepared.treasuryFinalization!.intent!,
+        }
+        let processing = true
+        const assertCurrent = () => {
+          if (!processing) throw new Error("Local processing stopped")
+        }
+        const manager = f.manager()
+        const send = spyOn(manager, "sendCheckoutTreasury")
+        try {
+          const provider = createBuyerCheckoutSparkNativeTreasuryProvider({
+            checkoutId: f.plan.checkoutId,
+            manager,
+            repository: f.repository,
+            now: f.now,
+            assertCurrent,
+            assertAuthority: async () => assertCurrent(),
+          })
+          expect(await provider.preflight(target)).toBe("ready")
+          const submitted = recordCheckoutSparkNativeTreasuryStatus(prepared, {
+            invoiceId: target.intent.invoiceId,
+            status: "submitted",
+            observedAt: f.now() + 1,
+          })
+          await f.repository.save(submitted, admitted.revision)
+
+          // An ordinary local stop happens after this adapter's live preflight,
+          // but before its wallet method is entered. The provider classifies
+          // that fact only; Core still owns any guarded cancellation write.
+          processing = false
+          let status = "threw"
+          try {
+            status = (await provider.send(target)).status
+          } catch {
+            // Keep failure output limited to the classification, not errors.
+          }
+          expect(send.mock.calls.length).toBe(0)
+          expect(f.control.nativeSnapshot().nativeSendInvocationCount).toBe(0)
+          expect((await f.loadState()).state.treasuryFinalization!.status).toBe(
+            "submitted"
+          )
+          expect(status).toBe("not_sent")
+        } finally {
+          send.mockRestore()
+        }
+      }),
+    15_000
+  )
   it(
     "retains only the validated native reference after Pause while the original account session remains current",
     async () =>

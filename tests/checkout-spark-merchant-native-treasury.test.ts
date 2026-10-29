@@ -362,6 +362,77 @@ function fakeClock(start: number) {
 }
 
 describe("Merchant native treasury continuation", () => {
+  it("pre-wallet admission classification: Merchant transient local read does not enter wallet", async () => {
+    const f = await fixture()
+    const load = f.repository.load.bind(f.repository)
+    const proveCommerce = f.dependencies.proveCommerce!
+    const openWallet = f.dependencies.openWallet!
+    let readsAfterSubmittedProof: number | null = null
+    let failedRead = false
+    let walletCalls = 0
+    f.dependencies.proveCommerce = async (input) => {
+      const settlement = await proveCommerce(input)
+      if (
+        input.state.treasuryFinalization?.status === "submitted" &&
+        readsAfterSubmittedProof === null
+      )
+        readsAfterSubmittedProof = 0
+      return settlement
+    }
+    f.repository.load = async (...args) => {
+      if (!failedRead && readsAfterSubmittedProof !== null) {
+        readsAfterSubmittedProof++
+        // Core's final store read performs the adapter's durable comparison
+        // and snapshot read. Fail only the next read: the provider adapter's
+        // own pre-wallet durable check. No stored data or payment input changes.
+        if (readsAfterSubmittedProof === 3) {
+          failedRead = true
+          throw new Error("Temporary local read unavailable")
+        }
+      }
+      return load(...args)
+    }
+    f.dependencies.openWallet = async (input) => {
+      const wallet = await openWallet(input)
+      const treasury = wallet.nativeTreasury!
+      return {
+        ...wallet,
+        nativeTreasury: {
+          ...treasury,
+          sendCheckoutTreasury: async (request) => {
+            walletCalls++
+            return treasury.sendCheckoutTreasury(request)
+          },
+        },
+      }
+    }
+    try {
+      const result = await f.run()
+      expect(failedRead).toBe(true)
+      expect(readsAfterSubmittedProof).toBe(3)
+      expect(walletCalls).toBe(0)
+      expect(f.sends()).toBe(0)
+      expect(
+        f.progress.map((item) => item.state.treasuryFinalization!.status)
+      ).toEqual(["prepared", "submitted"])
+      expect(result.payout).toEqual({
+        outcome: "wait",
+        reason: "provider_evidence_unavailable",
+        sendAttempted: false,
+      })
+      const saved = await load(f.plan.checkoutId, f.plan.planDigest)
+      if (saved.status !== "active") throw new Error("Expected active")
+      expect(saved.state.treasuryFinalization!.status).toBe("terminal_failure")
+      expect(saved.state.treasuryFinalization!.providerTransferId).toBeNull()
+      expect(
+        JSON.stringify(saved.state.treasuryFinalization!.intent) ===
+          JSON.stringify(f.progress.at(-1)!.state.treasuryFinalization!.intent)
+      ).toBe(true)
+    } finally {
+      f.repository.load = load
+      await f.database.delete()
+    }
+  }, 15_000)
   it.each(["pause", "logout", "account_replacement"] as const)(
     "retains an admitted native transfer reference only for an account-current %s before fulfillment returns",
     async (revocation) => {
