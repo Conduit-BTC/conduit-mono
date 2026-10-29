@@ -838,25 +838,28 @@ describe("durable account-owned commerce inbox", () => {
     await recordPrivateDelivery(store, id, recipient.id, outcome([targets[0]!]))
     await recordPrivateDelivery(store, id, self.id, null)
     const writes: Array<{ event: unknown; targets: string[] }> = []
-    await retryPrivateDeliveries(
-      pubkey,
-      (async (event, options) => {
+    await retryPrivateDeliveries(pubkey, {
+      publishFn: (async (event, options) => {
         writes.push({
           event: structuredClone(event),
           targets: [...options.exclusiveRelayUrls!],
         })
         return outcome([...options.exclusiveRelayUrls!])
       }) as never,
-      id,
+      onlyId: id,
       store,
-      (async (recipientPubkey) => ({
+      resolveDeclaration: (async (recipientPubkey) => ({
         pubkey: recipientPubkey,
         state: "declared",
         relayUrls: targets,
         stale: false,
         fetchedAt: Date.now(),
-      })) as never
-    )
+      })) as never,
+      shouldContinue: () => {
+        store.assertCurrent()
+        return true
+      },
+    })
     expect(writes).toEqual([
       { event: recipient, targets: [targets[1]!] },
       { event: self, targets },
@@ -866,15 +869,18 @@ describe("durable account-owned commerce inbox", () => {
     const restored = await store.open<PrivateDeliveryJob>(row!.value, id)
     expect(restored.legs.map((leg) => leg.event)).toEqual([recipient, self])
     let retryWrites = 0
-    await retryPrivateDeliveries(
-      pubkey,
-      (async () => {
+    await retryPrivateDeliveries(pubkey, {
+      publishFn: (async () => {
         retryWrites++
         return outcome(targets)
       }) as never,
-      id,
-      store
-    )
+      onlyId: id,
+      store,
+      shouldContinue: () => {
+        store.assertCurrent()
+        return true
+      },
+    })
     expect(retryWrites).toBe(0)
   })
 
@@ -923,31 +929,37 @@ describe("durable account-owned commerce inbox", () => {
       stale: false,
       fetchedAt: Date.now(),
     })) as never
-    const first = retryPrivateDeliveries(
-      pubkey,
-      (async (event) => {
+    const first = retryPrivateDeliveries(pubkey, {
+      publishFn: (async (event) => {
         if (event.id === legs[0]!.event.id) return { successfulRelayUrls: [] }
         held()
         await pending
         return { successfulRelayUrls: [relay] }
       }) as never,
-      id,
+      onlyId: id,
       store,
-      declaration
-    )
+      resolveDeclaration: declaration,
+      shouldContinue: () => {
+        store.assertCurrent()
+        return true
+      },
+    })
     await entered
     let overlappingWrites = 0
     try {
-      await retryPrivateDeliveries(
-        pubkey,
-        (async () => {
+      await retryPrivateDeliveries(pubkey, {
+        publishFn: (async () => {
           overlappingWrites++
           return { successfulRelayUrls: [relay] }
         }) as never,
-        id,
+        onlyId: id,
         store,
-        declaration
-      )
+        resolveDeclaration: declaration,
+        shouldContinue: () => {
+          store.assertCurrent()
+          return true
+        },
+      })
       expect(overlappingWrites).toBe(0)
     } finally {
       release()
@@ -990,15 +1002,18 @@ describe("durable account-owned commerce inbox", () => {
         holdClaim: true,
       })
       let writes = 0
-      await retryPrivateDeliveries(
-        pubkey,
-        (async () => {
+      await retryPrivateDeliveries(pubkey, {
+        publishFn: (async () => {
           writes++
           return { successfulRelayUrls: [relay] }
         }) as never,
-        id,
-        store
-      )
+        onlyId: id,
+        store,
+        shouldContinue: () => {
+          store.assertCurrent()
+          return true
+        },
+      })
       expect(writes).toBe(0)
       claim.assertCurrent()
     } finally {
@@ -1480,9 +1495,8 @@ it("retries exact owner-local self bytes while rejecting the same remote-local d
     ])
   )
   const writes: unknown[] = []
-  await retryPrivateDeliveries(
-    pubkey,
-    async (event, options) => {
+  await retryPrivateDeliveries(pubkey, {
+    publishFn: async (event, options) => {
       expect(options.shouldContinue?.()).toBe(true)
       writes.push({
         event,
@@ -1491,9 +1505,9 @@ it("retries exact owner-local self bytes while rejecting the same remote-local d
       })
       return { successfulRelayUrls: [relay] } as never
     },
-    id,
+    onlyId: id,
     store,
-    async (recipient, options) => {
+    resolveDeclaration: async (recipient, options) => {
       const resolution = await resolveInboxDeclaration(recipient, {
         ...options,
         relayUrls: ["wss://discovery.relay.dev"],
@@ -1507,8 +1521,12 @@ it("retries exact owner-local self bytes while rejecting the same remote-local d
         }),
       })
       return resolution
-    }
-  )
+    },
+    shouldContinue: () => {
+      store.assertCurrent()
+      return true
+    },
+  })
   expect(writes).toEqual([
     {
       event: JSON.parse(JSON.stringify(legs[1]!.event)),
@@ -1580,22 +1598,25 @@ it.each([false, true])(
     )
     const writes: string[][] = []
     try {
-      await retryPrivateDeliveries(
-        pubkey,
-        async (_event, options) => {
+      await retryPrivateDeliveries(pubkey, {
+        publishFn: async (_event, options) => {
           writes.push([...options.exclusiveRelayUrls!])
           return { successfulRelayUrls: options.exclusiveRelayUrls } as never
         },
-        id,
+        onlyId: id,
         store,
-        async () => ({
+        resolveDeclaration: async () => ({
           pubkey: peer,
           state: "declared",
           relayUrls: targets,
           stale: false,
           fetchedAt: Date.now(),
-        })
-      )
+        }),
+        shouldContinue: () => {
+          store.assertCurrent()
+          return true
+        },
+      })
     } finally {
       intercept.mockRestore()
     }

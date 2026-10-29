@@ -213,7 +213,7 @@ function rumor(sender: string, recipient: string, kind: 14 | 15 | 16) {
 }
 
 function sendInput(
-  fixture: ReturnType<typeof setup>,
+  fixture: DeliveryFixture,
   kind: 14 | 15 | 16
 ): PublishPrivateMessageInput {
   return {
@@ -248,7 +248,7 @@ function sendInput(
   }
 }
 
-async function stageFailedRecipientWrap(fixture: ReturnType<typeof setup>) {
+async function stageFailedRecipientWrap(fixture: DeliveryFixture) {
   const input = sendInput(fixture, 14)
   input.selfCopy = false
   input.publishFn = (async () => {
@@ -336,28 +336,16 @@ function resolveFixtureDeclaration(fixture: DeliveryFixture) {
 
 function retryForFixture(
   fixture: DeliveryFixture,
-  ...args: Parameters<typeof retryPrivateDeliveries>
+  principal: string,
+  options: Parameters<typeof retryPrivateDeliveries>[1]
 ) {
-  const [
-    principal,
-    publisher,
-    onlyId,
-    suppliedStore,
-    resolveDeclaration,
-    options,
-  ] = args
-  return retryPrivateDeliveries(
-    principal,
-    publisher,
-    onlyId,
-    suppliedStore,
-    resolveDeclaration ?? resolveFixtureDeclaration(fixture),
-    {
-      ...options,
-      inboxDeclarationEvidenceRepository:
-        fixture.inboxDeclarationEvidenceRepository,
-    }
-  )
+  return retryPrivateDeliveries(principal, {
+    ...options,
+    resolveDeclaration:
+      options.resolveDeclaration ?? resolveFixtureDeclaration(fixture),
+    inboxDeclarationEvidenceRepository:
+      fixture.inboxDeclarationEvidenceRepository,
+  })
 }
 
 function acknowledged(relay: string) {
@@ -371,6 +359,171 @@ function acknowledged(relay: string) {
 }
 
 describe("private delivery composed contract", () => {
+  it("requires bound continuation in the retained delivery APIs at compile time", async () => {
+    const ts = await import("typescript")
+    const contractPath = `${import.meta.dir}/retained-delivery-contract.types.ts`
+    const source = `
+      import { retryPrivateDeliveries, resumePrivateDelivery } from "../packages/core/src/protocol/private-message-delivery";
+      import type { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store";
+      declare const store: CommerceInboxStore;
+      const shouldContinue = () => { store.assertCurrent(); return true; };
+      void retryPrivateDeliveries(store.principal, { store, shouldContinue });
+      void resumePrivateDelivery(store, "rumor", "recipient", { shouldContinue });
+      // @ts-expect-error Retained retry cannot omit its operation continuation.
+      void retryPrivateDeliveries(store.principal, { store });
+      // @ts-expect-error Retained resume cannot omit its operation continuation.
+      void resumePrivateDelivery(store, "rumor", "recipient", {});
+      // @ts-expect-error Retained retry cannot omit its options.
+      void retryPrivateDeliveries(store.principal);
+      // @ts-expect-error Retained resume cannot omit its options.
+      void resumePrivateDelivery(store, "rumor", "recipient");
+    `
+    const options = {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+      jsx: ts.JsxEmit.ReactJSX,
+      strict: true,
+      skipLibCheck: true,
+      noEmit: true,
+      types: [],
+    }
+    const host = ts.createCompilerHost(options)
+    const readFile = host.readFile.bind(host)
+    const fileExists = host.fileExists.bind(host)
+    host.readFile = (path) => (path === contractPath ? source : readFile(path))
+    host.fileExists = (path) => path === contractPath || fileExists(path)
+    const program = ts.createProgram([contractPath], options, host)
+    // Check the actual imported signatures, rather than Bun's erased types.
+    const diagnostics = program.getSemanticDiagnostics(
+      program.getSourceFile(contractPath)!
+    )
+    expect(
+      diagnostics.map((diagnostic) =>
+        ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")
+      )
+    ).toEqual([])
+  }, 30_000)
+
+  it.each(["same", "different", "mismatched"] as const)(
+    "rejects %s-identity stale or mismatched retry authority before querying an empty outbox",
+    async (identity) => {
+      const fixture = await setup()
+      const query = spyOn(fixture.database.commerceInboxDeliveries, "where")
+      if (identity !== "mismatched")
+        installProtectedReadSigner(
+          identity === "same"
+            ? keySigner(fixture.senderSecret)
+            : fixture.recipientSigner,
+          identity === "same" ? fixture.sender : fixture.recipient,
+          () => true
+        )
+      try {
+        await expect(
+          retryPrivateDeliveries(
+            identity === "mismatched" ? fixture.recipient : fixture.sender,
+            { store: fixture.store, shouldContinue: () => true }
+          )
+        ).rejects.toThrow()
+        expect(query).not.toHaveBeenCalled()
+      } finally {
+        query.mockRestore()
+      }
+    }
+  )
+
+  it.each(["same", "different"] as const)(
+    "binds fresh delivery reads to the captured %s-identity account lease without a caller callback",
+    async (identity) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 14)
+      const inspectReadiness = input.inspectOwnInboxReadiness!
+      input.inspectOwnInboxReadiness = async (pubkey, options) => {
+        const readiness = await inspectReadiness(pubkey, options)
+        expect(typeof options?.shouldContinue).toBe("function")
+        expect(options!.shouldContinue!()).toBe(true)
+        installProtectedReadSigner(
+          identity === "same"
+            ? keySigner(fixture.senderSecret)
+            : fixture.recipientSigner,
+          identity === "same" ? fixture.sender : fixture.recipient,
+          () => true
+        )
+        expect(() => options!.shouldContinue!()).toThrow()
+        return readiness
+      }
+      let publications = 0
+      input.publishFn = (async () => {
+        publications++
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      await expect(publishPrivateMessage(input)).rejects.toThrow()
+      expect(publications).toBe(0)
+      expect(fixture.signCalls()).toBe(0)
+      expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
+    }
+  )
+
+  it.each(["fresh", "retained"] as const)(
+    "retains an already-started %s publication ACK through the real planner after cancellation",
+    async (mode) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 16)
+      input.selfCopy = false
+      if (mode === "retained") {
+        input.publishFn = (async () => {
+          throw new Error("recipient relay unavailable")
+        }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+        await expect(publishPrivateMessage(input)).rejects.toThrow(
+          "recipient relay unavailable"
+        )
+        delete input.publishFn
+      }
+      const signs = fixture.signCalls()
+      let current = true
+      let entered!: () => void
+      let release!: () => void
+      const starting = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let publications = 0
+      input.shouldContinue = () => current
+      __setRelayPublishTestOverrides({
+        accountNetworkLocalStateRepository:
+          fixture.accountNetworkLocalStateRepository,
+        inboxDeclarationEvidenceRepository:
+          fixture.inboxDeclarationEvidenceRepository,
+        publishSignedEventFrameToRelay: async () => {
+          publications++
+          entered()
+          await held
+          return "acked"
+        },
+      })
+      const operation = publishPrivateMessage(input)
+      await starting
+      current = false
+      release()
+      const result = await operation
+      expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+        RECIPIENT_RELAY,
+      ])
+      expect(
+        (await fixture.database.commerceInboxDeliveries.toArray())[0]!.state
+      ).toBe("accepted")
+      if (mode === "retained") expect(fixture.signCalls()).toBe(signs)
+      else expect(fixture.signCalls()).toBeGreaterThan(signs)
+      const completedSigns = fixture.signCalls()
+      current = true
+      await publishPrivateMessage(input)
+      expect(fixture.signCalls()).toBe(completedSigns)
+      expect(publications).toBe(1)
+    }
+  )
+
   it.each(["recipient", "self"] as const)(
     "stops automatic retained %s recovery after a canceled starting callback",
     async (lane) => {
@@ -497,22 +650,17 @@ describe("private delivery composed contract", () => {
           fixture.store,
           id.slice("delivery:".length),
           fixture.recipient,
-          publisher,
-          undefined,
-          { shouldContinue: () => false }
+          { publishFn: publisher, shouldContinue: () => false }
         )
       ).rejects.toThrow("signer session changed")
       expect(lookup).not.toHaveBeenCalled()
       await expect(
-        retryForFixture(
-          fixture,
-          fixture.sender,
-          publisher,
-          id,
-          fixture.store,
-          undefined,
-          { shouldContinue: () => false }
-        )
+        retryForFixture(fixture, fixture.sender, {
+          publishFn: publisher,
+          onlyId: id,
+          store: fixture.store,
+          shouldContinue: () => false,
+        })
       ).rejects.toThrow("signer session changed")
     } finally {
       lookup.mockRestore()
@@ -545,15 +693,12 @@ describe("private delivery composed contract", () => {
     }) as typeof table.get)
     try {
       await expect(
-        retryForFixture(
-          fixture,
-          fixture.sender,
-          publisher,
-          id,
-          fixture.store,
-          undefined,
-          { shouldContinue: () => current }
-        )
+        retryForFixture(fixture, fixture.sender, {
+          publishFn: publisher,
+          onlyId: id,
+          store: fixture.store,
+          shouldContinue: () => current,
+        })
       ).rejects.toThrow("signer session changed")
       expect(updates.mock.calls.length).toBe(0)
     } finally {
@@ -565,15 +710,12 @@ describe("private delivery composed contract", () => {
       isDeepStrictEqual(await table.get(fixture.store.key(id)), before)
     ).toBe(true)
     current = true
-    await retryForFixture(
-      fixture,
-      fixture.sender,
-      publisher,
-      id,
-      fixture.store,
-      undefined,
-      { shouldContinue: () => current }
-    )
+    await retryForFixture(fixture, fixture.sender, {
+      publishFn: publisher,
+      onlyId: id,
+      store: fixture.store,
+      shouldContinue: () => current,
+    })
     expect(publications).toBe(1)
     expect(fixture.signCalls()).toBe(signs)
     expect((await table.get(fixture.store.key(id)))?.state).toBe("accepted")
@@ -1045,16 +1187,17 @@ describe("private delivery composed contract", () => {
       ).rejects.toThrow("local persistence failed")
       expect(publishes).toBe(0)
       expect(await fixture.database.commerceInboxDeliveries.count()).toBe(0)
-      await retryForFixture(
-        fixture,
-        fixture.sender,
-        (async () => {
+      await retryForFixture(fixture, fixture.sender, {
+        publishFn: (async () => {
           publishes++
           return acknowledged(RECIPIENT_RELAY)
         }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
-        undefined,
-        fixture.store
-      )
+        store: fixture.store,
+        shouldContinue: () => {
+          fixture.store.assertCurrent()
+          return true
+        },
+      })
       expect(publishes).toBe(0)
     })
   }
@@ -1088,46 +1231,50 @@ describe("private delivery composed contract", () => {
     expect(job.legs[0]?.relayUrls).toEqual([RECIPIENT_RELAY])
     const signCallsBeforeRetry = fixture.signCalls()
     let retryCount = 0
-    await retryForFixture(
-      fixture,
-      fixture.sender,
-      (async () => {
+    await retryForFixture(fixture, fixture.sender, {
+      publishFn: (async () => {
         retryCount++
         return acknowledged(RECIPIENT_RELAY)
       }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
-      logicalId,
-      fixture.store,
-      (async () => ({
+      onlyId: logicalId,
+      store: fixture.store,
+      resolveDeclaration: (async () => ({
         pubkey: fixture.recipient,
         state: "declared",
         relayUrls: ["wss://new-recipient.inbox.conduit.market"],
         stale: false,
         fetchedAt: Date.now(),
-      })) as never
-    )
+      })) as never,
+      shouldContinue: () => {
+        fixture.store.assertCurrent()
+        return true
+      },
+    })
     expect(retryCount).toBe(0)
     expect(
       (await fixture.database.commerceInboxDeliveries.get(rows[0]!.id))?.state
     ).toBe("failed")
-    await retryForFixture(
-      fixture,
-      fixture.sender,
-      (async (event, options) => {
+    await retryForFixture(fixture, fixture.sender, {
+      publishFn: (async (event, options) => {
         retryCount++
         expect(event).toEqual(job.legs[0]?.event)
         expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
         return acknowledged(RECIPIENT_RELAY)
       }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
-      logicalId,
-      fixture.store,
-      (async () => ({
+      onlyId: logicalId,
+      store: fixture.store,
+      resolveDeclaration: (async () => ({
         pubkey: fixture.recipient,
         state: "declared",
         relayUrls: [RECIPIENT_RELAY],
         stale: false,
         fetchedAt: Date.now(),
-      })) as never
-    )
+      })) as never,
+      shouldContinue: () => {
+        fixture.store.assertCurrent()
+        return true
+      },
+    })
     expect(retryCount).toBe(1)
     expect(fixture.signCalls()).toBe(signCallsBeforeRetry)
     expect(
@@ -1148,10 +1295,8 @@ describe("private delivery composed contract", () => {
       resumeVisibility = resolve
     })
     let publishes = 0
-    const retry = retryForFixture(
-      fixture,
-      fixture.sender,
-      (async (event, options) => {
+    const retry = retryForFixture(fixture, fixture.sender, {
+      publishFn: (async (event, options) => {
         publishes++
         expect(event).toEqual(wrap)
         expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
@@ -1172,26 +1317,28 @@ describe("private delivery composed contract", () => {
         })
         return acknowledged(RECIPIENT_RELAY)
       }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
-      id,
-      fixture.store,
-      async () => ({
+      onlyId: id,
+      store: fixture.store,
+      resolveDeclaration: async () => ({
         pubkey: fixture.recipient,
         state: "declared",
         relayUrls: [RECIPIENT_RELAY],
         stale: false,
         fetchedAt: Date.now(),
       }),
-      {
-        foregroundRelayAuthentication: {
-          signer: fixture.signer,
-          method: fixture.signer.authMethod,
-          waitForSignerVisibility: async () => {
-            visibilityEntered()
-            await visible
-          },
+      shouldContinue: () => {
+        fixture.store.assertCurrent()
+        return true
+      },
+      foregroundRelayAuthentication: {
+        signer: fixture.signer,
+        method: fixture.signer.authMethod,
+        waitForSignerVisibility: async () => {
+          visibilityEntered()
+          await visible
         },
-      }
-    )
+      },
+    })
     await entered
     expect(fixture.signCalls()).toBe(signsBeforeRetry)
     resumeVisibility()
@@ -1280,27 +1427,26 @@ describe("private delivery composed contract", () => {
       value: ChallengingSocket,
     })
     try {
-      const attempts = await retryForFixture(
-        fixture,
-        fixture.sender,
-        undefined,
-        id,
-        fixture.store,
-        async () => ({
+      const attempts = await retryForFixture(fixture, fixture.sender, {
+        onlyId: id,
+        store: fixture.store,
+        resolveDeclaration: async () => ({
           pubkey: fixture.recipient,
           state: "declared",
           relayUrls: [RECIPIENT_RELAY],
           stale: false,
           fetchedAt: Date.now(),
         }),
-        {
-          foregroundRelayAuthentication: {
-            signer: fixture.signer,
-            method: fixture.signer.authMethod,
-            waitForSignerVisibility: async () => {},
-          },
-        }
-      )
+        shouldContinue: () => {
+          fixture.store.assertCurrent()
+          return true
+        },
+        foregroundRelayAuthentication: {
+          signer: fixture.signer,
+          method: fixture.signer.authMethod,
+          waitForSignerVisibility: async () => {},
+        },
+      })
       expect(sockets).toBe(1)
       expect(frames.map((frame) => frame[0])).toEqual([
         "EVENT",
@@ -1347,30 +1493,32 @@ describe("private delivery composed contract", () => {
       fetchedAt: Date.now(),
     })
     await expect(
-      retryForFixture(
-        fixture,
-        fixture.sender,
-        publisher,
-        id,
-        fixture.store,
-        declaration,
-        {
-          foregroundRelayAuthentication: {
-            signer: fixture.signer,
-            method: fixture.signer.authMethod === "nip07" ? "nip46" : "nip07",
-          },
-        }
-      )
+      retryForFixture(fixture, fixture.sender, {
+        publishFn: publisher,
+        onlyId: id,
+        store: fixture.store,
+        resolveDeclaration: declaration,
+        shouldContinue: () => {
+          fixture.store.assertCurrent()
+          return true
+        },
+        foregroundRelayAuthentication: {
+          signer: fixture.signer,
+          method: fixture.signer.authMethod === "nip07" ? "nip46" : "nip07",
+        },
+      })
     ).rejects.toThrow(/active account signer/)
     expect(publishes).toBe(0)
-    await retryForFixture(
-      fixture,
-      fixture.sender,
-      publisher,
-      id,
-      fixture.store,
-      declaration
-    )
+    await retryForFixture(fixture, fixture.sender, {
+      publishFn: publisher,
+      onlyId: id,
+      store: fixture.store,
+      resolveDeclaration: declaration,
+      shouldContinue: () => {
+        fixture.store.assertCurrent()
+        return true
+      },
+    })
     expect(publishes).toBe(1)
     expect(fixture.signCalls()).toBe(signsBeforeRetry)
   })
@@ -1381,33 +1529,33 @@ describe("private delivery composed contract", () => {
     const signsBeforeRetry = fixture.signCalls()
     let publishes = 0
     await expect(
-      retryForFixture(
-        fixture,
-        fixture.sender,
-        (async (_event, options) => {
+      retryForFixture(fixture, fixture.sender, {
+        publishFn: (async (_event, options) => {
           publishes++
           await options.relayAuthentication?.waitForSignerVisibility?.()
           throw new Error("AUTH signer must not run after revocation")
         }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
-        id,
-        fixture.store,
-        async () => ({
+        onlyId: id,
+        store: fixture.store,
+        resolveDeclaration: async () => ({
           pubkey: fixture.recipient,
           state: "declared",
           relayUrls: [RECIPIENT_RELAY],
           stale: false,
           fetchedAt: Date.now(),
         }),
-        {
-          foregroundRelayAuthentication: {
-            signer: fixture.signer,
-            method: fixture.signer.authMethod,
-            waitForSignerVisibility: async () => {
-              __resetProtectedReadSigner()
-            },
+        shouldContinue: () => {
+          fixture.store.assertCurrent()
+          return true
+        },
+        foregroundRelayAuthentication: {
+          signer: fixture.signer,
+          method: fixture.signer.authMethod,
+          waitForSignerVisibility: async () => {
+            __resetProtectedReadSigner()
           },
-        }
-      )
+        },
+      })
     ).rejects.toThrow()
     expect(publishes).toBe(1)
     expect(fixture.signCalls()).toBe(signsBeforeRetry)
@@ -1443,18 +1591,20 @@ describe("private delivery composed contract", () => {
         alreadyAccepted,
         newlyAdded,
       ])
-      await retryForFixture(
-        fixture,
-        fixture.sender,
-        (async (event, options) => {
+      await retryForFixture(fixture, fixture.sender, {
+        publishFn: (async (event, options) => {
           expect(JSON.stringify(event)).toBe(signedBytes)
           targets.push(...options.exclusiveRelayUrls!)
           return acknowledged(RECIPIENT_RELAY)
         }) as NonNullable<PublishPrivateMessageInput["publishFn"]>,
-        id,
-        fixture.store,
-        resolveFixtureDeclaration(fixture)
-      )
+        onlyId: id,
+        store: fixture.store,
+        resolveDeclaration: resolveFixtureDeclaration(fixture),
+        shouldContinue: () => {
+          fixture.store.assertCurrent()
+          return true
+        },
+      })
       expect(targets).toEqual([RECIPIENT_RELAY])
       expect(fixture.signCalls()).toBe(signs)
       const row = await fixture.database.commerceInboxDeliveries.get(
@@ -1488,13 +1638,14 @@ describe("private delivery composed contract", () => {
       ])
       return acknowledged(self ? SELF_RELAY : RECIPIENT_RELAY)
     }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
-    await retryForFixture(
-      fixture,
-      fixture.sender,
-      publisher,
-      undefined,
-      fixture.store
-    )
+    await retryForFixture(fixture, fixture.sender, {
+      publishFn: publisher,
+      store: fixture.store,
+      shouldContinue: () => {
+        fixture.store.assertCurrent()
+        return true
+      },
+    })
     expect(publications).toHaveLength(0)
     const replay = {
       rumorId: input.rumor.id,
