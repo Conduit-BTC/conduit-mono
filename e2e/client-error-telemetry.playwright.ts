@@ -61,29 +61,13 @@ async function readClientErrorEvents(
   })
 }
 
-async function waitForClientEffects(
-  page: Page,
-  telemetryEnabled = true
-): Promise<void> {
+async function waitForClientEffects(page: Page): Promise<void> {
   await expect(
     page.getByRole("heading", { name: /^About Conduit/ })
   ).toBeVisible()
-  if (telemetryEnabled) {
-    // The root installs runtime listeners before emitting app_load_result.
-    // Animation frames alone can finish while the route is still loading.
-    await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const plausible = (
-            window as unknown as { plausible?: { q?: unknown[][] } }
-          ).plausible
-          return (plausible?.q ?? []).some(
-            ([eventName]) => eventName === "app_load_result"
-          )
-        })
-      )
-      .toBe(true)
-  }
+  // Both About shells install listeners before their page-title effect runs.
+  // Animation frames alone can finish while the route is still loading.
+  await expect(page).toHaveTitle(/^About \| Conduit (Market|Merchant)$/)
   await page.evaluate(
     () =>
       new Promise<void>((resolve) => {
@@ -269,9 +253,9 @@ for (const { app, url } of appCases) {
 
     const disallowedUrl = url.replace("127.0.0.1", "localhost")
     await page.goto(`${disallowedUrl}/about`)
-    await waitForClientEffects(page, false)
+    await waitForClientEffects(page)
     await dispatchRuntimeErrors(page)
-    await waitForClientEffects(page, false)
+    await waitForClientEffects(page)
 
     expect((await readClientErrorEvents(page)).length).toBe(0)
     expect(
