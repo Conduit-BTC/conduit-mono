@@ -27,6 +27,8 @@ export function resolvePlaywrightWebServerTarget(
   const commerceIncluded = smokeArea === "all" || smokeArea === "commerce"
 
   const sharedAppEnv = {
+    // Match the supported sign-in flow with disposable hermetic identities.
+    VITE_ENABLE_LOCAL_KEY_SIGNER: "true",
     VITE_DISABLE_DEVTOOLS: "true",
     VITE_E2E_RELAY_URL: relayUrl,
     VITE_ENABLE_TELEMETRY: "true",

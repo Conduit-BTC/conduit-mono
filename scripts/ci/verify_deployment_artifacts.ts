@@ -69,6 +69,14 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
       `${manifestPath} has mismatched compiled address enablement.`
     )
   }
+  if (
+    manifest.publicFeatures.localKeySignerEnabled !==
+    resolvedProfile.publicFeatures.localKeySignerEnabled
+  ) {
+    throw new Error(
+      `${manifestPath} has mismatched local sign-in availability.`
+    )
+  }
   if (expectedCommit && manifest.commitSha !== expectedCommit) {
     throw new Error(`${manifestPath} has the wrong source commit.`)
   }

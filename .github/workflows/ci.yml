@@ -719,7 +719,7 @@ jobs:
           EXPECTED_PUBLIC_CONFIG_DIGEST: ${{ needs.build-mainnet.outputs.public-config-digest }}
         with:
           script: |
-            const { listPublicCloudflareCheckRuns, waitForProjectRows } = await import(
+            const { fetchPreviewManifest, listPublicCloudflareCheckRuns, waitForProjectRows } = await import(
               `${process.env.GITHUB_WORKSPACE}/scripts/ci/preview_links.mjs`
             );
             const headSha = context.payload.pull_request.head.sha;
@@ -744,6 +744,10 @@ jobs:
               throw new Error("The preview router execution capability is not explicit.");
             }
             const expectedBreezAddressEnabled = profiles.profiles.preview.publicFeatures.breezLightningAddressEnabled;
+            const expectedLocalKeySignerEnabled = profiles.profiles.preview.publicFeatures.localKeySignerEnabled;
+            if (typeof expectedLocalKeySignerEnabled !== "boolean") {
+              throw new Error("Preview profile must explicitly set localKeySignerEnabled.");
+            }
             if (typeof expectedBreezAddressEnabled !== "boolean") {
               throw new Error("The preview address capability is not explicit.");
             }
@@ -781,16 +785,15 @@ jobs:
             });
 
             async function verifyDeployedPreview(row) {
-              const manifestUrl = new URL("/.well-known/conduit-deployment.json", row.branchUrl);
               let lastFailure = "deployment manifest was not available";
 
               for (let attempt = 1; attempt <= 30; attempt += 1) {
-                manifestUrl.searchParams.set("commit", headSha);
-                manifestUrl.searchParams.set("attempt", String(attempt));
                 try {
-                  const response = await fetch(manifestUrl, {
-                    cache: "no-store",
-                    signal: AbortSignal.timeout(10_000),
+                  const { response, manifestUrl } = await fetchPreviewManifest({
+                    branchUrl: row.branchUrl,
+                    previewHostname: PROJECTS[row.app].previewHostname,
+                    headSha,
+                    attempt,
                   });
                   if (!response.ok) {
                     lastFailure = `HTTP ${response.status}`;
@@ -816,6 +819,9 @@ jobs:
                     }
                     if (manifest.publicFeatures?.breezLightningAddressEnabled !== expectedBreezAddressEnabled) {
                       failures.push("breezLightningAddressEnabled");
+                    }
+                    if (manifest.publicFeatures?.localKeySignerEnabled !== expectedLocalKeySignerEnabled) {
+                      failures.push("localKeySignerEnabled");
                     }
                     if (failures.length === 0) {
                       return manifestUrl.toString();

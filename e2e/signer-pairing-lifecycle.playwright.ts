@@ -464,7 +464,7 @@ test("switching accounts prepares the next mobile connection only after logout s
     .toBe(1)
   expect(await page.evaluate(() => window.__signerModalHarness.starts)).toBe(0)
   await expect(
-    page.getByRole("link", { name: "Connect with Clave", exact: true })
+    page.getByRole("link", { name: "Sign in with Clave", exact: true })
   ).toHaveCount(0)
 
   await page.evaluate(() => window.__signerModalHarness.settleDisconnect())
@@ -475,7 +475,7 @@ test("switching accounts prepares the next mobile connection only after logout s
     page.getByRole("dialog", { name: "Sign in to Conduit" })
   ).toBeVisible()
   await expect(
-    page.getByRole("link", { name: "Connect with Clave", exact: true })
+    page.getByRole("link", { name: "Sign in with Clave", exact: true })
   ).toBeVisible()
 })
 

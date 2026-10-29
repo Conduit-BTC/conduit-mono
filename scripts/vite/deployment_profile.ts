@@ -20,6 +20,7 @@ export interface PublicDeploymentFeatures {
   quantumRouterEnabled: boolean
   quantumRouterExecutionEnabled: boolean
   breezLightningAddressEnabled: boolean
+  localKeySignerEnabled: boolean
 }
 
 export interface PublicDeploymentProfile {
@@ -146,6 +147,11 @@ function assertProfile(
   ) {
     throw new Error(
       `Deployment profile ${name} must explicitly set dmCompatibilityOrderRoutingEnabled.`
+    )
+  }
+  if (typeof value.publicFeatures.localKeySignerEnabled !== "boolean") {
+    throw new Error(
+      `Deployment profile ${name} must explicitly set localKeySignerEnabled.`
     )
   }
   if (typeof value.publicFeatures.breezLightningAddressEnabled !== "boolean") {
@@ -352,6 +358,7 @@ export function resolveDeploymentProfile(
       releaseChannel: "local",
       lightningNetwork: env.VITE_LIGHTNING_NETWORK?.trim() || "mainnet",
       publicFeatures: {
+        localKeySignerEnabled: env.VITE_ENABLE_LOCAL_KEY_SIGNER !== "false",
         breezLightningAddressEnabled: ["1", "true", "on"].includes(
           env.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED?.trim().toLowerCase() ?? ""
         ),

@@ -30,16 +30,14 @@ async function hasActiveNdkSigner(page: Page): Promise<boolean> {
 async function openMarketSignerDialog(page: Page): Promise<void> {
   await page.goto(`${marketUrl}/products`)
   await page
-    .getByRole("button", { name: /^Connect$/ })
+    .getByRole("button", { name: /^Sign In$/ })
     .first()
     .click()
   await expect(page.getByRole("dialog")).toBeVisible()
 }
 
 async function connectFromMarketDialog(page: Page): Promise<void> {
-  await page
-    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
-    .click()
+  await page.getByRole("button", { name: /Sign in with Extension/i }).click()
 }
 
 async function storedAuthMatches(
@@ -77,7 +75,7 @@ test.describe("Market sign-in controls", () => {
       .getByRole("menuitem", { name: "Disconnect", exact: true })
       .click()
     const connect = page
-      .getByRole("button", { name: "Connect", exact: true })
+      .getByRole("button", { name: "Sign In", exact: true })
       .first()
     await expect(connect).toBeVisible()
     await expect(dialog).toBeHidden()
@@ -91,6 +89,10 @@ test.describe("Market sign-in controls", () => {
   }) => {
     await openMarketSignerDialog(page)
     const dialog = page.getByRole("dialog")
+    await expect(dialog.getByRole("tab")).toHaveCount(0)
+    await dialog
+      .getByRole("button", { name: "Remote Sign In", exact: true })
+      .click()
     for (const name of ["Scan QR", "Copy link", "Paste bunker"]) {
       await expect(dialog.getByRole("tab", { name, exact: true })).toBeVisible()
     }
@@ -112,7 +114,7 @@ test("market connect tolerates late NIP-07 signer injection @market", async ({
   await openMarketSignerDialog(page)
 
   const connectButton = page.getByRole("button", {
-    name: /Connect Extension \(NIP-07\)/i,
+    name: /Sign in with Extension/i,
   })
   await expect(connectButton).toBeEnabled({ timeout: 8_000 })
   await connectButton.click()
@@ -137,7 +139,7 @@ test("market rejected signer keeps retry path visible @market", async ({
   })
   await expect(page.getByRole("dialog")).toBeVisible()
   await expect(
-    page.getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
+    page.getByRole("button", { name: /Sign in with Extension/i })
   ).toBeEnabled()
 })
 
@@ -305,7 +307,7 @@ test("market signer authority storage failure remains retryable @market", async 
   await openMarketSignerDialog(page)
 
   const connectButton = page.getByRole("button", {
-    name: /Connect Extension \(NIP-07\)/i,
+    name: /Sign in with Extension/i,
   })
   await connectButton.click()
 
@@ -359,7 +361,7 @@ test("market signer authority read failure remains retryable @market", async ({
   await openMarketSignerDialog(page)
 
   const connectButton = page.getByRole("button", {
-    name: /Connect Extension \(NIP-07\)/i,
+    name: /Sign in with Extension/i,
   })
   await connectButton.click()
 
@@ -431,7 +433,7 @@ test("market does not publish a NIP-07 signer after a late authority read failur
   })
 
   const reconnectButton = page.getByRole("button", {
-    name: /Connect Extension \(NIP-07\)/i,
+    name: /Sign in with Extension/i,
   })
   await expect(reconnectButton).toBeEnabled()
   await connectFromMarketDialog(page)
@@ -448,9 +450,7 @@ test("merchant locked signer shows waiting state then connects after unlock @mer
   await installLockedTestSigner(page)
   await page.goto(merchantUrl)
 
-  await page
-    .getByRole("button", { name: /Connect Extension \(NIP-07\)/i })
-    .click()
+  await page.getByRole("button", { name: /Sign in with Extension/i }).click()
   await expect(
     page
       .getByRole("main", { name: "Sign in to Conduit" })
@@ -480,7 +480,7 @@ test("merchant remembered auth falls back to explicit retry when signer needs ac
   })
 
   const connectButton = page.getByRole("button", {
-    name: /Connect Extension \(NIP-07\)/i,
+    name: /Sign in with Extension/i,
   })
   await expect(connectButton).toBeEnabled()
   await connectButton.click()

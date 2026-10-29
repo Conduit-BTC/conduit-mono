@@ -1,48 +1,32 @@
 import { describe, expect, it } from "bun:test"
 import { readFile } from "node:fs/promises"
 
-describe("no-signer onboarding", () => {
-  it("keeps lightweight custody-safe setup guidance near signer connect surfaces", async () => {
-    const sharedSigner = await readFile(
+describe("sign-in onboarding copy", () => {
+  it("uses one identity setup link and plain-language benefits in both apps", async () => {
+    const shared = await readFile(
       "packages/ui/src/components/SignerSwitch.tsx",
       "utf8"
     )
-    const merchantRoot = await readFile(
+    expect(shared).toContain("Need a Secret Key?")
+    expect(shared).toContain("Go to")
+    expect(shared).toContain("https://nstart.me")
+    expect(shared).not.toContain("https://getalby.com/")
+    expect(shared).not.toContain("Keep your account backup safe.")
+    expect(shared).not.toContain("Learn more")
+    expect(shared).toContain('rel="noopener noreferrer"')
+    for (const app of ["market", "merchant"]) {
+      const source = await readFile(
+        `apps/${app}/src/components/SignerSwitch.tsx`,
+        "utf8"
+      )
+      expect(source).not.toContain("tied to your pubkey")
+      expect(source).toContain("onPasteLocalKey={pasteLocalKey}")
+    }
+    const merchant = await readFile(
       "apps/merchant/src/routes/__root.tsx",
       "utf8"
     )
-
-    expect(sharedSigner).toContain("Need a signer?")
-    expect(sharedSigner).toContain("Start at")
-    expect(sharedSigner).toContain("Set up the")
-    expect(sharedSigner).toContain("Return to Conduit and connect.")
-    expect(sharedSigner).not.toContain(
-      "Conduit never creates, stores, or recovers them."
-    )
-    expect(sharedSigner).toContain("https://nstart.me")
-    expect(sharedSigner).toContain("https://getalby.com/")
-    expect(sharedSigner).toContain("https://grownostr.org/get-started")
-    expect(sharedSigner).toContain("Learn more")
-    expect(sharedSigner).toContain('target="_blank"')
-    expect(sharedSigner).toContain('rel="noopener noreferrer"')
-    expect(sharedSigner).toContain("<NoSignerSetupGuide />")
-    expect(merchantRoot).toContain("<SignerConnectPanel")
-    expect(merchantRoot).toContain(
-      "Use your Nostr account to open your merchant workspace."
-    )
-    expect(merchantRoot).toContain(
-      "Choose a browser extension or remote signer."
-    )
-    expect(sharedSigner).toContain("Connect Extension (NIP-07)")
-    expect(sharedSigner).toContain("<RemoteSignerConnect")
-    expect(sharedSigner.replace(/\s+/g, " ")).toContain(
-      "Your account keys stay in your signer app. Conduit cannot recover them."
-    )
-    expect(merchantRoot).toContain("UNLOCK YOUR COMMAND CENTER")
-    expect(merchantRoot).toContain(
-      "Create your store and start publishing products."
-    )
-    expect(merchantRoot).not.toContain("without managing separate shops")
-    expect(merchantRoot).not.toContain("Connect your signer to run your store")
+    expect(merchant).toContain('logoSrc="/images/logo/merchant-logo-full.svg"')
+    expect(merchant).toContain("Open your merchant workspace.")
   })
 })
