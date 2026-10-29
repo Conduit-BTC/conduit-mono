@@ -57,6 +57,7 @@ import {
 import {
   assertProtectedReadAuthorization,
   getProtectedReadAuthorization,
+  hasProtectedReadAuthority,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { getRelayLists } from "./relay-list"
@@ -728,13 +729,8 @@ function bindPrivateDeliveryContinuation(
 ): () => boolean {
   return () => {
     // A false result lets the planner retain outcomes from writes already begun.
-    if (shouldContinue?.() === false) return false
-    if (authorization)
-      assertProtectedReadAuthorization(
-        authorization,
-        authorization.expectedPubkey
-      )
-    return true
+    if (authorization && !hasProtectedReadAuthority(authorization)) return false
+    return shouldContinue?.() !== false
   }
 }
 

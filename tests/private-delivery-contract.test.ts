@@ -35,6 +35,7 @@ import {
 } from "../packages/core/src/protocol/private-message-delivery"
 import {
   createPrivateMessageRumor,
+  createValidatedOrderRouteScope,
   unwrapPrivateMessageEnvelope,
   wrapPrivateMessage,
 } from "../packages/core/src/protocol/private-message-primitives"
@@ -449,7 +450,7 @@ describe("private delivery composed contract", () => {
           identity === "same" ? fixture.sender : fixture.recipient,
           () => true
         )
-        expect(() => options!.shouldContinue!()).toThrow()
+        expect(options!.shouldContinue!()).toBe(false)
         return readiness
       }
       let publications = 0
@@ -2171,6 +2172,59 @@ describe("private delivery composed contract", () => {
     expect(checkpointCalls).toBe(1)
     expect(recipientPublishes).toBe(1)
   })
+
+  it.each(["same", "different"] as const)(
+    "preserves accepted order delivery after a post-ACK %s-identity lease replacement",
+    async (identity) => {
+      const fixture = await setup()
+      const input = sendInput(fixture, 16)
+      input.rumor = createPrivateMessageRumor({
+        ...input.rumor,
+        content: JSON.stringify({
+          note: "Accepted order reply",
+          orderId: "contract-order",
+          buyerPubkey: fixture.sender,
+          merchantPubkey: fixture.recipient,
+          createdAt: Date.now(),
+        }),
+      })
+      input.validatedOrderScope = createValidatedOrderRouteScope({
+        rumor: input.rumor,
+        orderId: "contract-order",
+        senderPubkey: fixture.sender,
+        recipientPubkey: fixture.recipient,
+      })
+      let recipientPublishes = 0
+      let signsAtAcceptance = 0
+      input.publishFn = (async (_event, options) => {
+        expect(options.exclusiveRelayUrls).toEqual([RECIPIENT_RELAY])
+        recipientPublishes++
+        return acknowledged(RECIPIENT_RELAY)
+      }) as NonNullable<PublishPrivateMessageInput["publishFn"]>
+      input.onRecipientAccepted = async () => {
+        signsAtAcceptance = fixture.signCalls()
+        installProtectedReadSigner(
+          identity === "same"
+            ? keySigner(fixture.senderSecret)
+            : fixture.recipientSigner,
+          identity === "same" ? fixture.sender : fixture.recipient,
+          () => true
+        )
+      }
+      const result = await publishPrivateMessage(input)
+      expect(result.recipientDelivery.successfulRelayUrls).toEqual([
+        RECIPIENT_RELAY,
+      ])
+      expect(result.deliveryStatus).toBe("full_success")
+      expect(result.selfDelivery).toBeNull()
+      expect(result.selfCopyError).toContain("session changed")
+      expect(recipientPublishes).toBe(1)
+      expect(fixture.signCalls()).toBe(signsAtAcceptance)
+      const rows = await fixture.database.commerceInboxDeliveries.toArray()
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.state).toBe("accepted")
+    }
+  )
 
   it("reports a failed post-ACK callback without revoking recipient acceptance", async () => {
     const fixture = await setup()
