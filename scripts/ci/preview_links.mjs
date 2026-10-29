@@ -29,21 +29,10 @@ export function extractUrlsFromCommentBody(body) {
   }
 }
 
-function commentMatchesHead(body, headSha) {
-  const revisions = [headSha, headSha.slice(0, 7)]
-
-  return revisions.some((revision) => {
-    const pattern = new RegExp(
-      `<code>\\s*${escapeRegExp(revision)}\\s*</code>`,
-      "i"
-    )
-    return pattern.test(body)
-  })
-}
-
 export function resolveProjectUrls({
   comments,
   projectName,
+  previewHostname,
   headSha,
   cloudflareUsers = DEFAULT_CLOUDFLARE_USERS,
 }) {
@@ -52,14 +41,25 @@ export function resolveProjectUrls({
       const body = comment.body || ""
       return (
         cloudflareUsers.has(comment.user?.login || "") &&
-        body.includes(`Deploying ${projectName}`) &&
-        commentMatchesHead(body, headSha)
+        new RegExp(`Deploying ${escapeRegExp(projectName)}(?:\\s|$)`).test(
+          body
+        ) &&
+        /^[a-f0-9]{40}$/.test(headSha) &&
+        checkSummaryMatchesHead(body, headSha)
       )
     })
     .reverse()
 
   for (const comment of candidates) {
-    const urls = extractUrlsFromCommentBody(comment.body || "")
+    const extracted = extractUrlsFromCommentBody(comment.body || "")
+    const urls = {
+      commitUrl: isProjectPreviewUrl(extracted.commitUrl, previewHostname, true)
+        ? extracted.commitUrl
+        : null,
+      branchUrl: isProjectPreviewUrl(extracted.branchUrl, previewHostname)
+        ? extracted.branchUrl
+        : null,
+    }
     if (urls.commitUrl || urls.branchUrl) {
       return urls
     }
@@ -79,7 +79,12 @@ function checkSummaryMatchesHead(summary, headSha) {
 }
 
 function isProjectPreviewUrl(value, previewHostname, commit = false) {
-  if (typeof value !== "string") return false
+  if (
+    typeof value !== "string" ||
+    typeof previewHostname !== "string" ||
+    !/^[a-z0-9-]+\.pages\.dev$/.test(previewHostname)
+  )
+    return false
   const label = commit ? "[a-f0-9]{8}" : "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
   return new RegExp(
     `^https://${label}\\.${escapeRegExp(previewHostname)}/?$`
@@ -204,6 +209,7 @@ export async function waitForProjectRows({
       const urls = resolveProjectUrls({
         comments,
         projectName: project.project,
+        previewHostname: project.previewHostname,
         headSha,
       })
 
@@ -262,4 +268,47 @@ export async function waitForProjectRows({
       ", "
     )} at ${headSha}; refusing to guess deployment aliases.`
   )
+}
+
+export async function fetchPreviewManifest({
+  branchUrl,
+  previewHostname,
+  headSha,
+  attempt,
+  fetchImpl = globalThis.fetch,
+}) {
+  // Recheck the destination at the I/O boundary, even for prepared rows.
+  if (
+    !isProjectPreviewUrl(branchUrl, previewHostname) ||
+    !/^[a-f0-9]{40}$/.test(headSha) ||
+    !Number.isSafeInteger(attempt) ||
+    attempt < 1
+  ) {
+    throw new Error("Invalid preview manifest request.")
+  }
+  const manifestUrl = new globalThis.URL(
+    "/.well-known/conduit-deployment.json",
+    branchUrl
+  )
+  manifestUrl.searchParams.set("commit", headSha)
+  manifestUrl.searchParams.set("attempt", String(attempt))
+  try {
+    // Manifest identity checks do not authorize a different network destination.
+    const response = await fetchImpl(manifestUrl, {
+      method: "GET",
+      credentials: "omit",
+      redirect: "error",
+      cache: "no-store",
+      signal: globalThis.AbortSignal.timeout(10_000),
+    })
+    if (
+      response.redirected ||
+      (response.status >= 300 && response.status < 400)
+    ) {
+      throw new Error("Preview manifest redirects are not allowed.")
+    }
+    return { response, manifestUrl }
+  } catch {
+    throw new Error("Preview manifest could not be read safely.")
+  }
 }
