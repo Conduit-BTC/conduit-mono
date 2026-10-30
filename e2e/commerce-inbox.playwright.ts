@@ -1189,6 +1189,12 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           inboxDeclarationEvidenceRepository,
           publishFn: publisher,
         }
+        const deliveryStore = owner.store
+        const signer = input.signer
+        const shouldContinue = () => {
+          deliveryStore.assertCurrent()
+          return !!signer && getAccountSigner() === signer
+        }
         let rejected = false
         try {
           await publishPrivateMessage({
@@ -1212,19 +1218,18 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           await owner.store.database.commerceInboxDeliveries.update(row.id, {
             claim: undefined,
           })
-        await retryPrivateDeliveries(
-          principal,
-          publisher,
-          undefined,
-          owner.store,
+        await retryPrivateDeliveries(principal, {
+          publishFn: publisher,
+          store: deliveryStore,
           resolveDeclaration,
-          { inboxDeclarationEvidenceRepository }
-        )
+          inboxDeclarationEvidenceRepository,
+          shouldContinue,
+        })
         const resumedRejected = await resumePrivateDelivery(
-          owner.store,
+          deliveryStore,
           rumor.id,
           recipient,
-          publisher
+          { publishFn: publisher, shouldContinue }
         )
         const rejectedEvidence = {
           rejected,
@@ -1263,9 +1268,8 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
           await owner.store.database.commerceInboxDeliveries.toArray()
         let exactRetry = true
         let retried = 0
-        await retryPrivateDeliveries(
-          principal,
-          async (
+        await retryPrivateDeliveries(principal, {
+          publishFn: async (
             event: { id: string },
             options: { exclusiveRelayUrls: string[] }
           ) => {
@@ -1277,16 +1281,16 @@ test("domain persistence rejection leaves no generic delivery to retry @commerce
               )
             return publisher(event, options)
           },
-          undefined,
-          owner.store,
+          store: deliveryStore,
           resolveDeclaration,
-          { inboxDeclarationEvidenceRepository }
-        )
+          inboxDeclarationEvidenceRepository,
+          shouldContinue,
+        })
         const resumed = await resumePrivateDelivery(
-          owner.store,
+          deliveryStore,
           rumor.id,
           recipient,
-          publisher
+          { publishFn: publisher, shouldContinue }
         )
         return {
           rejectedEvidence,

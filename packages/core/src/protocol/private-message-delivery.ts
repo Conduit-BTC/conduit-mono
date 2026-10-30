@@ -57,6 +57,7 @@ import {
 import {
   assertProtectedReadAuthorization,
   getProtectedReadAuthorization,
+  hasProtectedReadAuthority,
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 import { getRelayLists } from "./relay-list"
@@ -328,28 +329,40 @@ function prepareForegroundPrivateDeliveryAuthentication(
   }
 }
 
+interface PrivateDeliveryRetryOptions {
+  shouldContinue: () => boolean
+  publishFn?: typeof publishWithPlanner
+  onlyId?: string
+  store?: CommerceInboxStore
+  resolveDeclaration?: typeof resolveInboxDeclaration
+  replayAcknowledged?: boolean
+  inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
+  foregroundRelayAuthentication?: ForegroundPrivateDeliveryAuthentication
+}
+
 /** Retry preserves saved wrap bytes and targets. Foreground relay AUTH may sign
  * a separate NIP-42 event, but never signs or replaces the message wrap.
  */
 export async function retryPrivateDeliveries(
   principal: string,
-  publisher = publishWithPlanner,
-  onlyId?: string,
-  suppliedStore?: CommerceInboxStore,
-  resolveDeclaration = resolveInboxDeclaration,
-  options: {
-    replayAcknowledged?: boolean
-    shouldContinue?: () => boolean
-    inboxDeclarationEvidenceRepository?: PublicRelayReadOptions["inboxDeclarationEvidenceRepository"]
-    foregroundRelayAuthentication?: ForegroundPrivateDeliveryAuthentication
-  } = {}
+  options: PrivateDeliveryRetryOptions
 ): Promise<Map<string, PublishWithPlannerResult>> {
+  const {
+    publishFn: publisher = publishWithPlanner,
+    onlyId,
+    resolveDeclaration = resolveInboxDeclaration,
+  } = options
   if (options.replayAcknowledged && !onlyId)
     throw new Error("Exact replay requires one selected delivery")
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   const attempts = new Map<string, PublishWithPlannerResult>()
-  const authorization = getProtectedReadAuthorization(principal)
+  const authorization =
+    options.store?.authorization ?? getProtectedReadAuthorization(principal)
   if (!authorization)
     throw new Error("Reconnect the intended account to retry delivery")
+  assertProtectedReadAuthorization(authorization, principal)
+  if (options.store && options.store.principal !== principal)
+    throw new Error("Private delivery belongs to another account")
   const { assertForegroundAuthority, relayAuthentication } =
     prepareForegroundPrivateDeliveryAuthentication(
       principal,
@@ -357,7 +370,7 @@ export async function retryPrivateDeliveries(
       options.foregroundRelayAuthentication,
       options.shouldContinue
     )
-  const store = suppliedStore ?? new CommerceInboxStore(authorization)
+  const store = options.store ?? new CommerceInboxStore(authorization)
   const rows = await store.database.commerceInboxDeliveries
     .where("accountPubkey")
     .equals(principal)
@@ -368,7 +381,9 @@ export async function retryPrivateDeliveries(
         (!onlyId || row.id === store.key(onlyId))
     )
     .toArray()
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   for (const row of rows) {
+    assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
     store.assertCurrent()
     const id = row.id.slice(principal.length + 1)
     const claimant = crypto.randomUUID()
@@ -378,6 +393,8 @@ export async function retryPrivateDeliveries(
       async () => {
         store.assertCurrent()
         const current = await store.database.commerceInboxDeliveries.get(row.id)
+        assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
+        store.assertCurrent()
         assertInboxTransportDeliveryRow(current)
         if (
           !current ||
@@ -403,7 +420,7 @@ export async function retryPrivateDeliveries(
           inboxDeclarationEvidenceRepository:
             options.inboxDeclarationEvidenceRepository,
           shouldContinue: () => {
-            assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
+            if (options.shouldContinue() === false) return false
             assertForegroundAuthority()
             claim.assertCurrent()
             return true
@@ -448,22 +465,36 @@ export async function retryPrivateDeliveries(
   return attempts
 }
 
+interface PrivateDeliveryResumeOptions {
+  shouldContinue: () => boolean
+  publishFn?: typeof publishWithPlanner
+  onDeliveryStarting?: () => void | Promise<void>
+}
+
 export async function resumePrivateDelivery(
   store: CommerceInboxStore,
   rumorId: string,
   recipient: string,
-  publisher = publishWithPlanner,
-  onDeliveryStarting?: () => void | Promise<void>
+  options: PrivateDeliveryResumeOptions
 ) {
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   const id = `delivery:${rumorId}`
   let row = await store.database.commerceInboxDeliveries.get(store.key(id))
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
   store.assertCurrent()
   assertInboxTransportDeliveryRow(row)
   if (!row) return null
   // A retained immutable send needs the same caller fence before recovery I/O.
-  await onDeliveryStarting?.()
+  // The checkpoint may await persistence while the caller operation is canceled.
+  await options.onDeliveryStarting?.()
+  assertPrivateMessageSignerSessionCurrent(options.shouldContinue)
+  store.assertCurrent()
   if (row.state !== "accepted") {
-    await retryPrivateDeliveries(store.principal, publisher, id, store)
+    await retryPrivateDeliveries(store.principal, {
+      ...options,
+      onlyId: id,
+      store,
+    })
     row = await store.database.commerceInboxDeliveries.get(store.key(id))
     store.assertCurrent()
     assertInboxTransportDeliveryRow(row)
@@ -480,7 +511,19 @@ export async function resumePrivateDelivery(
   )
   const selfId = `${id}:self`
   try {
-    await retryPrivateDeliveries(store.principal, publisher, selfId, store)
+    // Retain the saved history status even when cancellation prevents its retry.
+    const retainedSelf = await store.database.commerceInboxDeliveries.get(
+      store.key(selfId)
+    )
+    assertInboxTransportDeliveryRow(retainedSelf)
+    if (retainedSelf)
+      self = (await store.open<PrivateDeliveryJob>(retainedSelf.value, selfId))
+        .legs[0]
+    await retryPrivateDeliveries(store.principal, {
+      ...options,
+      onlyId: selfId,
+      store,
+    })
     const row = await store.database.commerceInboxDeliveries.get(
       store.key(selfId)
     )
@@ -676,6 +719,18 @@ function assertPrivateMessageSignerSessionCurrent(
 ): void {
   if (shouldContinue?.() === false) {
     throw new Error("Private message signer session changed.")
+  }
+}
+
+/** Bind one attempt to its caller and captured account lease across recovery. */
+function bindPrivateDeliveryContinuation(
+  shouldContinue: (() => boolean) | undefined,
+  authorization: ProtectedReadAuthorization | null
+): () => boolean {
+  return () => {
+    // A false result lets the planner retain outcomes from writes already begun.
+    if (authorization && !hasProtectedReadAuthority(authorization)) return false
+    return shouldContinue?.() !== false
   }
 }
 
@@ -1053,6 +1108,11 @@ export async function publishPrivateMessage(
   const currentDeliveryAuthorization = authenticatedOwnerPubkey
     ? getProtectedReadAuthorization(authenticatedOwnerPubkey)
     : null
+  const shouldContinue = bindPrivateDeliveryContinuation(
+    input.shouldContinue,
+    currentDeliveryAuthorization
+  )
+  if (currentDeliveryAuthorization) input = { ...input, shouldContinue }
   if (
     currentDeliveryAuthorization &&
     input.recipientDeliveryBoundary !== "accepted"
@@ -1062,8 +1122,11 @@ export async function publishPrivateMessage(
         new CommerceInboxStore(currentDeliveryAuthorization),
       stableRumor.id,
       recipientPubkey,
-      input.publishFn,
-      input.onRecipientDeliveryStarting
+      {
+        publishFn: input.publishFn,
+        onDeliveryStarting: input.onRecipientDeliveryStarting,
+        shouldContinue,
+      }
     )
     if (resumed) return resumed
   }
@@ -1305,13 +1368,10 @@ export async function publishPrivateMessage(
         }
       : undefined
 
-  const deliveryAuthorization = authenticatedOwnerPubkey
-    ? getProtectedReadAuthorization(authenticatedOwnerPubkey)
-    : null
   const deliveryStore =
     input.deliveryStore ??
-    (deliveryAuthorization
-      ? new CommerceInboxStore(deliveryAuthorization)
+    (currentDeliveryAuthorization
+      ? new CommerceInboxStore(currentDeliveryAuthorization)
       : null)
   if (deliveryStore && deliveryStore.principal !== senderPubkey)
     throw new Error("Private delivery belongs to another account")
@@ -2021,14 +2081,18 @@ export async function retryPrivateMessageWraps(
       input.foregroundRelayAuthentication,
       input.shouldContinue
     )
-  const originalShouldContinue = input.shouldContinue
+  const continueCaller = bindPrivateDeliveryContinuation(
+    input.shouldContinue,
+    authorization
+  )
+  const shouldContinue = () => {
+    if (!continueCaller()) return false
+    assertForegroundAuthority()
+    return true
+  }
   input = {
     ...input,
-    shouldContinue: () => {
-      if (originalShouldContinue?.() === false) return false
-      assertForegroundAuthority()
-      return true
-    },
+    shouldContinue,
   }
   const store =
     input.deliveryStore ??
@@ -2054,12 +2118,11 @@ export async function retryPrivateMessageWraps(
       // A user-requested domain replay resends the same receipt even after an
       // earlier ACK. Generic resume still sends only unfinished targets.
       const replayAcknowledged = !input.acknowledged
-      const attempts = await retryPrivateDeliveries(
-        store.principal,
-        input.publishFn,
-        id,
+      const attempts = await retryPrivateDeliveries(store.principal, {
+        publishFn: input.publishFn,
+        onlyId: id,
         store,
-        (pubkey, options) =>
+        resolveDeclaration: (pubkey, options) =>
           input.resolveInboxRelays
             ? resolveDeclarationViaSeam(
                 pubkey,
@@ -2070,14 +2133,12 @@ export async function retryPrivateMessageWraps(
                 ...input.inboxDeclarationOptions,
                 ...options,
               }),
-        {
-          replayAcknowledged,
-          shouldContinue: input.shouldContinue,
-          inboxDeclarationEvidenceRepository:
-            input.inboxDeclarationEvidenceRepository,
-          foregroundRelayAuthentication: input.foregroundRelayAuthentication,
-        }
-      )
+        replayAcknowledged,
+        shouldContinue,
+        inboxDeclarationEvidenceRepository:
+          input.inboxDeclarationEvidenceRepository,
+        foregroundRelayAuthentication: input.foregroundRelayAuthentication,
+      })
       if (replayAcknowledged) {
         const delivery = attempts.get(event.id)
         if (!delivery?.successfulRelayUrls.length)
