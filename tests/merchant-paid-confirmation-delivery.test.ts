@@ -571,21 +571,28 @@ it("a checkpoint-only row is absent from generic send retry and outgoing-pending
   await fixture.reload()
   expect(fixture.owner().getSnapshot().diagnostics.outgoingPending).toBe(0)
   const publications = fixture.publications()
-  const retried = await retryPrivateDeliveries(
-    fixture.input.merchantPubkey,
-    fixture.publishRelay,
-    undefined,
-    fixture.owner().store
-  )
+  const retried = await retryPrivateDeliveries(fixture.input.merchantPubkey, {
+    publishFn: fixture.publishRelay,
+    store: fixture.owner().store,
+    shouldContinue: () => {
+      fixture.owner().store.assertCurrent()
+      return true
+    },
+  })
   expect(retried.size).toBe(0)
   const checkpoint = await fixture.confirmationRow()
   const acknowledgedReplay = await retryPrivateDeliveries(
     fixture.input.merchantPubkey,
-    fixture.publishRelay,
-    checkpoint.id.slice(fixture.input.merchantPubkey.length + 1),
-    fixture.owner().store,
-    undefined,
-    { replayAcknowledged: true }
+    {
+      publishFn: fixture.publishRelay,
+      onlyId: checkpoint.id.slice(fixture.input.merchantPubkey.length + 1),
+      store: fixture.owner().store,
+      shouldContinue: () => {
+        fixture.owner().store.assertCurrent()
+        return true
+      },
+      replayAcknowledged: true,
+    }
   )
   expect(acknowledgedReplay.size).toBe(0)
   expect(fixture.publications() - publications).toBe(0)
@@ -606,12 +613,14 @@ it("a saved legacy absent-kind transport row still resumes unchanged through gen
   fixture.rejectRelay(false)
   await fixture.reload()
   expect(fixture.owner().getSnapshot().diagnostics.outgoingPending).toBe(1)
-  const retried = await retryPrivateDeliveries(
-    fixture.input.merchantPubkey,
-    fixture.publishRelay,
-    undefined,
-    fixture.owner().store
-  )
+  const retried = await retryPrivateDeliveries(fixture.input.merchantPubkey, {
+    publishFn: fixture.publishRelay,
+    store: fixture.owner().store,
+    shouldContinue: () => {
+      fixture.owner().store.assertCurrent()
+      return true
+    },
+  })
   expect(retried.size).toBe(1)
   expect(fixture.received[0]?.id === savedWrapId).toBe(true)
   expect(fixture.signingCalls() - signs).toBe(0)

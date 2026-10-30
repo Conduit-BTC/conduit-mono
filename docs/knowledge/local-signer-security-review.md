@@ -40,6 +40,16 @@ errors are generic and contain no clipboard contents. Paste does not sign in or
 persist the account until the user submits. Browser permission prompts and
 manual-paste fallback remain platform-dependent.
 
+After the Paste button fills the field, or a native paste input event confirms
+insertion, the shared form immediately attempts one empty clipboard write. This
+write-only cleanup never reads secret text. Success feedback requires browser
+acknowledgement; failure preserves the field and a manual-clear warning through
+typing. Clearing does not block sign-in. No retries or deferred writes are queued,
+and stale completions cannot replace newer feedback. An issued browser write
+cannot be cancelled or conditionally matched to the pasted clipboard contents;
+a later copy can race with it. This does not erase clipboard history or synced
+copies, and browser/device permission behavior remains a separate QA concern.
+
 ## Threat model and lifecycle
 
 Contain accidental key propagation, logging/telemetry, ad hoc signing,
