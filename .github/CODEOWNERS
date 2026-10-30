@@ -27,6 +27,15 @@ packages/ui/src/components/ProductTermsOfService.tsx @dylangolow @ericfj2140
 packages/ui/src/legal/** @dylangolow @ericfj2140
 LICENSE @dylangolow @ericfj2140
 
+# Browser execution policy and its enforcement evidence.
+scripts/vite/browser_security.ts @dylangolow @ericfj2140
+packages/core/src/schemas/browser-zod.ts @dylangolow @ericfj2140
+apps/*/vite.config.ts @dylangolow @ericfj2140
+playwright.security.config.ts @dylangolow @ericfj2140
+security-tests/** @dylangolow @ericfj2140
+scripts/dev/serve_security_build.mjs @dylangolow @ericfj2140
+tests/browser-security.test.ts @dylangolow @ericfj2140
+
 # Imported account secrets and shared authority/input changes need focused review.
 packages/core/src/protocol/local-key/** @dylangolow @ericfj2140
 packages/core/src/context/AuthContext.tsx @dylangolow @ericfj2140
