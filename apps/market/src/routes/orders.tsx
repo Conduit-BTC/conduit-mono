@@ -3548,7 +3548,7 @@ function OrderDetail({
               <p className="mt-1 text-sm text-[var(--text-secondary)]">
                 {guestIdentity
                   ? vm.requiresPickup
-                    ? "The merchant can use the email or phone submitted at checkout only if guest pickup recovery is needed."
+                    ? "For pickup help, speak with the seller or organizer. If you shared contact details at checkout, the merchant can also use them for recovery."
                     : "The merchant will use the phone and email contact details submitted at checkout for questions and fulfillment updates."
                   : "Message the merchant for any questions or issues."}
               </p>
@@ -4193,7 +4193,7 @@ function OrdersPage() {
             <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
               {signerConnected
                 ? "Track your purchases, payment status, and shipping progress."
-                : "Review this guest order and its locally saved checkout status. The merchant can use your submitted private recovery contact."}
+                : "Review this guest order and its locally saved checkout status. Keep your private receipt, if provided, for pickup or support."}
             </p>
           </div>
           <RefreshChip

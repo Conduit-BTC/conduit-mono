@@ -104,6 +104,43 @@ export function isAuthorizedZeroCostPickup(
   return input.pickupAuthorizationVerified && hasExactZeroCostPickupTerms(input)
 }
 
+export interface MerchantEventInventoryPolicy {
+  hasEventPickup: boolean
+  allowGenericStockAdjustments: boolean
+  acceptedForFulfillment: boolean
+  canReconcilePaidMerchantPickup: boolean
+}
+
+/** Event pickup stock belongs to durable acceptance, never the generic listing editor. */
+export function getMerchantEventInventoryPolicy(input: {
+  order: Pick<OrderSchema, "items"> | null
+  acceptanceReadReady: boolean
+  acceptedInventorySaved: boolean
+  goodsPaymentVerified: boolean
+}): MerchantEventInventoryPolicy {
+  const eventPickups =
+    input.order?.items.flatMap((item) =>
+      item.fulfillment?.type === "event_market_pickup" ? [item.fulfillment] : []
+    ) ?? []
+  const hasEventPickup = eventPickups.length > 0
+  const merchantPresent =
+    hasEventPickup &&
+    eventPickups.every((pickup) => pickup.mode === "merchant_present")
+
+  return {
+    hasEventPickup,
+    allowGenericStockAdjustments: !hasEventPickup,
+    acceptedForFulfillment:
+      input.acceptanceReadReady &&
+      (!hasEventPickup || input.acceptedInventorySaved),
+    canReconcilePaidMerchantPickup:
+      merchantPresent &&
+      input.acceptanceReadReady &&
+      !input.acceptedInventorySaved &&
+      input.goodsPaymentVerified,
+  }
+}
+
 /** Goods settlement and handout authority, never fee or cleanup progress. */
 export function getMerchantFulfillmentBlockReason(input: {
   goodsPaymentVerified: boolean

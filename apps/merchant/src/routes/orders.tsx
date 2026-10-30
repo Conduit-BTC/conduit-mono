@@ -167,6 +167,7 @@ import {
 import {
   buildMerchantOrderActionView,
   captureMerchantPaymentConfirmationTarget,
+  getMerchantEventInventoryPolicy,
   getMerchantOrderCancellationCopy,
   getMerchantFulfillmentBlockReason,
   isAuthorizedZeroCostPickup,
@@ -248,6 +249,13 @@ type ReopenOrderMutationInput = {
   delivery: MerchantOrderDelivery
   communication: MerchantOrderCommunication
   transition: MerchantOrderReopenTransition
+}
+
+type EventInventoryReconciliationInput = {
+  merchantPubkey: string
+  buyerPubkey: string
+  orderId: string
+  orderMessageId: string
 }
 
 type StockDeliveryState = {
@@ -1562,9 +1570,6 @@ function OrdersWorkspace() {
   })
   const pickupAuthorizationVerified =
     pickupAuthorizationQuery.data?.status === "verified"
-  const pickupFulfillmentActionsAuthorized =
-    inventoryAcceptanceReady &&
-    (!snapshottedOrderFulfillment.hasPickupClaim || pickupAuthorizationVerified)
   // Preserve the buyer's acknowledged pickup lane for presentation while
   // treating its organizer/product authorization as a separate action gate.
   // An unverifiable pickup must never silently become a shipment.
@@ -1590,6 +1595,37 @@ function OrdersWorkspace() {
         }),
       }
     : { status: null }
+  const selectedRoutedSettlement = selected
+    ? getOrderSettlement(selected)
+    : null
+  const merchantPaid = merchantOrderState.checkoutSparkRouted
+    ? selectedRoutedSettlement?.commerceVerified === true
+    : isMerchantOrderPaid(merchantOrderState)
+  const eventInventoryPolicy = getMerchantEventInventoryPolicy({
+    order: selectedOrder,
+    acceptanceReadReady: inventoryAcceptanceReady,
+    acceptedInventorySaved: !!acceptedInventory,
+    goodsPaymentVerified: merchantPaid,
+  })
+  const pickupFulfillmentActionsAuthorized =
+    eventInventoryPolicy.acceptedForFulfillment &&
+    (!snapshottedOrderFulfillment.hasPickupClaim || pickupAuthorizationVerified)
+  const eventInventoryReconciliationGateRef = useRef({
+    merchantPubkey: pubkey,
+    buyerPubkey: selected?.buyerPubkey,
+    orderId: selected?.orderId,
+    orderMessageId: selectedOrderMessage?.id,
+    goodsPaymentVerified: merchantPaid,
+    canReconcile: eventInventoryPolicy.canReconcilePaidMerchantPickup,
+  })
+  eventInventoryReconciliationGateRef.current = {
+    merchantPubkey: pubkey,
+    buyerPubkey: selected?.buyerPubkey,
+    orderId: selected?.orderId,
+    orderMessageId: selectedOrderMessage?.id,
+    goodsPaymentVerified: merchantPaid,
+    canReconcile: eventInventoryPolicy.canReconcilePaidMerchantPickup,
+  }
   useEffect(() => {
     const terminalStatusAuthenticated = selected?.messages?.some(
       (message) =>
@@ -1639,6 +1675,7 @@ function OrdersWorkspace() {
   ])
   const stockAdjustments =
     !!acceptedInventory ||
+    !eventInventoryPolicy.allowGenericStockAdjustments ||
     !inventoryAcceptanceReady ||
     !selected ||
     !orderSummary ||
@@ -1733,12 +1770,6 @@ function OrdersWorkspace() {
       stockMutationDisabledKeys.add(adjustment.key)
     }
   }
-  const selectedRoutedSettlement = selected
-    ? getOrderSettlement(selected)
-    : null
-  const merchantPaid = merchantOrderState.checkoutSparkRouted
-    ? selectedRoutedSettlement?.commerceVerified === true
-    : isMerchantOrderPaid(merchantOrderState)
   const reservedOrganizerHandoutQuery = useQuery({
     queryKey: [
       "merchant-reserved-organizer-handout",
@@ -1774,7 +1805,7 @@ function OrdersWorkspace() {
     zeroCostPickupAuthorized:
       !merchantOrderState.checkoutSparkRouted &&
       merchantOrderState.isZeroCostPickup === true,
-    inventoryAcceptanceReady,
+    inventoryAcceptanceReady: eventInventoryPolicy.acceptedForFulfillment,
     pickupAuthorityVerified:
       !snapshottedOrderFulfillment.hasPickupClaim ||
       pickupAuthorizationVerified,
@@ -1801,11 +1832,16 @@ function OrdersWorkspace() {
   const assertPaidForFulfillment = useCallback(
     async (allowZeroCostPickup = false) => {
       if (!pubkey || !selected) throw new Error("No order selected.")
-      await readMerchantOccurrenceAcceptedOrder({
+      const accepted = await readMerchantOccurrenceAcceptedOrder({
         merchantPubkey: pubkey,
         orderId: selected.orderId,
         order: selectedOrder,
       })
+      if (snapshottedOrderFulfillment.hasPickupClaim && !accepted) {
+        throw new Error(
+          "Reconcile this event order's exact inventory before fulfillment."
+        )
+      }
       if (
         !merchantPaid &&
         !(
@@ -1826,6 +1862,7 @@ function OrdersWorkspace() {
       pubkey,
       selected,
       selectedOrder,
+      snapshottedOrderFulfillment.hasPickupClaim,
     ]
   )
   async function assertCurrentPickupAuthorization(
@@ -3056,10 +3093,17 @@ function OrdersWorkspace() {
 
   async function commitSelectedInventory(
     order = selectedOrder,
-    purpose?: "payment-confirmation"
+    purpose?: "payment-confirmation",
+    assertAdditionalCurrent?: () => void
   ) {
     if (!pubkey || !order) throw new Error("No order selected.")
     const authority = captureFreshOrderAuthority()
+    const shouldContinue = () => {
+      if (!isCurrentOrderAction(authority)) return false
+      assertAdditionalCurrent?.()
+      return true
+    }
+    assertAdditionalCurrent?.()
     const productIds = [...new Set(order.items.map((item) => item.productId))]
     const inventory = await db.merchantInventoryProducts.bulkGet(productIds)
     const unresolved = productIds.filter((_, index) => !inventory[index])
@@ -3068,7 +3112,7 @@ function OrdersWorkspace() {
           includeMarketHidden: true,
           accountPubkey: pubkey,
           authenticatedPubkey,
-          shouldContinue: () => isCurrentOrderAction(authority),
+          shouldContinue,
         })
       : null
     const result = await withMerchantStockLock(pubkey, () => {
@@ -3093,7 +3137,7 @@ function OrdersWorkspace() {
       return acceptMerchantOccurrenceOrder({
         merchantPubkey: pubkey,
         authenticatedPubkey,
-        shouldContinue: () => isCurrentOrderAction(authority),
+        shouldContinue,
         order,
         purpose,
         products: [
@@ -3111,6 +3155,112 @@ function OrdersWorkspace() {
     )
     return result
   }
+  const reconcilePaidEventInventoryMutation = useMutation({
+    mutationFn: (input: EventInventoryReconciliationInput) =>
+      runExclusiveOrderAction(orderActionLockRef, async () => {
+        const authority = captureFreshOrderAuthority()
+        const actionConversation = selected
+        const order = selectedOrder
+        if (
+          !actionConversation ||
+          !order ||
+          authority.accountPubkey !== input.merchantPubkey ||
+          actionConversation.buyerPubkey !== input.buyerPubkey ||
+          actionConversation.orderId !== input.orderId ||
+          selectedOrderMessage?.id !== input.orderMessageId ||
+          order.id !== input.orderId ||
+          order.merchantPubkey !== input.merchantPubkey
+        ) {
+          throw new Error("The selected event order changed. Review it again.")
+        }
+        const assertCurrentReconciliation = () => {
+          const current = eventInventoryReconciliationGateRef.current
+          if (
+            !isCurrentOrderAction(authority) ||
+            !isCurrentSelectedOrder(
+              input.merchantPubkey,
+              input.buyerPubkey,
+              input.orderId
+            ) ||
+            current.merchantPubkey !== input.merchantPubkey ||
+            current.buyerPubkey !== input.buyerPubkey ||
+            current.orderId !== input.orderId ||
+            current.orderMessageId !== input.orderMessageId ||
+            !current.goodsPaymentVerified
+          ) {
+            throw new Error(
+              "Recheck the selected order's verified payment and event inventory."
+            )
+          }
+        }
+        assertCurrentReconciliation()
+        if (!eventInventoryReconciliationGateRef.current.canReconcile)
+          throw new Error(
+            "Recheck the selected order's verified payment and event inventory."
+          )
+        const result = await commitSelectedInventory(
+          order,
+          "payment-confirmation",
+          assertCurrentReconciliation
+        )
+        try {
+          const publication = await resumeMerchantOccurrencePublication({
+            merchantPubkey: input.merchantPubkey,
+            authenticatedPubkey,
+            shouldContinue: () =>
+              isCurrentOrderAction(authority) &&
+              isCurrentSelectedOrder(
+                input.merchantPubkey,
+                input.buyerPubkey,
+                input.orderId
+              ),
+          })
+          if (
+            isCurrentOrderAction(authority) &&
+            isCurrentSelectedOrder(
+              input.merchantPubkey,
+              input.buyerPubkey,
+              input.orderId
+            )
+          ) {
+            setInventoryNotice(
+              publication.pending
+                ? "Event inventory is accepted. Some inventory publication is still pending."
+                : "Event inventory is accepted and its updates are published."
+            )
+          }
+        } catch {
+          if (
+            isCurrentOrderAction(authority) &&
+            isCurrentSelectedOrder(
+              input.merchantPubkey,
+              input.buyerPubkey,
+              input.orderId
+            )
+          ) {
+            setInventoryNotice(
+              "Event inventory is accepted locally. Inventory publication needs retry."
+            )
+          }
+        }
+        return { authority, actionConversation, result }
+      }),
+    onSuccess: ({ authority, actionConversation }) => {
+      if (
+        !isCurrentOrderAction(authority) ||
+        !isCurrentSelectedOrder(
+          authority.accountPubkey,
+          actionConversation.buyerPubkey,
+          actionConversation.orderId
+        )
+      )
+        return
+      flash("Event inventory reconciled.")
+      void invalidateOrderQueries().catch(() =>
+        console.warn("Could not refresh reconciled event inventory")
+      )
+    },
+  })
   const retryInventoryMutation = useMutation({
     mutationFn: async () => {
       if (!pubkey || !selectedOrder) throw new Error("No order selected.")
@@ -3545,6 +3695,7 @@ function OrdersWorkspace() {
   const orderDeliveryPending =
     !hasAccount ||
     stockUpdateMutation.isPending ||
+    reconcilePaidEventInventoryMutation.isPending ||
     confirmPaymentMutation.isPending ||
     futureReadyMutation.isPending ||
     futureRevokeMutation.isPending ||
@@ -3573,6 +3724,7 @@ function OrdersWorkspace() {
     futureReadyMutation.reset()
     futureRevokeMutation.reset()
     futureRetryMutation.reset()
+    reconcilePaidEventInventoryMutation.reset()
     confirmPaymentMutation.reset()
     advanceStatusMutation.reset()
     reopenOrderMutation.reset()
@@ -3587,6 +3739,7 @@ function OrdersWorkspace() {
     futureReadyMutation,
     futureRevokeMutation,
     futureRetryMutation,
+    reconcilePaidEventInventoryMutation,
     reopenOrderMutation,
     retryInvoiceMutation,
     shippingMutation,
@@ -3999,6 +4152,61 @@ function OrdersWorkspace() {
                               {successFlash}
                             </div>
                           )}
+
+                          {eventInventoryPolicy.canReconcilePaidMerchantPickup ? (
+                            <section className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4">
+                              <div>
+                                <h4 className="text-sm font-semibold text-[var(--text-primary)]">
+                                  Event inventory acceptance
+                                </h4>
+                                <p
+                                  role="status"
+                                  className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]"
+                                >
+                                  Payment is verified, but this event
+                                  pickup&apos;s exact inventory acceptance is
+                                  not saved on this device. Reconcile the signed
+                                  order before completing pickup. This does not
+                                  send another payment.
+                                </p>
+                              </div>
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={orderActionPending}
+                                onClick={() => {
+                                  if (
+                                    !pubkey ||
+                                    !selected ||
+                                    !selectedOrderMessage
+                                  )
+                                    return
+                                  reconcilePaidEventInventoryMutation.mutate({
+                                    merchantPubkey: pubkey,
+                                    buyerPubkey: selected.buyerPubkey,
+                                    orderId: selected.orderId,
+                                    orderMessageId: selectedOrderMessage.id,
+                                  })
+                                }}
+                              >
+                                {reconcilePaidEventInventoryMutation.isPending
+                                  ? "Reconciling…"
+                                  : "Reconcile event inventory"}
+                              </Button>
+                              {reconcilePaidEventInventoryMutation.error &&
+                              reconcilePaidEventInventoryMutation.variables
+                                ?.orderId === selected.orderId ? (
+                                <p
+                                  role="alert"
+                                  className="text-pretty text-sm leading-6 text-[var(--error-text)]"
+                                >
+                                  Inventory reconciliation did not finish
+                                  cleanly. Refresh this order and check for its
+                                  saved acceptance before trying again.
+                                </p>
+                              ) : null}
+                            </section>
+                          ) : null}
 
                           <OrderStockPanel
                             adjustments={stockAdjustments}
