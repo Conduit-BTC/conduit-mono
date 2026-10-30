@@ -21,12 +21,10 @@ function hasSameValue(left: unknown, right: unknown): boolean {
 const appCases = [
   {
     app: "market",
-    appName: "Conduit Market",
     url: `http://127.0.0.1:${process.env.PLAYWRIGHT_MARKET_PORT ?? "7000"}`,
   },
   {
     app: "merchant",
-    appName: "Conduit Merchant Portal",
     url: `http://127.0.0.1:${process.env.PLAYWRIGHT_MERCHANT_PORT ?? "7001"}`,
   },
 ] as const
@@ -64,6 +62,12 @@ async function readClientErrorEvents(
 }
 
 async function waitForClientEffects(page: Page): Promise<void> {
+  await expect(
+    page.getByRole("heading", { name: /^About Conduit/ })
+  ).toBeVisible()
+  // Both About shells install listeners before their page-title effect runs.
+  // Animation frames alone can finish while the route is still loading.
+  await expect(page).toHaveTitle(/^About \| Conduit (Market|Merchant)$/)
   await page.evaluate(
     () =>
       new Promise<void>((resolve) => {
@@ -136,7 +140,7 @@ test("merchant authenticated route errors retain account recovery actions @merch
   ).toBeVisible()
 })
 
-for (const { app, appName, url } of appCases) {
+for (const { app, url } of appCases) {
   for (const hostileCase of hostileBoundaryCases) {
     test(`${app} route boundary safely handles ${hostileCase} @${app}`, async ({
       page,
@@ -183,11 +187,8 @@ for (const { app, appName, url } of appCases) {
       { times: 1 }
     )
     await page.goto(`${url}/about`)
-    await expect(
-      page.getByRole("heading", { name: `About ${appName}`, exact: true })
-    ).toBeVisible()
-    expect(delayedAboutComponents).toBe(1)
     await waitForClientEffects(page)
+    expect(delayedAboutComponents).toBe(1)
     await dispatchRuntimeErrors(page)
 
     await expect
@@ -267,9 +268,6 @@ for (const { app, appName, url } of appCases) {
 
     const disallowedUrl = url.replace("127.0.0.1", "localhost")
     await page.goto(`${disallowedUrl}/about`)
-    await expect(
-      page.getByRole("heading", { name: `About ${appName}`, exact: true })
-    ).toBeVisible()
     await waitForClientEffects(page)
     await dispatchRuntimeErrors(page)
     await waitForClientEffects(page)
