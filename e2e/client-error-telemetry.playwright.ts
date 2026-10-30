@@ -62,6 +62,12 @@ async function readClientErrorEvents(
 }
 
 async function waitForClientEffects(page: Page): Promise<void> {
+  await expect(
+    page.getByRole("heading", { name: /^About Conduit/ })
+  ).toBeVisible()
+  // Both About shells install listeners before their page-title effect runs.
+  // Animation frames alone can finish while the route is still loading.
+  await expect(page).toHaveTitle(/^About \| Conduit (Market|Merchant)$/)
   await page.evaluate(
     () =>
       new Promise<void>((resolve) => {
