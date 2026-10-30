@@ -3,6 +3,7 @@ import { createEventMarketOrderFixture } from "./helpers/event-market-order-fixt
 import { getMerchantOrderActions, type OrderSchema } from "@conduit/core"
 import {
   buildMerchantOrderActionView,
+  getMerchantEventInventoryPolicy,
   getMerchantOrderCancellationCopy,
   getMerchantFulfillmentBlockReason,
   isAuthorizedZeroCostPickup,
@@ -11,6 +12,122 @@ import {
 } from "../apps/merchant/src/lib/order-action-view"
 
 describe("merchant order action presentation", () => {
+  it("keeps event inventory on its durable acceptance lane", () => {
+    const merchantPresent = createEventMarketOrderFixture({
+      mode: "merchant_present",
+      newAssignment: true,
+    }).order
+    const waiting = getMerchantEventInventoryPolicy({
+      order: merchantPresent,
+      acceptanceReadReady: true,
+      acceptedInventorySaved: false,
+      goodsPaymentVerified: true,
+    })
+
+    expect(waiting).toEqual({
+      hasEventPickup: true,
+      allowGenericStockAdjustments: false,
+      acceptedForFulfillment: false,
+      canReconcilePaidMerchantPickup: true,
+    })
+    expect(
+      getMerchantEventInventoryPolicy({
+        order: merchantPresent,
+        acceptanceReadReady: true,
+        acceptedInventorySaved: true,
+        goodsPaymentVerified: true,
+      })
+    ).toEqual({
+      hasEventPickup: true,
+      allowGenericStockAdjustments: false,
+      acceptedForFulfillment: true,
+      canReconcilePaidMerchantPickup: false,
+    })
+    expect(
+      getMerchantEventInventoryPolicy({
+        order: merchantPresent,
+        acceptanceReadReady: false,
+        acceptedInventorySaved: false,
+        goodsPaymentVerified: true,
+      }).canReconcilePaidMerchantPickup
+    ).toBe(false)
+    expect(
+      getMerchantEventInventoryPolicy({
+        order: merchantPresent,
+        acceptanceReadReady: true,
+        acceptedInventorySaved: false,
+        goodsPaymentVerified: false,
+      }).canReconcilePaidMerchantPickup
+    ).toBe(false)
+  })
+
+  it("preserves organizer import and ordinary stock as separate lanes", () => {
+    const organizerHeld = createEventMarketOrderFixture({
+      mode: "organizer_handoff",
+      newAssignment: true,
+    }).order
+    const merchantPresent = createEventMarketOrderFixture({
+      mode: "merchant_present",
+      newAssignment: true,
+    }).order
+    const ordinary = {
+      ...merchantPresent,
+      items: merchantPresent.items.map((item) => {
+        const ordinaryItem = { ...item }
+        delete ordinaryItem.fulfillment
+        return ordinaryItem
+      }),
+    }
+
+    expect(
+      getMerchantEventInventoryPolicy({
+        order: organizerHeld,
+        acceptanceReadReady: true,
+        acceptedInventorySaved: false,
+        goodsPaymentVerified: true,
+      })
+    ).toEqual({
+      hasEventPickup: true,
+      allowGenericStockAdjustments: false,
+      acceptedForFulfillment: false,
+      canReconcilePaidMerchantPickup: false,
+    })
+    expect(
+      getMerchantEventInventoryPolicy({
+        order: ordinary,
+        acceptanceReadReady: true,
+        acceptedInventorySaved: false,
+        goodsPaymentVerified: true,
+      })
+    ).toEqual({
+      hasEventPickup: false,
+      allowGenericStockAdjustments: true,
+      acceptedForFulfillment: true,
+      canReconcilePaidMerchantPickup: false,
+    })
+  })
+
+  it("wires paid event reconciliation without restoring the ordinary stock path", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+
+    expect(source).toContain(
+      "const eventInventoryPolicy = getMerchantEventInventoryPolicy({"
+    )
+    expect(source).toContain(
+      "!eventInventoryPolicy.allowGenericStockAdjustments"
+    )
+    expect(source).toContain(
+      "inventoryAcceptanceReady: eventInventoryPolicy.acceptedForFulfillment"
+    )
+    expect(source).toMatch(
+      /commitSelectedInventory\(\s*order,\s*"payment-confirmation",/
+    )
+    expect(source).toContain(
+      "snapshottedOrderFulfillment.hasPickupClaim && !accepted"
+    )
+    expect(source).toContain("Reconcile event inventory")
+  })
+
   it("explains how to import an already recorded organizer handout", () => {
     expect(
       getMerchantFulfillmentBlockReason({

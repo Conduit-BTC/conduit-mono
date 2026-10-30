@@ -48,6 +48,7 @@ import { createMerchantCheckoutSparkPayoutReviewSelection } from "../lib/checkou
 import {
   getMerchantCheckoutSparkCandidateSelectionKey,
   getMerchantCheckoutSparkOrderSelectionKey,
+  resolveMerchantCheckoutSparkDiscoverySelection,
   selectMerchantCheckoutSparkOrderRecovery,
   type MerchantCheckoutSparkSelectedOrder,
 } from "../lib/checkout-spark-order-selection"
@@ -215,6 +216,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const [reviewSelection] = useState(
     createMerchantCheckoutSparkPayoutReviewSelection
   )
+  const discoverySelection = useRef<ReturnType<
+    typeof resolveMerchantCheckoutSparkDiscoverySelection
+  > | null>(null)
   const [automaticSession] = useState(() =>
     createMerchantCheckoutSparkAutomaticSession({
       isCurrent: () => automaticAllowed.current && hasCurrentExecutionSession(),
@@ -305,7 +309,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const candidateSelectionKey = candidate
     ? getMerchantCheckoutSparkCandidateSelectionKey(selectedOrder, candidate)
     : null
-  const selectionKey = candidateSelectionKey ?? selectedOrderKey
+  discoverySelection.current = resolveMerchantCheckoutSparkDiscoverySelection({
+    selected: selectedOrderKey ? selectedOrder : null,
+    page: result,
+    previous: discoverySelection.current,
+  })
+  const selectionKey = discoverySelection.current.selectionKey
   const reviewSelectionRevision = reviewSelection.select(
     selectedOrderId,
     selectionKey
