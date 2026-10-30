@@ -1,7 +1,8 @@
-import { Clipboard, KeyRound } from "lucide-react"
+import { Check, Clipboard, KeyRound } from "lucide-react"
 import { useEffect, useId, useRef, useState } from "react"
 import { Button } from "./Button"
 import { Input } from "./Input"
+import { clearLocalKeyClipboard } from "./local-key-clipboard"
 
 /** Uncontrolled input: only core's local-key boundary reads import/clipboard text. */
 export function LocalKeyImportForm({
@@ -16,32 +17,68 @@ export function LocalKeyImportForm({
   const id = useId()
   const input = useRef<HTMLInputElement>(null)
   const pasteAttempt = useRef<AbortController | null>(null)
+  const clearAttempt = useRef(0)
+  const clearing = useRef(false)
+  const clipboardTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
   const [pasting, setPasting] = useState(false)
   const [pasteStatus, setPasteStatus] = useState<"pasted" | "failed" | null>(
     null
   )
+  const [clipboardStatus, setClipboardStatus] = useState<
+    "cleared" | "failed" | null
+  >(null)
   useEffect(() => {
     const element = input.current
     return () => {
       pasteAttempt.current?.abort()
       pasteAttempt.current = null
+      clearAttempt.current += 1
+      if (clipboardTimer.current) clearTimeout(clipboardTimer.current)
       if (element) element.value = ""
     }
   }, [])
   useEffect(() => {
     if (disabled) {
       pasteAttempt.current?.abort()
+      clearAttempt.current += 1
       setPasting(false)
     }
   }, [disabled])
-
   function cancelPaste() {
     pasteAttempt.current?.abort()
     pasteAttempt.current = null
     setPasting(false)
     setPasteStatus(null)
+  }
+
+  async function clearClipboard(element: HTMLInputElement) {
+    const attempt = ++clearAttempt.current
+    if (clipboardTimer.current) clearTimeout(clipboardTimer.current)
+    setClipboardStatus(null)
+    // Never queue another write: a delayed cleanup could erase a later copy.
+    if (clearing.current) {
+      setClipboardStatus("failed")
+      return
+    }
+    clearing.current = true
+    const cleared = await clearLocalKeyClipboard(element)
+    clearing.current = false
+    // An issued browser write cannot be aborted; only its UI result can retire.
+    if (
+      clearAttempt.current === attempt &&
+      element.isConnected &&
+      !element.disabled
+    ) {
+      setPasteStatus(null)
+      setClipboardStatus(cleared ? "cleared" : "failed")
+      if (cleared) {
+        clipboardTimer.current = setTimeout(() => {
+          setClipboardStatus(null)
+        }, 3_000)
+      }
+    }
   }
 
   async function paste() {
@@ -51,9 +88,17 @@ export function LocalKeyImportForm({
     pasteAttempt.current = attempt
     setPasting(true)
     setPasteStatus(null)
+    clearAttempt.current += 1
+    setClipboardStatus(null)
     try {
       const pasted = await onPaste(element, attempt.signal)
-      if (!attempt.signal.aborted && pasted) {
+      if (
+        !attempt.signal.aborted &&
+        pasted &&
+        element.isConnected &&
+        !element.disabled
+      ) {
+        void clearClipboard(element)
         setPasteStatus("pasted")
         element.focus()
       }
@@ -78,6 +123,8 @@ export function LocalKeyImportForm({
         event.preventDefault()
         if (!input.current || disabled || pending) return
         cancelPaste()
+        clearAttempt.current += 1
+        setClipboardStatus((status) => (status === "failed" ? status : null))
         setPending(true)
         setFailed(false)
         try {
@@ -110,8 +157,18 @@ export function LocalKeyImportForm({
           spellCheck={false}
           className="min-w-0 flex-1 border-0 bg-transparent shadow-none"
           disabled={disabled || pending}
-          onInput={cancelPaste}
-          aria-describedby={`${id}-help`}
+          onInput={(event) => {
+            cancelPaste()
+            const native = event.nativeEvent
+            if (
+              native.isTrusted &&
+              "inputType" in native &&
+              native.inputType === "insertFromPaste"
+            ) {
+              void clearClipboard(event.currentTarget)
+            }
+          }}
+          aria-describedby={`${id}-help ${id}-clipboard-help ${id}-clipboard-status`}
           placeholder="Your secret key"
         />
         {onPaste && (
@@ -135,14 +192,35 @@ export function LocalKeyImportForm({
       >
         Stay signed in. Your key stays in your browser, not on our servers.
       </p>
+      <p
+        id={`${id}-clipboard-help`}
+        className="text-sm text-pretty text-[var(--text-secondary)]"
+      >
+        Pasting here also clears your clipboard when your browser allows it.
+      </p>
       {pasteStatus === "failed" && (
         <p role="alert" className="text-sm text-error-text">
           Clipboard access was blocked or no text was found. Paste directly into
           the field instead.
         </p>
       )}
-      <p role="status" className="sr-only">
-        {pasteStatus === "pasted" ? "Secret key pasted." : ""}
+      <p
+        id={`${id}-clipboard-status`}
+        role="status"
+        aria-atomic="true"
+        className="text-sm text-pretty text-[var(--text-secondary)]"
+      >
+        {clipboardStatus === "cleared" && (
+          <>
+            <Check className="mr-1 inline size-4" aria-hidden="true" />
+            Clipboard cleared.
+          </>
+        )}
+        {clipboardStatus === "failed" &&
+          "Couldn’t clear your clipboard. Clear it manually."}
+        {!clipboardStatus && pasteStatus === "pasted" && (
+          <span className="sr-only">Secret key pasted.</span>
+        )}
       </p>
       {failed && (
         <p role="alert" className="text-sm text-error-text">
