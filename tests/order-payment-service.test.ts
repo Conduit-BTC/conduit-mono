@@ -46,6 +46,7 @@ import {
   payCheckoutInvoice,
 } from "../apps/market/src/lib/payment-rails"
 import {
+  marketWalletPaymentCoordinator,
   WalletPaymentCoordinator,
   WalletProviderRegistry,
 } from "../apps/market/src/lib/wallet-payment-coordinator"
@@ -399,17 +400,25 @@ it.each(["external report", "proof resend"] as const)(
       deliveryRoute: "declared_inbox",
       companionNotification: Promise.resolve("skipped_non_order" as const),
     }))
+    const pay = spyOn(
+      marketWalletPaymentCoordinator,
+      "payInvoice"
+    ).mockImplementation(async () => {
+      throw new Error("Proof-only delivery must not invoke payment")
+    })
     try {
       if (action === "external report")
         await submitExternalPaymentProof(orderId)
       else await resendOrderProof(orderId)
       expect(publish).toHaveBeenCalledTimes(1)
+      expect(pay).not.toHaveBeenCalled()
       expect(stored.proofDeliveryStatus).toBe("sent")
       expect(stored.deliveryNotice).toBe(
         "Payment proof was accepted by Nostr delivery relays for merchant pickup. Order history may update after relay sync."
       )
     } finally {
       publish.mockRestore()
+      pay.mockRestore()
       table.get = originalGet
       table.put = originalPut
       restoreTransaction()
