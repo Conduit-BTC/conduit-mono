@@ -27,6 +27,7 @@ packages/ui/src/components/ProductTermsOfService.tsx @dylangolow @ericfj2140
 packages/ui/src/legal/** @dylangolow @ericfj2140
 LICENSE @dylangolow @ericfj2140
 
+tests/workflow-supply-chain.test.ts @dylangolow @ericfj2140
 # Imported account secrets and shared authority/input changes need focused review.
 packages/core/src/protocol/local-key/** @dylangolow @ericfj2140
 packages/core/src/context/AuthContext.tsx @dylangolow @ericfj2140
