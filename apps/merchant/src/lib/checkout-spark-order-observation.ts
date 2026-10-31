@@ -15,6 +15,11 @@ import {
   type CheckoutSparkSettledRecoveryPayload,
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
+import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  restoreCheckoutSparkRecoveryTiming,
+} from "@conduit/core/protocol/checkout-spark-recovery-timing"
 import { openMerchantCheckoutSparkObservationWallet } from "./checkout-spark-observation-wallet"
 import type { MerchantSparkObservationWallet } from "./checkout-spark-observation-wallet"
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
@@ -50,6 +55,8 @@ export async function observeMerchantCheckoutSparkOrder(
   } = {}
 ): Promise<"verified" | "pending" | "unavailable"> {
   const principal = principalPubkey.trim().toLowerCase()
+  candidate = { ...candidate }
+  restoreCheckoutSparkRecoveryTiming(candidate)
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now
@@ -109,7 +116,10 @@ export async function observeMerchantCheckoutSparkOrder(
       candidate.checkoutId !== plan.checkoutId ||
       candidate.orderId !== plan.orderId ||
       candidate.planDigest !== plan.planDigest ||
-      candidate.takeoverAt !== plan.takeoverAt ||
+      !checkoutSparkRecoveryTimingMatches(
+        candidate,
+        checkoutSparkRecoveryTiming(plan, recoveredState.buyerActivation)
+      ) ||
       recoveredState.plan.planDigest !== plan.planDigest
     )
       throw new Error("Checkout Spark observation binding changed.")
@@ -119,6 +129,14 @@ export async function observeMerchantCheckoutSparkOrder(
     assertCurrent()
     if (saved.status !== "active")
       throw new CheckoutSparkSettledRepositoryConflictError()
+    if (
+      !checkoutSparkRecoveryTimingMatches(
+        candidate,
+        checkoutSparkRecoveryTiming(plan, saved.state.buyerActivation)
+      )
+    )
+      throw new CheckoutSparkSettledRepositoryConflictError()
+    if (candidate.takeoverAt === null) return
     assertCheckoutSparkSettledRecoveryProgression(recoveredState, saved.state)
     const witness = await bounded(() =>
       repository.loadMerchantOrderWitness(

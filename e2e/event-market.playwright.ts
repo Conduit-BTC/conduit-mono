@@ -34,6 +34,7 @@ import { formatEventGuestReceipt } from "@conduit/core/protocol/event-guest-chec
 import {
   classifyStockAcceptanceError,
   observeStockAcceptance,
+  observeStockAcceptanceStart,
 } from "./helpers/stock-acceptance-diagnostics"
 import { recordEventStockControlFailure } from "./helpers/smoke-diagnostics"
 
@@ -5065,15 +5066,20 @@ test("event shopping keeps pickup-only choices and merchant profile navigation @
 })
 
 for (const retention of ["screen", "file"] as const) {
-  test(`guest retains a private event receipt by ${retention} and merchant verifies it @market @merchant @commerce @occurrence-orders`, async ({
+  test(`guest automatically retains a private event receipt with optional ${retention} copy and merchant verifies it @market @merchant @commerce @occurrence-orders`, async ({
     page,
   }) => {
     test.setTimeout(120_000)
     let receiptStage:
       | "setup"
+      | "event-navigation"
+      | "event-product"
+      | "cart-ready"
+      | "checkout-navigation"
       | "phone-normalization"
-      | "receipt-required"
+      | "receipt-before-order"
       | "receipt-display"
+      | "receipt-recovery"
       | "receipt-export"
       | "order-submission"
       | "code-verification"
@@ -5167,14 +5173,18 @@ for (const retention of ["screen", "file"] as const) {
         pubkey: ORGANIZER_PUBKEY,
         identifier: "choice-fair",
       })
+      receiptStage = "event-navigation"
       await page.goto(`${marketUrl}/events/${marketRef}`)
+      receiptStage = "event-product"
       await expect(
         page.getByRole("heading", { name: "Receipt soap" })
       ).toBeVisible()
       await page.getByRole("button", { name: /^Add .+ to cart$/ }).click()
+      receiptStage = "cart-ready"
       await expect(
         page.getByRole("button", { name: /Cart, 1 item/ })
       ).toBeVisible()
+      receiptStage = "checkout-navigation"
       await page.goto(`${marketUrl}/checkout`)
       receiptStage = "phone-normalization"
       await expect(
@@ -5200,7 +5210,7 @@ for (const retention of ["screen", "file"] as const) {
         (await page.getByLabel("Phone", { exact: true }).inputValue()) ===
           "+12025550123"
       ).toBe(true)
-      receiptStage = "receipt-required"
+      receiptStage = "receipt-before-order"
       await page
         .getByRole("checkbox", { name: "Use a name only for handoff" })
         .check()
@@ -5208,39 +5218,110 @@ for (const retention of ["screen", "file"] as const) {
       await expect(page.getByLabel("Email", { exact: true })).toHaveCount(0)
       await page.getByLabel("Name or pseudonym for handoff").fill("Soap fan")
       const before = relay.publications.length
-      await page
-        .getByRole("button", { name: "Send order", exact: true })
-        .click()
       await expect(
-        page
-          .getByText("Save your event receipt and confirm that you kept it.")
-          .first()
-      ).toBeVisible()
+        page.getByLabel("Private receipt code", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("checkbox", { name: "I saved my private receipt" })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Save event receipt", exact: true })
+      ).toHaveCount(0)
       const prematureOrderCount = decryptPrivatePublications(
         relay.publications,
         MERCHANT_SECRET,
         before
       ).filter((message) => rumorType(message.rumor) === "order").length
       expect(prematureOrderCount).toBe(0)
-      // The private receipt is usable on screen; generating it must not force a file.
+      // Submission verifies browser saving; no download or bearer display is required.
       let automaticDownloads = 0
       page.on("download", () => {
         automaticDownloads += 1
       })
-      receiptStage = "receipt-display"
+      receiptStage = "order-submission"
       await page
-        .getByRole("button", { name: "Show private receipt", exact: true })
+        .getByRole("button", { name: "Send order", exact: true })
         .click()
-      await expect(
-        page.getByRole("region", {
-          name: "Private pickup receipt",
-          exact: true,
-        })
-      ).toBeVisible()
+      const orders = () =>
+        uniquePrivatePublications(
+          decryptPrivatePublications(
+            relay.publications,
+            MERCHANT_SECRET,
+            before
+          )
+        ).filter((message) => rumorType(message.rumor) === "order")
+      await expect.poll(() => orders().length).toBe(1)
       expect(automaticDownloads).toBe(0)
+      const order = JSON.parse(orders()[0]!.rumor.content) as {
+        id: string
+        buyerIdentityKind: string
+        guestContact?: unknown
+        createdAt: number
+        pickupReceiptCommitment: string
+        contactFreePickup: { label: string; receiptCommitment: string }
+      }
+      expect(order.buyerIdentityKind === "guest_ephemeral").toBe(true)
+      expect(order.guestContact === undefined).toBe(true)
+      expect(order.contactFreePickup.label === "Soap fan").toBe(true)
+      expect(
+        /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
+      ).toBe(true)
+      expect(
+        order.pickupReceiptCommitment ===
+          order.contactFreePickup.receiptCommitment
+      ).toBe(true)
+      expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
+      // The Orders component must commit before starting a new document.
+      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
+      await expect(
+        page.getByRole("heading", { name: "Orders", exact: true })
+      ).toBeVisible()
+      receiptStage = "receipt-display"
+      // Exact zero-price terms and successful order delivery authorize this
+      // receipt display, without inventing a paid payment status.
+      await expect(
+        page.getByRole("region", { name: "Pickup receipt", exact: true })
+      ).toBeVisible()
       const receiptCode = await page
         .getByLabel("Private receipt code", { exact: true })
         .inputValue()
+      await page.reload()
+      await expect(
+        page.getByRole("region", { name: "Pickup receipt", exact: true })
+      ).toBeVisible()
+      expect(
+        (await page
+          .getByLabel("Private receipt code", { exact: true })
+          .inputValue()) === receiptCode
+      ).toBe(true)
+      receiptStage = "receipt-recovery"
+      // Move wall time only. The receipt outlives the unchanged 24-hour guest
+      // signing deadline; recovery must not restore payment or handout authority.
+      await page.clock.setFixedTime(order.createdAt + 24 * 60 * 60 * 1_000 + 1)
+      await page.reload()
+      await expect(
+        page.getByText("Guest order session not found", { exact: true })
+      ).toBeVisible()
+      await expect(
+        page.getByText(/Payment status is unavailable\./)
+      ).toBeVisible()
+      const recoveredReceipt = page.getByRole("region", {
+        name: "Pickup receipt",
+        exact: true,
+      })
+      await expect(recoveredReceipt).toBeVisible()
+      await expect(recoveredReceipt.locator("svg")).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Pay for order", exact: true })
+      ).toHaveCount(0)
+      await expect(
+        page.getByRole("button", { name: "Resume payment", exact: true })
+      ).toHaveCount(0)
+      expect(
+        (await page
+          .getByLabel("Private receipt code", { exact: true })
+          .inputValue()) === receiptCode
+      ).toBe(true)
       let receiptPath: string | null = null
       if (retention === "file") {
         receiptStage = "receipt-export"
@@ -5255,43 +5336,7 @@ for (const retention of ["screen", "file"] as const) {
           download.suggestedFilename() === "conduit-event-receipt.txt"
         ).toBe(true)
       }
-      receiptStage = "order-submission"
-      await page
-        .getByRole("checkbox", {
-          name: "I saved my private receipt",
-        })
-        .check()
-      await page
-        .getByRole("button", { name: "Send order", exact: true })
-        .click()
-      const orders = () =>
-        uniquePrivatePublications(
-          decryptPrivatePublications(
-            relay.publications,
-            MERCHANT_SECRET,
-            before
-          )
-        ).filter((message) => rumorType(message.rumor) === "order")
-      await expect.poll(() => orders().length).toBe(1)
       expect(automaticDownloads).toBe(retention === "file" ? 1 : 0)
-      const order = JSON.parse(orders()[0]!.rumor.content) as {
-        id: string
-        buyerIdentityKind: string
-        guestContact?: unknown
-        contactFreePickup: { label: string; receiptCommitment: string }
-      }
-      expect(order.buyerIdentityKind === "guest_ephemeral").toBe(true)
-      expect(order.guestContact === undefined).toBe(true)
-      expect(order.contactFreePickup.label === "Soap fan").toBe(true)
-      expect(
-        /^[0-9a-f]{64}$/.test(order.contactFreePickup.receiptCommitment)
-      ).toBe(true)
-      expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)
-      // The Orders component must commit before starting a new document.
-      await expect(page).toHaveURL(/\/orders(?:\?|$)/)
-      await expect(
-        page.getByRole("heading", { name: "Orders", exact: true })
-      ).toBeVisible()
       receiptStage = "code-verification"
       await gotoAs(page, merchantUrl, "/orders", "merchant", {
         order: order.id,
@@ -5345,7 +5390,36 @@ for (const retention of ["screen", "file"] as const) {
         page.getByText("This receipt does not match this order and merchant.")
       ).toBeVisible()
     } catch {
-      throw new Error(`Guest receipt journey failed at ${receiptStage}.`)
+      let boundary = "unclassified"
+      if (receiptStage === "event-product") {
+        const text = await page
+          .locator("body")
+          .innerText({ timeout: 1_000 })
+          .catch(() => "")
+        boundary = text.includes(
+          "The current signed Event Market record is unavailable."
+        )
+          ? "record-unavailable"
+          : text.includes("Event records could not be checked.")
+            ? "record-check-failed"
+            : text.includes("Loading event products")
+              ? "record-pending"
+              : text.includes("Receipt soap")
+                ? "product-heading-contract"
+                : text.includes("Event Market")
+                  ? "event-without-product"
+                  : await page.evaluate(() =>
+                      document.querySelector("vite-error-overlay")
+                        ? "vite-overlay"
+                        : document.querySelector("#root")?.childElementCount ===
+                            0
+                          ? "empty-root"
+                          : "unexpected-shell"
+                    )
+      }
+      throw new Error(
+        `Guest receipt journey failed at ${receiptStage} (${boundary}).`
+      )
     }
   })
 }
@@ -7538,10 +7612,45 @@ async function acceptPickupOrder(
     name: "Retry acceptance publication",
     exact: true,
   })
-  await page.getByRole("button", { name: "Accept order", exact: true }).click()
-  // A click starts the async action; settle it before checking durable readback.
-  // Accept the saved control as the start signal when the action finishes quickly.
-  await pending.or(saved).first().waitFor({ state: "visible" })
+  const startObservation = await observeStockAcceptanceStart(page)
+  let startPhase: "click" | "start_wait" = "click"
+  try {
+    await page
+      .getByRole("button", { name: "Accept order", exact: true })
+      .click()
+    startPhase = "start_wait"
+    // A click starts the async action; settle it before checking durable readback.
+    // Accept the saved control as the start signal when the action finishes quickly.
+    try {
+      await pending.or(saved).first().waitFor({ state: "visible" })
+    } catch (cause) {
+      let observationTimer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const observation = await Promise.race([
+          observeStockAcceptance(pending.or(saved)),
+          new Promise<undefined>((resolve) => {
+            observationTimer = setTimeout(() => resolve(undefined), 250)
+          }),
+        ])
+        recordSmokeDiagnostic(test.info(), "event-stock-acceptance", {
+          phase: "start_wait",
+          errorCategory: classifyStockAcceptanceError(cause).errorCategory,
+          ...(observation ?? { observationAvailable: false }),
+          pageClosed: page.isClosed(),
+        })
+      } catch {
+        // Diagnostics must not replace the original wait failure.
+      } finally {
+        if (observationTimer !== undefined) clearTimeout(observationTimer)
+      }
+      throw cause
+    }
+  } catch (cause) {
+    await startObservation.recordFailure(test.info(), orderId, startPhase)
+    throw cause
+  } finally {
+    await startObservation.dispose()
+  }
   await pending.waitFor({ state: "hidden" })
   if (interruptSigning)
     await expect(

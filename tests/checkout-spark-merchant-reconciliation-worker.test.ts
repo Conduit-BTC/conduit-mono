@@ -74,6 +74,42 @@ function fakeClock() {
 }
 
 describe("bounded merchant Spark reconciliation scheduling", () => {
+  it("never schedules an inactive Pay preparation and wakes only after authenticated activation replaces it", async () => {
+    const clock = fakeClock()
+    const calls: number[] = []
+    const worker = startMerchantCheckoutSparkReconciliation({
+      now: clock.now,
+      schedule: clock.schedule,
+      reconcile: async () => {
+        calls.push(clock.now())
+        return "verified"
+      },
+      onUpdate() {},
+    })
+    const inactive: MerchantCheckoutSparkRecoveryCandidate = {
+      ...candidate("inactive"),
+      executionTiming: "pay_activation_v1",
+      buyerActivationId: null,
+      takeoverAt: null,
+    }
+    worker.replaceCandidates([inactive])
+    await clock.advance(300_000)
+    expect(calls.length).toBe(0)
+    expect(clock.nextDelay()).toBeNull()
+    worker.replaceCandidates([
+      {
+        ...inactive,
+        executionTiming: "pay_activation_v1",
+        buyerActivationId: "b".repeat(64),
+        takeoverAt: 420_000,
+      },
+    ])
+    await clock.advance(119_999)
+    expect(calls.length).toBe(0)
+    await clock.advance(1)
+    expect(calls).toEqual([420_000])
+    worker.dispose()
+  })
   it("opts into immediate read-only observation and still wakes at the fixed takeover", async () => {
     const clock = fakeClock()
     const calls: number[] = []

@@ -17,6 +17,23 @@ const base = {
 }
 
 describe("Merchant order payment presentation", () => {
+  it("shows inactive Buyer payment without a fake takeover time or automatic recovery controls", () => {
+    const html = renderToStaticMarkup(
+      <CheckoutSparkMerchantPaymentCard
+        {...base}
+        handoffAt={null}
+        recoveryPending
+        automaticProcessing
+      >
+        <button type="button">Check received funding</button>
+      </CheckoutSparkMerchantPaymentCard>
+    )
+    expect(html).toContain("Waiting for buyer to start payment")
+    expect(html).not.toContain("automatic recovery can continue after")
+    expect(html).not.toContain("Pause and Resume")
+    expect(html).not.toContain('role="progressbar"')
+    expect(html).toContain("Check received funding")
+  })
   it.each(["progress_pending", "verified", "unavailable"] as const)(
     "keeps verified payment complete without cleanup when the worker reports %s",
     (outcome) => {
@@ -528,8 +545,19 @@ describe("Merchant order payment presentation", () => {
       renderToStaticMarkup(
         <CheckoutSparkRecoveryPanel
           principalPubkey={"a".repeat(64)}
-          selectedOrderId={selectedOrderId}
-          selectedOrderSettlement={{ orderId: "order-a", projection }}
+          selectedOrder={{
+            orderId: selectedOrderId,
+            buyerPubkey: "b".repeat(64),
+            merchantPubkey: "a".repeat(64),
+          }}
+          selectedOrderSettlement={{
+            order: {
+              orderId: "order-a",
+              buyerPubkey: "b".repeat(64),
+              merchantPubkey: "a".repeat(64),
+            },
+            projection,
+          }}
           isSessionCurrent={() => true}
         />
       )
@@ -537,6 +565,34 @@ describe("Merchant order payment presentation", () => {
     expect(renderOrder("order-a")).not.toContain("Checking payment")
     expect(renderOrder("order-b")).not.toContain("Payment verified")
     expect(renderOrder("order-b")).toContain("Checking payment")
+  })
+
+  it("never displays another participant's saved payment for the same plain order ID", () => {
+    const order = {
+      orderId: "shared-order",
+      buyerPubkey: "b".repeat(64),
+      merchantPubkey: "a".repeat(64),
+    }
+    const html = renderToStaticMarkup(
+      <CheckoutSparkRecoveryPanel
+        principalPubkey={order.merchantPubkey}
+        selectedOrder={{ ...order, buyerPubkey: "c".repeat(64) }}
+        selectedOrderSettlement={{
+          order,
+          projection: {
+            creditVerified: true,
+            merchantVerified: true,
+            commerceVerified: true,
+            feePending: false,
+          },
+        }}
+        allowAutomaticPayouts
+        isSessionCurrent={() => true}
+      />
+    )
+    expect(html).not.toContain("Payment verified")
+    expect(html).not.toContain("Continue this order")
+    expect(html).toContain("Checking payment")
   })
 
   it("offers a retry when the order is absent from incomplete discovery, without claiming unpaid", () => {

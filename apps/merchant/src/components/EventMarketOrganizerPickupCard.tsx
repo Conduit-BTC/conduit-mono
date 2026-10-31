@@ -1,5 +1,9 @@
-import { useMemo, useRef, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useEffect, useMemo, useRef, useState } from "react"
+import {
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from "@tanstack/react-query"
 import type { EventMarketOrganizerMerchandise } from "@conduit/core/protocol/event-market-organizer-merchandise"
 import {
   acceptCheckoutSparkOrganizerStockOrder,
@@ -17,6 +21,7 @@ import {
   retryOrganizerStockOrderHandout,
   useAuth,
   type CheckoutSparkOrganizerCommerceProof,
+  type CheckoutSparkNativeTreasuryHistoryDiagnostic,
   type CheckoutSparkOrganizerRecoveryAuthority,
   type CheckoutSparkOrganizerRecoveryReadDetails,
   type CheckoutSparkOrganizerRecoverySelection,
@@ -36,6 +41,10 @@ import {
   Input,
   useTimeBoundaryNow,
 } from "@conduit/ui"
+import {
+  CheckoutSparkOrganizerRoutingTimeoutError,
+  type CheckoutSparkOrganizerRoutingDiagnostic,
+} from "../lib/checkout-spark-organizer-routing-observation"
 
 /** The UI's common continuation does not create a financial plan for free goods. */
 export async function continueEventMarketOrganizerPickup(
@@ -48,33 +57,56 @@ export async function continueEventMarketOrganizerPickup(
       typeof acceptCheckoutSparkOrganizerStockOrder
     >[0]["delivery"]
     now?: () => number
+    onCommerceProof?(proof: CheckoutSparkOrganizerCommerceProof): void
+    stockQuery?: {
+      client: QueryClient
+      authGeneration: number
+      isCurrent(): boolean
+    }
   } = {}
 ) {
   input = { ...input }
   const purchase = assertEventMarketOrganizerPurchaseAuthority(input.authority)
-  await acceptCheckoutSparkOrganizerStockOrder({
-    ...input,
-    delivery: dependencies.delivery,
-    nowMs: dependencies.now?.(),
-  })
-  if (purchase.kind === "free") {
-    const commerceProof = await proveEventMarketFreeOrganizerCommerce({
-      authority: input.authority as EventMarketFreePurchaseAuthority,
-      assertCurrent: () => {
-        if (!input.shouldContinue())
-          throw new Error("Organizer pickup session changed.")
-        assertEventMarketOrganizerPurchaseAuthority(input.authority)
-      },
-      now: dependencies.now,
+  try {
+    await acceptCheckoutSparkOrganizerStockOrder({
+      ...input,
+      delivery: dependencies.delivery,
+      nowMs: dependencies.now?.(),
     })
-    return { status: "complete" as const, commerceProof, reason: undefined }
+    if (purchase.kind === "free") {
+      const commerceProof = await proveEventMarketFreeOrganizerCommerce({
+        authority: input.authority as EventMarketFreePurchaseAuthority,
+        assertCurrent: () => {
+          if (!input.shouldContinue())
+            throw new Error("Organizer pickup session changed.")
+          assertEventMarketOrganizerPurchaseAuthority(input.authority)
+        },
+        now: dependencies.now,
+      })
+      dependencies.onCommerceProof?.(commerceProof)
+      return { status: "complete" as const, commerceProof, reason: undefined }
+    }
+    const { routeCheckoutSparkOrganizerOrder } =
+      await import("../lib/checkout-spark-organizer-routing")
+    return await routeCheckoutSparkOrganizerOrder({
+      ...input,
+      authority: input.authority as CheckoutSparkOrganizerRecoveryAuthority,
+      onCommerceProof: dependencies.onCommerceProof,
+    })
+  } finally {
+    // Acceptance is durable before delivery/routing can fail. Refresh only the
+    // saved-stock view after the attempt settles, never repeat the operation.
+    const stockQuery = dependencies.stockQuery
+    if (stockQuery?.isCurrent())
+      await stockQuery.client.invalidateQueries({
+        queryKey: [
+          "event-stock-panel",
+          input.authenticatedPubkey,
+          purchase.eventMarket.marketCoordinate,
+        ],
+        predicate: (query) => query.queryKey[4] === stockQuery.authGeneration,
+      })
   }
-  const { routeCheckoutSparkOrganizerOrder } =
-    await import("../lib/checkout-spark-organizer-routing")
-  return routeCheckoutSparkOrganizerOrder({
-    ...input,
-    authority: input.authority as CheckoutSparkOrganizerRecoveryAuthority,
-  })
 }
 
 export function EventMarketOrganizerPickupForm(props: {
@@ -87,11 +119,16 @@ export function EventMarketOrganizerPickupForm(props: {
   paymentVerified: boolean
   handedOut: boolean
   waitingForBuyer: boolean
+  buyerNotStarted?: boolean
   waitingForFunding?: boolean
   needsAttention?: boolean
   claimCode: string
   error?: string
   notice?: string
+  diagnostic?: CheckoutSparkOrganizerRoutingDiagnostic
+  inspectingHistory?: boolean
+  historyDiagnostic?: CheckoutSparkNativeTreasuryHistoryDiagnostic
+  onInspectHistory?(): void
   onClaimCode(value: string): void
   onContinue(): void
   onPause(): void
@@ -114,9 +151,11 @@ export function EventMarketOrganizerPickupForm(props: {
                 ? "Needs attention"
                 : props.waitingForFunding
                   ? "Awaiting funding verification"
-                  : props.waitingForBuyer
-                    ? "Buyer payment in progress"
-                    : "Awaiting verification"}
+                  : props.buyerNotStarted
+                    ? "Waiting for buyer to start payment"
+                    : props.waitingForBuyer
+                      ? "Buyer payment in progress"
+                      : "Awaiting verification"}
       </p>
       <p className="text-sm">
         {props.quantity} {props.quantity === 1 ? "item" : "items"} ·{" "}
@@ -171,7 +210,11 @@ export function EventMarketOrganizerPickupForm(props: {
           handing out goods.
         </p>
       )}
-      {props.routing ? (
+      {props.inspectingHistory ? (
+        <p role="status" className="text-sm">
+          Checking the saved Conduit transfer history. No payment is being sent.
+        </p>
+      ) : props.routing ? (
         <>
           {props.free ? (
             <p role="status" className="text-sm">
@@ -223,8 +266,9 @@ export function EventMarketOrganizerPickupForm(props: {
           </Button>
           {props.waitingForBuyer ? (
             <p className="text-sm text-[var(--text-secondary)]">
-              The buyer still has time to finish routing. Organizer recovery
-              starts after the saved takeover time.
+              {props.buyerNotStarted
+                ? "Recovery timing starts when the buyer chooses Pay. The original order and recovery stay saved."
+                : "The buyer still has time to finish routing. Organizer recovery starts after the saved takeover time."}
             </p>
           ) : null}
           {props.historyReady === false && !props.error ? (
@@ -280,8 +324,104 @@ export function EventMarketOrganizerPickupForm(props: {
           {props.error}
         </p>
       ) : null}
+      {!props.free && props.onInspectHistory ? (
+        <details className="text-sm text-[var(--text-secondary)]">
+          <summary>Conduit transfer inspection</summary>
+          <p className="mt-2">
+            Read only the existing checkout's bounded sender history. This does
+            not send a payment, change its saved status or authorize a retry.
+            Missing history does not prove that a payment was never sent.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            className="mt-2"
+            disabled={
+              props.routing ||
+              props.inspectingHistory ||
+              props.waitingForBuyer ||
+              props.historyReady === false
+            }
+            onClick={props.onInspectHistory}
+          >
+            Inspect saved Conduit transfer
+          </Button>
+          {props.historyDiagnostic ? (
+            <p role="status" className="mt-2">
+              {nativeHistoryDescription(props.historyDiagnostic)}
+            </p>
+          ) : null}
+        </details>
+      ) : null}
+      {props.diagnostic ? (
+        <details className="text-sm text-[var(--text-secondary)]">
+          <summary>Recovery check details</summary>
+          <p className="mt-2">
+            Each value is the last observation at its own check, not payment
+            confirmation or the cause of the timeout. Writer counts exclude
+            opening recovery. Backoff is scheduled, not measured.
+          </p>
+          <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 [&_dd]:break-words">
+            <dt>Last observed stage</dt>
+            <dd>{props.diagnostic.stage}</dd>
+            <dt>Elapsed</dt>
+            <dd>{props.diagnostic.elapsedMs} ms</dd>
+            <dt>Writer checks</dt>
+            <dd>{props.diagnostic.writerChecks}</dd>
+            <dt>Writer check time</dt>
+            <dd>{props.diagnostic.writerCheckMs} ms</dd>
+            <dt>Last observed exact payout</dt>
+            <dd>{props.diagnostic.lastPayoutObservation}</dd>
+            <dt>Last observed recipient check</dt>
+            <dd>{props.diagnostic.lastRecipientObservation}</dd>
+            <dt>Last observed progress acknowledgment</dt>
+            <dd>{props.diagnostic.lastProgressAck}</dd>
+            <dt>Last loaded Conduit state</dt>
+            <dd>{props.diagnostic.lastLoadedNativeStatus}</dd>
+            <dt>Last loaded Conduit transfer reference</dt>
+            <dd>{props.diagnostic.lastLoadedNativeTransferReference}</dd>
+            <dt>Last observed Conduit check</dt>
+            <dd>{props.diagnostic.lastNativeObservation}</dd>
+            <dt>Last observed Conduit preflight</dt>
+            <dd>{props.diagnostic.lastNativePreflight}</dd>
+            <dt>Last observed Conduit send response</dt>
+            <dd>{props.diagnostic.lastNativeSend}</dd>
+            <dt>Last observed workflow outcome</dt>
+            <dd>{props.diagnostic.lastWorkflowOutcome}</dd>
+            <dt>Last observed workflow wait reason</dt>
+            <dd>{props.diagnostic.lastWorkflowWaitReason}</dd>
+            <dt>Completed workflow steps</dt>
+            <dd>{props.diagnostic.completedWorkflowSteps}</dd>
+            <dt>Scheduled backoff</dt>
+            <dd>{props.diagnostic.scheduledBackoffMs} ms</dd>
+          </dl>
+        </details>
+      ) : null}
     </section>
   )
+}
+
+function nativeHistoryDescription(
+  value: CheckoutSparkNativeTreasuryHistoryDiagnostic
+): string {
+  switch (value) {
+    case "exact_commit_and_finalized_invoice":
+      return "Exact sender commitment and finalized invoice observed. Receiver claim and wallet cleanup remain separate; this check changed no saved status."
+    case "history_commit_invoice_unresolved":
+      return "Sender history shows commitment, but the exact invoice check is unresolved. Keep this payment held; do not send again."
+    case "exact_pending":
+      return "The exact transfer is still pending. No new payment was sent."
+    case "exact_returned":
+      return "The exact transfer has a terminal return or failure. This does not prove spendable funds or authorize a retry."
+    case "no_exact_match_in_bounded_history":
+      return "No exact transfer was found in this bounded history read. The payment remains unresolved; do not send again."
+    case "multiple_matches":
+      return "More than one transfer matched the frozen invoice. Reconciliation is required; do not send again."
+    case "conflicting":
+      return "The exact provider evidence conflicts. Keep this payment held; do not send again."
+    default:
+      return "The exact history check could not be completed. No payment or saved status was changed."
+  }
 }
 
 export function EventMarketOrganizerPickupCard(props: {
@@ -289,37 +429,69 @@ export function EventMarketOrganizerPickupCard(props: {
   authenticatedPubkey: string
   onBusy?(busy: boolean): void
 }) {
+  const queryClient = useQueryClient()
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [commerceProof, setCommerceProof] =
     useState<CheckoutSparkOrganizerCommerceProof | null>(null)
   const [claimCode, setClaimCode] = useState("")
   const [routing, setRouting] = useState(false)
+  const [inspectingHistory, setInspectingHistory] = useState(false)
+  const [historyDiagnostic, setHistoryDiagnostic] = useState<
+    | {
+        authority: EventMarketOrganizerPurchaseAuthority
+        authenticatedPubkey: string
+        authGeneration: number
+        value: CheckoutSparkNativeTreasuryHistoryDiagnostic
+      }
+    | undefined
+  >()
   const [error, setError] = useState("")
+  const [diagnostic, setDiagnostic] =
+    useState<CheckoutSparkOrganizerRoutingDiagnostic | null>(null)
   const [notice, setNotice] = useState("")
   const [waitingReason, setWaitingReason] = useState<string | undefined>()
   const running = useRef(false),
     paused = useRef(false)
+  const mounted = useRef(false)
+  const inspectionScope = useRef({
+    authority: props.authority,
+    pubkey: props.authenticatedPubkey,
+    authGeneration,
+  })
+  inspectionScope.current = {
+    authority: props.authority,
+    pubkey: props.authenticatedPubkey,
+    authGeneration,
+  }
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   let purchase: ReturnType<
     typeof assertEventMarketOrganizerPurchaseAuthority
   > | null = null
-  let takeoverAt: number | undefined
+  let takeoverAt: number | null | undefined
   try {
     purchase = assertEventMarketOrganizerPurchaseAuthority(props.authority)
     if (purchase.kind === "routed") {
       takeoverAt = assertCheckoutSparkOrganizerRecoveryAuthority(
         props.authority as CheckoutSparkOrganizerRecoveryAuthority
-      ).plan.takeoverAt
+      ).buyerTakeoverAt
     }
   } catch {
     purchase = null
     /* Reopen the exact selected recovery; never refresh its financial terms. */
   }
   const timeBoundaries = useMemo(
-    () => (takeoverAt === undefined ? [] : [takeoverAt]),
+    () => (typeof takeoverAt === "number" ? [takeoverAt] : []),
     [takeoverAt]
   )
   const nowMs = useTimeBoundaryNow(timeBoundaries)
-  const waitingForBuyer = takeoverAt !== undefined && nowMs < takeoverAt
+  const buyerNotStarted = takeoverAt === null
+  const waitingForBuyer =
+    buyerNotStarted || (typeof takeoverAt === "number" && nowMs < takeoverAt)
   const saved = useQuery({
     queryKey: [
       "organizer-stock-handout",
@@ -374,6 +546,50 @@ export function EventMarketOrganizerPickupCard(props: {
       shouldContinue: current,
     }
   }
+  async function inspectHistory() {
+    if (running.current || !purchase || purchase.kind !== "routed") return
+    const scope = inspectionScope.current
+    const inspectionCurrent = () =>
+      mounted.current &&
+      current() &&
+      inspectionScope.current.authority === scope.authority &&
+      inspectionScope.current.pubkey === scope.pubkey &&
+      inspectionScope.current.authGeneration === scope.authGeneration
+    running.current = true
+    paused.current = false
+    props.onBusy?.(true)
+    setInspectingHistory(true)
+    setHistoryDiagnostic(undefined)
+    const recordResult = (
+      value: CheckoutSparkNativeTreasuryHistoryDiagnostic
+    ) => {
+      if (inspectionCurrent())
+        setHistoryDiagnostic({
+          authority: scope.authority,
+          authenticatedPubkey: scope.pubkey,
+          authGeneration: scope.authGeneration,
+          value,
+        })
+    }
+    try {
+      const input = session()
+      const { inspectCheckoutSparkOrganizerNativeHistory } =
+        await import("../lib/checkout-spark-organizer-history")
+      if (!inspectionCurrent()) return
+      const result = await inspectCheckoutSparkOrganizerNativeHistory({
+        ...input,
+        authority: scope.authority as CheckoutSparkOrganizerRecoveryAuthority,
+        shouldContinue: inspectionCurrent,
+      })
+      recordResult(result)
+    } catch {
+      recordResult("unavailable")
+    } finally {
+      running.current = false
+      if (mounted.current) setInspectingHistory(false)
+      props.onBusy?.(false)
+    }
+  }
   async function run(action: "route" | "handout" | "retry") {
     if (running.current || !purchase) return
     running.current = true
@@ -381,18 +597,31 @@ export function EventMarketOrganizerPickupCard(props: {
     paused.current = false
     setRouting(true)
     setError("")
+    setDiagnostic(null)
+    setHistoryDiagnostic(undefined)
     setNotice("")
     setWaitingReason(undefined)
     try {
       const input = session()
       if (action === "route") {
-        setCommerceProof(null)
-        const result = await continueEventMarketOrganizerPickup({
-          ...input,
-          authority: props.authority,
-        })
+        const result = await continueEventMarketOrganizerPickup(
+          {
+            ...input,
+            authority: props.authority,
+          },
+          {
+            onCommerceProof: (proof) => {
+              if (mounted.current && current()) setCommerceProof(proof)
+            },
+            stockQuery: {
+              client: queryClient,
+              authGeneration,
+              isCurrent: () => isAuthGenerationCurrent(authGeneration),
+            },
+          }
+        )
         if (current()) {
-          setCommerceProof(result.commerceProof)
+          if (result.commerceProof) setCommerceProof(result.commerceProof)
           setWaitingReason(
             result.status === "waiting" ? result.reason : undefined
           )
@@ -430,7 +659,12 @@ export function EventMarketOrganizerPickupCard(props: {
           )
       }
     } catch (cause) {
-      if (isAuthGenerationCurrent(authGeneration))
+      if (isAuthGenerationCurrent(authGeneration)) {
+        setDiagnostic(
+          cause instanceof CheckoutSparkOrganizerRoutingTimeoutError
+            ? cause.diagnostic
+            : null
+        )
         setError(
           paused.current
             ? purchase.kind === "free"
@@ -438,6 +672,7 @@ export function EventMarketOrganizerPickupCard(props: {
               : "This order is paused. A possibly sent payment is checked before any continuation."
             : message(cause)
         )
+      }
     } finally {
       if (isAuthGenerationCurrent(authGeneration)) await saved.refetch()
       running.current = false
@@ -466,6 +701,7 @@ export function EventMarketOrganizerPickupCard(props: {
       paymentVerified={paymentVerified}
       handedOut={handedOut}
       waitingForBuyer={waitingForBuyer}
+      buyerNotStarted={buyerNotStarted}
       waitingForFunding={waitingReason === "funding_wait"}
       needsAttention={
         !!error || (!!waitingReason && waitingReason !== "funding_wait")
@@ -478,6 +714,18 @@ export function EventMarketOrganizerPickupCard(props: {
           : undefined)
       }
       notice={notice}
+      diagnostic={diagnostic ?? undefined}
+      inspectingHistory={inspectingHistory}
+      historyDiagnostic={
+        historyDiagnostic?.authority === props.authority &&
+        historyDiagnostic.authenticatedPubkey === props.authenticatedPubkey &&
+        historyDiagnostic.authGeneration === authGeneration
+          ? historyDiagnostic.value
+          : undefined
+      }
+      onInspectHistory={
+        purchase.kind === "routed" ? () => void inspectHistory() : undefined
+      }
       onClaimCode={setClaimCode}
       onContinue={() => void run("route")}
       onPause={() => {

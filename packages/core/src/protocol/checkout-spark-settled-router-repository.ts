@@ -16,6 +16,7 @@ import {
   restoreCheckoutSparkSettledPlan,
   restoreCheckoutSparkSettledReconciliation,
   getCheckoutSparkSettledLegGeneration,
+  isCheckoutSparkEventMarketPlan,
   renewCheckoutSparkSettledLeg,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
@@ -194,7 +195,16 @@ function projectState(
         : {}),
     })),
     updatedAt: valid.updatedAt,
-    ...(valid.schemaVersion === 5 || valid.schemaVersion === 6
+    ...(valid.schemaVersion === 7
+      ? {
+          buyerActivation: valid.buyerActivation
+            ? { ...valid.buyerActivation }
+            : null,
+        }
+      : {}),
+    ...(valid.schemaVersion === 5 ||
+    valid.schemaVersion === 6 ||
+    valid.schemaVersion === 7
       ? {
           treasuryFinalization: {
             ...valid.treasuryFinalization!,
@@ -260,7 +270,8 @@ function snapshotFromRows(
       (active.state.schemaVersion !== 3 &&
         active.state.schemaVersion !== 4 &&
         active.state.schemaVersion !== 5 &&
-        active.state.schemaVersion !== 6)
+        active.state.schemaVersion !== 6 &&
+        active.state.schemaVersion !== 7)
     ) {
       throw new CheckoutSparkSettledRepositoryIntegrityError()
     }
@@ -301,6 +312,11 @@ export function assertCheckoutSparkSettledRecoveryProgression(
     (previous.schemaVersion === 4 && next.schemaVersion !== 4) ||
     (previous.schemaVersion === 5 && next.schemaVersion !== 5) ||
     (previous.schemaVersion === 6 && next.schemaVersion !== 6) ||
+    (previous.schemaVersion === 7 && next.schemaVersion !== 7) ||
+    (previous.buyerActivation !== undefined &&
+      previous.buyerActivation !== null &&
+      JSON.stringify(previous.buyerActivation) !==
+        JSON.stringify(next.buyerActivation)) ||
     next.updatedAt < previous.updatedAt ||
     next.plan.planDigest !== previous.plan.planDigest ||
     (previous.credit !== null &&
@@ -308,7 +324,11 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   ) {
     throw new CheckoutSparkSettledRepositoryConflictError()
   }
-  if (previous.schemaVersion === 5 || previous.schemaVersion === 6) {
+  if (
+    previous.schemaVersion === 5 ||
+    previous.schemaVersion === 6 ||
+    previous.schemaVersion === 7
+  ) {
     const before = previous.treasuryFinalization!
     const after = next.treasuryFinalization!
     if (
@@ -724,7 +744,7 @@ export class DexieCheckoutSparkSettledRepository {
         }
         assertGuestOrderCurrent()
         const next: CheckoutSparkBuyerOrderBinding = {
-          schemaVersion: canonical.schemaVersion === 5 ? 2 : 1,
+          schemaVersion: isCheckoutSparkEventMarketPlan(canonical) ? 2 : 1,
           checkoutId: canonical.checkoutId,
           planDigest: canonical.planDigest,
           orderId: canonical.orderId,
@@ -822,7 +842,7 @@ export class DexieCheckoutSparkSettledRepository {
           if (
             buyerBinding &&
             (buyerBinding.schemaVersion !==
-              (plan.schemaVersion === 5 ? 2 : 1) ||
+              (isCheckoutSparkEventMarketPlan(plan) ? 2 : 1) ||
               buyerBinding.orderId !== plan.orderId ||
               buyerBinding.merchantPubkey !== plan.merchantPubkey ||
               buyerBinding.walletId !== plan.walletId ||
@@ -2063,7 +2083,8 @@ export class DexieCheckoutSparkSettledRepository {
         )
         if (
           (current.state.schemaVersion === 5 ||
-            current.state.schemaVersion === 6) &&
+            current.state.schemaVersion === 6 ||
+            current.state.schemaVersion === 7) &&
           current.state.treasuryFinalization!.status === "paid" &&
           !binding.merchantSettlement?.nativeTreasury
         ) {

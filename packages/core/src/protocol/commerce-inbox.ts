@@ -1,4 +1,5 @@
 import type { RelayTarget } from "./relay-authority"
+import { checkoutSparkRecoveryTiming } from "./checkout-spark-recovery-timing"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 import {
@@ -637,7 +638,12 @@ export class CommerceInbox {
                     checkoutId: payload.plan.checkoutId,
                     orderId: payload.plan.orderId,
                     planDigest: payload.plan.planDigest,
-                    takeoverAt: payload.plan.takeoverAt,
+                    ...checkoutSparkRecoveryTiming(
+                      payload.plan,
+                      payload.schemaVersion === 1
+                        ? undefined
+                        : payload.state.buyerActivation
+                    ),
                     preparedAt: payload.preparedAt,
                     payloadDigest: checkoutRecoveryPayloadDigest(payload),
                   },
@@ -669,7 +675,10 @@ export class CommerceInbox {
                     checkoutId: payload.plan.checkoutId,
                     orderId: payload.plan.orderId,
                     planDigest: payload.plan.planDigest,
-                    takeoverAt: payload.plan.takeoverAt,
+                    ...checkoutSparkRecoveryTiming(
+                      payload.plan,
+                      payload.state.buyerActivation
+                    ),
                     preparedAt: payload.preparedAt,
                     payloadDigest:
                       checkoutSparkOrganizerRecoveryPayloadDigest(payload),
@@ -699,7 +708,10 @@ export class CommerceInbox {
                     checkoutId: payload.state.plan.checkoutId,
                     orderId: payload.state.plan.orderId,
                     planDigest: payload.state.plan.planDigest,
-                    takeoverAt: payload.state.plan.takeoverAt,
+                    ...checkoutSparkRecoveryTiming(
+                      payload.state.plan,
+                      payload.state.buyerActivation
+                    ),
                     preparedAt: payload.recordedAt,
                     payloadDigest: payload.snapshotId,
                   },
@@ -723,7 +735,10 @@ export class CommerceInbox {
                     checkoutId: payload.state.plan.checkoutId,
                     orderId: payload.state.plan.orderId,
                     planDigest: payload.state.plan.planDigest,
-                    takeoverAt: payload.state.plan.takeoverAt,
+                    ...checkoutSparkRecoveryTiming(
+                      payload.state.plan,
+                      payload.state.buyerActivation
+                    ),
                     preparedAt: payload.recordedAt,
                     payloadDigest: payload.snapshotId,
                   },
@@ -740,7 +755,10 @@ export class CommerceInbox {
                     checkoutId: payload.state.plan.checkoutId,
                     orderId: payload.state.plan.orderId,
                     planDigest: payload.state.plan.planDigest,
-                    takeoverAt: payload.state.plan.takeoverAt,
+                    ...checkoutSparkRecoveryTiming(
+                      payload.state.plan,
+                      payload.state.buyerActivation
+                    ),
                     preparedAt: payload.recordedAt,
                     payloadDigest: payload.snapshotId,
                   },

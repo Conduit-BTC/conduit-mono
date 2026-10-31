@@ -35,9 +35,10 @@ all test and helper edits use full coverage. Current tags cannot establish a
 changed test's former owning areas, runtime or dependencies between files. Even
 small test-only edits therefore keep all areas and their existing parallelism.
 Commerce remains complete, including isolated ordinary native-router, Event
-native-router and receiver setup profiles. The Event native profile runs in its
-own required parallel job; the existing Commerce job retains ordinary Commerce,
-ordinary native routing and receiver setup. Both use independent test state.
+native-router and receiver setup profiles. Ordinary Commerce, ordinary native
+routing with serial receiver setup, and Event native routing run in three
+independent required jobs. The two router jobs depend only on smoke selection,
+not completion of ordinary Commerce, and use independent test state.
 The native discovery guard compares their project-aware manifests with the full
 native selection and rejects missing or repeated cases before execution. These
 are execution partitions within `@commerce`, not new area ownership tags.
@@ -54,10 +55,10 @@ Measured About and legal source scopes run unsharded. Scopes above 150 project
 cases fall back to full-area partitions as the inventory grows. This count is a
 size guard, not a runtime bound. General test-file edits always keep full-area
 partitions in all areas, regardless of case count. Full areas retain the existing
-five Market, four Merchant, one Commerce and one Event-router jobs. Build runs independently of
-quality checks;
-preview verification still requires the validated build and configuration digest.
-Every required check must pass independently.
+five Market, four Merchant, one Commerce, one ordinary-router/receiver and one
+Event-router jobs. Build runs independently of quality checks; preview
+verification still requires the validated build and configuration digest. Every
+required check must pass independently.
 
 Report selected case counts, setup-inclusive wall time and runner-minutes by
 change cohort. A faster selective run is not a full-coverage run or proof of
@@ -77,10 +78,13 @@ project-aware case multiset across smaller jobs; actual discovery rejects
 missing, repeated or empty partitions. Assertions, retries, browser projects,
 worker counts and deadlines remain unchanged. This scheduling change does not
 establish the cause of a timeout or replace fresh required runtime evidence. The
-bounded Event-router split preserves all native cases while keeping the existing
-Commerce job's serial lanes within their unchanged deadline; it does not increase
-test deadlines or make a failed lane optional. Unit execution
-and broader preview scheduling remain independent performance limits.
+bounded router splits preserve every native and receiver case without sharing
+the ordinary Commerce job's remaining time. Ordinary native and receiver setup
+retain their serial order inside one isolated job; Event native remains separate.
+All three jobs keep their 25-minute limits, with unchanged test deadlines and
+no failed lane made optional. A complete current-head run is still required to
+validate the scheduling change. Unit execution and broader preview scheduling
+remain independent performance limits.
 
 To roll back narrower selection, omit `--inventory` from the selector invocation.
 The existing area selector then restores its full-area floor; required checks,

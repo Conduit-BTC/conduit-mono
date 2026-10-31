@@ -27,6 +27,7 @@ import {
   config,
   db,
   EVENT_KINDS,
+  getAccountSigner,
   getCachedMerchantStorefront,
   projectSignedProductListingForLocalCommit,
   planProductDeletionRelays,
@@ -433,6 +434,7 @@ afterEach(() => {
   resetFixturePublishers()
   __resetRelayPublishTestOverrides()
   __resetNdkTestState()
+  expect(getAccountSigner()).toBeUndefined()
 })
 
 describe("merchant product event delivery", () => {

@@ -2,6 +2,56 @@ import { describe, expect, it } from "bun:test"
 import { formatMerchantCheckoutSparkNativeObservation } from "../apps/merchant/src/lib/checkout-spark-payout-history-display"
 
 describe("Merchant native preparation details", () => {
+  it.each([
+    ["saved_progress", "saved progress retry"],
+    ["prepared_snapshot", "prepared snapshot acknowledgement"],
+    ["submitted_snapshot", "submitted snapshot acknowledgement"],
+  ] as const)(
+    "distinguishes the finite %s recovery checkpoint",
+    (checkpoint, label) => {
+      expect(
+        formatMerchantCheckoutSparkNativeObservation({
+          phase: "recovery_delivery",
+          status: "not_verified",
+          recoveryCheckpoint: checkpoint,
+        })
+      ).toBe(`Last Conduit check: recovery delivery / ${label} (checking).`)
+    }
+  )
+
+  it("does not read or coerce unknown checkpoint details", () => {
+    const base = { phase: "recovery_delivery", status: "not_verified" }
+    const expected = "Last Conduit check: recovery delivery (checking)."
+    for (const value of [
+      "private-checkpoint-sentinel",
+      "constructor",
+      {},
+      null,
+    ])
+      expect(
+        formatMerchantCheckoutSparkNativeObservation({
+          ...base,
+          recoveryCheckpoint: value,
+        })
+      ).toBe(expected)
+    expect(
+      formatMerchantCheckoutSparkNativeObservation(
+        Object.defineProperty({ ...base }, "recoveryCheckpoint", {
+          get() {
+            throw new Error("No checkpoint getter access")
+          },
+        })
+      )
+    ).toBe(expected)
+    expect(
+      formatMerchantCheckoutSparkNativeObservation({
+        phase: "wallet_open",
+        status: "not_verified",
+        recoveryCheckpoint: "submitted_snapshot",
+      })
+    ).toBe("Last Conduit check: wallet opening (checking).")
+  })
+
   it("distinguishes draining earlier work from opening the wallet", () => {
     expect(
       formatMerchantCheckoutSparkNativeObservation({

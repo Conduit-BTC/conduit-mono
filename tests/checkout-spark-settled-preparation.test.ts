@@ -394,49 +394,67 @@ describe("native treasury preparation", () => {
     expect(calls).toEqual({ open: 0, close: 0, publish: 0, invoice: 0 })
   })
 
-  it("freezes the native sender-restricted request before exposing funding", async () => {
-    const { calls, options } = dependencies(true)
-    const sparkAddress = "static-treasury-fixture"
-    const receiverIdentityPublicKey = `03${"b".repeat(64)}`
-    const storage = new MemoryStorage()
-    let preparedInvoiceId: string | undefined
-    const prepared = await prepareCheckoutSparkSettledFunding(
-      request(storage),
-      {
-        ...options,
-        treasuryConfiguration: { mainnetAddress: sparkAddress },
-        validateTreasuryDestination: async () => {
-          expect(calls.open).toBe(0)
-          return { sparkAddress, receiverIdentityPublicKey }
+  it.each([false, true])(
+    "freezes the native sender-restricted request before exposing funding (Pay activation: %s)",
+    async (payActivation) => {
+      const { calls, options } = dependencies(true)
+      const sparkAddress = "static-treasury-fixture"
+      const receiverIdentityPublicKey = `03${"b".repeat(64)}`
+      const storage = new MemoryStorage()
+      let preparedInvoiceId: string | undefined
+      const { takeoverAt, ...base } = request(storage)
+      const prepared = await prepareCheckoutSparkSettledFunding(
+        {
+          ...base,
+          ...(payActivation
+            ? {
+                executionTiming: {
+                  type: "pay_activation_v1" as const,
+                  windowMs: 120_000 as const,
+                },
+              }
+            : { takeoverAt }),
         },
-        prepareTreasuryRequest: async (input) => {
-          expect(calls.publish).toBe(0)
-          expect(input.senderIdentityPublicKey).toBe(RECEIVER_IDENTITY)
-          preparedInvoiceId = input.invoiceId
-          return {
-            schemaVersion: 1,
-            sparkAddress,
-            receiverIdentityPublicKey,
-            senderIdentityPublicKey: input.senderIdentityPublicKey,
-            invoiceId: input.invoiceId,
-            invoiceRequest: "canonical-native-fixture",
-            feePolicy: "zero_required",
-            residualPolicy: "unused_commerce_reserves",
-          }
-        },
+        {
+          ...options,
+          treasuryConfiguration: { mainnetAddress: sparkAddress },
+          validateTreasuryDestination: async () => {
+            expect(calls.open).toBe(0)
+            return { sparkAddress, receiverIdentityPublicKey }
+          },
+          prepareTreasuryRequest: async (input) => {
+            expect(calls.publish).toBe(0)
+            expect(input.senderIdentityPublicKey).toBe(RECEIVER_IDENTITY)
+            preparedInvoiceId = input.invoiceId
+            return {
+              schemaVersion: 1,
+              sparkAddress,
+              receiverIdentityPublicKey,
+              senderIdentityPublicKey: input.senderIdentityPublicKey,
+              invoiceId: input.invoiceId,
+              invoiceRequest: "canonical-native-fixture",
+              feePolicy: "zero_required",
+              residualPolicy: "unused_commerce_reserves",
+            }
+          },
+        }
+      )
+      expect(prepared.plan.schemaVersion).toBe(payActivation ? 6 : 4)
+      expect(prepared.state.schemaVersion).toBe(payActivation ? 7 : 5)
+      if (payActivation) {
+        expect(prepared.plan).not.toHaveProperty("takeoverAt")
+        expect(prepared.state.buyerActivation).toBeNull()
       }
-    )
-    expect(prepared.plan.schemaVersion).toBe(4)
-    expect(prepared.state.schemaVersion).toBe(5)
-    expect(prepared.plan.nativeTreasury?.invoiceId).toBe(preparedInvoiceId)
-    expect(prepared.state.treasuryFinalization?.intent).toBeNull()
-    expect(prepared.state.treasuryFinalization?.status).toBe("unprepared")
-    expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
-    expect(
-      getCheckoutSparkSettledPreparation(prepared.plan.checkoutId, storage)
-        ?.fundingInvoiceExposedAt
-    ).toBe(NOW)
-  })
+      expect(prepared.plan.nativeTreasury?.invoiceId).toBe(preparedInvoiceId)
+      expect(prepared.state.treasuryFinalization?.intent).toBeNull()
+      expect(prepared.state.treasuryFinalization?.status).toBe("unprepared")
+      expect(calls).toEqual({ open: 1, close: 0, publish: 1, invoice: 1 })
+      expect(
+        getCheckoutSparkSettledPreparation(prepared.plan.checkoutId, storage)
+          ?.fundingInvoiceExposedAt
+      ).toBe(NOW)
+    }
+  )
 })
 
 function deferred<T>() {
@@ -714,6 +732,25 @@ describe("settled Spark pre-funding metadata", () => {
                       { ...terms, storage, recoveryStorage: storage },
                       {
                         ...options,
+                        treasuryConfiguration: {
+                          mainnetAddress: "static-treasury-fixture",
+                        },
+                        validateTreasuryDestination: async () => ({
+                          sparkAddress: "static-treasury-fixture",
+                          receiverIdentityPublicKey: `03${"b".repeat(64)}`,
+                        }),
+                        prepareTreasuryRequest: async (input) => ({
+                          schemaVersion: 1,
+                          sparkAddress: input.sparkAddress,
+                          receiverIdentityPublicKey:
+                            input.receiverIdentityPublicKey,
+                          senderIdentityPublicKey:
+                            input.senderIdentityPublicKey,
+                          invoiceId: input.invoiceId,
+                          invoiceRequest: "canonical-native-fixture",
+                          feePolicy: "zero_required",
+                          residualPolicy: "unused_commerce_reserves",
+                        }),
                         fetchPayoutMetadata: async (lud16) => {
                           metadataReads++
                           await delay()

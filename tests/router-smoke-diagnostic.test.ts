@@ -18,6 +18,68 @@ import {
 } from "../scripts/ci/router_smoke_diagnostic"
 
 describe("runner-owned router phase evidence", () => {
+  it("accepts fixed retained Buyer handoff checkpoints without payment content", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "retained Buyer remains mounted through merchant handoff",
+      "retained Buyer waits past cutoff before funding",
+      "retained Buyer has no payment authority after merchant handoff",
+      "retained Buyer refreshes saved status without replay",
+    ] as const) {
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        lifecycle: "body",
+        body: "running",
+      })
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+          payment: "unapproved field",
+        })
+      ).toBeUndefined()
+    }
+  })
+
+  it("accepts the fixed Event Pay and private receipt checkpoints without adding content fields", () => {
+    const annotations: Array<{ type: string; description?: string }> = []
+    const recorder = createRouterSmokeRecorder(annotations)
+    for (const phase of [
+      "event external Pay action ready",
+      "event external Pay activation",
+      "event external funding QR",
+      "event external funding visible",
+      "event first Pay preserves its exact acknowledged activation",
+      "event buyer paid pickup receipt",
+      "event signed-in pickup receipt reload",
+    ] as const) {
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+        })?.phase
+      ).toBe(phase)
+      recorder.phase(phase)
+      expect(routerSmokeDiagnosticFromAnnotations(annotations)).toEqual({
+        phase,
+        lifecycle: "body",
+        body: "running",
+      })
+      expect(
+        parseRouterSmokeDiagnostic({
+          phase,
+          lifecycle: "body",
+          body: "running",
+          receipt: "unapproved field",
+        })
+      ).toBeUndefined()
+    }
+  })
+
   it("distinguishes Event Buyer completion checks without transaction data", () => {
     const annotations: Array<{ type: string; description?: string }> = []
     const recorder = createRouterSmokeRecorder(annotations)
@@ -174,27 +236,66 @@ describe("runner-owned router phase evidence", () => {
     }
   })
   it("runs both isolated lanes independently and retains separate SHA-bound artifacts", () => {
-    const workflow = readFileSync(resolve(".github/workflows/ci.yml"), "utf8")
+    const workflow = Bun.YAML.parse(
+      readFileSync(resolve(".github/workflows/ci.yml"), "utf8")
+    ) as {
+      jobs: Record<
+        string,
+        {
+          steps: Array<{
+            name?: string
+            if?: string
+            run?: string
+            env?: Record<string, string>
+            with?: Record<string, string | number>
+          }>
+        }
+      >
+    }
+    const router = workflow.jobs["e2e-router"]!
+    expect(router).toBeDefined()
+    const ordinary = workflow.jobs["e2e-smoke-shard"]!
     for (const [step, prerequisite] of [
       ["Validate isolated router smoke selection", "smoke_dependencies"],
       ["Run isolated router Playwright smoke tests", "router_selection"],
       ["Validate router receiver setup smoke selection", "smoke_dependencies"],
       ["Run router receiver setup Playwright smoke", "receiver_selection"],
     ]) {
-      const start = workflow.indexOf(`- name: ${step}`)
-      expect(start).toBeGreaterThanOrEqual(0)
-      expect(
-        workflow.slice(start, workflow.indexOf("\n      - name:", start + 1))
-      ).toContain(
-        `if: \${{ !cancelled() && matrix.job.area == 'commerce' && steps.${prerequisite}.outcome == 'success' }}`
+      const matches = router.steps.filter((value) => value.name === step)
+      expect(matches).toHaveLength(1)
+      expect(matches[0]!.if).toBe(
+        `\${{ !cancelled() && steps.${prerequisite}.outcome == 'success' }}`
       )
+      expect(ordinary.steps.some((value) => value.name === step)).toBe(false)
     }
-    for (const lane of [
-      ["router", "playwright-router-smoke"],
-      ["router-receiver-setup", "playwright-router-receiver-setup"],
+    for (const lane of ["isolated router", "router receiver setup"]) {
+      const verify = router.steps.find(
+        (step) => step.name === `Verify executed ${lane} smoke evidence`
+      )!
+      expect(verify.if).toBe("always()")
+      expect(verify.run).toContain("--expected-manifest")
+      expect(verify.run).toContain("--execution-report")
+    }
+    for (const [name, prefix, artifactName] of [
+      [
+        "Retain sanitized isolated router evidence",
+        "router-smoke",
+        "smoke-evidence-router-${{ github.run_attempt }}",
+      ],
+      [
+        "Retain sanitized router receiver setup evidence",
+        "router-receiver-setup",
+        "smoke-evidence-router-receiver-setup-${{ github.run_attempt }}",
+      ],
     ]) {
-      expect(workflow).toContain(`name: smoke-evidence-${lane[0]}-`)
-      expect(workflow).toContain(`${lane[1]}-evidence.json`)
+      const upload = router.steps.find((step) => step.name === name)!
+      expect(upload.if).toBe("always()")
+      expect(upload.with?.name).toBe(artifactName)
+      expect(upload.with?.path).toBe(
+        `\${{ runner.temp }}/playwright-${prefix}-evidence.json`
+      )
+      expect(upload.with?.["if-no-files-found"]).toBe("error")
+      expect(upload.with?.["retention-days"]).toBe(7)
     }
   })
 

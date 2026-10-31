@@ -4,12 +4,107 @@ import { getMerchantOrderActions, type OrderSchema } from "@conduit/core"
 import {
   buildMerchantOrderActionView,
   getMerchantOrderCancellationCopy,
+  getMerchantFulfillmentBlockReason,
   isAuthorizedZeroCostPickup,
   isMerchantOrderActionSurfacePending,
   runExclusiveOrderAction,
 } from "../apps/merchant/src/lib/order-action-view"
 
 describe("merchant order action presentation", () => {
+  it("explains how to import an already recorded organizer handout", () => {
+    expect(
+      getMerchantFulfillmentBlockReason({
+        goodsPaymentVerified: true,
+        zeroCostPickupAuthorized: false,
+        inventoryAcceptanceReady: true,
+        pickupAuthorityVerified: true,
+        organizerHandoutVerified: false,
+      })
+    ).toBe(
+      "Organizer handout is not verified here yet. If the organizer has already recorded it, open the Event > Organizer-held stock, choose Check for stock updates, then Reconcile accepted order stock. Completion and new stock updates stay locked until verification."
+    )
+  })
+
+  it("keeps earlier verification guidance ahead of organizer handout import guidance", () => {
+    const waitingForHandout = {
+      goodsPaymentVerified: true,
+      zeroCostPickupAuthorized: false,
+      inventoryAcceptanceReady: true,
+      pickupAuthorityVerified: true,
+      organizerHandoutVerified: false,
+    }
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...waitingForHandout,
+        goodsPaymentVerified: false,
+        inventoryAcceptanceReady: false,
+      })
+    ).toBe(
+      "Verify the goods payment before pickup, fulfillment or new stock updates."
+    )
+    for (const key of [
+      "inventoryAcceptanceReady",
+      "pickupAuthorityVerified",
+    ] as const)
+      expect(
+        getMerchantFulfillmentBlockReason({
+          ...waitingForHandout,
+          [key]: false,
+        })
+      ).toBe(
+        "Verify this order's inventory and pickup authority before fulfillment or new stock updates."
+      )
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...waitingForHandout,
+        goodsPaymentVerified: false,
+        zeroCostPickupAuthorized: true,
+      })
+    ).toBe(getMerchantFulfillmentBlockReason(waitingForHandout))
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...waitingForHandout,
+        organizerHandoutVerified: true,
+      })
+    ).toBeNull()
+  })
+
+  it("gates goods, inventory and handout separately from coordination fee or cleanup", () => {
+    const verified = {
+      goodsPaymentVerified: true,
+      zeroCostPickupAuthorized: false,
+      inventoryAcceptanceReady: true,
+      pickupAuthorityVerified: true,
+      organizerHandoutVerified: true,
+    }
+    expect(getMerchantFulfillmentBlockReason(verified)).toBeNull()
+    for (const key of [
+      "goodsPaymentVerified",
+      "inventoryAcceptanceReady",
+      "pickupAuthorityVerified",
+      "organizerHandoutVerified",
+    ] as const) {
+      expect(
+        getMerchantFulfillmentBlockReason({ ...verified, [key]: false })
+      ).not.toBeNull()
+    }
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...verified,
+        goodsPaymentVerified: false,
+        zeroCostPickupAuthorized: true,
+      })
+    ).toBeNull()
+    expect(
+      getMerchantFulfillmentBlockReason({
+        ...verified,
+        goodsPaymentVerified: false,
+        zeroCostPickupAuthorized: true,
+        pickupAuthorityVerified: false,
+      })
+    ).not.toBeNull()
+  })
+
   const fixture = createEventMarketOrderFixture({ price: 0 })
   const merchant = fixture.merchant
   const zeroCostOrder: Pick<

@@ -51,7 +51,8 @@ describe("Merchant saved payout confirmation", () => {
       "const automaticDispatch = automaticPayouts && automaticScope !== null"
     )
     expect(worker).toContain("if (automaticDispatch)")
-    expect(worker).toContain("assertAutomaticCurrent(candidate.orderId)")
+    expect(worker).toContain("assertAutomaticCurrent(")
+    expect(worker).toContain("candidateKeyForSelection(candidate)")
     expect(worker).toContain("await advanceMerchantCheckoutSparkOrder")
     expect(worker).toContain("controller?.requestRescan()")
     expect(worker).toContain("await reconcileMerchantCheckoutSparkOrder")
@@ -333,7 +334,7 @@ describe("Merchant saved payout confirmation", () => {
     )
 
     expect(source).toContain("continueMerchantCheckoutSparkNativeTreasury")
-    expect(native).toContain("beginManualAction(candidate.orderId, true)")
+    expect(native).toContain("beginManualAction(candidate, true)")
     expect(native).toContain("await stopDiscovery()")
     expect(native).toContain("shouldContinue: current.isCurrent")
     expect(native).toContain("refreshVerifiedStatus([candidate], current)")

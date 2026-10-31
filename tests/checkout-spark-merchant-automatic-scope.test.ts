@@ -15,6 +15,38 @@ function deferred() {
 }
 
 describe("Merchant selected-order automatic recovery", () => {
+  it("pins per-order dispatch and delayed consent to the participant-qualified checkout", async () => {
+    const selection = createMerchantCheckoutSparkPayoutReviewSelection()
+    const exactKey = "buyer-a:checkout-a"
+    selection.select("shared-order", exactKey)
+    const session = createMerchantCheckoutSparkAutomaticSession({
+      isCurrent: () => true,
+      stopAndDrain: async () => {},
+      captureOrder: (orderId, selectionKey) =>
+        selection.capture(orderId, selectionKey),
+    })
+    await session.change(true, {
+      kind: "order",
+      orderId: "shared-order",
+      selectionKey: exactKey,
+    })
+    const assertCurrent = session.capture()
+    expect(() => assertCurrent("shared-order", exactKey)).not.toThrow()
+    expect(() => assertCurrent("shared-order", "buyer-b:checkout-b")).toThrow(
+      "session changed"
+    )
+    let adapterCalls = 0
+    selection.select("shared-order", "buyer-b:checkout-b")
+    expect(session.getScope()).toBeNull()
+    try {
+      assertCurrent("shared-order", exactKey)
+      adapterCalls += 1
+    } catch {
+      /* Revoked selection must never reach an adapter. */
+    }
+    expect(adapterCalls).toBe(0)
+  })
+
   it("does not grant another funded order authority when continuing the selected order", async () => {
     const selection = createMerchantCheckoutSparkPayoutReviewSelection()
     selection.select("selected-order")
@@ -49,9 +81,32 @@ describe("Merchant selected-order automatic recovery", () => {
     expect(await session.change(true)).toBe(true)
     const assertCurrent = session.capture()
     selection.select("another-funded-order")
+    selection.select("another-funded-order", "different-participant-checkout")
     expect(session.getScope()).toEqual({ kind: "all" })
     expect(() => assertCurrent("selected-order")).not.toThrow()
     expect(() => assertCurrent("another-funded-order")).not.toThrow()
+  })
+
+  it("does not admit a held per-order Start after a same-ID participant change", async () => {
+    const selection = createMerchantCheckoutSparkPayoutReviewSelection()
+    const key = "buyer-a:checkout-a"
+    selection.select("shared-order", key)
+    const held = deferred()
+    const session = createMerchantCheckoutSparkAutomaticSession({
+      isCurrent: () => true,
+      stopAndDrain: () => held.promise,
+      captureOrder: (orderId, selectionKey) =>
+        selection.capture(orderId, selectionKey),
+    })
+    const starting = session.change(true, {
+      kind: "order",
+      orderId: "shared-order",
+      selectionKey: key,
+    })
+    selection.select("shared-order", "buyer-b:checkout-b")
+    held.resolve()
+    expect(await starting).toBe(false)
+    expect(session.getScope()).toBeNull()
   })
 
   it("does not activate a selected order after selection changes during the worker drain", async () => {

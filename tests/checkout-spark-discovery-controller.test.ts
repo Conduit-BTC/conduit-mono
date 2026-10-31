@@ -67,6 +67,7 @@ function rescanHarness(
   input: {
     active?: boolean
     opening?: Promise<void>
+    subscription?: Promise<void>
     nextPage?: (read: number) => Promise<MerchantCheckoutDiscoveryPage>
   } = {}
 ) {
@@ -78,10 +79,13 @@ function rescanHarness(
     closed: 0,
     inFlight: 0,
     maxInFlight: 0,
+    subscribed: 0,
+    unsubscribed: 0,
   }
   const observed: MerchantCheckoutDiscoveryPage[] = []
   const statuses: MerchantCheckoutDiscoveryStatus[] = []
   let lastPage: MerchantCheckoutDiscoveryPage | null = null
+  let notifyRecoveryChange = () => {}
   const controller = startMerchantCheckoutSparkDiscovery({
     principalPubkey: "a".repeat(64),
     active: input.active,
@@ -90,6 +94,14 @@ function rescanHarness(
       calls.opened += 1
       await input.opening
       return {
+        subscribeToRecoveryChanges: async (listener: () => void) => {
+          calls.subscribed += 1
+          notifyRecoveryChange = listener
+          await input.subscription
+          return () => {
+            calls.unsubscribed += 1
+          }
+        },
         nextPage: async () => {
           calls.reads += 1
           calls.inFlight += 1
@@ -120,10 +132,102 @@ function rescanHarness(
     onPage: (result) => observed.push(result),
     onStatus: (status) => statuses.push(status),
   })
-  return { controller, timer, calls, observed, statuses }
+  return {
+    controller,
+    timer,
+    calls,
+    observed,
+    statuses,
+    notifyRecoveryChange: () => notifyRecoveryChange(),
+  }
 }
 
 describe("active Merchant recovery discovery scheduling", () => {
+  it("coalesces automatic authenticated-change hints through the existing rescan delay", async () => {
+    const test = rescanHarness()
+    test.timer.run()
+    await settled()
+    expect(test.timer.nextDelay()).toBe(60_000)
+    const scheduled = test.timer.scheduledCount()
+    for (let count = 0; count < 8; count += 1) test.notifyRecoveryChange()
+    expect(test.timer.nextDelay()).toBe(750)
+    expect(test.timer.scheduledCount()).toBe(scheduled + 1)
+    test.timer.run()
+    await settled()
+    expect(test.calls.reads).toBe(2)
+    expect(test.calls.restarted).toBe(1)
+    expect(test.calls.maxInFlight).toBe(1)
+    expect(test.calls.subscribed).toBe(1)
+    expect(test.timer.nextDelay()).toBe(60_000)
+    test.controller.dispose()
+    expect(test.calls.unsubscribed).toBe(1)
+    test.notifyRecoveryChange()
+    expect(test.timer.nextDelay()).toBeUndefined()
+  })
+
+  it("holds automatic hints while hidden and drains remaining pages before restarting", async () => {
+    const held = deferred<MerchantCheckoutDiscoveryPage>()
+    const test = rescanHarness({
+      nextPage: async (read) =>
+        read === 1 ? held.promise : page("source_eose", false),
+    })
+    test.timer.run()
+    await settled()
+    test.notifyRecoveryChange()
+    test.controller.setActive(false)
+    held.resolve(page("advanced", true))
+    await settled()
+    expect(test.timer.nextDelay()).toBeUndefined()
+    expect(test.calls.restarted).toBe(0)
+    test.notifyRecoveryChange()
+    test.controller.setActive(true)
+    expect(test.timer.nextDelay()).toBe(750)
+    test.timer.run()
+    await settled()
+    expect(test.calls.reads).toBe(2)
+    expect(test.calls.restarted).toBe(0)
+    expect(test.timer.nextDelay()).toBe(750)
+    test.timer.run()
+    await settled()
+    expect(test.calls.reads).toBe(3)
+    expect(test.calls.restarted).toBe(1)
+    expect(test.calls.maxInFlight).toBe(1)
+    test.controller.dispose()
+  })
+
+  it("releases a late optional subscription after disposal without another page", async () => {
+    const subscription = deferred<void>()
+    const test = rescanHarness({ subscription: subscription.promise })
+    test.timer.run()
+    await settled()
+    expect(test.calls.subscribed).toBe(1)
+    expect(test.calls.reads).toBe(1)
+    const drain = test.controller.stopAndDrain()
+    test.notifyRecoveryChange()
+    subscription.resolve()
+    await drain
+    await settled()
+    expect(test.calls.closed).toBe(1)
+    expect(test.calls.unsubscribed).toBe(1)
+    expect(test.calls.reads).toBe(1)
+    expect(test.timer.nextDelay()).toBeUndefined()
+  })
+
+  it("never lets optional local change setup block the strict first page or disposal drain", async () => {
+    const test = rescanHarness({ subscription: new Promise<void>(() => {}) })
+    test.timer.run()
+    await settled()
+    expect(test.calls.reads).toBe(1)
+    expect(test.timer.nextDelay()).toBe(60_000)
+    const drained = await Promise.race([
+      test.controller.stopAndDrain().then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 20)),
+    ])
+    expect(drained).toBe(true)
+    expect(test.calls.closed).toBe(1)
+    expect(test.timer.nextDelay()).toBeUndefined()
+  })
+
   it("coalesces idle rescan requests into one prompt restart of the retained session", async () => {
     const test = rescanHarness()
     test.timer.run()
@@ -302,7 +406,9 @@ describe("active Merchant recovery discovery scheduling", () => {
       await settled()
       expect(test.statuses.at(-1)).toBe("unavailable")
       expect(test.calls.closed).toBe(1)
+      expect(test.calls.unsubscribed).toBe(1)
       test.controller.requestRescan()
+      test.notifyRecoveryChange()
       test.controller.setActive(false)
       test.controller.setActive(true)
       expect(test.timer.nextDelay()).toBeUndefined()

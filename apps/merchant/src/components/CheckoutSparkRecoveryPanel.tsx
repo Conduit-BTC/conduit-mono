@@ -6,6 +6,7 @@ import {
   hasCheckoutSparkProviderSendWindow,
   startMerchantCheckoutSparkReconciliation,
   type CheckoutSparkMerchantSettlementProjection,
+  type CheckoutSparkNativeRetirementObservation,
   type MerchantCheckoutSparkRecoveryCandidate,
   type MerchantCheckoutSparkRecoveryDiscoveryResult,
   type MerchantCheckoutSparkReconciliationSummary,
@@ -45,6 +46,12 @@ import {
 } from "../lib/checkout-spark-automatic-session"
 import { createMerchantCheckoutSparkPayoutReviewSelection } from "../lib/checkout-spark-payout-review-selection"
 import {
+  getMerchantCheckoutSparkCandidateSelectionKey,
+  getMerchantCheckoutSparkOrderSelectionKey,
+  selectMerchantCheckoutSparkOrderRecovery,
+  type MerchantCheckoutSparkSelectedOrder,
+} from "../lib/checkout-spark-order-selection"
+import {
   continueMerchantCheckoutSparkNativeTreasury,
   continueMerchantCheckoutSparkSettledPayout,
   reviewMerchantCheckoutSparkSettledPayout,
@@ -65,10 +72,10 @@ import {
 
 interface CheckoutSparkRecoveryPanelProps {
   principalPubkey: string
-  selectedOrderId?: string | null
+  selectedOrder?: MerchantCheckoutSparkSelectedOrder | null
   /** Independently order-bound durable facts; discovery is not payment truth. */
   selectedOrderSettlement?: {
-    orderId: string
+    order: MerchantCheckoutSparkSelectedOrder
     projection: CheckoutSparkMerchantSettlementProjection
   } | null
   /** Local display reads only; these flags grant no recovery authority. */
@@ -108,7 +115,7 @@ const PREPARATION_NOTICES: Record<
 /** Keep private rows inside an account-keyed instance, even if callers reuse it. */
 export function CheckoutSparkRecoveryPanel({
   principalPubkey,
-  selectedOrderId,
+  selectedOrder,
   selectedOrderSettlement,
   settlementRefreshing = false,
   settlementReadUnavailable = false,
@@ -123,7 +130,7 @@ export function CheckoutSparkRecoveryPanel({
     <CheckoutSparkRecoveryPanelForPrincipal
       key={merchantCheckoutRecoveryPrincipalKey(principalPubkey)}
       principalPubkey={principalPubkey}
-      selectedOrderId={selectedOrderId}
+      selectedOrder={selectedOrder}
       selectedOrderSettlement={selectedOrderSettlement}
       settlementRefreshing={settlementRefreshing}
       settlementReadUnavailable={settlementReadUnavailable}
@@ -140,7 +147,7 @@ export function CheckoutSparkRecoveryPanel({
 /** Account-scoped recovery; automatic dispatch still requires the frozen plan authority. */
 function CheckoutSparkRecoveryPanelForPrincipal({
   principalPubkey,
-  selectedOrderId,
+  selectedOrder,
   selectedOrderSettlement,
   settlementRefreshing = false,
   settlementReadUnavailable = false,
@@ -151,6 +158,15 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   startAutomatically = false,
   isSessionCurrent,
 }: CheckoutSparkRecoveryPanelProps) {
+  const selectedOrderId = selectedOrder?.orderId ?? null
+  const selectedOrderKey =
+    selectedOrder?.merchantPubkey === principalPubkey
+      ? getMerchantCheckoutSparkOrderSelectionKey(selectedOrder)
+      : null
+  const selectedOrderRef = useRef<MerchantCheckoutSparkSelectedOrder | null>(
+    null
+  )
+  selectedOrderRef.current = selectedOrderKey ? selectedOrder! : null
   const sessionCurrent = useRef(isSessionCurrent)
   sessionCurrent.current = isSessionCurrent
   const automaticAllowed = useRef(allowAutomaticPayouts)
@@ -199,18 +215,15 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const [reviewSelection] = useState(
     createMerchantCheckoutSparkPayoutReviewSelection
   )
-  const reviewSelectionRevision = reviewSelection.select(
-    selectedOrderId ?? null
-  )
   const [automaticSession] = useState(() =>
     createMerchantCheckoutSparkAutomaticSession({
       isCurrent: () => automaticAllowed.current && hasCurrentExecutionSession(),
       stopAndDrain: stopDiscovery,
-      captureOrder: (orderId) => reviewSelection.capture(orderId),
+      captureOrder: (orderId, selectionKey) =>
+        reviewSelection.capture(orderId, selectionKey),
     })
   )
   const [automaticPayouts, setAutomaticPayouts] = useState(false)
-  const automaticScope = automaticSession.getScope()
   const [automaticTransition, setAutomaticTransition] = useState<
     "starting" | "pausing" | null
   >(null)
@@ -224,7 +237,9 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     setBusyState(next)
   }
   const [notice, setNotice] = useState<string | null>(null)
-  const [noticeOrderId, setNoticeOrderId] = useState<string | null>(null)
+  const [noticeSelectionKey, setNoticeSelectionKey] = useState<string | null>(
+    null
+  )
   const [lastPayoutObservation, setLastPayoutObservation] = useState<{
     message: string
     planDigest: string
@@ -271,8 +286,6 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     review: MerchantCheckoutSparkPayoutReview
     isSelectionCurrent: () => boolean
   } | null>(null)
-  const confirmationSelectionCurrent =
-    confirmation?.isSelectionCurrent() === true
   const [confirmationNowMs, setConfirmationNowMs] = useState(Date.now)
   const confirmationHasTime =
     confirmation !== null &&
@@ -283,11 +296,38 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   const settledCandidates =
     result?.candidates.filter((candidate) => candidate.schemaVersion !== 1) ??
     []
-  const orderCandidates = settledCandidates.filter(
-    (candidate) => candidate.orderId === selectedOrderId
+  const orderRecovery = selectMerchantCheckoutSparkOrderRecovery(
+    selectedOrderKey ? selectedOrder : null,
+    settledCandidates
   )
   // Never choose one conflicting recovery plan arbitrarily for an order.
-  const candidate = orderCandidates.length === 1 ? orderCandidates[0] : null
+  const candidate = orderRecovery.candidate
+  const candidateSelectionKey = candidate
+    ? getMerchantCheckoutSparkCandidateSelectionKey(selectedOrder, candidate)
+    : null
+  const selectionKey = candidateSelectionKey ?? selectedOrderKey
+  const reviewSelectionRevision = reviewSelection.select(
+    selectedOrderId,
+    selectionKey
+  )
+  const automaticScope = automaticSession.getScope()
+  const candidateKeyForSelection = useCallback(
+    (candidate: MerchantCheckoutSparkRecoveryCandidate) =>
+      getMerchantCheckoutSparkCandidateSelectionKey(
+        selectedOrderRef.current,
+        candidate
+      ),
+    []
+  )
+  const captureCandidateSelection = useCallback(
+    (candidate: MerchantCheckoutSparkRecoveryCandidate) => {
+      const key = candidateKeyForSelection(candidate)
+      return key ? reviewSelection.capture(candidate.orderId, key) : () => false
+    },
+    [candidateKeyForSelection, reviewSelection]
+  )
+  const confirmationSelectionCurrent =
+    confirmation?.isSelectionCurrent() === true
   useEffect(() => {
     setLastPayoutObservation(null)
   }, [reviewSelectionRevision, candidate?.planDigest])
@@ -299,7 +339,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
   useEffect(() => {
     if (!candidate || !hasCurrentSession()) return
     let closed = false
-    const isSelectionCurrent = reviewSelection.capture(candidate.orderId)
+    const isSelectionCurrent = captureCandidateSelection(candidate)
     const isCurrent = () =>
       !closed && hasCurrentSession() && isSelectionCurrent()
     // Read the selected order's saved terminal marker immediately; it need not
@@ -327,6 +367,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     reviewSelectionRevision,
     hasCurrentSession,
     applySavedVerification,
+    captureCandidateSelection,
   ])
 
   useEffect(
@@ -430,7 +471,10 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             const assertActive = () => {
               assertWorkerCurrent()
               if (automaticDispatch) {
-                assertAutomaticCurrent(candidate.orderId)
+                assertAutomaticCurrent(
+                  candidate.orderId,
+                  candidateKeyForSelection(candidate)
+                )
                 if (executionRevision.current !== actionExecutionRevision) {
                   throw new Error("Merchant execution permission changed.")
                 }
@@ -450,9 +494,11 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             try {
               let outcome: MerchantCheckoutSparkReconciliationStatus
               if (automaticDispatch) {
-                const isPayoutSelectionCurrent = reviewSelection.capture(
-                  candidate.orderId
-                )
+                const isPayoutSelectionCurrent =
+                  captureCandidateSelection(candidate)
+                // This invocation's finite checkpoint cannot outlive its exact
+                // participant selection or leak into a later order/check.
+                let recoveryCheckpoint: unknown
                 outcome = await advanceMerchantCheckoutSparkOrder(
                   principalPubkey,
                   candidate,
@@ -463,6 +509,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                     onNativeObservation(observation) {
                       assertActive()
                       if (!isPayoutSelectionCurrent()) return
+                      if (observation.phase === "recovery_delivery")
+                        recoveryCheckpoint = observation.recoveryCheckpoint
                       const message =
                         formatMerchantCheckoutSparkNativeObservation(
                           observation
@@ -479,7 +527,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                       if (!isPayoutSelectionCurrent()) return
                       const message =
                         formatMerchantCheckoutSparkPayoutObservation(
-                          observation
+                          observation,
+                          recoveryCheckpoint
                         )
                       setLastPayoutObservation(
                         message
@@ -594,7 +643,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
                 ? page.candidates.filter((candidate) =>
                     merchantCheckoutSparkAutomaticScopeIncludes(
                       automaticScope,
-                      candidate.orderId
+                      candidate.orderId,
+                      candidateKeyForSelection(candidate)
                     )
                   )
                 : page.candidates
@@ -628,6 +678,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     executionEnabled,
     hasCurrentSession,
     applySavedVerification,
+    candidateKeyForSelection,
+    captureCandidateSelection,
     busy,
     confirmation,
     discoveryRefresh,
@@ -653,7 +705,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     setAutomaticPayouts(false)
     setNotice(null)
     if (next) setLastPayoutObservation(null)
-    setNoticeOrderId(selectedOrderId ?? null)
+    setNoticeSelectionKey(selectionKey)
     try {
       // change() revokes synchronously and drains before granting the new mode.
       const enabled = await automaticSession.change(next, scope)
@@ -708,24 +760,28 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     hasCurrentExecutionSession,
   ])
 
-  function beginManualAction(orderId: string, requiresExecution = false) {
+  function beginManualAction(
+    candidate: MerchantCheckoutSparkRecoveryCandidate,
+    requiresExecution = false
+  ) {
+    const isOrderCurrent = captureCandidateSelection(candidate)
     if (
       busyRef.current ||
       automaticTransitionRef.current !== null ||
+      !isOrderCurrent() ||
       !hasCurrentSession() ||
       (requiresExecution && !hasCurrentExecutionSession())
     )
       return null
     generation.current += 1
     setLastPayoutObservation(null)
-    setNoticeOrderId(orderId)
+    setNoticeSelectionKey(candidateKeyForSelection(candidate))
     automaticSession.revoke()
     setAutomaticPayouts(false)
     setBusy(true)
     // Revoke before React renders; each action also awaits this same drain.
     void stopDiscovery().catch(() => undefined)
     const capturedExecutionRevision = executionRevision.current
-    const isOrderCurrent = reviewSelection.capture(orderId)
     const display = captureMerchantCheckoutSparkRecoveryAction({
       generation: () => generation.current,
       isCurrent: hasCurrentSession,
@@ -737,7 +793,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           ? executionRevision.current === capturedExecutionRevision &&
             isOrderCurrent() &&
             hasCurrentExecutionSession()
-          : hasCurrentSession(),
+          : isOrderCurrent() && hasCurrentSession(),
     })
     return { ...action, isDisplayCurrent: display.isCurrent }
   }
@@ -779,7 +835,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy) return
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate)
     if (current === null) return
     setNotice(null)
     try {
@@ -815,14 +871,14 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy) return
-    if (Date.now() < candidate.takeoverAt) {
-      setNoticeOrderId(candidate.orderId)
+    if (candidate.takeoverAt === null || Date.now() < candidate.takeoverAt) {
+      setNoticeSelectionKey(candidateKeyForSelection(candidate))
       setNotice(
         "Recovery access can be checked after the shopper handoff time."
       )
       return
     }
-    const current = beginManualAction(candidate.orderId)
+    const current = beginManualAction(candidate)
     if (current === null) return
     setNotice(null)
     try {
@@ -860,12 +916,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy) return
-    if (Date.now() < candidate.takeoverAt) {
-      setNoticeOrderId(candidate.orderId)
+    if (candidate.takeoverAt === null || Date.now() < candidate.takeoverAt) {
+      setNoticeSelectionKey(candidateKeyForSelection(candidate))
       setNotice("Credit recovery is available after the shopper handoff time.")
       return
     }
-    const current = beginManualAction(candidate.orderId, true)
+    const current = beginManualAction(candidate, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -910,12 +966,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy) return
-    if (Date.now() < candidate.takeoverAt) {
-      setNoticeOrderId(candidate.orderId)
+    if (candidate.takeoverAt === null || Date.now() < candidate.takeoverAt) {
+      setNoticeSelectionKey(candidateKeyForSelection(candidate))
       setNotice("Payout history is available after the shopper handoff time.")
       return
     }
-    const current = beginManualAction(candidate.orderId, true)
+    const current = beginManualAction(candidate, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -964,7 +1020,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy || confirmation) return
-    const current = beginManualAction(candidate.orderId, true)
+    const current = beginManualAction(candidate, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -1029,19 +1085,26 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ): Promise<void> {
     if (busy || confirmation) return
-    if (Date.now() < candidate.takeoverAt) {
-      setNoticeOrderId(candidate.orderId)
+    if (candidate.takeoverAt === null || Date.now() < candidate.takeoverAt) {
+      setNoticeSelectionKey(candidateKeyForSelection(candidate))
       setNotice(
         "Conduit payment finalization is available after the shopper handoff time."
       )
       return
     }
-    const current = beginManualAction(candidate.orderId, true)
+    const current = beginManualAction(candidate, true)
     if (current === null) return
     setNotice(null)
-    const isPayoutSelectionCurrent = reviewSelection.capture(candidate.orderId)
-    const showObservation = (observation: unknown) => {
+    const isPayoutSelectionCurrent = captureCandidateSelection(candidate)
+    let recoveryCheckpoint: unknown
+    const showObservation = (
+      observation:
+        | CheckoutSparkNativeRetirementObservation
+        | { phase: "waiting_for_current_check"; status: "not_verified" }
+    ) => {
       if (!current.isCurrent() || !isPayoutSelectionCurrent()) return
+      if (observation.phase === "recovery_delivery")
+        recoveryCheckpoint = observation.recoveryCheckpoint
       const message = formatMerchantCheckoutSparkNativeObservation(observation)
       if (message)
         setLastPayoutObservation({
@@ -1067,7 +1130,8 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       )
       if (!current.isCurrent()) return
       const resultMessage = formatMerchantCheckoutSparkPayoutObservation(
-        continued.payout
+        continued.payout,
+        recoveryCheckpoint
       )
       setLastPayoutObservation(
         resultMessage
@@ -1119,16 +1183,16 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     candidate: MerchantCheckoutSparkRecoveryCandidate
   ) {
     if (busy) return
-    const isSelectionCurrent = reviewSelection.capture(candidate.orderId)
+    const isSelectionCurrent = captureCandidateSelection(candidate)
     if (!isSelectionCurrent()) return
-    if (Date.now() < candidate.takeoverAt) {
-      setNoticeOrderId(candidate.orderId)
+    if (candidate.takeoverAt === null || Date.now() < candidate.takeoverAt) {
+      setNoticeSelectionKey(candidateKeyForSelection(candidate))
       setNotice(
         "Payout continuation is available after the shopper handoff time."
       )
       return
     }
-    const current = beginManualAction(candidate.orderId, true)
+    const current = beginManualAction(candidate, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -1178,7 +1242,7 @@ function CheckoutSparkRecoveryPanelForPrincipal({
       )
       return
     }
-    const current = beginManualAction(reviewed.candidate.orderId, true)
+    const current = beginManualAction(reviewed.candidate, true)
     if (current === null) return
     setNotice(null)
     try {
@@ -1238,7 +1302,10 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     ? (verified[candidate.planDigest] ?? null)
     : null
   const orderProjection =
-    selectedOrderSettlement?.orderId === selectedOrderId
+    selectedOrderKey &&
+    selectedOrderSettlement &&
+    getMerchantCheckoutSparkOrderSelectionKey(selectedOrderSettlement.order) ===
+      selectedOrderKey
       ? selectedOrderSettlement.projection
       : null
   // Both inputs are provider-attested projections. A temporary discovery gap or
@@ -1248,12 +1315,12 @@ function CheckoutSparkRecoveryPanelForPrincipal({
     : (orderProjection ?? candidateProjection)
   const recoveryLookupIncomplete =
     !candidate &&
-    orderCandidates.length === 0 &&
+    orderRecovery.matchingCount === 0 &&
     (discoveryStatus === "finished" ||
       discoveryStatus === "unavailable" ||
       discoveryStatus === "paused")
   const outcome =
-    orderCandidates.length > 1
+    orderRecovery.matchingCount > 1
       ? "needs_attention"
       : candidate
         ? retirement[candidate.planDigest] === "retired"
@@ -1264,7 +1331,11 @@ function CheckoutSparkRecoveryPanelForPrincipal({
           : undefined
   const selectedAutomaticAuthority =
     automaticPayouts &&
-    merchantCheckoutSparkAutomaticScopeIncludes(automaticScope, selectedOrderId)
+    merchantCheckoutSparkAutomaticScopeIncludes(
+      automaticScope,
+      selectedOrderId,
+      candidateSelectionKey
+    )
   const recoveryPending =
     candidate !== null &&
     outcome !== "retired" &&
@@ -1289,14 +1360,18 @@ function CheckoutSparkRecoveryPanelForPrincipal({
         paused={
           !selectedAutomaticAuthority && automaticTransition !== "starting"
         }
-        canContinue={allowAutomaticPayouts && executionEnabled}
+        canContinue={
+          allowAutomaticPayouts &&
+          executionEnabled &&
+          candidateSelectionKey !== null
+        }
         processingScope={
           automaticPayouts && automaticScope?.kind === "all" ? "all" : "order"
         }
         recoveryPending={recoveryPending}
         automaticProcessing={selectedAutomaticAuthority && recoveryPending}
         transitioning={busy || automaticTransition !== null}
-        handoffAt={candidate?.takeoverAt ?? 0}
+        handoffAt={candidate?.takeoverAt ?? null}
         nowMs={displayNowMs}
         notice={
           outcome === "retired"
@@ -1304,16 +1379,18 @@ function CheckoutSparkRecoveryPanelForPrincipal({
             : !executionEnabled &&
                 (!projection?.commerceVerified || projection.feePending)
               ? "Saved payment status remains available. Processing is paused in this build; do not request another payment."
-              : noticeOrderId === selectedOrderId
+              : noticeSelectionKey === selectionKey
                 ? notice
                 : null
         }
         onRetry={inspect}
         onPause={() => void changeAutomaticPayouts(false)}
         onContinue={() =>
+          candidateSelectionKey &&
           void changeAutomaticPayouts(true, {
             kind: "order",
             orderId: selectedOrderId,
+            selectionKey: candidateSelectionKey,
           })
         }
       >
