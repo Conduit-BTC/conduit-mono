@@ -435,6 +435,7 @@ export function prepareProductImages(
   images: readonly ProductImage[]
 ): ProductImage[] {
   return images.map((image) => ({
+    ...image,
     url: image.url.trim(),
     ...(typeof image.alt === "string" && image.alt ? { alt: image.alt } : {}),
   }))

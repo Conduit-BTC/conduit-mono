@@ -394,3 +394,4 @@ export {
   type CheckoutSparkPerformanceObservation,
   type CheckoutSparkPerformanceObserver,
 } from "./protocol/checkout-spark-performance"
+export * from "./protocol/product-image-sources"
