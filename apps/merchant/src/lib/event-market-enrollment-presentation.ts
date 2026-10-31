@@ -6,6 +6,54 @@ import {
   type PrivateMessageRelayReadinessReason,
 } from "@conduit/core"
 
+/** An invitation is useful before a request/admission, not a second approval. */
+export function canInviteEventMerchant({
+  hasRosterRow,
+  hasApproval,
+  isOrganizer,
+  enrollmentStatus,
+}: {
+  hasRosterRow: boolean
+  hasApproval: boolean
+  isOrganizer: boolean
+  enrollmentStatus?: string
+}): boolean {
+  return (
+    !hasRosterRow &&
+    !hasApproval &&
+    !isOrganizer &&
+    enrollmentStatus !== "requested"
+  )
+}
+
+export function getEventMerchantAdmissionHint({
+  pending,
+  decisionPending,
+  checking,
+  failed,
+  canChange,
+  assignment,
+}: {
+  pending: boolean
+  decisionPending: boolean
+  checking: boolean
+  failed: boolean
+  canChange: boolean
+  assignment: string
+}): string | undefined {
+  if (pending) return "Updating merchant authorization…"
+  if (decisionPending)
+    return "A saved merchant decision needs delivery before another change. Retry that signed decision above."
+  if (checking) return "Checking current merchant authorization…"
+  if (failed)
+    return "Merchant authorization could not be checked. Refresh authorization before approving."
+  if (!canChange)
+    return "Current signed authorization must be verified before changing admission. Refresh authorization to check again."
+  if (!assignment.trim())
+    return "Add a public booth or pickup assignment before approving or saving."
+  return undefined
+}
+
 /** Requests are an organizer queue, not evidence of permission to sell. */
 export function getPendingEventMerchantRequests(
   merchants: readonly Pick<EventMarketMerchantRow, "pubkey">[],

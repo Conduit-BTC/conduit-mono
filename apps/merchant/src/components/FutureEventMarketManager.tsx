@@ -4,6 +4,7 @@ import {
   buildEventMarketCalendarDraft,
   admitPublicEvent,
   buildEventMarketSeriesDraft,
+  buildMerchantEventParticipationUrl,
   decodeEventMarketReference,
   encodeEventMarketNaddr,
   listPendingEventMarketMerchantDecisions,
@@ -48,6 +49,8 @@ import {
   CardHeader,
   CardTitle,
   EventPageHeader,
+  EventSeriesDateNavigation,
+  Field,
   Input,
   Label,
   QRCodeSVG,
@@ -73,18 +76,20 @@ import {
   getOrganizerExclusiveEndDate,
   localDateTimeToEpochSeconds,
 } from "../lib/event-market-form"
-import {
-  EventBannerField,
-  EventDescriptionField,
-  EventTimezoneField,
-} from "./EventAuthoringFields"
+import { EventBannerField, EventTimezoneField } from "./EventAuthoringFields"
+import { EventDetailsEditor, EventDetailsFields } from "./EventDetailsFields"
 import { useEventMarketEnrollment } from "../hooks/useEventMarketEnrollment"
 import { EventActorName, EventActorProvenance } from "./EventActorIdentity"
 import { getEventActorDisplayName } from "../lib/event-actor-identity"
 import { FutureEventMerchantParticipation } from "./FutureEventMerchantParticipation"
 import { EventMarketOrganizerFeeEditor } from "./EventMarketOrganizerFeeEditor"
+import { EventMerchantAssignmentField } from "./EventMerchantAssignmentField"
 import { EventMarketStockPanel } from "./EventMarketStockPanel"
-import { getPendingEventMerchantRequests } from "../lib/event-market-enrollment-presentation"
+import {
+  canInviteEventMerchant,
+  getEventMerchantAdmissionHint,
+  getPendingEventMerchantRequests,
+} from "../lib/event-market-enrollment-presentation"
 
 function errorText(error: unknown): string {
   return error instanceof Error
@@ -203,11 +208,15 @@ function MarketLifecycleEditor({
   calendar,
   authenticatedPubkey,
   onChanged,
+  detailsOpen,
+  onDetailsOpenChange,
 }: {
   market: ParsedEventMarketRoster
   calendar: ParsedEventMarketCalendar
   authenticatedPubkey: string
   onChanged: () => void
+  detailsOpen: boolean
+  onDetailsOpenChange: (open: boolean) => void
 }) {
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [timezone, setTimezone] = useState(calendar.startTzid || "UTC")
@@ -313,29 +322,6 @@ function MarketLifecycleEditor({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <EventDescriptionField
-          id="future-edit-summary"
-          value={summary}
-          disabled={pending || bannerBusy}
-          onChange={setSummary}
-        />
-        <EventBannerField
-          id="future-edit-image"
-          value={image}
-          title={title}
-          scopeId={`event-edit:${market.coordinate}`}
-          disabled={pending || bannerBusy}
-          onChange={setImage}
-          onBusyChange={setBannerBusy}
-        />
-        {calendar.kind === 31923 ? (
-          <EventTimezoneField
-            id="future-edit-timezone"
-            value={timezone}
-            disabled={pending || bannerBusy}
-            onChange={setTimezone}
-          />
-        ) : null}
         <Button
           type="button"
           variant="outline"
@@ -346,59 +332,81 @@ function MarketLifecycleEditor({
             ? "Close Event Market"
             : "Reopen Event Market"}
         </Button>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="space-y-1">
-            <Label htmlFor="future-edit-title">Title</Label>
-            <Input
-              id="future-edit-title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="future-edit-location">Location</Label>
-            <Input
-              id="future-edit-location"
-              value={location}
-              onChange={(event) => setLocation(event.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="future-edit-start">
-              Start {calendar.kind === 31923 ? `(${timezone})` : ""}
-            </Label>
-            <Input
-              id="future-edit-start"
-              type={calendar.kind === 31922 ? "date" : "datetime-local"}
-              value={start}
-              onChange={(event) => setStart(event.target.value)}
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="future-edit-end">
-              End {calendar.kind === 31923 ? `(${timezone})` : ""}
-            </Label>
-            <Input
-              id="future-edit-end"
-              type={calendar.kind === 31922 ? "date" : "datetime-local"}
-              value={end}
-              onChange={(event) => setEnd(event.target.value)}
-            />
-          </div>
-        </div>
-        <Button
-          type="button"
-          disabled={
-            pending ||
-            bannerBusy ||
-            !title.trim() ||
-            !summary.trim() ||
-            !location.trim()
-          }
-          onClick={() => void saveCalendar()}
+        <EventDetailsEditor
+          id="future-edit-details"
+          label="Edit event details"
+          open={detailsOpen}
+          disabled={pending || bannerBusy}
+          onOpenChange={onDetailsOpenChange}
         >
-          Save event details
-        </Button>
+          <EventDetailsFields
+            idPrefix="future-edit"
+            title={title}
+            summary={summary}
+            location={location}
+            disabled={pending || bannerBusy}
+            onTitleChange={setTitle}
+            onSummaryChange={setSummary}
+            onLocationChange={setLocation}
+            banner={
+              <EventBannerField
+                id="future-edit-image"
+                value={image}
+                title={title}
+                scopeId={`event-edit:${market.coordinate}`}
+                disabled={pending || bannerBusy}
+                onChange={setImage}
+                onBusyChange={setBannerBusy}
+                showPreview={detailsOpen}
+              />
+            }
+          />
+          {calendar.kind === 31923 ? (
+            <EventTimezoneField
+              id="future-edit-timezone"
+              value={timezone}
+              disabled={pending || bannerBusy}
+              onChange={setTimezone}
+            />
+          ) : null}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor="future-edit-start">
+                Start {calendar.kind === 31923 ? `(${timezone})` : ""}
+              </Label>
+              <Input
+                id="future-edit-start"
+                type={calendar.kind === 31922 ? "date" : "datetime-local"}
+                value={start}
+                onChange={(event) => setStart(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="future-edit-end">
+                End {calendar.kind === 31923 ? `(${timezone})` : ""}
+              </Label>
+              <Input
+                id="future-edit-end"
+                type={calendar.kind === 31922 ? "date" : "datetime-local"}
+                value={end}
+                onChange={(event) => setEnd(event.target.value)}
+              />
+            </div>
+          </div>
+          <Button
+            type="button"
+            disabled={
+              pending ||
+              bannerBusy ||
+              !title.trim() ||
+              !summary.trim() ||
+              !location.trim()
+            }
+            onClick={() => void saveCalendar()}
+          >
+            Save event details
+          </Button>
+        </EventDetailsEditor>
         {error ? (
           <p role="alert" className="text-sm text-[var(--error-text)]">
             {error}
@@ -419,6 +427,8 @@ function SeriesDateManager({
   onSelectOccurrence,
   authenticatedPubkey,
   onChanged,
+  detailsOpen,
+  onDetailsOpenChange,
 }: {
   market: ParsedEventMarketRoster
   schedule: Extract<EventMarketSchedule, { kind: "series" }>
@@ -429,6 +439,8 @@ function SeriesDateManager({
   onSelectOccurrence?: (coordinate: string) => void
   authenticatedPubkey: string
   onChanged: () => Promise<unknown>
+  detailsOpen: boolean
+  onDetailsOpenChange: (open: boolean) => void
 }) {
   const { authGeneration, isAuthGenerationCurrent } = useAuth()
   const [localSelection, setLocalSelection] = useState<string | undefined>()
@@ -909,7 +921,7 @@ function SeriesDateManager({
           </p>
         ) : null}
         <div className="space-y-1">
-          <Label htmlFor="future-series-date-choice">Choose date</Label>
+          <Label htmlFor="future-series-date-choice">Choose date to edit</Label>
           <Select value={chosenCoordinate} onValueChange={choose}>
             <SelectTrigger id="future-series-date-choice">
               <SelectValue placeholder="Choose a date" />
@@ -961,129 +973,134 @@ function SeriesDateManager({
         ) : null}
         {editReady && chosen ? (
           <div className="space-y-3 rounded-[var(--radius-md)] border border-[var(--border)] p-3">
-            <h3 className="font-medium">Edit selected date</h3>
-            {editChanged && !pending && !pendingMutation ? (
-              <div className="space-y-2">
-                <p
-                  role="status"
-                  className="text-sm text-[var(--text-secondary)]"
+            <EventDetailsEditor
+              id="series-edit-details"
+              label="Edit selected date"
+              open={detailsOpen}
+              disabled={pending || bannerBusy}
+              onOpenChange={onDetailsOpenChange}
+            >
+              <p className="text-sm text-[var(--text-secondary)]">
+                These details apply only to the selected date. Add date below
+                creates a separate occurrence.
+              </p>
+              {editChanged && !pending && !pendingMutation ? (
+                <div className="space-y-2">
+                  <p
+                    role="status"
+                    className="text-sm text-[var(--text-secondary)]"
+                  >
+                    This date changed since you started editing. Your unsaved
+                    text is still shown. Review the updated date to replace
+                    these fields with its current details before saving.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={bannerBusy}
+                    onClick={() => reviewDate(chosen.occurrence)}
+                  >
+                    Review updated date
+                  </Button>
+                </div>
+              ) : null}
+              <EventDetailsFields
+                idPrefix="series-edit"
+                title={title}
+                summary={summary}
+                location={location}
+                disabled={pending || !!pendingMutation || bannerBusy}
+                onTitleChange={setTitle}
+                onSummaryChange={setSummary}
+                onLocationChange={setLocation}
+                banner={
+                  <EventBannerField
+                    id="series-edit-image"
+                    value={image}
+                    title={title}
+                    scopeId={`event-edit:${market.coordinate}`}
+                    disabled={pending || !!pendingMutation || bannerBusy}
+                    onChange={setImage}
+                    onBusyChange={setBannerBusy}
+                    showPreview={detailsOpen}
+                  />
+                }
+              />
+              {chosen.occurrence.kind === 31923 ? (
+                <EventTimezoneField
+                  id="series-edit-timezone"
+                  value={timezone}
+                  disabled={pending || !!pendingMutation || bannerBusy}
+                  onChange={setTimezone}
+                />
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="series-edit-start">
+                    Start{" "}
+                    {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
+                  </Label>
+                  <Input
+                    id="series-edit-start"
+                    type={
+                      chosen.occurrence.kind === 31922
+                        ? "date"
+                        : "datetime-local"
+                    }
+                    value={start}
+                    disabled={pending || !!pendingMutation}
+                    onChange={(event) => setStart(event.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="series-edit-end">
+                    End{" "}
+                    {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
+                  </Label>
+                  <Input
+                    id="series-edit-end"
+                    type={
+                      chosen.occurrence.kind === 31922
+                        ? "date"
+                        : "datetime-local"
+                    }
+                    value={end}
+                    disabled={pending || !!pendingMutation}
+                    onChange={(event) => setEnd(event.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  disabled={
+                    pending ||
+                    bannerBusy ||
+                    !!pendingMutation ||
+                    editChanged ||
+                    !title.trim() ||
+                    !summary.trim() ||
+                    !location.trim()
+                  }
+                  onClick={editDate}
                 >
-                  This date changed since you started editing. Your unsaved text
-                  is still shown. Review the updated date to replace these
-                  fields with its current details before saving.
-                </p>
+                  Save selected date
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={bannerBusy}
-                  onClick={() => reviewDate(chosen.occurrence)}
+                  disabled={
+                    pending ||
+                    bannerBusy ||
+                    !!pendingMutation ||
+                    schedule.series.memberCoordinates.length <= 1
+                  }
+                  onClick={removeDate}
                 >
-                  Review updated date
+                  Remove future date
                 </Button>
               </div>
-            ) : null}
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1">
-                <Label htmlFor="series-edit-title">Title</Label>
-                <Input
-                  id="series-edit-title"
-                  value={title}
-                  disabled={pending || !!pendingMutation}
-                  onChange={(event) => setTitle(event.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="series-edit-location">Location</Label>
-                <Input
-                  id="series-edit-location"
-                  value={location}
-                  disabled={pending || !!pendingMutation}
-                  onChange={(event) => setLocation(event.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="series-edit-start">
-                  Start{" "}
-                  {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
-                </Label>
-                <Input
-                  id="series-edit-start"
-                  type={
-                    chosen.occurrence.kind === 31922 ? "date" : "datetime-local"
-                  }
-                  value={start}
-                  disabled={pending || !!pendingMutation}
-                  onChange={(event) => setStart(event.target.value)}
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="series-edit-end">
-                  End {chosen.occurrence.kind === 31923 ? `(${timezone})` : ""}
-                </Label>
-                <Input
-                  id="series-edit-end"
-                  type={
-                    chosen.occurrence.kind === 31922 ? "date" : "datetime-local"
-                  }
-                  value={end}
-                  disabled={pending || !!pendingMutation}
-                  onChange={(event) => setEnd(event.target.value)}
-                />
-              </div>
-            </div>
-            <EventDescriptionField
-              id="series-edit-summary"
-              value={summary}
-              disabled={pending || !!pendingMutation}
-              onChange={setSummary}
-            />
-            <EventBannerField
-              id="series-edit-image"
-              value={image}
-              title={title}
-              scopeId={`event-edit:${market.coordinate}`}
-              disabled={pending || !!pendingMutation}
-              onChange={setImage}
-              onBusyChange={setBannerBusy}
-            />
-            {chosen.occurrence.kind === 31923 ? (
-              <EventTimezoneField
-                id="series-edit-timezone"
-                value={timezone}
-                disabled={pending || !!pendingMutation}
-                onChange={setTimezone}
-              />
-            ) : null}
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                disabled={
-                  pending ||
-                  bannerBusy ||
-                  !!pendingMutation ||
-                  editChanged ||
-                  !title.trim() ||
-                  !summary.trim() ||
-                  !location.trim()
-                }
-                onClick={editDate}
-              >
-                Save selected date
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={
-                  pending ||
-                  bannerBusy ||
-                  !!pendingMutation ||
-                  schedule.series.memberCoordinates.length <= 1
-                }
-                onClick={removeDate}
-              >
-                Remove future date
-              </Button>
-            </div>
+            </EventDetailsEditor>
           </div>
         ) : null}
         {chosen && !editReady ? (
@@ -1276,6 +1293,20 @@ function MerchantAuthorityRow({
     !auth.isFetching &&
     isEventMarketAuthorizationWriteReady(auth.data) &&
     ["active", "revoked", "missing"].includes(authState)
+  const admissionHint = getEventMerchantAdmissionHint({
+    pending,
+    decisionPending,
+    checking: auth.isFetching || auth.isPending,
+    failed: auth.isError,
+    canChange,
+    assignment,
+  })
+  const canInvite = canInviteEventMerchant({
+    hasRosterRow: !!row,
+    hasApproval: authState === "active",
+    isOrganizer: merchant === organizerPubkey,
+    enrollmentStatus,
+  })
   const expectedTipIds =
     resolution &&
     (resolution.state === "active" || resolution.state === "revoked")
@@ -1463,16 +1494,24 @@ function MerchantAuthorityRow({
               </p>
             ) : null}
           </div>
-          <div className="space-y-1">
-            <Label htmlFor={`assignment-${merchant}`}>Public assignment</Label>
-            <Input
-              id={`assignment-${merchant}`}
-              value={assignment}
-              onChange={(event) => setAssignment(event.target.value)}
-              placeholder="Booth 12 or pickup desk"
-            />
-          </div>
+          <EventMerchantAssignmentField
+            id={`assignment-${merchant}`}
+            value={assignment}
+            disabled={pending || decisionPending}
+            onChange={setAssignment}
+          />
         </div>
+        {enrollmentStatus === "requested" && !row ? (
+          <p className="text-sm text-[var(--text-secondary)]">
+            This merchant has already requested to join. Set their assignment
+            and approve them; no invitation is needed.
+          </p>
+        ) : null}
+        {admissionHint ? (
+          <p role="status" className="text-sm text-[var(--text-secondary)]">
+            {admissionHint}
+          </p>
+        ) : null}
         {confirmReapproval ? (
           <div
             role="alert"
@@ -1529,21 +1568,23 @@ function MerchantAuthorityRow({
           </p>
         ) : null}
         <div className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            disabled={
-              !authenticatedPubkey ||
-              pending ||
-              enrollmentBlocked ||
-              merchant === organizerPubkey
-            }
-            onClick={() => void onEnrollment("invite", merchant)}
-          >
-            {enrollmentStatus === "invited"
-              ? "Resend invitation"
-              : "Send private invitation"}
-          </Button>
+          {canInvite ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={
+                !authenticatedPubkey ||
+                pending ||
+                enrollmentBlocked ||
+                merchant === organizerPubkey
+              }
+              onClick={() => void onEnrollment("invite", merchant)}
+            >
+              {enrollmentStatus === "invited"
+                ? "Resend invitation"
+                : "Send private invitation"}
+            </Button>
+          ) : null}
           {!row && enrollmentStatus === "requested" ? (
             <Button
               variant="outline"
@@ -1557,7 +1598,7 @@ function MerchantAuthorityRow({
             <Button
               type="button"
               variant="outline"
-              disabled={!canChange}
+              disabled={!canChange || !assignment.trim()}
               onClick={() => void save("edit")}
             >
               Save assignment
@@ -1568,6 +1609,7 @@ function MerchantAuthorityRow({
               type="button"
               disabled={
                 !canChange ||
+                !assignment.trim() ||
                 (confirmReapproval &&
                   (reapprovalPreview.isPending || reapprovalPreview.isError))
               }
@@ -1638,6 +1680,8 @@ export function FutureEventMarketManager({
     signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
   const coordinate = decodeEventMarketReference(reference, [30409])?.coordinate
   const [merchantInput, setMerchantInput] = useState("")
+  const [merchantReviewError, setMerchantReviewError] = useState("")
+  const [openDetailsKey, setOpenDetailsKey] = useState<string | null>(null)
   const [invited, setInvited] = useState<string[]>([])
   const enrollment = useEventMarketEnrollment(
     coordinate ?? "",
@@ -1728,6 +1772,13 @@ export function FutureEventMarketManager({
     market.organizerPubkey === authenticatedPubkey &&
     isEventMarketRosterWriteReady(result) &&
     isEventMarketCalendarWriteReady(result)
+  const detailsEditorKey = series
+    ? `${series.series.eventId}:${selectedOccurrence ?? "default"}:${authGeneration}`
+    : calendar && market
+      ? `${calendar.eventId}:${market.eventId}:${authGeneration}`
+      : null
+  const detailsOpen =
+    !!canManage && !!detailsEditorKey && openDetailsKey === detailsEditorKey
   const pendingMerchantRequests = getPendingEventMerchantRequests(
     market?.merchants ?? [],
     enrollment.query.data?.states
@@ -1863,9 +1914,19 @@ export function FutureEventMarketManager({
 
   function addInvitation(): void {
     const normalized = normalizePubkey(merchantInput)
-    if (!normalized || merchantIds.includes(normalized)) return
+    if (!normalized) {
+      setMerchantReviewError("Enter the seller's Nostr npub or public key.")
+      return
+    }
+    if (merchantIds.includes(normalized)) {
+      setMerchantReviewError(
+        "This seller is already listed here. Review their existing merchant or request card."
+      )
+      return
+    }
     setInvited((current) => [...current, normalized])
     setMerchantInput("")
+    setMerchantReviewError("")
   }
 
   return (
@@ -1956,7 +2017,11 @@ export function FutureEventMarketManager({
           <EventPageHeader
             title={series?.series.title ?? calendar?.title ?? "Event Market"}
             summary={selectedCalendar?.summary ?? calendar?.summary}
-            imageUrl={selectedCalendar?.image ?? calendar?.image}
+            imageUrl={
+              detailsOpen
+                ? undefined
+                : (selectedCalendar?.image ?? calendar?.image)
+            }
             schedule={
               selectedCalendar
                 ? formatOrganizerOccurrenceDate(selectedCalendar)
@@ -1981,6 +2046,40 @@ export function FutureEventMarketManager({
               </span>
             }
           >
+            {series ? (
+              <EventSeriesDateNavigation
+                currentCoordinate={selectedCalendar?.coordinate}
+                dates={series.series.memberCoordinates.map((coordinate) => {
+                  const entry = series.occurrences.find(
+                    (date) => date.occurrence.coordinate === coordinate
+                  )
+                  const url =
+                    naddr && typeof window !== "undefined"
+                      ? new URL(
+                          buildMerchantEventParticipationUrl(
+                            window.location.origin,
+                            naddr
+                          )
+                        )
+                      : undefined
+                  url?.searchParams.set("occurrence", coordinate)
+                  return {
+                    coordinate,
+                    label: entry
+                      ? formatOrganizerOccurrenceDate(entry.occurrence)
+                      : "Date details unavailable",
+                    href: url?.toString(),
+                    unavailableReason:
+                      !entry ||
+                      (entry.coverage !== "complete" &&
+                        entry.coverage !== "partial")
+                        ? "Refresh the event to check this date."
+                        : undefined,
+                  }
+                })}
+                onNavigate={onSelectOccurrence}
+              />
+            ) : null}
             <p className="text-sm text-[var(--text-muted)]">
               {market.state === "open"
                 ? "Open for sales"
@@ -2026,6 +2125,10 @@ export function FutureEventMarketManager({
               calendar={calendar}
               authenticatedPubkey={authenticatedPubkey}
               onChanged={() => void query.refetch()}
+              detailsOpen={detailsOpen}
+              onDetailsOpenChange={(open) =>
+                setOpenDetailsKey(open ? detailsEditorKey : null)
+              }
             />
           ) : null}
           {authenticatedPubkey === market.organizerPubkey && series ? (
@@ -2040,6 +2143,10 @@ export function FutureEventMarketManager({
               onSelectOccurrence={onSelectOccurrence}
               authenticatedPubkey={authenticatedPubkey}
               onChanged={() => query.refetch()}
+              detailsOpen={detailsOpen}
+              onDetailsOpenChange={(open) =>
+                setOpenDetailsKey(open ? detailsEditorKey : null)
+              }
             />
           ) : null}
           <div className="flex flex-wrap gap-3">
@@ -2171,17 +2278,29 @@ export function FutureEventMarketManager({
                   onSend={enrollment.send}
                 />
               ) : null}
-              <div className="flex gap-2">
-                <Input
-                  aria-label="Merchant pubkey"
-                  value={merchantInput}
-                  onChange={(event) => setMerchantInput(event.target.value)}
-                  placeholder="Merchant npub or pubkey"
-                />
-                <Button type="button" onClick={addInvitation}>
-                  Review seller
-                </Button>
-              </div>
+              <Field
+                label="Merchant pubkey"
+                description="Review a seller by their Nostr npub or public key to send a private invitation. An invitation does not approve them to sell."
+                error={merchantReviewError}
+              >
+                {(control) => (
+                  <div className="flex flex-wrap gap-2">
+                    <Input
+                      {...control}
+                      className="min-w-0 flex-1"
+                      value={merchantInput}
+                      onChange={(event) => {
+                        setMerchantInput(event.target.value)
+                        setMerchantReviewError("")
+                      }}
+                      placeholder="Merchant npub or pubkey"
+                    />
+                    <Button type="button" onClick={addInvitation}>
+                      Review seller
+                    </Button>
+                  </div>
+                )}
+              </Field>
               <div className="grid gap-4">
                 {merchantIds
                   .filter(

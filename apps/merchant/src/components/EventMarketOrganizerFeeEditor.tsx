@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import {
   parseEventMarketOrganizerFeeTerms,
   publishEventMarketRoster,
@@ -29,8 +30,11 @@ import {
   createEventMarketOrganizerFeeFormValues,
   formatOrganizerFeePercent,
   getOrganizerFeeProfileAddress,
+  observeOrganizerFeeProfileReceiver,
   parseEventMarketOrganizerFeeForm,
+  withOrganizerFeeProfileDefault,
   type EventMarketOrganizerFeeFormValues,
+  type OrganizerFeeProfileReceiver,
 } from "../lib/event-market-organizer-fee-form"
 
 export function EventMarketOrganizerFeeForm(props: {
@@ -41,7 +45,7 @@ export function EventMarketOrganizerFeeForm(props: {
   busy: boolean
   editing: boolean
   editLocked?: boolean
-  profileAddress?: string
+  profileReceiver?: OrganizerFeeProfileReceiver
   notice?: string
   error?: string
   onChange: (values: EventMarketOrganizerFeeFormValues) => void
@@ -51,6 +55,7 @@ export function EventMarketOrganizerFeeForm(props: {
   onCancel: () => void
 }) {
   const { fee, values } = props
+  const receiver = props.profileReceiver ?? { status: "none" }
   const disabled = props.busy || props.editLocked
   const update = (
     field: keyof EventMarketOrganizerFeeFormValues,
@@ -168,27 +173,53 @@ export function EventMarketOrganizerFeeForm(props: {
                     />
                   )}
                 </Field>
-                {props.profileAddress ? (
+                {receiver.status === "supported" ? (
                   <div className="space-y-2">
                     <p className="break-all text-sm text-[var(--text-secondary)]">
-                      Your saved profile address: {props.profileAddress}
+                      {values.lightningAddress === receiver.address
+                        ? "Using your saved Lightning address: "
+                        : "Your supported profile address: "}
+                      {receiver.address}
                     </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={disabled}
-                      onClick={() =>
-                        update("lightningAddress", props.profileAddress!)
-                      }
-                    >
-                      Use my Lightning address
-                    </Button>
+                    {values.lightningAddress !== receiver.address ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={disabled}
+                        onClick={() =>
+                          update("lightningAddress", receiver.address)
+                        }
+                      >
+                        Use my Lightning address
+                      </Button>
+                    ) : null}
                   </div>
                 ) : (
-                  <p className="text-sm text-[var(--text-secondary)]">
-                    No saved profile address is available here. Enter a
-                    receiving Lightning address below.
-                  </p>
+                  <div className="space-y-2">
+                    <p
+                      role="status"
+                      className="text-sm text-[var(--text-secondary)]"
+                    >
+                      {receiver.status === "checking"
+                        ? "Checking your saved Lightning address…"
+                        : receiver.status === "unsupported"
+                          ? "Your saved address is not supported for event routing in this deployment. Choose a supported receiving wallet."
+                          : receiver.status === "unavailable"
+                            ? "Your saved address could not be checked right now. Retry later or enter another receiving address."
+                            : receiver.status === "conflicting"
+                              ? "Your saved address did not pass the receiving-wallet check. Review its setup or enter another address."
+                              : "No usable saved profile address is available here. Set up a receiving wallet or enter an address below."}
+                    </p>
+                    {receiver.status !== "checking" ? (
+                      <Button asChild type="button" variant="outline">
+                        <a href="/wallet">Manage in Wallets</a>
+                      </Button>
+                    ) : null}
+                    <p className="text-sm text-[var(--text-secondary)]">
+                      You can leave the organizer fee disabled. Wallet setup
+                      does not change your profile or existing event fees.
+                    </p>
+                  </div>
                 )}
                 <Field
                   label="Organizer Lightning address"
@@ -293,6 +324,7 @@ export function EventMarketOrganizerFeeEditor(props: {
   const [values, setValues] = useState(() =>
     createEventMarketOrganizerFeeFormValues(fee)
   )
+  const [addressEdited, setAddressEdited] = useState(false)
   const [editing, setEditing] = useState(
     () => fee.state === "absent" || fee.state === "invalid"
   )
@@ -316,6 +348,42 @@ export function EventMarketOrganizerFeeEditor(props: {
     profileQuery.profileContext,
     market.organizerPubkey
   )
+  const receiverEnabled =
+    owner && props.canManage && editing && values.state === "active"
+  const receiverQuery = useQuery({
+    queryKey: [
+      "event-organizer-fee-profile-receiver",
+      market.coordinate,
+      props.authenticatedPubkey,
+      authGeneration,
+      profileAddress,
+    ],
+    queryFn: ({ signal }) =>
+      observeOrganizerFeeProfileReceiver({
+        context: profileQuery.profileContext,
+        organizerPubkey: market.organizerPubkey,
+        assertCurrent: () => {
+          if (signal.aborted || !shouldContinue())
+            throw new Error("Organizer session changed.")
+        },
+      }),
+    enabled: receiverEnabled && !!profileAddress,
+    retry: false,
+    gcTime: 0,
+  })
+  const profileReceiver: OrganizerFeeProfileReceiver = !receiverEnabled
+    ? { status: "none" }
+    : profileQuery.isFetching || receiverQuery.isFetching
+      ? { status: "checking" }
+      : profileQuery.error || receiverQuery.isError
+        ? { status: "unavailable" }
+        : (receiverQuery.data ?? { status: "none" })
+  const draftValues = withOrganizerFeeProfileDefault({
+    fee,
+    values,
+    receiver: profileReceiver,
+    addressEdited,
+  })
   const displayedFee = useMemo(
     () =>
       published && saved
@@ -329,6 +397,7 @@ export function EventMarketOrganizerFeeEditor(props: {
   function changeEditing(next: boolean) {
     if (inFlight.current || saved) return
     setValues(createEventMarketOrganizerFeeFormValues(fee))
+    setAddressEdited(false)
     setNotice("")
     setError("")
     setEditing(next)
@@ -361,7 +430,7 @@ export function EventMarketOrganizerFeeEditor(props: {
           state: market.state,
           merchants: market.merchants,
           expectedPreviousEventId: market.eventId,
-          organizerFee: parseEventMarketOrganizerFeeForm(values),
+          organizerFee: parseEventMarketOrganizerFeeForm(draftValues),
           shouldContinue,
           onSignedLocal: async (event) => {
             await retainSignedEventMarketEvidence(market.coordinate, event)
@@ -396,17 +465,19 @@ export function EventMarketOrganizerFeeEditor(props: {
   return (
     <EventMarketOrganizerFeeForm
       fee={displayedFee}
-      values={values}
+      values={draftValues}
       canEdit={owner && props.canManage}
       canRetry={owner && !!saved && !published && !!error}
       busy={busy}
       editing={editing}
       editLocked={!!saved}
-      profileAddress={profileAddress}
+      profileReceiver={profileReceiver}
       notice={notice}
       error={error}
       onChange={(next) => {
         if (inFlight.current || saved) return
+        if (next.lightningAddress !== draftValues.lightningAddress)
+          setAddressEdited(true)
         setValues(next)
         setNotice("")
         setError("")

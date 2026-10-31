@@ -213,6 +213,11 @@ export {
 } from "./EventMarketCard"
 export { EventPageHeader, type EventPageHeaderProps } from "./EventPageHeader"
 export {
+  EventSeriesDateNavigation,
+  type EventSeriesDateLink,
+  type EventSeriesDateNavigationProps,
+} from "./EventSeriesDateNavigation"
+export {
   NoSignerSetupGuide,
   SignerConnectPanel,
   SignerSwitch,

@@ -30,8 +30,6 @@ import {
   CardHeader,
   CardTitle,
   DialogTrigger,
-  Input,
-  Label,
 } from "@conduit/ui"
 import {
   createEmptyOrganizerEventMarketForm,
@@ -56,7 +54,8 @@ import {
   withFutureEventMarketCreationLock,
 } from "../lib/event-market-creation-retry"
 
-import { EventBannerField, EventDescriptionField } from "./EventAuthoringFields"
+import { EventBannerField } from "./EventAuthoringFields"
+import { EventDetailsFields } from "./EventDetailsFields"
 import {
   EventScheduleFields,
   type EventRepeatMode,
@@ -825,42 +824,30 @@ function FutureEventMarketCreateForm({
           }
           className="space-y-5"
         >
-          <div className="space-y-1">
-            <Label htmlFor="future-title">Event title</Label>
-            <Input
-              id="future-title"
-              value={form.title}
-              onChange={(event) => update("title", event.target.value)}
-              required
-            />
-          </div>
-          <EventDescriptionField
-            id="future-summary"
-            value={form.summary}
-            onChange={(value) => update("summary", value)}
-          />
-          <EventBannerField
-            id="future-image"
-            value={form.imageUrl}
+          <EventDetailsFields
+            idPrefix="future"
             title={form.title}
-            scopeId={bannerScope}
-            disabled={
-              pending ||
-              (!!creation && creationSigned !== false) ||
-              !!frozenDraft
+            summary={form.summary}
+            location={form.eventLocation}
+            onTitleChange={(value) => update("title", value)}
+            onSummaryChange={(value) => update("summary", value)}
+            onLocationChange={(value) => update("eventLocation", value)}
+            banner={
+              <EventBannerField
+                id="future-image"
+                value={form.imageUrl}
+                title={form.title}
+                scopeId={bannerScope}
+                disabled={
+                  pending ||
+                  (!!creation && creationSigned !== false) ||
+                  !!frozenDraft
+                }
+                onChange={(url) => update("imageUrl", url)}
+                onBusyChange={setBannerBusy}
+              />
             }
-            onChange={(url) => update("imageUrl", url)}
-            onBusyChange={setBannerBusy}
           />
-          <div className="space-y-1">
-            <Label htmlFor="future-location">Location</Label>
-            <Input
-              id="future-location"
-              value={form.eventLocation}
-              onChange={(event) => update("eventLocation", event.target.value)}
-              required
-            />
-          </div>
           <EventScheduleFields
             form={form}
             onFormChange={setForm}

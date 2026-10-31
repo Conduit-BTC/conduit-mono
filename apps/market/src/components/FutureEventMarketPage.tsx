@@ -24,14 +24,9 @@ import {
   Button,
   Combobox,
   EventPageHeader,
+  EventSeriesDateNavigation,
   Input,
-  Label,
   QRCodeSVG,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
 } from "@conduit/ui"
 import { useCart } from "../hooks/useCart"
 import { useMerchantIdentities } from "../hooks/useMerchantIdentities"
@@ -440,40 +435,40 @@ export function FutureEventMarketPage({
           shareLabel={selectedMerchant ? "Share this view" : "Share event"}
         >
           {series ? (
-            <div className="max-w-sm grid grid-cols-1 gap-1 [&>p]:mt-1">
-              <Label htmlFor="event-market-date">Choose date</Label>
-              <Select
-                value={selectedDate?.occurrence.coordinate ?? ""}
-                onValueChange={(coordinate) => onOccurrenceChange(coordinate)}
-              >
-                <SelectTrigger id="event-market-date" aria-label="Choose date">
-                  <SelectValue placeholder="Confirm a pickup date" />
-                </SelectTrigger>
-                <SelectContent>
-                  {series.occurrences.map((entry) => (
-                    <SelectItem
-                      key={entry.occurrence.coordinate}
-                      value={entry.occurrence.coordinate}
-                      disabled={
-                        (entry.coverage !== "complete" &&
-                          entry.coverage !== "partial") ||
-                        entry.occurrence.end <= Date.now()
-                      }
-                    >
-                      {formatEventTimelineSchedule(entry.occurrence)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {series.unresolvedCoordinates.length > 0 ? (
-                <p
-                  role="status"
-                  className="text-sm text-[var(--text-secondary)]"
-                >
-                  Some listed dates could not be verified yet.
-                </p>
-              ) : null}
-            </div>
+            <EventSeriesDateNavigation
+              currentCoordinate={selectedDate?.occurrence.coordinate}
+              dates={series.series.memberCoordinates.map((coordinate) => {
+                const entry = series.occurrences.find(
+                  (date) => date.occurrence.coordinate === coordinate
+                )
+                return {
+                  coordinate,
+                  label: entry
+                    ? formatEventTimelineSchedule(entry.occurrence)
+                    : "Date details unavailable",
+                  href:
+                    naddr && typeof window !== "undefined"
+                      ? buildMarketEventCatalogUrl(
+                          window.location.origin,
+                          naddr,
+                          {
+                            merchantPubkey: selectedMerchant,
+                            occurrenceCoordinate: coordinate,
+                          }
+                        )
+                      : undefined,
+                  unavailableReason:
+                    !entry ||
+                    (entry.coverage !== "complete" &&
+                      entry.coverage !== "partial")
+                      ? "Refresh the event to check this date."
+                      : entry.occurrence.end <= Date.now()
+                        ? "This date has ended."
+                        : undefined,
+                }
+              })}
+              onNavigate={onOccurrenceChange}
+            />
           ) : null}
           <p className="text-sm text-[var(--text-secondary)]">
             {market.state === "open" ? "Open" : "Closed"} ·{" "}
