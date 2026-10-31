@@ -8,6 +8,7 @@ on:
       - test/smoke-route-scenarios
       - feat/wallet-name-sync
       - feat/wallet-ui-hierarchy
+      - feat/portable-wallet-clean-start
   push:
     branches: [main]
 
