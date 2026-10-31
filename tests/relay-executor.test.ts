@@ -25,6 +25,7 @@ import {
   type RelayWebSocket,
 } from "../packages/core/src/protocol/relay-executor"
 import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
+import { readExactAccountNetworkPreference } from "../packages/core/src/protocol/account-network-readback"
 import { relayTargetsFromUrls } from "../packages/core/src/protocol/relay-authority"
 import { createInMemoryInboxDeclarationEvidenceRepository } from "../packages/core/src/protocol/inbox-declaration-evidence"
 import { admitFixture } from "./helpers/public-event"
@@ -1397,6 +1398,294 @@ describe("NDK-neutral relay executor NIP-42 state machine", () => {
     expect(harness.sockets[0]?.sent.some((frame) => frame[0] === "AUTH")).toBe(
       false
     )
+  })
+
+  for (const kind of [10002, 10050]) {
+    it(`authenticates an exact owner kind-${kind} preference confirmation`, async () => {
+      const event = finalizeEvent(
+        { kind, created_at: 1, tags: [], content: "" },
+        PRIVATE_KEY_A
+      )
+      let authenticated = false
+      const harness = new FakeRelayHarness().at("wss://protected.example", {
+        onSend: (socket, frame) => {
+          if (frame[0] === "AUTH") {
+            authenticated = true
+            respondToAuth(socket, frame)
+          }
+          if (frame[0] === "REQ") {
+            if (!authenticated) {
+              socket.relay(["AUTH", "preference-confirmation"])
+              socket.relay([
+                "CLOSED",
+                frame[1],
+                "auth-required: owner required",
+              ])
+            } else {
+              socket.relay(["EVENT", frame[1], event])
+              socket.relay(["EOSE", frame[1]])
+            }
+          }
+        },
+      })
+      const executor = createExecutor(harness)
+      authorize()
+      const result = await readExactAccountNetworkPreference({
+        signedEvent: event,
+        relayUrl: "wss://protected.example",
+        authenticatedPubkey: PUBKEY_A,
+        options: {
+          accountPubkey: PUBKEY_A,
+          relayUrls: ["wss://protected.example"],
+        },
+        admitRelay: async () => true,
+        executor,
+        fetchEvents: async () => ({
+          events: [],
+          eventSourceRelayUrls: {},
+          relays: [
+            {
+              relayUrl: "wss://protected.example",
+              status: "failed",
+              eventCount: 0,
+              outcome: "auth_required",
+            },
+          ],
+        }),
+      })
+      expect(result).toBe("observed")
+      const requests = harness.sockets[0]!.sent.filter(
+        (frame) => frame[0] === "REQ"
+      )
+      expect(requests).toHaveLength(2)
+      expect(requests[0]![1]).not.toBe(requests[1]![1])
+      expect(requests[0]!.slice(2)).toEqual(requests[1]!.slice(2))
+    })
+  }
+
+  it("rejects widened Network confirmation filters before connecting or signing", async () => {
+    const harness = new FakeRelayHarness()
+    const executor = createExecutor(harness)
+    const { authorization } = authorize()
+    const exact = {
+      kinds: [10002],
+      authors: [PUBKEY_A],
+      ids: ["a".repeat(64)],
+      limit: 1,
+    }
+    for (const filter of [
+      { ...exact, authors: [PUBKEY_B] },
+      { ...exact, authors: [PUBKEY_A, PUBKEY_B] },
+      { ...exact, ids: undefined },
+      { ...exact, ids: ["a".repeat(64), "b".repeat(64)] },
+      { ...exact, kinds: [10002, 10050] },
+      { ...exact, kinds: [1059] },
+      { ...exact, limit: 2 },
+      { ...exact, search: "extra" },
+    ]) {
+      await expect(
+        executor.query(
+          {
+            operation: "account_network_preference_read",
+            relayUrls: ["wss://protected.example"],
+            filters: [filter],
+          },
+          { authorization }
+        )
+      ).rejects.toThrow("exact owner preference")
+    }
+    expect(harness.sockets).toHaveLength(0)
+  })
+
+  it("keeps anonymous confirmation and remote-owner discovery signer-free", async () => {
+    let signatures = 0
+    authorize(createSigner(PRIVATE_KEY_A, { onSign: () => signatures++ }))
+    const harness = new FakeRelayHarness()
+    const executor = createExecutor(harness)
+    for (const secret of [PRIVATE_KEY_A, PRIVATE_KEY_B]) {
+      const event = await admitFixture(
+        finalizeEvent(
+          { kind: 10002, created_at: 1, tags: [], content: "" },
+          secret
+        )
+      )
+      const common = {
+        signedEvent: event,
+        relayUrl: "wss://protected.example",
+        authenticatedPubkey: PUBKEY_A,
+        options: {
+          accountPubkey: event.pubkey,
+          relayUrls: ["wss://protected.example"],
+        },
+        admitRelay: async () => true,
+        executor,
+      }
+      expect(
+        await readExactAccountNetworkPreference({
+          ...common,
+          fetchEvents: async () => ({
+            events: [event],
+            eventSourceRelayUrls: { [event.id]: [common.relayUrl] },
+            relays: [],
+          }),
+        })
+      ).toBe("observed")
+      if (event.pubkey !== PUBKEY_A) {
+        expect(
+          await readExactAccountNetworkPreference({
+            ...common,
+            fetchEvents: async () => ({
+              events: [],
+              eventSourceRelayUrls: {},
+              relays: [
+                {
+                  relayUrl: common.relayUrl,
+                  status: "failed",
+                  eventCount: 0,
+                  outcome: "auth_required",
+                },
+              ],
+            }),
+          })
+        ).toBe("auth_required")
+      }
+    }
+    expect(harness.sockets).toHaveLength(0)
+    expect(signatures).toBe(0)
+  })
+
+  for (const [scenario, expected] of [
+    ["denied", "cancelled"],
+    ["rejected", "auth_rejected"],
+    ["timeout", "timed_out"],
+    ["empty", "absent"],
+    ["aborted", "cancelled"],
+    ["removed", "policy_blocked"],
+  ] as const) {
+    it(`keeps ${scenario} authenticated preference readback distinct`, async () => {
+      const event = finalizeEvent(
+        { kind: 10002, created_at: 1, tags: [], content: "" },
+        PRIVATE_KEY_A
+      )
+      const controller = new AbortController()
+      let eligible = true
+      const { authorization } = authorize(
+        createSigner(PRIVATE_KEY_A, {
+          failure:
+            scenario === "denied"
+              ? new NostrSignerError("authorization_denied")
+              : undefined,
+          onSign: () => {
+            if (scenario === "aborted") controller.abort()
+            if (scenario === "removed") eligible = false
+          },
+        })
+      )
+      const harness = new FakeRelayHarness().at("wss://protected.example", {
+        onOpen: (socket) => socket.relay(["AUTH", "preference-negative"]),
+        onSend: (socket, frame) => {
+          if (frame[0] === "AUTH" && scenario !== "timeout")
+            respondToAuth(socket, frame, scenario !== "rejected")
+          if (frame[0] === "REQ") socket.relay(["EOSE", frame[1]])
+        },
+      })
+      const executor = createExecutor(harness)
+      const result = await readExactAccountNetworkPreference({
+        signedEvent: event,
+        relayUrl: "wss://protected.example",
+        authenticatedPubkey: PUBKEY_A,
+        options: {
+          accountPubkey: PUBKEY_A,
+          relayUrls: ["wss://protected.example"],
+          signal: controller.signal,
+        },
+        admitRelay: async () => eligible,
+        executor,
+        authTimeoutMs: 10,
+        fetchEvents: async () => ({
+          events: [],
+          eventSourceRelayUrls: {},
+          relays: [
+            {
+              relayUrl: "wss://protected.example",
+              status: "failed",
+              eventCount: 0,
+              outcome: "auth_required",
+            },
+          ],
+        }),
+      })
+      expect(result).toBe(expected)
+      if (
+        scenario === "removed" ||
+        scenario === "aborted" ||
+        scenario === "denied"
+      ) {
+        expect(
+          harness.sockets
+            .flatMap((socket) => socket.sent)
+            .filter((frame) => frame[0] === "AUTH")
+        ).toHaveLength(0)
+      }
+      if (scenario === "denied")
+        expect(
+          clearProtectedReadAuthenticationSuppression(
+            authorization.expectedPubkey
+          )
+        ).toBe(true)
+    })
+  }
+
+  it("does not send AUTH or retain confirmation after a signer session changes", async () => {
+    const event = finalizeEvent(
+      { kind: 10002, created_at: 1, tags: [], content: "" },
+      PRIVATE_KEY_A
+    )
+    authorize(
+      createSigner(PRIVATE_KEY_A, {
+        onSign: () => {
+          installProtectedReadSigner(
+            createSigner(PRIVATE_KEY_B),
+            PUBKEY_B,
+            () => true
+          )
+        },
+      })
+    )
+    const harness = new FakeRelayHarness().at("wss://protected.example", {
+      onOpen: (socket) => socket.relay(["AUTH", "replaced-session"]),
+    })
+    const executor = createExecutor(harness)
+    await expect(
+      readExactAccountNetworkPreference({
+        signedEvent: event,
+        relayUrl: "wss://protected.example",
+        authenticatedPubkey: PUBKEY_A,
+        options: {
+          accountPubkey: PUBKEY_A,
+          relayUrls: ["wss://protected.example"],
+        },
+        admitRelay: async () => true,
+        executor,
+        fetchEvents: async () => ({
+          events: [],
+          eventSourceRelayUrls: {},
+          relays: [
+            {
+              relayUrl: "wss://protected.example",
+              status: "failed",
+              eventCount: 0,
+              outcome: "auth_required",
+            },
+          ],
+        }),
+      })
+    ).rejects.toMatchObject({ code: "authority_changed" })
+    expect(
+      harness.sockets
+        .flatMap((socket) => socket.sent)
+        .filter((frame) => frame[0] === "AUTH")
+    ).toHaveLength(0)
   })
 
   it("settles public auth-required CLOSED without signing or recording auth evidence", async () => {

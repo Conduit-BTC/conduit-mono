@@ -571,6 +571,8 @@ export interface NetworkPreferenceRelayOutcome {
   publishAttemptCount: number
   publishAttemptedAt?: number
   readbackStatus: NetworkPreferenceReadbackStatus
+  /** Optional diagnostic; older clients can still interpret readbackStatus. */
+  readbackAuthFailure?: "rejected"
   readbackAttemptCount: number
   readbackAttemptedAt?: number
   observedAt?: number

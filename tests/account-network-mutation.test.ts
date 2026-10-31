@@ -48,6 +48,13 @@ import {
 import type { InboxDeclarationResolution } from "@conduit/core/protocol/private-message-routing"
 import type { SignedPublicNostrEvent } from "@conduit/core/protocol/signed-event"
 import { admitFixture } from "./helpers/public-event"
+import {
+  installProtectedReadSigner,
+  removeProtectedReadSigner,
+  getProtectedReadAuthorization,
+  getProtectedReadAuthenticationSuppression,
+  suppressProtectedReadAuthentication,
+} from "../packages/core/src/protocol/protected-read-authorization"
 
 const ACCOUNT_SECRET = generateSecretKey()
 const ACCOUNT = getPublicKey(ACCOUNT_SECRET)
@@ -1942,6 +1949,167 @@ describe("account network mutation", () => {
       (await execution.baseRepository.get(ACCOUNT)).inboxDeclaration
         ?.pendingDistribution
     ).toBeUndefined()
+  })
+
+  it("confirms restored ACKed preferences through owner auth without signing or publishing them again", async () => {
+    const fixture = await createFixture()
+    const execution = createExecutionHarness(fixture)
+    const preferenceSigner = createSignerHarness({ log: execution.log })
+    execution.dependencies.fetchEvents = async (_filter, options) => ({
+      events: [],
+      eventSourceRelayUrls: {},
+      relays: [
+        {
+          relayUrl: options!.relayUrls![0]!,
+          status: "failed",
+          eventCount: 0,
+          outcome: "auth_required",
+        },
+      ],
+    })
+    const first = await publishAccountNetworkMutation({
+      reviewed: reviewAccountNetworkMutation(
+        fixture.reconciliation,
+        action(ownerChangedRoles())
+      ),
+      authenticatedPubkey: ACCOUNT,
+      signer: preferenceSigner.signer,
+      dependencies: execution.dependencies,
+    })
+    expect(first.checkpoints[0]!.pending).toBe(true)
+    expect(
+      first.checkpoints[0]!.relayOutcomes.every(
+        (outcome) =>
+          outcome.publishStatus === "acked" &&
+          outcome.readbackStatus === "auth_required"
+      )
+    ).toBe(true)
+    await execution.baseRepository.recordOutcomes({
+      pubkey: ACCOUNT,
+      kind: EVENT_KINDS.RELAY_LIST,
+      signedEventId: first.checkpoints[0]!.signedEvent.id,
+      update: {
+        observedAt: MUTATION_AT + 1,
+        readback: [
+          {
+            relayUrl: first.checkpoints[0]!.relayOutcomes[0]!.relayUrl,
+            status: "auth_required",
+            authFailure: "rejected",
+          },
+        ],
+      },
+    })
+    const persistedSnapshot = JSON.stringify(
+      await execution.baseRepository.get(ACCOUNT)
+    )
+    const saved = JSON.parse(
+      persistedSnapshot
+    ) as AccountNetworkMutationSnapshot
+    expect(
+      saved.ownerRelayList!.pendingDistribution!.relayOutcomes[0]
+    ).toMatchObject({
+      readbackStatus: "auth_required",
+      readbackAuthFailure: "rejected",
+    })
+    const exact = saved.ownerRelayList!.pendingDistribution!.signedEvent
+    const restored = createInMemoryAccountNetworkMutationRepository([
+      { pubkey: ACCOUNT, snapshot: saved },
+    ])
+    let authReads = 0
+    const lease = installProtectedReadSigner(
+      {
+        authMethod: "nip07",
+        getPublicKey: async () => ACCOUNT,
+        signEvent: async (event) => {
+          throw new Error(
+            `Unexpected replacement preference signature kind ${event.kind}`
+          )
+        },
+      },
+      ACCOUNT,
+      () => true
+    )
+    try {
+      const authorization = getProtectedReadAuthorization(ACCOUNT)!
+      suppressProtectedReadAuthentication(authorization, {
+        scope: "session",
+        reason: "signer_authorization_denied",
+      })
+      const retry = await retryAccountNetworkMutation({
+        pubkey: ACCOUNT,
+        authenticatedPubkey: ACCOUNT,
+        kind: EVENT_KINDS.RELAY_LIST,
+        dependencies: {
+          ...execution.dependencies,
+          repository: restored,
+          publishToRelay: async () => {
+            throw new Error("ACKed preference must not be republished")
+          },
+          readbackExecutor: {
+            req: () => {
+              throw new Error("Unexpected streaming read")
+            },
+            query: async (request, options) => {
+              expect(
+                getProtectedReadAuthenticationSuppression(
+                  options!.authorization!,
+                  request.relayUrls[0]!
+                )
+              ).toBeNull()
+              expect(request.operation).toBe("account_network_preference_read")
+              expect(request.filters).toEqual([
+                {
+                  ids: [exact.id],
+                  kinds: [10002],
+                  authors: [ACCOUNT],
+                  limit: 1,
+                },
+              ])
+              expect(await options!.admitRelay!(request.relayUrls[0]!)).toBe(
+                true
+              )
+              authReads++
+              return {
+                events: [exact],
+                status: "success",
+                observations: [],
+                attemptedCount: 1,
+                completedCount: 1,
+                failedCount: 0,
+                authoritativeEmpty: false,
+                relays: [
+                  {
+                    relayIndex: 0,
+                    status: "success",
+                    auth: "succeeded",
+                    eventCount: 1,
+                    duplicateCount: 0,
+                    malformedCount: 0,
+                    unusableCount: 0,
+                  },
+                ],
+              }
+            },
+          },
+        },
+      })
+      expect(authReads).toBeGreaterThan(0)
+      expect(retry.checkpoints[0]!.pending).toBe(false)
+      expect(
+        retry.checkpoints[0]!.relayOutcomes.every(
+          (outcome) => outcome.readbackAuthFailure === undefined
+        )
+      ).toBe(true)
+      expect(JSON.stringify(retry.checkpoints[0]!.signedEvent)).toBe(
+        JSON.stringify(exact)
+      )
+      expect(preferenceSigner.signedDrafts).toHaveLength(1)
+      expect(
+        (await restored.get(ACCOUNT)).ownerRelayList!.pendingDistribution
+      ).toBeUndefined()
+    } finally {
+      removeProtectedReadSigner(lease)
+    }
   })
 
   it("replaces a pending inbox without changing the other kind's exact retry checkpoint", async () => {

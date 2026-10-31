@@ -862,7 +862,8 @@ function PendingUpdateSummary({
           <p className="mt-1 text-pretty text-sm leading-6 text-[var(--text-secondary)]">
             Your signed update is saved on this device. Some relay confirmations
             are still pending. You can keep editing or retry the saved update
-            without signing again.
+            without signing preferences again. Your signer may ask you to
+            authenticate with a relay to confirm the update.
           </p>
         </div>
         {retryAvailable ? (
