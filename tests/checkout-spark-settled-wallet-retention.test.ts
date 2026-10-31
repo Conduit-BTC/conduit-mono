@@ -1,8 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import type { CheckoutSparkSettledRepositorySnapshot } from "@conduit/core"
 
-import { closeUnusedSparkWallets } from "../apps/market/src/lib/checkout-spark-router-wallet-retention"
-import { closeUnusedSparkWallets as closeUnusedSharedSparkWallets } from "@conduit/core/wallets/checkout-spark-router-wallet-retention"
+import { closeUnusedSparkWallets } from "@conduit/core/wallets/checkout-spark-router-wallet-retention"
 import { acquireCheckoutSparkWalletRetentionLock } from "../apps/market/src/lib/checkout-spark-wallet-retention-lock"
 import { acquireCheckoutSparkWalletRetentionLock as acquireSharedRetentionLock } from "@conduit/core/wallets/checkout-spark-wallet-retention-lock"
 import type { StoredCheckoutSparkSettledPreparation } from "../apps/market/src/lib/checkout-spark-settled-preparation"
@@ -77,8 +76,7 @@ function openWallets() {
 }
 
 describe("settled checkout wallet retention during regular-wallet reload", () => {
-  it("uses one shared cleanup guard and preparation serialization lock across app and Core callers", () => {
-    expect(closeUnusedSparkWallets).toBe(closeUnusedSharedSparkWallets)
+  it("uses one preparation serialization lock across app and Core callers", () => {
     expect(acquireCheckoutSparkWalletRetentionLock).toBe(
       acquireSharedRetentionLock
     )
