@@ -1382,6 +1382,9 @@ export function adaptFirstPartySparkWallet(input: {
       return prepared
     },
     async sendPayment(request) {
+      // No await precedes either native send below. Disconnect revokes entry
+      // synchronously, even when cleanup is still pending or has failed.
+      if (disconnected) throw new Error("Spark wallet is closed.")
       const prepared = preparedPayments.get(request.prepareResponse)
       if (!prepared) {
         throw new Error("This Spark payment quote is no longer available.")
