@@ -172,8 +172,23 @@ for (const { app, url } of appCases) {
   test(`${app} client-error telemetry covers runtime, boundary, and host gates @${app}`, async ({
     page,
   }) => {
+    // Loading the document and two animation frames do not imply that a lazy
+    // route has mounted its error listeners. Exercise that gap deliberately.
+    let delayedAboutComponents = 0
+    await page.route(
+      (url) =>
+        url.pathname.endsWith("/routes/about.tsx") &&
+        Boolean(url.searchParams.get("tsr-split")?.includes("component")),
+      async (route) => {
+        delayedAboutComponents += 1
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        await route.continue()
+      },
+      { times: 1 }
+    )
     await page.goto(`${url}/about`)
     await waitForClientEffects(page)
+    expect(delayedAboutComponents).toBe(1)
     await dispatchRuntimeErrors(page)
 
     await expect

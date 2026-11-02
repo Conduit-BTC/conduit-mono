@@ -65,8 +65,8 @@ function RootShell({
                 data-merchant-main-scroll
                 className={
                   fullBleed
-                    ? "flex min-h-dvh min-w-0 pt-[calc(5rem+env(safe-area-inset-top))] lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pt-0"
-                    : "min-w-0 px-4 pb-28 pt-[calc(6.5rem+env(safe-area-inset-top))] sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
+                    ? "relative flex min-h-dvh min-w-0 pt-[calc(5rem+env(safe-area-inset-top))] lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pt-0"
+                    : "relative min-w-0 px-4 pb-28 pt-[calc(6.5rem+env(safe-area-inset-top))] sm:px-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-8 lg:pb-28 lg:pt-20"
                 }
               >
                 <div

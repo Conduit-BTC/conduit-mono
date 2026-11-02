@@ -122,8 +122,8 @@ function RootShell({
       <main
         className={
           isNotFound
-            ? "flex min-w-0 w-full flex-1"
-            : "mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6"
+            ? "relative flex min-w-0 w-full flex-1"
+            : "relative mx-auto min-w-0 w-full max-w-7xl flex-1 px-4 pb-12 pt-6"
         }
       >
         {children}

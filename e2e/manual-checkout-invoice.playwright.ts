@@ -508,6 +508,11 @@ for (const scenario of scenarios) {
       await publishTestRelayEvents([stopEvent])
       stopRelayAccepted = true
       await page.getByRole("button", { name: "Refresh", exact: true }).click()
+      // The warning depends on the completed relay read and decode, not on the
+      // click returning. Keep its assertions after the explicit completion cue.
+      await expect(
+        page.getByRole("button", { name: "Updated", exact: true })
+      ).toBeVisible({ timeout: 20_000 })
       const expectStoppedInvoice = async (
         phase: "after_refresh" | "after_reload"
       ) => {
