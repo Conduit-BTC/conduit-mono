@@ -135,35 +135,6 @@
         "wrangler": "4.151.1",
       },
     },
-    "apps/store-builder": {
-      "name": "@conduit/store-builder",
-      "version": "0.0.1",
-      "dependencies": {
-        "@conduit/core": "workspace:*",
-        "@conduit/ui": "workspace:*",
-        "@nostr-dev-kit/ndk": "^3.0.3",
-        "@tanstack/react-query": "^5.104.5",
-        "@tanstack/react-router": "^1.170.46",
-        "react": "^19.2.8",
-        "react-dom": "^19.2.8",
-        "react-hook-form": "^7.90.0",
-        "zod": "^4.6.7",
-      },
-      "devDependencies": {
-        "@tailwindcss/postcss": "^4.3.3",
-        "@tanstack/react-query-devtools": "^5.104.5",
-        "@tanstack/router-core": "^1.171.16",
-        "@tanstack/router-devtools": "^1.167.2",
-        "@tanstack/router-plugin": "^1.168.48",
-        "@types/react": "^19.2.18",
-        "@types/react-dom": "^19.2.7",
-        "@vitejs/plugin-react-swc": "^4.3.3",
-        "postcss": "^8.5.31",
-        "tailwindcss": "^4.3.3",
-        "typescript": "^6.0.3",
-        "vite": "^8.3.5",
-      },
-    },
     "packages/core": {
       "name": "@conduit/core",
       "version": "0.0.1",
@@ -316,8 +287,6 @@
     "@conduit/posthog-proxy": ["@conduit/posthog-proxy@workspace:apps/posthog-proxy"],
 
     "@conduit/presence": ["@conduit/presence@workspace:apps/presence"],
-
-    "@conduit/store-builder": ["@conduit/store-builder@workspace:apps/store-builder"],
 
     "@conduit/ui": ["@conduit/ui@workspace:packages/ui"],
 
