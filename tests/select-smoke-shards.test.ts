@@ -136,6 +136,14 @@ describe("path-aware smoke shard selection", () => {
     ])
   })
 
+  it("treats retired app paths as unknown runtime changes", () => {
+    expect(selectSmokeShards(["apps/store-builder/src/main.tsx"])).toEqual([
+      "market",
+      "merchant",
+      "commerce",
+    ])
+  })
+
   it("keeps deleted and renamed paths in the affected shard input", () => {
     const paths = parseChangedPaths(
       "D\0apps/market/src/removed.ts\0R100\0apps/merchant/src/old.ts\0docs/new.md\0"

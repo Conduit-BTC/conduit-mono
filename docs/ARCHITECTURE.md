@@ -7,18 +7,14 @@ System architecture and technical design for the current `conduit-mono` client r
 ## System Overview
 
 ```
-Market ─────────┐
-                ├── @conduit/core ── Nostr relays, Lightning/Spark/NWC/WebLN, Dexie
-Merchant ───────┤
-                └── @conduit/ui ─── shared components, tokens, styles
-Store Builder ──┘
+Market ─────┬── @conduit/core ── Nostr relays, Lightning/Spark/NWC/WebLN, Dexie
+Merchant ───┴── @conduit/ui ─── shared components, tokens, styles
 ```
 
-| App                  | Current role                                                                                           |
-| -------------------- | ------------------------------------------------------------------------------------------------------ |
-| `apps/market`        | Buyer marketplace: browse, cart, checkout, orders, messages, wallet, network settings                  |
-| `apps/merchant`      | Seller workspace: readiness dashboard, products, orders, profile, payments, shipping, network settings |
-| `apps/store-builder` | Placeholder app shell                                                                                  |
+| App             | Current role                                                                                           |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| `apps/market`   | Buyer marketplace: browse, cart, checkout, orders, messages, wallet, network settings                  |
+| `apps/merchant` | Seller workspace: readiness dashboard, products, orders, profile, payments, shipping, network settings |
 
 | Package         | Current role                                                                                                             |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -43,7 +39,6 @@ interaction primitives belong in `@conduit/ui`. Apps may depend on both.
 | `conduit.market`          | Marketing / landing page     |
 | `shop.conduit.market`     | Market app                   |
 | `sell.conduit.market`     | Merchant Portal              |
-| `build.conduit.market`    | Store Builder app shell      |
 | `blossom.conduit.market`  | Blossom media hosting        |
 | `relay.conduit.market`    | Conduit-operated Nostr relay |
 | `e.conduit.market`        | Product telemetry proxy      |
@@ -60,8 +55,7 @@ Retired Conduit relay hosts should not appear in active docs or examples.
 TanStack Router files under each `apps/*/src/routes/` directory define the
 current route inventory. Inspect those files for a route task; this architecture
 document records cross-route boundaries rather than duplicating a changing
-file tree. Store Builder remains an app shell; do not describe unimplemented
-product behavior.
+file tree.
 
 ### Product Legal Boot Boundary
 
@@ -440,24 +434,21 @@ bun run dev
 bun run dev:mock
 bun run dev:market
 bun run dev:merchant
-bun run dev:store-builder
 ```
 
 Default Vite ports are:
 
-| App           | Port   |
-| ------------- | ------ |
-| Market        | `3000` |
-| Merchant      | `3001` |
-| Store Builder | `3002` |
+| App      | Port   |
+| -------- | ------ |
+| Market   | `3000` |
+| Merchant | `3001` |
 
 Agents may use the 7000 range when they need stable side-by-side local servers:
 
-| App           | Agent port |
-| ------------- | ---------- |
-| Market        | `7000`     |
-| Merchant      | `7001`     |
-| Store Builder | `7002`     |
+| App      | Agent port |
+| -------- | ---------- |
+| Market   | `7000`     |
+| Merchant | `7001`     |
 
 ### Environment Variables
 

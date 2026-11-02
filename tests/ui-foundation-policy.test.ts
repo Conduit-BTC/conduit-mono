@@ -135,7 +135,6 @@ describe("shared UI foundation policy", () => {
       "packages/ui/workbench/main.tsx",
       "apps/market/src/routes/wallet.tsx",
       "apps/merchant/src/routes/events.tsx",
-      "apps/store-builder/src/main.tsx",
     ]) {
       expect(sources.some((source) => source.path === path)).toBe(true)
     }

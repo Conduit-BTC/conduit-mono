@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-const appEntries = ["market", "merchant", "store-builder"] as const
+const appEntries = ["market", "merchant"] as const
 
 describe("theme startup contract", () => {
   for (const app of appEntries) {

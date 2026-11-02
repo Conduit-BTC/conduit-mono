@@ -4,10 +4,9 @@ This document defines the shared visual system for Conduit and where shared UI d
 
 ## Overview
 
-Conduit uses one shared visual system across `apps/market`, `apps/merchant`, `apps/store-builder`, and shared UI in `packages/ui`.
+Conduit uses one shared visual system across `apps/market`, `apps/merchant`, and shared UI in `packages/ui`.
 
 - `market` and `merchant` use the same token set and named theme vocabulary.
-- `store-builder` should inherit the same shared foundations unless a documented product need requires a scoped variation.
 - Night Market and Day Market preserve the existing dark and light value sets.
 - Design decisions should be expressed through tokens in `packages/ui/src/styles/theme.css` and typography variables in `packages/ui/src/styles/typography.css`.
 - New UI should not introduce raw hex, `rgba(...)`, or Tailwind palette colors when a Conduit token already exists.
@@ -38,7 +37,7 @@ Conduit uses shadcn-style primitives wrapped and themed in `@conduit/ui`. Produc
 ## Token-First Rule
 
 - prefer shared tokens or CSS variables over raw hardcoded values when the value is brand-defining, reused, or likely to spread
-- if a new value is likely to be reused across Market, Merchant, or Store Builder, promote it into shared theme infrastructure before copying it into app code
+- if a new value is likely to be reused across Market or Merchant, promote it into shared theme infrastructure before copying it into app code
 - keep one-off local styling local only when it is truly isolated and not a new design-system decision
 
 ## Where Design Decisions Should Live
@@ -337,7 +336,7 @@ Do not introduce these in new code:
 - typography: `packages/ui/src/styles/typography.css`
 - shared site/base styles: `packages/ui/src/styles/site.css`
 - shared components: `packages/ui/src/components/*`
-- app-specific implementation: `apps/market/src/**`, `apps/merchant/src/**`, `apps/store-builder/src/**`
+- app-specific implementation: `apps/market/src/**`, `apps/merchant/src/**`
 
 ## PR Expectations For UI Work
 
@@ -359,4 +358,4 @@ Before merging UI work, verify:
 
 ## Notes
 
-- `market`, `merchant`, and `store-builder` should feel like one product family with different workflows, not separate brands.
+- `market` and `merchant` should feel like one product family with different workflows, not separate brands.

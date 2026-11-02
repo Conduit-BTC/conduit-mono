@@ -1,7 +1,7 @@
 # Conduit Monorepo Agent Guide
 
 This public repository contains Market (`apps/market`), Merchant
-(`apps/merchant`), the Store Builder shell (`apps/store-builder`),
+(`apps/merchant`),
 shared protocol and persistence code (`packages/core`), and shared
 controls (`packages/ui`). Read this file at startup. Read deeper
 guidance when the task touches its boundary; use
