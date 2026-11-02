@@ -7,6 +7,7 @@ import { ConduitDB, db } from "../db"
 import { createCheckoutSparkMerchantProgress } from "./checkout-spark-merchant-progress"
 import type { CheckoutSparkOrganizerOrderBinding } from "./checkout-spark-organizer-recovery"
 import {
+  isCheckoutSparkEventMarketPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
@@ -100,7 +101,7 @@ export function createCheckoutSparkOrganizerExecutionProgress(input: {
     .sort((a, b) => a.poolId.localeCompare(b.poolId))
   if (
     !hashSchema.safeParse(input.initialHandoffId).success ||
-    state.plan.schemaVersion !== 5 ||
+    !isCheckoutSparkEventMarketPlan(state.plan) ||
     binding?.mode !== "organizer_handoff" ||
     binding.organizerPubkey !== input.organizerPubkey ||
     new Set(writerBindings.map((row) => row.poolId)).size !==
@@ -129,7 +130,10 @@ export function createCheckoutSparkOrganizerExecutionProgress(input: {
   }
   if (
     base.orderBinding.createdAt < state.plan.createdAt ||
-    base.orderBinding.createdAt >= state.plan.takeoverAt
+    base.orderBinding.createdAt >=
+      (state.plan.schemaVersion === 6
+        ? state.plan.funding.expiresAt
+        : state.plan.takeoverAt)
   )
     invalid()
   return Object.freeze({
@@ -295,12 +299,12 @@ export class DexieCheckoutSparkOrganizerProgressRepository implements CheckoutSp
       !active ||
       retired ||
       binding.planDigest !== planDigest ||
-      active.state.schemaVersion !== 6
+      (active.state.schemaVersion !== 6 && active.state.schemaVersion !== 7)
     )
       invalid()
     const state = restoreCheckoutSparkSettledReconciliation(active.state)
     if (
-      state.plan.schemaVersion !== 5 ||
+      !isCheckoutSparkEventMarketPlan(state.plan) ||
       state.plan.planDigest !== planDigest ||
       state.plan.eventMarket?.mode !== "organizer_handoff" ||
       state.plan.eventMarket.organizerPubkey !== organizer

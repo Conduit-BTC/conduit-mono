@@ -5,6 +5,9 @@ import { wrapPrivateMessage } from "../packages/core/src/protocol/messaging"
 import {
   createCheckoutSparkSettledReconciliation,
   freezeCheckoutSparkSettledPlan,
+  freezeCheckoutSparkSettledTreasuryPlan,
+  deriveCheckoutSparkNativeTreasuryInvoiceId,
+  activateCheckoutSparkBuyer,
   openCheckoutSparkRecoveryDelivery,
   recordCheckoutSparkSettledCredit,
   type CheckoutSparkRecoveryTransportOptions,
@@ -57,7 +60,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-function fixture() {
+function fixture(version: 3 | 6 = 3) {
   const createdAt = Math.floor(Date.now() / 1_000) * 1_000
   const clock = { now: createdAt + 100 }
   const merchant = plainTestSigner(NDKPrivateKeySigner.generate())
@@ -76,7 +79,7 @@ function fixture() {
       bolt11PlainDescriptionField(),
     ],
   })
-  const plan = freezeCheckoutSparkSettledPlan({
+  const historical = freezeCheckoutSparkSettledPlan({
     checkoutId: "guest-router-checkout",
     orderId: identity.orderId,
     merchantPubkey: merchant.pubkey,
@@ -133,6 +136,31 @@ function fixture() {
       },
     ],
   })
+  const nativeIdentity = {
+    ...historical,
+    sparkAddress: "spark-guest-activation.fixture",
+    receiverIdentityPublicKey: `03${"e".repeat(64)}`,
+    senderIdentityPublicKey: historical.funding.receiverIdentityPublicKey,
+  }
+  const plan =
+    version === 3
+      ? historical
+      : freezeCheckoutSparkSettledTreasuryPlan({
+          ...historical,
+          takeoverAt: undefined,
+          executionTiming: { type: "pay_activation_v1", windowMs: 120_000 },
+          nativeTreasury: {
+            schemaVersion: 1,
+            sparkAddress: nativeIdentity.sparkAddress,
+            receiverIdentityPublicKey: nativeIdentity.receiverIdentityPublicKey,
+            senderIdentityPublicKey: nativeIdentity.senderIdentityPublicKey,
+            invoiceId:
+              deriveCheckoutSparkNativeTreasuryInvoiceId(nativeIdentity),
+            invoiceRequest: "spark-guest-activation-invoice.fixture",
+            feePolicy: "zero_required",
+            residualPolicy: "unused_commerce_reserves",
+          },
+        })
   const state = createCheckoutSparkSettledReconciliation(plan)
   const calls = { wraps: 0, publishes: 0, persistedBeforePublish: false }
   const relay = { ack: true }
@@ -193,6 +221,96 @@ function fixture() {
 }
 
 describe("guest settled Spark recovery handoff", () => {
+  it("ACKs an inactive v6 initial after preparation time, activates once, and reuses ACKed ciphertext after dispatch cutoff", async () => {
+    const f = fixture(6)
+    f.clock.now += 300_000
+    const initial = await publishCheckoutSparkSettledRecoveryHandoff({
+      ...f.input,
+      preparedAt: f.clock.now,
+    })
+    const activatedAt = ++f.clock.now
+    const active = activateCheckoutSparkBuyer(f.state, {
+      buyerPubkey: f.identity.pubkey,
+      activatedAt,
+    })
+    const snapshotInput = {
+      ...f.input,
+      state: active,
+      initialHandoffId: initial.handoffId,
+      preparedAt: activatedAt,
+    }
+    const published =
+      await acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+    expect(published.mode).toBe("published")
+    const wraps = f.calls.wraps,
+      publishes = f.calls.publishes
+    f.clock.now = activatedAt + 120_001
+    const reused =
+      await acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+    expect(reused.mode).toBe("reused")
+    expect(reused.handoffId === published.handoffId).toBe(true)
+    expect(f.calls.wraps).toBe(wraps)
+    expect(f.calls.publishes).toBe(publishes)
+    const saved = (await getCheckoutSparkRecoveryDelivery(
+      published.handoffId,
+      f.storage
+    ))!
+    const opened = await openCheckoutSparkRecoveryDelivery({
+      record: saved.record,
+      signer: f.merchant,
+    })
+    expect(
+      "state" in opened &&
+        opened.state.buyerActivation?.activationId ===
+          active.buyerActivation!.activationId
+    ).toBe(true)
+  })
+
+  it("retains an unACKed v6 activation without rewrapping and never publishes new late activation", async () => {
+    const f = fixture(6)
+    const initial = await publishCheckoutSparkSettledRecoveryHandoff(f.input)
+    const activatedAt = ++f.clock.now
+    const active = activateCheckoutSparkBuyer(f.state, {
+      buyerPubkey: f.identity.pubkey,
+      activatedAt,
+    })
+    const snapshotInput = {
+      ...f.input,
+      state: active,
+      initialHandoffId: initial.handoffId,
+      preparedAt: activatedAt,
+    }
+    f.relay.ack = false
+    await expect(
+      acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+    ).rejects.toThrow("relay ACK")
+    const wraps = f.calls.wraps
+    f.relay.ack = true
+    const retried =
+      await acknowledgeOrRetryCheckoutSparkSettledSnapshot(snapshotInput)
+    expect(retried.mode).toBe("retried")
+    expect(f.calls.wraps).toBe(wraps)
+    const other = fixture(6)
+    const otherInitial = await publishCheckoutSparkSettledRecoveryHandoff(
+      other.input
+    )
+    const otherActiveAt = ++other.clock.now
+    const otherActive = activateCheckoutSparkBuyer(other.state, {
+      buyerPubkey: other.identity.pubkey,
+      activatedAt: otherActiveAt,
+    })
+    other.clock.now = otherActiveAt + 120_000
+    const previousWraps = other.calls.wraps
+    await expect(
+      acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+        ...other.input,
+        state: otherActive,
+        initialHandoffId: otherInitial.handoffId,
+        preparedAt: otherActiveAt,
+      })
+    ).rejects.toThrow("takeover")
+    expect(other.calls.wraps).toBe(previousWraps)
+  })
   it("persists one real merchant-only wrap before publication without wallet plaintext", async () => {
     const f = fixture()
     const result = await publishCheckoutSparkSettledRecoveryHandoff(f.input)

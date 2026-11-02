@@ -778,7 +778,10 @@ describe("Merchant checkout Spark recovery discovery", () => {
 
     const result = await getMerchantCheckoutSparkRecoveryList(MERCHANT)
 
-    expect(result).toEqual({
+    expect(result.candidates[0]?.initialBuyerPubkey === BUYER).toBe(true)
+    const opaqueCandidate = { ...result.candidates[0] }
+    delete opaqueCandidate.initialBuyerPubkey
+    expect({ ...result, candidates: [opaqueCandidate] }).toEqual({
       candidates: [
         {
           wrapId: wrap.id,

@@ -7,6 +7,8 @@ import {
   hasCheckoutSparkOutgoingPreProviderCancellation,
   restoreCheckoutSparkSettledReconciliation,
   isCheckoutSparkNativeTreasuryPlan,
+  isCheckoutSparkEventMarketPlan,
+  getCheckoutSparkBuyerTakeoverAt,
   type CheckoutSparkSettledRepositorySnapshot,
   type CheckoutSparkBuyerPrice,
   type CheckoutSparkSettledReconciliation,
@@ -223,7 +225,8 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   if (
     (plan.schemaVersion !== 3 &&
       plan.schemaVersion !== 4 &&
-      plan.schemaVersion !== 5) ||
+      plan.schemaVersion !== 5 &&
+      plan.schemaVersion !== 6) ||
     plan.checkoutId !== binding.checkoutId ||
     plan.planDigest !== binding.planDigest ||
     plan.walletId !== binding.walletId ||
@@ -254,8 +257,9 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   )!.weightSats
   // Use validated frozen economics, not a new quote. Historical pre-allowance
   // plans keep their exact saved total and are never repriced on reopen.
-  const organizerFeeSats =
-    plan.schemaVersion === 5 ? plan.eventMarket!.organizerFeeSats : 0
+  const organizerFeeSats = isCheckoutSparkEventMarketPlan(plan)
+    ? plan.eventMarket!.organizerFeeSats
+    : 0
   const priceSummary: CheckoutSparkOrderPriceSummary = Object.freeze({
     itemSubtotalSats: plan.commerceQuote.lines.reduce(
       (sum, line) => sum + line.quantity * line.unitMerchandiseSats,
@@ -277,7 +281,7 @@ export function assessCheckoutSparkSettledOrderControl(input: {
       plan.commerceQuote.commerceTotalSats -
       conduitFeeSats -
       organizerFeeSats,
-    ...(plan.schemaVersion === 5 ? { organizerFeeSats } : {}),
+    ...(isCheckoutSparkEventMarketPlan(plan) ? { organizerFeeSats } : {}),
     minimumApplies:
       plan.conduitFeePolicy === undefined &&
       conduitFeeSats === calculateConduitCheckoutFeeSats(1),
@@ -327,10 +331,25 @@ export function assessCheckoutSparkSettledOrderControl(input: {
   }
   const nextLegId =
     state.legs.find((leg) => leg.status !== "paid")?.legId ?? null
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    plan,
+    state.buyerActivation
+  )
+  if (state.credit && takeoverAt === null) {
+    return blocked(
+      "Buyer payment activation is not confirmed. Keep this order for recovery; do not pay again."
+    )
+  }
   const inspectAfterTakeover =
-    now >= plan.takeoverAt &&
+    takeoverAt !== null &&
+    now >= takeoverAt &&
     canInspectCheckoutSparkSettledSubmittedAttempt(state, nextLegId)
-  if (state.credit && now >= plan.takeoverAt && !inspectAfterTakeover) {
+  if (
+    state.credit &&
+    takeoverAt !== null &&
+    now >= takeoverAt &&
+    !inspectAfterTakeover
+  ) {
     return {
       status: "blocked",
       reason:

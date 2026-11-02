@@ -104,6 +104,23 @@ export function isAuthorizedZeroCostPickup(
   return input.pickupAuthorizationVerified && hasExactZeroCostPickupTerms(input)
 }
 
+/** Goods settlement and handout authority, never fee or cleanup progress. */
+export function getMerchantFulfillmentBlockReason(input: {
+  goodsPaymentVerified: boolean
+  zeroCostPickupAuthorized: boolean
+  inventoryAcceptanceReady: boolean
+  pickupAuthorityVerified: boolean
+  organizerHandoutVerified: boolean
+}): string | null {
+  if (!input.goodsPaymentVerified && !input.zeroCostPickupAuthorized)
+    return "Verify the goods payment before pickup, fulfillment or new stock updates."
+  if (!input.inventoryAcceptanceReady || !input.pickupAuthorityVerified)
+    return "Verify this order's inventory and pickup authority before fulfillment or new stock updates."
+  if (!input.organizerHandoutVerified)
+    return "Organizer handout is not verified here yet. If the organizer has already recorded it, open the Event > Organizer-held stock, choose Check for stock updates, then Reconcile accepted order stock. Completion and new stock updates stay locked until verification."
+  return null
+}
+
 export function buildMerchantOrderActionView({
   actions,
   canSendInvoice,

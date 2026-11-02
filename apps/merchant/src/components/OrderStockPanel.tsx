@@ -18,6 +18,7 @@ interface OrderStockDeliveryView {
 
 interface OrderStockPanelProps {
   adjustments: OrderStockAdjustment[]
+  newStockActionsAuthorized: boolean
   stockMutationDisabledKeys?: ReadonlySet<string>
   unpublishedStockKeys?: ReadonlySet<string>
   delivery: OrderStockDeliveryView | null
@@ -157,6 +158,7 @@ function getDeliveryStateLabel(state: ProductDeliveryNotice["state"]): string {
 
 export function OrderStockPanel({
   adjustments,
+  newStockActionsAuthorized,
   stockMutationDisabledKeys = new Set<string>(),
   unpublishedStockKeys = new Set<string>(),
   delivery,
@@ -191,6 +193,14 @@ export function OrderStockPanel({
           sign each update.
         </p>
       </div>
+
+      {!newStockActionsAuthorized && adjustments.length > 0 && (
+        <p role="status" className="text-sm text-[var(--text-secondary)]">
+          Verify the goods payment and pickup authority before publishing new
+          stock changes. A separate coordination fee or wallet cleanup does not
+          hold up verified fulfillment.
+        </p>
+      )}
 
       {delivery && (
         <div
@@ -238,12 +248,16 @@ export function OrderStockPanel({
       {adjustments.map((adjustment) => {
         const restockingRequired = adjustment.shortfall > 0
         const unpublished = unpublishedStockKeys.has(adjustment.key)
-        const canPublishStock = !stockMutationDisabledKeys.has(adjustment.key)
+        const canPublishStock =
+          newStockActionsAuthorized &&
+          !stockMutationDisabledKeys.has(adjustment.key)
         const showCalculatedStock =
           adjustment.currentStock !== adjustment.nextStock
         const showMessageBuyer =
           restockingRequired && canMessageBuyer && Boolean(onMessageBuyer)
-        const showActions = canPublishStock || showMessageBuyer || unpublished
+        const canRepublishStock = newStockActionsAuthorized && unpublished
+        const showActions =
+          canPublishStock || showMessageBuyer || canRepublishStock
 
         return (
           <div
@@ -314,7 +328,7 @@ export function OrderStockPanel({
             ) : null}
             {showActions && (
               <div className="mt-3 space-y-3">
-                {unpublished && (
+                {canRepublishStock && (
                   <Button
                     type="button"
                     size="sm"

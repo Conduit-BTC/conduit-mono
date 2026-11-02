@@ -1,5 +1,6 @@
 import { assertCheckoutSparkSignedCommerceAllocations } from "./checkout-spark-signed-allocation"
 import {
+  isCheckoutSparkEventMarketPlan,
   restoreCheckoutSparkSettledPlan,
   type CheckoutSparkSettledPlan,
 } from "./checkout-spark-settled-router"
@@ -197,7 +198,7 @@ function referencesFor(
       })
     }
   }
-  if (plan.schemaVersion === 5) {
+  if (isCheckoutSparkEventMarketPlan(plan)) {
     for (const reference of getCheckoutSparkEventMarketSourceReferences(
       plan.eventMarket!,
       plan.merchantPubkey
@@ -206,7 +207,10 @@ function referencesFor(
   }
   for (const recipient of plan.recipients) {
     if (recipient.kind === "conduit") continue
-    if (recipient.kind === "organizer" && plan.schemaVersion === 5) {
+    if (
+      recipient.kind === "organizer" &&
+      isCheckoutSparkEventMarketPlan(plan)
+    ) {
       const source = recipient.destination.source
       if (
         source.type !== "signed_event_market" ||
@@ -318,7 +322,7 @@ export function validateCheckoutSparkPlanSources(
       // checked against the independent provider creation time and rate keyring.
       acceptedAtMs:
         frozen.commerceQuote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
-      ...(frozen.schemaVersion === 5
+      ...(isCheckoutSparkEventMarketPlan(frozen)
         ? {
             eventMarket: frozen.eventMarket,
             eventSourceEvents: [...sources.values()],
@@ -329,7 +333,10 @@ export function validateCheckoutSparkPlanSources(
         : {}),
       commerce: frozen.recipients.flatMap((recipient) => {
         if (recipient.kind === "conduit") return []
-        if (recipient.kind === "organizer" && frozen.schemaVersion === 5)
+        if (
+          recipient.kind === "organizer" &&
+          isCheckoutSparkEventMarketPlan(frozen)
+        )
           return []
         if (recipient.kind !== "merchant" && recipient.kind !== "supplier") {
           return unavailable()
@@ -346,7 +353,10 @@ export function validateCheckoutSparkPlanSources(
 
     for (const recipient of frozen.recipients) {
       if (recipient.kind === "conduit") continue
-      if (recipient.kind === "organizer" && frozen.schemaVersion === 5) {
+      if (
+        recipient.kind === "organizer" &&
+        isCheckoutSparkEventMarketPlan(frozen)
+      ) {
         const binding = frozen.eventMarket!
         const source = recipient.destination.source
         const fee = binding.organizerFee

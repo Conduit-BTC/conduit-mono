@@ -11,6 +11,7 @@ import ts from "typescript"
 import {
   safeRetainedSmokeFailureContext,
   safeSmokeDiagnostics,
+  smokeBrowserOperationFailure,
   smokeFailureContextFromAnnotations,
   type SmokeFailureContext,
 } from "../../e2e/helpers/smoke-diagnostics"
@@ -744,6 +745,22 @@ export class PrivacySafeSmokeReporter implements Reporter {
         ...(context ? { context } : {}),
         ...(failedStep ? { failedStep } : {}),
         ...(completed ? { lastCompletedStep: completed } : {}),
+      }
+      if (failedStep?.category === "browser-operation") {
+        const observation = smokeBrowserOperationFailure(
+          file,
+          failed ? failed.step.error : (error ?? result.error),
+          failed ? "matched_leaf" : "primary"
+        )
+        if (observation) {
+          safeResult.diagnostics = [
+            ...(safeResult.diagnostics ?? []),
+            observation,
+          ]
+          this.progress(
+            `diagnostic retry=${result.retry} project=${safeProject(test)} ${file}:${test.location.line} ${JSON.stringify(observation)}`
+          )
+        }
       }
       this.progress(
         `failure case=${safePlaywrightSmokeId(test.id)} ${JSON.stringify(safeResult.failure)}`

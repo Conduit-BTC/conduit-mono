@@ -2,6 +2,8 @@ import {
   DexieCheckoutSparkSettledRepository,
   runCheckoutSparkFinancialWorkflow,
   observeCheckoutSparkOperation,
+  activateCheckoutSparkBuyer,
+  getCheckoutSparkBuyerTakeoverAt,
   type CheckoutSparkPerformanceObserver,
   type CheckoutSparkSettledReconciliation,
   type ConduitAppId,
@@ -37,6 +39,10 @@ export interface CheckoutSparkSettledFundingPaymentInput {
   walletPaymentAttemptId?: string
   approveFee?: WalletPaymentFeeApproval
   beforeSend?: () => Promise<void>
+  /** New terms require the exact saved Buyer activation to be relay-ACKed. */
+  acknowledgeRecoverySnapshot?: (
+    state: CheckoutSparkSettledReconciliation
+  ) => Promise<void>
   timeoutMs: number
   appId: ConduitAppId
 }
@@ -249,6 +255,53 @@ export function createCheckoutSparkSettledFundingBridge(
     if (snapshot.status !== "active") {
       throw new Error("Settled checkout funding state is unavailable.")
     }
+    let fundingState = snapshot.state
+
+    const activateBeforeFunding = async () => {
+      if (plan.schemaVersion !== 6) return
+      if (!input.acknowledgeRecoverySnapshot) {
+        throw new Error(
+          "Buyer activation requires acknowledged recovery delivery."
+        )
+      }
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
+      const current = await repository.load(checkoutId, plan.planDigest)
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
+      if (current.status !== "active") {
+        throw new Error("Buyer activation state is unavailable.")
+      }
+      const activated = activateCheckoutSparkBuyer(current.state, {
+        buyerPubkey: input.buyerPubkey,
+        activatedAt: now(),
+      })
+      if (!current.state.buyerActivation) {
+        await repository.save(activated, current.revision, () => {
+          assertBuyerSession()
+          readMetadata()
+        })
+      }
+      const readSavedActivation = async () => {
+        const saved = await repository.load(checkoutId, plan.planDigest)
+        await assertCurrentBuyer(prepared.recoveryHandoffId)
+        if (
+          saved.status !== "active" ||
+          saved.state.plan.planDigest !== plan.planDigest ||
+          saved.state.buyerActivation?.activationId !==
+            activated.buyerActivation?.activationId ||
+          getCheckoutSparkBuyerTakeoverAt(plan, saved.state.buyerActivation) ===
+            null
+        ) {
+          throw new Error("Buyer activation was not durably saved.")
+        }
+        return saved.state
+      }
+      fundingState = await readSavedActivation()
+      // Saving locally is not shared authority. No payer admission or invoice
+      // disclosure is allowed until this exact marker reaches recovery.
+      await input.acknowledgeRecoverySnapshot(fundingState)
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
+      fundingState = await readSavedActivation()
+    }
 
     let proof: SparkCheckoutReceiveCreditProof | null
     try {
@@ -357,6 +410,11 @@ export function createCheckoutSparkSettledFundingBridge(
       }
       await input.beforeSend?.()
       await assertDisclosureWindow()
+      await activateBeforeFunding()
+      await assertDisclosureWindow()
+      if (fundingState.credit) {
+        return { status: "funded", reconciliation: fundingState }
+      }
       metadata = await withStoreWriteLock(async () => {
         await assertDisclosureWindow()
         const current = readMetadata()
@@ -406,6 +464,19 @@ export function createCheckoutSparkSettledFundingBridge(
       if (authorized.state.credit) {
         return { status: "funded", reconciliation: authorized.state }
       }
+      const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+        plan,
+        authorized.state.buyerActivation
+      )
+      if (
+        takeoverAt === null ||
+        authorized.state.buyerActivation?.activationId !==
+          fundingState.buyerActivation?.activationId
+      ) {
+        throw new Error(
+          "External funding activation changed before disclosure."
+        )
+      }
       return {
         status: "external_ready",
         reconciliation: authorized.state,
@@ -417,7 +488,7 @@ export function createCheckoutSparkSettledFundingBridge(
           invoice: plan.funding.paymentRequest,
           amountSats: plan.funding.grossFundingSats,
           expiresAt: plan.funding.expiresAt,
-          takeoverAt: plan.takeoverAt,
+          takeoverAt,
           exposedAt: reserved.externalFundingExposedAt,
         }),
       }
@@ -442,11 +513,35 @@ export function createCheckoutSparkSettledFundingBridge(
       }
     }
 
+    if (plan.schemaVersion === 6) {
+      await input.beforeSend?.()
+      await assertCurrentBuyer(prepared.recoveryHandoffId)
+      await activateBeforeFunding()
+      if (fundingState.credit) {
+        return { status: "funded", reconciliation: fundingState }
+      }
+    }
+    const assertConnectedFundingWindow = () => {
+      const sendTime = now()
+      if (
+        !Number.isSafeInteger(sendTime) ||
+        sendTime < plan.createdAt ||
+        sendTime >= plan.funding.expiresAt
+      ) {
+        throw new Error(
+          "The funding invoice expired before wallet payment. Check the original order for a late payment."
+        )
+      }
+    }
+    // Activation delivery may itself outlive the invoice. Do not reserve an
+    // unsent payment or enter a payer provider after that acknowledgement.
+    assertConnectedFundingWindow()
     // Reserve the exact invoice before any payer-provider call. The per-checkout
     // Web Lock serializes this with every other tab; local-storage writes also
     // use the shared store lock to preserve unrelated checkout metadata.
-    metadata = await withStoreWriteLock(async () =>
-      saveCheckoutSparkSettledPreparation(
+    metadata = await withStoreWriteLock(async () => {
+      assertConnectedFundingWindow()
+      return saveCheckoutSparkSettledPreparation(
         {
           ...readMetadata(),
           fundingSubmissionState: "provisional",
@@ -454,7 +549,7 @@ export function createCheckoutSparkSettledFundingBridge(
         },
         dependencies.storage
       )
-    )
+    })
     if (metadata.fundingSubmissionState !== "provisional") {
       throw new Error("Settled checkout funding was not durably reserved.")
     }
@@ -473,16 +568,7 @@ export function createCheckoutSparkSettledFundingBridge(
           await assertCurrentBuyer(prepared.recoveryHandoffId)
           // Wallet setup and Spark fee approval can outlive the invoice. This
           // callback runs again at the provider's final pre-publish boundary.
-          const sendTime = now()
-          if (
-            !Number.isSafeInteger(sendTime) ||
-            sendTime < plan.createdAt ||
-            sendTime >= plan.funding.expiresAt
-          ) {
-            throw new Error(
-              "The funding invoice expired before wallet payment. Check the original order for a late payment."
-            )
-          }
+          assertConnectedFundingWindow()
         },
         timeoutMs: input.timeoutMs,
         appId: input.appId,
@@ -512,7 +598,7 @@ export function createCheckoutSparkSettledFundingBridge(
       return {
         status: "payment_retryable",
         reason: payment.reason,
-        reconciliation: snapshot.state,
+        reconciliation: fundingState,
       }
     }
     if (payment?.status === "manual_required") {
@@ -561,7 +647,7 @@ export function createCheckoutSparkSettledFundingBridge(
     return {
       status: "awaiting_reconciliation",
       paymentSubmission: payment?.status === "paid" ? "accepted" : "unknown",
-      reconciliation: snapshot.state,
+      reconciliation: fundingState,
     }
   }
 

@@ -1,14 +1,16 @@
-import { describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import {
   CHECKOUT_SPARK_CURRENT_CONDUIT_FEE_POLICY,
+  activateCheckoutSparkBuyer,
   calculateCheckoutSparkInboundNetworkAllowanceSats,
   calculateConduitCheckoutFeeSats,
   createCheckoutSparkMerchantSettlementRecord,
   createCheckoutSparkInvoiceOriginRecord,
   createCheckoutSparkSettledReconciliation,
   createSelectedProfileContext,
+  deriveCheckoutSparkNativeTreasuryBudget,
   fetchLnurlPayMetadata,
   getNdk,
   hasCheckoutSparkInvoiceOrigin,
@@ -87,6 +89,19 @@ const GROSS =
   ) +
   calculateCheckoutSparkInboundNetworkAllowanceSats(1_000)
 const MNEMONIC = createRuntimeMnemonic()
+let previousTreasuryAddress: string | undefined
+
+beforeEach(() => {
+  previousTreasuryAddress = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+  process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS =
+    "vertical-native-treasury-fixture"
+})
+
+afterEach(() => {
+  if (previousTreasuryAddress === undefined)
+    delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+  else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previousTreasuryAddress
+})
 
 class MemoryStorage {
   private readonly values = new Map<string, string>()
@@ -455,6 +470,23 @@ function harness(options: {
             receiverContracts: qualifiedReceiverMetadataFixture(
               "merchant@wallet.conduit.market"
             ).contracts,
+            treasuryConfiguration: {
+              mainnetAddress: "vertical-native-treasury-fixture",
+            },
+            validateTreasuryDestination: async () => ({
+              sparkAddress: "vertical-native-treasury-fixture",
+              receiverIdentityPublicKey: `03${"b".repeat(64)}`,
+            }),
+            prepareTreasuryRequest: async (input) => ({
+              schemaVersion: 1,
+              sparkAddress: input.sparkAddress,
+              receiverIdentityPublicKey: input.receiverIdentityPublicKey,
+              senderIdentityPublicKey: input.senderIdentityPublicKey,
+              invoiceId: input.invoiceId,
+              invoiceRequest: "vertical-canonical-native-fixture",
+              feePolicy: "zero_required",
+              residualPolicy: "unused_commerce_reserves",
+            }),
             fetchPayoutMetadata: (lud16) =>
               fetchLnurlPayMetadata(lud16, {
                 fetchImpl: (async (url) => {
@@ -704,7 +736,10 @@ describe("settled Spark no-funds vertical flow", () => {
     }
     const input = {
       initialHandoffId: prepared.prepared.recoveryHandoffId,
-      state: snapshot.state,
+      state: activateCheckoutSparkBuyer(snapshot.state, {
+        buyerPubkey: BUYER.pubkey,
+        activatedAt: NOW + 2_000,
+      }),
       identity: entryRequest(snapshot.state.plan.checkoutId).buyer,
       preparedAt: NOW + 10_000,
       storage: run.storage,
@@ -742,7 +777,7 @@ describe("settled Spark no-funds vertical flow", () => {
     expect(wrapAttempts).toBe(1)
   })
 
-  it("funds once from exact credit, then pays Merchant before Conduit without replay", async () => {
+  it("activates and funds once, pays Merchant without replay and holds native Conduit until independently verified", async () => {
     const run = harness({ checkoutId: "vertical-credited-checkout" })
     const prepared = await run.prepare()
     const { plan } = prepared.prepared
@@ -755,6 +790,9 @@ describe("settled Spark no-funds vertical flow", () => {
       run.storage
     )
     expect(stored?.fundingInvoiceExposedAt).not.toBeNull()
+    expect(stored?.externalFundingExposedAt).toBeUndefined()
+    expect(plan.schemaVersion).toBe(6)
+    expect(prepared.prepared.state.buyerActivation).toBeNull()
     expect(
       initialDelivery?.deliveryProgress.acknowledgedRelayRefs
     ).toHaveLength(1)
@@ -780,6 +818,20 @@ describe("settled Spark no-funds vertical flow", () => {
       })
     ).toMatchObject({ fundingInvoice: plan.funding.paymentRequest })
 
+    const acknowledgeRecoverySnapshot = async (
+      state: CheckoutSparkSettledReconciliation
+    ) => {
+      const result = await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+        initialHandoffId: prepared.prepared.recoveryHandoffId,
+        state,
+        identity: entryRequest(plan.checkoutId).buyer,
+        preparedAt: NOW + 10_000,
+        storage: run.storage,
+        now: () => NOW + 10_000,
+        transport: run.transport,
+      })
+      expect(result.acknowledged).toBe(true)
+    }
     let payerCalls = 0
     let creditReads = 0
     let payerSubmitted = false
@@ -827,6 +879,7 @@ describe("settled Spark no-funds vertical flow", () => {
       walletPaymentAttemptId: "vertical-payer-attempt",
       timeoutMs: 10_000,
       appId: "market" as const,
+      acknowledgeRecoverySnapshot,
     }
     expect((await bridge.fund(fundingInput)).status).toBe("funded")
     expect((await bridge.fund(fundingInput)).status).toBe("funded")
@@ -836,6 +889,9 @@ describe("settled Spark no-funds vertical flow", () => {
     const credited = run.repository.snapshot()
     expect(credited.status).toBe("active")
     if (credited.status !== "active") return
+    expect(credited.state.buyerActivation?.activatedAt).toBe(NOW + 2_000)
+    expect(credited.state.buyerActivation?.takeoverAt).toBe(NOW + 122_000)
+    expect(plan.funding.expiresAt).toBe(NOW + 900_000)
     expect(credited.state.credit?.creditedSats).toBe(GROSS)
     expect(run.repository.settlement()?.credit?.creditedSats).toBe(GROSS)
     expect(
@@ -846,20 +902,6 @@ describe("settled Spark no-funds vertical flow", () => {
       1_002, 21,
     ])
 
-    const acknowledgeRecoverySnapshot = async (
-      state: CheckoutSparkSettledReconciliation
-    ) => {
-      const result = await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
-        initialHandoffId: prepared.prepared.recoveryHandoffId,
-        state,
-        identity: entryRequest(plan.checkoutId).buyer,
-        preparedAt: NOW + 10_000,
-        storage: run.storage,
-        now: () => NOW + 10_000,
-        transport: run.transport,
-      })
-      expect(result.acknowledged).toBe(true)
-    }
     const resolveInvoice = async (input: CheckoutSparkLnurlInvoiceInput) => {
       const hashByte = input.lud16 === "merchant@wallet.conduit.market" ? 4 : 5
       return resolveCheckoutSparkFixtureInvoice(
@@ -872,7 +914,9 @@ describe("settled Spark no-funds vertical flow", () => {
         })
       )
     }
-    for (const recipient of plan.recipients) {
+    for (const recipient of plan.recipients.filter(
+      (candidate) => candidate.kind !== "conduit"
+    )) {
       await prepareCheckoutSparkSettledOutgoingLeg(
         {
           checkoutId: plan.checkoutId,
@@ -957,23 +1001,34 @@ describe("settled Spark no-funds vertical flow", () => {
         acknowledgeRecoverySnapshot,
       })
     const merchantLegId = plan.recipients[0]!.legId
-    const conduitLegId = plan.recipients[1]!.legId
-    expect((await step(conduitLegId)).reason).toBe("prerequisite_unpaid")
+    const assertNativeHeld = () => {
+      const saved = run.repository.snapshot()
+      if (saved.status !== "active") throw new Error("Missing state")
+      expect(() =>
+        deriveCheckoutSparkNativeTreasuryBudget(
+          saved.state,
+          run.repository.settlement()!
+        )
+      ).toThrow()
+      expect(saved.state.treasuryFinalization?.status).toBe("unprepared")
+    }
+    assertNativeHeld()
     expect((await step(merchantLegId)).outcome).toBe("send_ambiguous")
-    expect((await step(conduitLegId)).reason).toBe("prerequisite_unpaid")
+    assertNativeHeld()
     expect((await step(merchantLegId)).reason).toBe("prior_possible_send")
     expect(sends).toEqual([merchantLegId])
 
     merchantHistory = "paid"
     expect((await step(merchantLegId)).outcome).toBe("paid")
-    expect((await step(conduitLegId)).outcome).toBe("paid")
-    expect(sends).toEqual([merchantLegId, conduitLegId])
+    expect((await step(merchantLegId)).outcome).toBe("already_paid")
+    expect(sends).toEqual([merchantLegId])
+    assertNativeHeld()
     const final = run.repository.snapshot()
     expect(final.status).toBe("active")
     if (final.status === "active") {
       expect(final.state.legs.map((leg) => leg.status)).toEqual([
         "paid",
-        "paid",
+        "unprepared",
       ])
     }
     // This lower-level Core runner bypasses the Market provider-fact capture.

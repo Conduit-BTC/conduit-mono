@@ -1,4 +1,5 @@
 import {
+  getCheckoutSparkBuyerTakeoverAt,
   CheckoutSparkSettledRepositoryConflictError,
   DexieCheckoutSparkSettledRepository,
   DexieMerchantCheckoutSparkProgressRepository,
@@ -27,6 +28,11 @@ import {
   type MerchantCheckoutSparkProgressTransport,
   type NostrKeySigner,
 } from "@conduit/core"
+import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  restoreCheckoutSparkRecoveryTiming,
+} from "@conduit/core/protocol/checkout-spark-recovery-timing"
 
 import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
@@ -191,6 +197,7 @@ export async function continueMerchantCheckoutSparkSettledPayout(
       : {}),
   }
   review = { ...review, intent: { ...review.intent } }
+  restoreCheckoutSparkRecoveryTiming(selected)
   // Preview classifications are advisory, not part of the frozen send intent.
   delete review.inspection
   const repository =
@@ -214,12 +221,17 @@ export async function continueMerchantCheckoutSparkSettledPayout(
     retainMerchantProgress = false
   ) => {
     const { plan } = initial
+    const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+      plan,
+      signedState.buyerActivation
+    )
     const assertEligible = () => {
       assertCurrent()
       assertMerchantCheckoutSparkDispatchPlan(plan)
       if (
         dependencies.shouldContinue?.() === false ||
-        now() < plan.takeoverAt
+        takeoverAt === null ||
+        now() < takeoverAt
       ) {
         throw new Error(
           "Merchant checkout continuation is not currently authorized."
@@ -234,6 +246,10 @@ export async function continueMerchantCheckoutSparkSettledPayout(
       selected.orderId !== plan.orderId ||
       selected.planDigest !== plan.planDigest ||
       signedState.plan.planDigest !== plan.planDigest ||
+      !checkoutSparkRecoveryTimingMatches(
+        selected,
+        checkoutSparkRecoveryTiming(plan, signedState.buyerActivation)
+      ) ||
       initial.wallet.walletId !== plan.walletId ||
       initial.wallet.network !== plan.network ||
       review.checkoutId !== plan.checkoutId ||

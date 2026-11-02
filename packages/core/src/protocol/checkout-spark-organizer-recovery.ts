@@ -32,6 +32,7 @@ import type { publishWithPlanner } from "./relay-publish"
 import { getOrganizerStockOrderBindings } from "./merchant-order-acceptance-bindings"
 import { matchesCheckoutSparkOrderEventMarketSnapshot } from "./checkout-spark-event-market"
 import { hasExactMachineRumorBindings } from "./machine-rumor-binding"
+import { isCheckoutSparkEventMarketPlan } from "./checkout-spark-settled-router"
 
 const DOMAIN = "conduit:checkout-spark-organizer-recovery:v1"
 const HEX_64 = /^[0-9a-f]{64}$/
@@ -120,7 +121,7 @@ export function createCheckoutSparkOrganizerRecoveryProgressPayload(input: {
   })
   const binding = merchant.plan.eventMarket
   if (
-    merchant.plan.schemaVersion !== 5 ||
+    !isCheckoutSparkEventMarketPlan(merchant.plan) ||
     binding?.mode !== "organizer_handoff" ||
     !HEX_64.test(input.initialOrganizerHandoffId) ||
     JSON.stringify(source) !== JSON.stringify(merchant)
@@ -219,7 +220,7 @@ export function createCheckoutSparkOrganizerRecoveryPayload(input: {
   const plan = merchant.plan
   const binding = plan.eventMarket
   if (
-    plan.schemaVersion !== 5 ||
+    !isCheckoutSparkEventMarketPlan(plan) ||
     !binding ||
     binding.mode !== "organizer_handoff" ||
     order.id !== plan.orderId ||
@@ -292,7 +293,7 @@ export function restoreCheckoutSparkOrganizerRecoveryPayload(
   const binding = plan.eventMarket
   const orderBinding = Object.freeze({ ...candidate.orderBinding })
   if (
-    plan.schemaVersion !== 5 ||
+    !isCheckoutSparkEventMarketPlan(plan) ||
     !binding ||
     binding.mode !== "organizer_handoff" ||
     JSON.stringify(raw.plan) !== JSON.stringify(plan) ||

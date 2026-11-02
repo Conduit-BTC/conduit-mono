@@ -1,4 +1,5 @@
 import type { MerchantCheckoutSparkRecoveryCandidate } from "./commerce"
+import { restoreCheckoutSparkRecoveryTiming } from "./checkout-spark-recovery-timing"
 
 export type MerchantCheckoutSparkReconciliationStatus =
   | "verified"
@@ -77,6 +78,8 @@ function identity(candidate: MerchantCheckoutSparkRecoveryCandidate): string {
     candidate.orderId,
     candidate.planDigest,
     candidate.takeoverAt,
+    candidate.executionTiming,
+    candidate.buyerActivationId,
     candidate.preparedAt,
     candidate.initialWrapId ?? null,
     candidate.initialHandoffId ?? null,
@@ -215,6 +218,8 @@ export function startMerchantCheckoutSparkReconciliation(
   }
 
   async function run(entry: Entry): Promise<void> {
+    const takeoverAt = entry.candidate.takeoverAt
+    if (takeoverAt === null) return
     lastStartedAt = now()
     const currentEpoch = epoch
     const assertCurrent = () => {
@@ -260,19 +265,16 @@ export function startMerchantCheckoutSparkReconciliation(
       // not select another signed intent or grant payment authority. Unchanged
       // progress on that inspection falls back to ordinary bounded backoff.
       entry.retryCount = 0
-      entry.nextAt = Math.max(
-        entry.candidate.takeoverAt,
-        checkedAt + MIN_STEP_GAP_MS
-      )
+      entry.nextAt = Math.max(takeoverAt, checkedAt + MIN_STEP_GAP_MS)
     } else {
       entry.retryCount = Math.min(entry.retryCount + 1, 5)
       const retryAt =
         checkedAt +
         Math.min(MIN_RETRY_MS * 2 ** (entry.retryCount - 1), MAX_RETRY_MS)
       entry.nextAt =
-        options.observeBeforeTakeover && checkedAt < entry.candidate.takeoverAt
-          ? Math.min(retryAt, entry.candidate.takeoverAt)
-          : Math.max(entry.candidate.takeoverAt, retryAt)
+        options.observeBeforeTakeover && checkedAt < takeoverAt
+          ? Math.min(retryAt, takeoverAt)
+          : Math.max(takeoverAt, retryAt)
     }
   }
 
@@ -303,9 +305,15 @@ export function startMerchantCheckoutSparkReconciliation(
         seen.add(candidate.checkoutId)
         const version = identity(candidate)
         const previous = entries.get(candidate.checkoutId)
-        const validTakeover =
-          Number.isSafeInteger(candidate.takeoverAt) &&
-          candidate.takeoverAt >= 0
+        let validTakeover = false
+        let validTiming = false
+        try {
+          validTakeover =
+            restoreCheckoutSparkRecoveryTiming(candidate).takeoverAt !== null
+          validTiming = true
+        } catch {
+          /* Untrusted discovery hints never grant dispatch. */
+        }
         next.set(
           candidate.checkoutId,
           previous?.identity === version
@@ -315,12 +323,12 @@ export function startMerchantCheckoutSparkReconciliation(
                 identity: version,
                 // Malformed timing is visible as unavailable but never sent to
                 // an authority/provider adapter or scheduled in a tight loop.
-                status: validTakeover ? "pending" : "unavailable",
+                status: validTiming ? "pending" : "unavailable",
                 retryCount: 0,
                 nextAt: validTakeover
                   ? options.observeBeforeTakeover
                     ? now()
-                    : candidate.takeoverAt
+                    : candidate.takeoverAt!
                   : Number.POSITIVE_INFINITY,
               }
         )

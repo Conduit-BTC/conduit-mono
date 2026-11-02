@@ -27,19 +27,25 @@ export function CheckoutSparkPaymentReceipt({
           Payment history
         </h2>
         <p className="mt-1 text-sm text-[var(--text-secondary)]">
-          Recorded payment history, not a live wallet balance. Source-wallet
-          fees and later refunds or transfers are not included.
+          Payment history saved on this device, not a live wallet balance.
+          Source-wallet fees and later refunds or transfers are not included.
         </p>
         <dl className="mt-4">
           <Amount label="Funding credited" sats={receipt.creditedSats} />
         </dl>
         <p className="mt-4 text-sm text-[var(--text-secondary)]">
           {!receipt.allPayoutsRecorded
-            ? "Payments are still being completed."
+            ? "This device does not have records for every checkout payment."
             : receipt.rows.every((row) => row.payment?.recipientVerified)
               ? "All checkout payments verified."
               : "Payments recorded; final verification is still pending."}
         </p>
+        {!receipt.allPayoutsRecorded && (
+          <p className="mt-2 text-sm text-[var(--text-secondary)]">
+            If the merchant continued this checkout, later payment records may
+            not appear here. Do not pay again.
+          </p>
+        )}
         <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
           <Amount label="Recorded payouts" sats={receipt.recordedPaidSats} />
           <Amount

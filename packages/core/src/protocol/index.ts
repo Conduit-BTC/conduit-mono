@@ -68,6 +68,14 @@ export * from "./event-market-organizer-purchase"
 export * from "./event-market-order-handoff-policy"
 export * from "./event-market-stock-merchant-inbox"
 export * from "./checkout-spark-settled-router"
+export {
+  getCheckoutSparkBuyerTakeoverAt,
+  createCheckoutSparkBuyerActivation,
+  restoreCheckoutSparkBuyerActivation,
+  restoreCheckoutSparkPayActivationTiming,
+  type CheckoutSparkBuyerActivation,
+  type CheckoutSparkPayActivationTiming,
+} from "./checkout-spark-buyer-activation"
 export * from "./checkout-spark-treasury-finalization"
 export * from "./checkout-spark-treasury-sdk"
 export * from "./checkout-spark-treasury-policy"
@@ -309,6 +317,7 @@ export {
 export * from "./event-market-authorization-read"
 export * from "./event-market-authorization-publish"
 export * from "./event-guest-checkout"
+export * from "./event-pickup-receipt-storage"
 export * from "./event-market-order-evidence"
 export * from "./future-market-handoff"
 export * from "./future-market-merchandise"

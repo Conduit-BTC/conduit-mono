@@ -23,25 +23,29 @@ describe("event-market browser artifact privacy", () => {
   })
 
   it("keeps guest receipt failures content-free without dropping receipt checks", async () => {
-    const source = await Bun.file("e2e/event-market.playwright.ts").text()
+    const source = (
+      await Bun.file("e2e/event-market.playwright.ts").text()
+    ).replace(/\r\n/g, "\n")
     const start = source.indexOf(
       'for (const retention of ["screen", "file"] as const)'
     )
-    const end = source.indexOf(
-      'test("organizer fee edits use saved addresses',
-      start
-    )
+    const end = source.indexOf("\n}\n", start)
     expect(start >= 0 && end > start).toBe(true)
-    const journey = source.slice(start, end)
+    const journey = source.slice(start, end + 2)
     const compact = journey.replace(/\s+/g, " ")
     const stages = journey.match(/let receiptStage:([\s\S]*?)= "setup"/)
     expect(
       stages?.[1]?.match(/"[a-z-]+"/g)?.join(",") ===
         [
           "setup",
+          "event-navigation",
+          "event-product",
+          "cart-ready",
+          "checkout-navigation",
           "phone-normalization",
-          "receipt-required",
+          "receipt-before-order",
           "receipt-display",
+          "receipt-recovery",
           "receipt-export",
           "order-submission",
           "code-verification",
@@ -53,19 +57,57 @@ describe("event-market browser artifact privacy", () => {
           .join(",")
     ).toBe(true)
     expect(compact.includes('= "setup" try { const relay =')).toBe(true)
+    const failure = journey.slice(journey.lastIndexOf("} catch {"))
+    expect(failure.includes('let boundary = "unclassified"')).toBe(true)
     expect(
-      /\} catch \{ throw new Error\(\s*`Guest receipt journey failed at \$\{receiptStage\}\.`\s*\) \} \}\) \}/.test(
-        compact
-      )
+      failure
+        .match(/[?:]\s*"([a-z-]+)"/g)
+        ?.map((value) => value.match(/"([a-z-]+)"/)?.[1])
+    ).toEqual([
+      "record-unavailable",
+      "record-check-failed",
+      "record-pending",
+      "product-heading-contract",
+      "event-without-product",
+      "vite-overlay",
+      "empty-root",
+      "unexpected-shell",
+    ])
+    expect(
+      failure.match(/new Error\([\s\S]*?\)/g)?.length === 1 &&
+        failure.includes(
+          "`Guest receipt journey failed at ${receiptStage} (${boundary}).`"
+        )
     ).toBe(true)
+    for (const privateOutput of [
+      "JSON.stringify",
+      "console.",
+      "${text}",
+      "${receiptCode}",
+      "${order.",
+      "{ cause",
+    ])
+      expect(failure.includes(privateOutput)).toBe(false)
     expect(journey.includes(".toHaveLength(")).toBe(false)
     for (const assertion of [
       'expect(order.buyerIdentityKind === "guest_ephemeral").toBe(true)',
       "expect(order.guestContact === undefined).toBe(true)",
       'expect(order.contactFreePickup.label === "Soap fan").toBe(true)',
       'download.suggestedFilename() === "conduit-event-receipt.txt"',
+      "expect(automaticDownloads).toBe(0)",
+      "order.pickupReceiptCommitment === order.contactFreePickup.receiptCommitment",
+      'expect(orders()[0]!.rumor.content.includes("claimSecret")).toBe(false)',
+      "order.createdAt + 24 * 60 * 60 * 1_000 + 1",
     ])
       expect(compact.includes(assertion)).toBe(true)
+    const beforeSubmit = journey.slice(
+      journey.indexOf('receiptStage = "receipt-before-order"'),
+      journey.indexOf('receiptStage = "order-submission"')
+    )
+    expect(beforeSubmit.match(/\.toHaveCount\(0\)/g)?.length === 5).toBe(true)
+    expect(beforeSubmit.includes("I saved my private receipt")).toBe(true)
+    expect(beforeSubmit.includes("Private receipt code")).toBe(true)
+    expect(beforeSubmit.includes("Save event receipt")).toBe(true)
     expect(journey.includes(".fill(receiptCode)")).toBe(true)
     expect(
       journey.match(/getByText\(\/Receipt matches this order/g)?.length

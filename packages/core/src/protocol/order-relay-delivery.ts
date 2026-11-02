@@ -72,6 +72,7 @@ export type StagedOrderLifecycleInput = Pick<
   | "claimedReferralSource"
   | "buyerPubkey"
   | "buyerIdentityKind"
+  | "pickupReceiptCommitment"
   | "guestSessionExpiresAt"
   | "merchantPubkey"
   | "checkoutMode"
@@ -256,6 +257,7 @@ function immutableLifecycleSnapshot(
     claimedReferralSource: lifecycle.claimedReferralSource,
     buyerPubkey: lifecycle.buyerPubkey,
     buyerIdentityKind: lifecycle.buyerIdentityKind,
+    pickupReceiptCommitment: lifecycle.pickupReceiptCommitment,
     guestSessionExpiresAt: lifecycle.guestSessionExpiresAt,
     merchantPubkey: lifecycle.merchantPubkey,
     checkoutMode: lifecycle.checkoutMode,

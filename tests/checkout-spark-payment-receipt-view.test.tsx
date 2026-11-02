@@ -120,7 +120,7 @@ describe("private checkout payment receipt", () => {
       expect(html).not.toContain(role)
   })
 
-  it("keeps unobserved payouts and their remainder unknown", () => {
+  it("labels missing device records without claiming payments are still running", () => {
     const full = receipt()
     const html = renderToStaticMarkup(
       <CheckoutSparkPaymentReceipt
@@ -135,10 +135,28 @@ describe("private checkout payment receipt", () => {
         }}
       />
     )
-    expect(html).toContain("Payments are still being completed.")
+    expect(html).toContain("Payment history saved on this device")
+    expect(html).toContain(
+      "This device does not have records for every checkout payment."
+    )
+    expect(html).toContain(
+      "If the merchant continued this checkout, later payment records may not appear here. Do not pay again."
+    )
+    expect(html).not.toContain("Payments are still being completed.")
+    expect(html).not.toContain("All checkout payments verified.")
+    expect(html).not.toContain(
+      "Payments recorded; final verification is still pending."
+    )
+    expect(html).toContain("995 sats")
+    expect(html).toContain("2 sats")
+    expect(html).toContain("997 sats")
+    expect(html).toContain("The recorded remainder is unavailable")
     expect(html).toContain("Totals above include recorded payouts only.")
     expect(html).not.toContain("Unspent from recorded checkout credit")
     expect(html).not.toContain("107 sats")
+    expect(html).toContain("not a live wallet balance")
+    expect(html).toContain("do not prove the wallet is empty or safe to remove")
+    expect(html).not.toContain("<button")
   })
 
   it("distinguishes invoice payment from recipient verification and preserves zero fees", () => {

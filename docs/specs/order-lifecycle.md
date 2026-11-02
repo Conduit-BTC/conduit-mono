@@ -372,6 +372,15 @@ the checkout form after successful delivery, and omitted from the buyer's
 durable lifecycle/message cache. The remaining redacted guest lifecycle and
 invoice are bounded to the 24-hour guest recovery window.
 
+Private Event pickup receipt retention is separate from that lifecycle: a
+receipt-only browser record may keep the exact possession code and minimal
+order/merchant/selected-occurrence metadata until 24 hours after that signed
+occurrence ends. It contains no guest signing key, contact, invoice or paid
+state and cannot restore expired guest signing or order-payment authority.
+Receipt matching still requires independent payment and once-only handout
+verification. Browser saving is verified, export is optional, and explicit
+Delete removes the code with a bounded stale-tab replay marker.
+
 ## Occurrence inventory acceptance
 
 A merchant accepts a new assignment order through one durable transaction that

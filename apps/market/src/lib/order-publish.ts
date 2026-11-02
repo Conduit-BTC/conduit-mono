@@ -244,6 +244,7 @@ export function assertStagedOrderLifecycleMatchesRumor(
     parsed.orderId !== lifecycle.orderId ||
     payload.id !== lifecycle.orderId ||
     payload.buyerIdentityKind !== lifecycle.buyerIdentityKind ||
+    payload.pickupReceiptCommitment !== lifecycle.pickupReceiptCommitment ||
     payload.createdAt !== lifecycle.createdAt ||
     payload.currency !== lifecycle.currency ||
     currencyTags[0]?.[1] !== lifecycle.currency ||

@@ -15,6 +15,8 @@ import {
   preparePrivateMessageRecipientWrap,
   createCheckoutSparkSettledRecoveryProgressPayload,
   deriveCheckoutSparkSettledRecoverySnapshotKey,
+  getCheckoutSparkBuyerTakeoverAt,
+  isCheckoutSparkEventMarketPlan,
   parseCheckoutSparkRecoveryDeliveryProgress,
   parseCheckoutSparkRecoveryDeliveryRecord,
   publishCheckoutSparkRecovery,
@@ -907,7 +909,8 @@ function assertGuestSettledRecoveryScope(input: {
   if (
     (plan.schemaVersion !== 3 &&
       plan.schemaVersion !== 4 &&
-      plan.schemaVersion !== 5) ||
+      plan.schemaVersion !== 5 &&
+      plan.schemaVersion !== 6) ||
     identity.orderId !== plan.orderId ||
     identity.merchantPubkey !== plan.merchantPubkey ||
     !HEX_64.test(identity.pubkey) ||
@@ -921,12 +924,36 @@ function assertGuestSettledRecoveryScope(input: {
     !Number.isSafeInteger(now) ||
     now < preparedAt ||
     now >= identity.expiresAt ||
-    now >= plan.takeoverAt
+    now >= (plan.schemaVersion === 6 ? plan.funding.expiresAt : plan.takeoverAt)
   ) {
     throw new Error(
       "Guest checkout recovery is outside its order or session scope."
     )
   }
+}
+
+/** Initial preparation is inactive; only later progress carries Pay activation. */
+function recoveryDeliveryDeadline(
+  payload: CheckoutSparkRecoveryPayload | CheckoutSparkOrganizerRecoveryMessage
+): number {
+  if (payload.plan.schemaVersion !== 6) return payload.plan.takeoverAt
+  if (!("state" in payload))
+    throw new Error("Checkout recovery activation is unavailable.")
+  if (
+    payload.type === "checkout_spark_recovery" ||
+    payload.type === "checkout_spark_organizer_recovery"
+  ) {
+    if (payload.state.buyerActivation !== null)
+      throw new Error("Initial checkout recovery must be inactive.")
+    return payload.plan.funding.expiresAt
+  }
+  const deadline = getCheckoutSparkBuyerTakeoverAt(
+    payload.plan,
+    payload.state.buyerActivation
+  )
+  if (deadline === null)
+    throw new Error("Checkout recovery activation is unavailable.")
+  return deadline
 }
 
 function assertScopedRecoveryInput(input: {
@@ -1123,7 +1150,7 @@ async function persistEventRecoveryPayloadPair(
       identity.pubkey !== merchantPayload.senderPubkey ||
       organizerPayload.senderPubkey !== identity.pubkey ||
       now() < preparedAt ||
-      now() >= merchantPayload.plan.takeoverAt
+      now() >= recoveryDeliveryDeadline(merchantPayload)
     ) {
       throw new Error("Event checkout recovery authority changed.")
     }
@@ -1269,7 +1296,7 @@ async function assertAcknowledgedInitialRecovery(
   if (
     !initial ||
     initial.deliveryProgress.acknowledgedRelayRefs.length === 0 ||
-    (plan.schemaVersion === 5 &&
+    (isCheckoutSparkEventMarketPlan(plan) &&
       plan.eventMarket?.mode === "organizer_handoff" &&
       (initial.organizerDelivery?.organizerPubkey !==
         plan.eventMarket.organizerPubkey ||
@@ -1320,7 +1347,7 @@ export async function acknowledgeCheckoutSparkSettledSnapshot(
     preparedAt,
   })
   if (
-    payload.plan.schemaVersion === 5 &&
+    isCheckoutSparkEventMarketPlan(payload.plan) &&
     payload.plan.eventMarket?.mode === "organizer_handoff"
   ) {
     const initial = await getCheckoutSparkRecoveryDelivery(
@@ -1442,14 +1469,18 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
     storage
   )
   assertCurrent()
-  if (
-    preparedAt >= input.state.plan.takeoverAt ||
-    currentTime >= input.state.plan.takeoverAt
-  ) {
-    throw new Error(
-      "Checkout recovery progress is outside its takeover window."
-    )
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    input.state.plan,
+    input.state.buyerActivation
+  )
+  const assertProgressWindow = () => {
+    if (takeoverAt === null || preparedAt >= takeoverAt || now() >= takeoverAt)
+      throw new Error(
+        "Checkout recovery progress is outside its takeover window."
+      )
   }
+  if (takeoverAt === null || input.state.plan.schemaVersion !== 6)
+    assertProgressWindow()
   const key = deriveCheckoutSparkSettledRecoverySnapshotKey({
     initialHandoffId: input.initialHandoffId,
     state: input.state,
@@ -1476,7 +1507,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       existing.record.network !== initial.network ||
       existing.record.senderPubkey !== initial.senderPubkey ||
       existing.record.merchantPubkey !== initial.merchantPubkey ||
-      (input.state.plan.schemaVersion === 5 &&
+      (isCheckoutSparkEventMarketPlan(input.state.plan) &&
         input.state.plan.eventMarket?.mode === "organizer_handoff" &&
         existing.snapshotKey !== key)
     ) {
@@ -1484,7 +1515,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
     }
     if (
       existing.deliveryProgress.acknowledgedRelayRefs.length > 0 &&
-      (input.state.plan.schemaVersion !== 5 ||
+      (!isCheckoutSparkEventMarketPlan(input.state.plan) ||
         input.state.plan.eventMarket?.mode !== "organizer_handoff" ||
         (existing.organizerDelivery?.organizerPubkey ===
           input.state.plan.eventMarket.organizerPubkey &&
@@ -1498,6 +1529,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
         mode: "reused",
       }
     }
+    assertProgressWindow()
     const retry = await retryStoredCheckoutSparkRecoveryHandoff({
       handoffId: existingHandoffId,
       storage,
@@ -1507,6 +1539,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       shouldContinue: () => {
         try {
           assertCurrent()
+          assertProgressWindow()
           return true
         } catch {
           return false
@@ -1515,6 +1548,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       publishFn: input.transport?.publishFn
         ? (...args) => {
             assertCurrent()
+            assertProgressWindow()
             return input.transport!.publishFn!(...args)
           }
         : undefined,
@@ -1524,6 +1558,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       throw new Error("Checkout Spark recovery received no relay ACK.")
     }
     assertCurrent()
+    assertProgressWindow()
     return {
       handoffId: existingHandoffId,
       deliveryProgress: retry.deliveryProgress,
@@ -1531,6 +1566,7 @@ async function acknowledgeOrRetryCheckoutSparkSettledSnapshotLocked(
       mode: "retried",
     }
   }
+  assertProgressWindow()
   const published = await acknowledgeCheckoutSparkSettledSnapshot({
     ...input,
     preparedAt,
@@ -1560,6 +1596,12 @@ async function persistAndPublishRecoveryHandoff(input: {
   const identity = { ...input.identity }
   const callerShouldContinue = input.transport?.shouldContinue
   const assertGuestCurrent = () => {
+    if (
+      input.payload.plan.schemaVersion === 6 &&
+      (input.now() < input.payload.preparedAt ||
+        input.now() >= recoveryDeliveryDeadline(input.payload))
+    )
+      throw new Error("Checkout recovery delivery window ended.")
     if (identity.kind !== "guest_ephemeral") return
     assertGuestSettledRecoveryScope({
       identity,
@@ -1595,7 +1637,8 @@ async function persistAndPublishRecoveryHandoff(input: {
   }
   const publishFn = input.transport?.publishFn
   const transport =
-    identity.kind === "guest_ephemeral"
+    identity.kind === "guest_ephemeral" ||
+    input.payload.plan.schemaVersion === 6
       ? {
           ...input.transport,
           shouldContinue,

@@ -1,5 +1,9 @@
 import { afterEach, expect, it } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
+import {
+  QueryClient,
+  QueryObserver,
+} from "../apps/merchant/node_modules/@tanstack/react-query"
 import type { ConduitDB } from "@conduit/core/db"
 import {
   assertCheckoutSparkOrganizerCommerceProof,
@@ -16,6 +20,10 @@ import { eventMarketFreePurchaseFixture } from "./support/event-market-free-purc
 import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
 import { createInMemoryInboxDeclarationEvidenceRepository } from "@conduit/core/protocol/inbox-declaration-evidence"
 import { admitFixture } from "./helpers/public-event"
+import {
+  CheckoutSparkOrganizerRoutingTimeoutError,
+  createCheckoutSparkOrganizerRoutingObservation,
+} from "../apps/merchant/src/lib/checkout-spark-organizer-routing-observation"
 
 const databases: ConduitDB[] = []
 afterEach(async () => {
@@ -35,6 +43,66 @@ const controls = {
   onHandout: () => {},
   onRetryHandout: () => {},
 }
+
+it("keeps native history inspection separate from routing and handout", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      paymentVerified
+      inspectingHistory
+      onInspectHistory={() => {}}
+    />
+  )
+  expect(markup).toContain("No payment is being sent")
+  expect(markup).toContain("does not send a payment")
+  expect(markup).not.toContain("Confirm code and hand out once")
+  expect(markup).not.toContain(">Recheck payments<")
+  expect(
+    markup.match(/<button\b[^>]*>Inspect saved Conduit transfer<\/button>/)?.[0]
+  ).toContain('disabled=""')
+})
+
+it("describes native history inspection as evidence rather than a saved payment update", () => {
+  const render = (
+    historyDiagnostic:
+      | "no_exact_match_in_bounded_history"
+      | "exact_commit_and_finalized_invoice"
+      | "history_commit_invoice_unresolved"
+  ) =>
+    renderToStaticMarkup(
+      <EventMarketOrganizerPickupForm
+        {...controls}
+        onInspectHistory={() => {}}
+        historyDiagnostic={historyDiagnostic}
+      />
+    )
+  expect(render("no_exact_match_in_bounded_history")).toContain(
+    "payment remains unresolved"
+  )
+  expect(render("exact_commit_and_finalized_invoice")).toContain(
+    "this check changed no saved status"
+  )
+  expect(render("history_commit_invoice_unresolved")).toContain(
+    "Keep this payment held"
+  )
+})
+
+it("keeps an inactive routed purchase waiting for Pay instead of inventing a recovery deadline", () => {
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      waitingForBuyer
+      buyerNotStarted
+    />
+  )
+  expect(markup).toContain("Waiting for buyer to start payment")
+  expect(markup).toContain("Recovery timing starts when the buyer chooses Pay")
+  expect(markup).not.toContain("buyer still has time to finish routing")
+  const button = markup.match(
+    /<button\b[^>]*>Continue this order<\/button>/
+  )?.[0]
+  expect(button).toContain('disabled=""')
+})
 
 it("shows one actionable incomplete-history notice rather than claiming the inbox is empty", () => {
   for (const selectionCount of [0, 1]) {
@@ -115,6 +183,116 @@ it("renders safe zero counts when older discovery fixtures omit read details", (
   expect(markup).not.toContain("undefined")
   expect(markup).not.toContain("NaN")
   expect(markup).not.toContain("<button")
+})
+
+it("shows only fixed last-observed recovery verdicts and timing in collapsed check details", () => {
+  const timeout = new CheckoutSparkOrganizerRoutingTimeoutError({
+    ...createCheckoutSparkOrganizerRoutingObservation(() => 0, 0).timeout()
+      .diagnostic,
+    stage: "Verifying the original funding",
+    elapsedMs: 120_300,
+    writerChecks: 12,
+    writerCheckMs: 4_500,
+    lastPayoutObservation: "paid",
+    lastRecipientObservation: "verified_unsettled",
+    lastProgressAck: "accepted",
+    lastLoadedNativeStatus: "submitted",
+    lastLoadedNativeTransferReference: "absent",
+    lastNativeObservation: "pending_sender",
+    lastNativePreflight: "ready",
+    lastNativeSend: "submitted",
+    lastWorkflowOutcome: "wait",
+    lastWorkflowWaitReason: "provider_evidence_unavailable",
+    completedWorkflowSteps: 2,
+    scheduledBackoffMs: 3_000,
+  })
+  const diagnostic = {
+    ...timeout.diagnostic,
+    providerMessage: "unused-provider-detail",
+    privatePayload: "unused-private-detail",
+  }
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      {...{ diagnostic }}
+      error={timeout.message}
+      needsAttention
+    />
+  )
+  expect(markup).toContain("Recovery check details")
+  expect(markup).toContain("Verifying the original funding")
+  expect(markup).toContain("120300 ms")
+  expect(markup).toContain("Writer checks</dt><dd>12")
+  expect(markup).toContain("4500 ms")
+  expect(markup).toContain("Last observed exact payout</dt><dd>paid")
+  expect(markup).toContain(
+    "Last observed recipient check</dt><dd>verified_unsettled"
+  )
+  expect(markup).toContain(
+    "Last observed progress acknowledgment</dt><dd>accepted"
+  )
+  expect(markup).toContain("Last observed Conduit check</dt><dd>pending_sender")
+  expect(markup).toContain("Last loaded Conduit state</dt><dd>submitted")
+  expect(markup).toContain(
+    "Last loaded Conduit transfer reference</dt><dd>absent"
+  )
+  expect(markup).toContain("Last observed Conduit preflight</dt><dd>ready")
+  expect(markup).toContain(
+    "Last observed Conduit send response</dt><dd>submitted"
+  )
+  expect(markup).toContain("Last observed workflow outcome</dt><dd>wait")
+  expect(markup).toContain(
+    "Last observed workflow wait reason</dt><dd>provider_evidence_unavailable"
+  )
+  expect(markup).toContain("Completed workflow steps</dt><dd>2")
+  expect(markup).toContain("3000 ms")
+  expect(markup).toContain(
+    "not payment confirmation or the cause of the timeout"
+  )
+  expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|\s|>)/)
+  expect(markup).not.toContain("unused-provider-detail")
+  expect(markup).not.toContain("unused-private-detail")
+  expect(markup).not.toContain("CheckoutSparkOrganizerRoutingTimeoutError")
+  expect(
+    renderToStaticMarkup(<EventMarketOrganizerPickupForm {...controls} />)
+  ).not.toContain("Recovery check details")
+})
+
+it("keeps independently verified goods ready after a separate payment check timeout", () => {
+  const timeout = createCheckoutSparkOrganizerRoutingObservation(
+    () => 120_000,
+    0
+  ).timeout()
+  const markup = renderToStaticMarkup(
+    <EventMarketOrganizerPickupForm
+      {...controls}
+      paymentVerified
+      historyReady
+      needsAttention
+      error={timeout.message}
+      diagnostic={timeout.diagnostic}
+      claimCode="EXAMPLE-PICKUP-CODE"
+      merchandise={{
+        state: "ready",
+        lines: [
+          {
+            productCoordinate: "fixture-item",
+            title: "Fixture apples",
+            quantity: 1,
+            specifications: [],
+          },
+        ],
+      }}
+    />
+  )
+  expect(markup).toContain("Ready for pickup")
+  expect(markup).toContain("Goods payment verified")
+  expect(markup).toContain(timeout.message)
+  const handout = markup.match(
+    /<button\b[^>]*>Confirm code and hand out once<\/button>/
+  )?.[0]
+  expect(handout).toBeDefined()
+  expect(handout).not.toContain('disabled=""')
 })
 
 it("shows each exact pickup product, selected variation and quantity before handout", () => {
@@ -291,3 +469,109 @@ it("uses the actual free authority to reserve stock and verify a zero-cost picku
     continueEventMarketOrganizerPickup(input, dependencies)
   ).rejects.toThrow()
 })
+
+it.each(["complete", "delivery-failed", "session-ended"] as const)(
+  "keeps saved stock totals scoped to the active session after %s continuation",
+  async (outcome) => {
+    const f = await eventMarketFreePurchaseFixture()
+    databases.push(f.database)
+    const purchase = assertEventMarketOrganizerPurchaseAuthority(
+      f.freeAuthority
+    )
+    const client = new QueryClient()
+    const authGeneration = 4
+    const queryKey = [
+      "event-stock-panel",
+      f.organizerPubkey,
+      purchase.eventMarket.marketCoordinate,
+      "history",
+      authGeneration,
+    ]
+    const observer = new QueryObserver(client, {
+      queryKey,
+      staleTime: Infinity,
+      queryFn: async () =>
+        (await f.database.eventMarketOrganizerStockPools.toArray()).reduce(
+          (total, pool) => total + pool.acceptedQuantity,
+          0
+        ),
+    })
+    const unsubscribe = observer.subscribe(() => {})
+    const unrelated = [
+      ["event-stock-panel", "another-account", queryKey[2], "history", 4],
+      ["event-stock-panel", f.organizerPubkey, "another-market", "history", 4],
+      [...queryKey.slice(0, 4), 3],
+    ]
+    for (const key of unrelated) client.setQueryData(key, 0)
+    const inbox = createInMemoryInboxDeclarationEvidenceRepository()
+    const relay = "wss://relay.conduit.market"
+    for (const [pubkey, sign] of [
+      [f.organizerPubkey, f.signOrganizer],
+      [f.merchantPubkey, f.signMerchant],
+    ] as const) {
+      await inbox.merge({
+        pubkey,
+        observedAt: Date.now(),
+        signedEvent: await admitFixture(
+          sign({
+            kind: 10050,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [["relay", relay]],
+            content: "",
+          })
+        ),
+      })
+    }
+    try {
+      await observer.refetch()
+      expect(observer.getCurrentResult().data).toBe(0)
+      const dependencies = {
+        now: () => f.clock.now,
+        stockQuery: {
+          client,
+          authGeneration,
+          isCurrent: () => f.clock.active,
+        },
+        delivery: {
+          recipientInboxRelays: [relay],
+          resolveInboxRelays: async () => [relay],
+          inboxDeclarationEvidenceRepository: inbox,
+          accountNetworkLocalStateRepository: { get: async () => undefined },
+          publishFn: async () => {
+            if (outcome === "session-ended") f.clock.active = false
+            return {
+              attemptedRelayUrls: [relay],
+              successfulRelayUrls: outcome === "complete" ? [relay] : [],
+              failedRelayUrls: outcome === "complete" ? [] : [relay],
+              relayFailureMessages: {},
+            }
+          },
+        },
+      }
+      const continuation = continueEventMarketOrganizerPickup(
+        {
+          db: f.database,
+          signer: f.organizerSigner,
+          authenticatedPubkey: f.organizerPubkey,
+          shouldContinue: () => f.clock.active,
+          authority: f.freeAuthority,
+        },
+        dependencies
+      )
+      if (outcome === "complete")
+        expect((await continuation).status).toBe("complete")
+      else await expect(continuation).rejects.toThrow()
+      expect(await f.database.eventMarketOrganizerStockEntries.count()).toBe(1)
+      expect(observer.getCurrentResult().data).toBe(
+        outcome === "session-ended" ? 0 : 1
+      )
+      expect(client.getQueryState(queryKey)?.isInvalidated).toBe(false)
+      for (const key of unrelated)
+        expect(client.getQueryState(key)?.isInvalidated).toBe(false)
+      expect(await f.database.checkoutSparkReconciliations.count()).toBe(0)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  }
+)

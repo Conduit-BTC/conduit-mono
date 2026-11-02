@@ -2,18 +2,23 @@ import type { CommerceInbox } from "./commerce-inbox"
 import type { CheckoutRecoveryDescriptor } from "./checkout-spark-recovery"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import type { EventMarketFreePurchaseDescriptor } from "./event-market-free-purchase"
+import {
+  restoreCheckoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  type CheckoutSparkRecoveryTiming,
+} from "./checkout-spark-recovery-timing"
 
-export interface CheckoutSparkOrganizerRecoverySelection {
-  checkoutId: string
-  orderId: string
-  planDigest: string
-  marketCoordinate: string
-  takeoverAt: number
-  initialWrap: SignedPublicNostrEvent
-  buyerProgressWraps: SignedPublicNostrEvent[]
-  organizerProgressWraps: SignedPublicNostrEvent[]
-  merchantProgressWraps: SignedPublicNostrEvent[]
-}
+export type CheckoutSparkOrganizerRecoverySelection =
+  CheckoutSparkRecoveryTiming & {
+    checkoutId: string
+    orderId: string
+    planDigest: string
+    marketCoordinate: string
+    initialWrap: SignedPublicNostrEvent
+    buyerProgressWraps: SignedPublicNostrEvent[]
+    organizerProgressWraps: SignedPublicNostrEvent[]
+    merchantProgressWraps: SignedPublicNostrEvent[]
+  }
 /** A zero-cost pickup has no financial checkout, plan or wallet to restore. */
 export interface EventMarketFreePurchaseSelection {
   orderId: string
@@ -148,7 +153,11 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
       new Set(initial.map((row) => row.payloadDigest)).size !== 1 ||
       new Set(
         group.map((row) =>
-          JSON.stringify([row.orderId, row.marketCoordinate, row.takeoverAt])
+          JSON.stringify([
+            row.orderId,
+            row.marketCoordinate,
+            row.executionTiming,
+          ])
         )
       ).size !== 1
     ) {
@@ -157,6 +166,60 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
     }
     initial.sort((a, b) => a.wrapId.localeCompare(b.wrapId))
     const first = initial[0]!
+    let timing: CheckoutSparkRecoveryTiming
+    try {
+      timing = restoreCheckoutSparkRecoveryTiming(first)
+      if (
+        !initial.every((row) =>
+          checkoutSparkRecoveryTimingMatches(
+            timing,
+            restoreCheckoutSparkRecoveryTiming(row)
+          )
+        )
+      )
+        throw new Error("Conflicting initial timing")
+      if (timing.executionTiming === "pay_activation_v1") {
+        if (timing.takeoverAt !== null)
+          throw new Error("Activated initial recovery")
+        for (const row of group.filter(
+          (row) => row.organizerMessage === "buyer_progress"
+        )) {
+          const next = restoreCheckoutSparkRecoveryTiming(row)
+          if (
+            next.executionTiming !== "pay_activation_v1" ||
+            next.takeoverAt === null ||
+            (timing.takeoverAt !== null &&
+              !checkoutSparkRecoveryTimingMatches(timing, next))
+          )
+            throw new Error("Conflicting Buyer activation")
+          timing = next
+        }
+        for (const row of group.filter(
+          (row) =>
+            row.organizerMessage === "execution" ||
+            row.organizerMessage === "merchant_progress"
+        )) {
+          if (
+            !checkoutSparkRecoveryTimingMatches(
+              timing,
+              restoreCheckoutSparkRecoveryTiming(row)
+            )
+          )
+            throw new Error("Actor activation differs from Buyer")
+        }
+      } else if (
+        !group.every((row) =>
+          checkoutSparkRecoveryTimingMatches(
+            timing,
+            restoreCheckoutSparkRecoveryTiming(row)
+          )
+        )
+      )
+        throw new Error("Conflicting historical timing")
+    } catch {
+      conflictingCheckouts++
+      continue
+    }
     const initialWrap = byWrap.get(first.wrapId)
     if (!initialWrap) {
       readDetails.missingInitialWrapper++
@@ -179,7 +242,7 @@ export async function readRetainedCheckoutSparkOrganizerRecoveries(input: {
       orderId: first.orderId,
       planDigest: first.planDigest,
       marketCoordinate: first.marketCoordinate!,
-      takeoverAt: first.takeoverAt,
+      ...timing,
       initialWrap,
       buyerProgressWraps: collect("buyer_progress"),
       organizerProgressWraps: collect("execution"),

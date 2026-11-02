@@ -10,6 +10,12 @@ import {
   type MerchantCheckoutSparkRecoveryCandidate,
 } from "@conduit/core"
 import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  restoreCheckoutSparkRecoveryTiming,
+} from "@conduit/core/protocol/checkout-spark-recovery-timing"
+import { getCheckoutSparkBuyerTakeoverAt } from "@conduit/core/protocol/checkout-spark-buyer-activation"
+import {
   inspectMerchantCheckoutSparkSettledPayoutHistory,
   reconcileMerchantCheckoutSparkSettledCredit,
 } from "./checkout-spark-settled-recovery"
@@ -100,6 +106,7 @@ async function inspectMerchantCheckoutSparkOrder(
       : {}),
   }
   const now = dependencies.now ?? Date.now
+  restoreCheckoutSparkRecoveryTiming(candidate)
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   assertActive()
@@ -146,10 +153,18 @@ async function inspectMerchantCheckoutSparkOrder(
     saved.state.plan.orderId !== witness.orderId ||
     saved.state.plan.checkoutId !== witness.checkoutId ||
     saved.state.plan.planDigest !== witness.planDigest ||
-    saved.state.plan.takeoverAt !== candidate.takeoverAt
+    !checkoutSparkRecoveryTimingMatches(
+      candidate,
+      checkoutSparkRecoveryTiming(saved.state.plan, saved.state.buyerActivation)
+    )
   ) {
     return "needs_attention"
   }
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    saved.state.plan,
+    saved.state.buyerActivation
+  )
+  if (takeoverAt === null) return "pending"
 
   // This independent, bounded lookup repairs cross-device attribution before
   // projecting paid facts or continuing a preserved unpaid invoice. It never
@@ -184,7 +199,7 @@ async function inspectMerchantCheckoutSparkOrder(
     attributionUnavailable = attribution === "unavailable"
   }
 
-  if (dependencies.observationOnly || now() < saved.state.plan.takeoverAt) {
+  if (dependencies.observationOnly || now() < takeoverAt) {
     // This separate version-pinned adapter queries exact native/SSP evidence
     // without initialize, privacy mutation, claims, or outgoing capabilities.
     // Receiver-only evidence remains informational if that read cannot finish.
@@ -526,7 +541,13 @@ async function advanceMerchantCheckoutSparkOrderPhase(
         current.state.plan.checkoutId !== candidate.checkoutId ||
         current.state.plan.orderId !== candidate.orderId ||
         current.state.plan.planDigest !== candidate.planDigest ||
-        current.state.plan.takeoverAt !== candidate.takeoverAt
+        !checkoutSparkRecoveryTimingMatches(
+          candidate,
+          checkoutSparkRecoveryTiming(
+            current.state.plan,
+            current.state.buyerActivation
+          )
+        )
       )
         return "unavailable"
       if (

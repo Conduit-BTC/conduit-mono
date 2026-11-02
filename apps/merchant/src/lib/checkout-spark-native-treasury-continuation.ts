@@ -1,4 +1,5 @@
 import {
+  getCheckoutSparkBuyerTakeoverAt,
   CheckoutSparkSettledRepositoryConflictError,
   DexieCheckoutSparkSettledRepository,
   DexieMerchantCheckoutSparkProgressRepository,
@@ -24,6 +25,11 @@ import {
   type MerchantCheckoutSparkRecoveryCandidate,
   type NostrKeySigner,
 } from "@conduit/core"
+import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  restoreCheckoutSparkRecoveryTiming,
+} from "@conduit/core/protocol/checkout-spark-recovery-timing"
 import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
   openMerchantCheckoutSparkRecoveryWallet,
@@ -79,6 +85,7 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
   dependencies: MerchantCheckoutSparkNativeTreasuryContinuationDependencies = {}
 ): Promise<MerchantCheckoutSparkContinuationResult> {
   const principal = principalPubkey.trim().toLowerCase()
+  restoreCheckoutSparkRecoveryTiming(selectedInput)
   const selected = {
     ...selectedInput,
     ...(selectedInput.merchantProgress
@@ -118,10 +125,18 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
   ) => {
     const signed = restoreCheckoutSparkSettledReconciliation(signedInput)
     const { plan } = signed
+    const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+      plan,
+      signed.buyerActivation
+    )
     const assertEligible = () => {
       assertCurrent()
       assertDispatchPlan(plan)
-      if (dependencies.shouldContinue?.() === false || now() < plan.takeoverAt)
+      if (
+        dependencies.shouldContinue?.() === false ||
+        takeoverAt === null ||
+        now() < takeoverAt
+      )
         throw new Error(
           "Merchant treasury takeover is not currently authorized."
         )
@@ -136,7 +151,10 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
       selected.checkoutId !== plan.checkoutId ||
       selected.orderId !== plan.orderId ||
       selected.planDigest !== plan.planDigest ||
-      selected.takeoverAt !== plan.takeoverAt ||
+      !checkoutSparkRecoveryTimingMatches(
+        selected,
+        checkoutSparkRecoveryTiming(plan, signed.buyerActivation)
+      ) ||
       initial.wallet.walletId !== plan.walletId ||
       initial.wallet.network !== plan.network ||
       typeof repository.saveTreasuryPrepared !== "function" ||
@@ -220,7 +238,11 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
       )
         throw new Error("Merchant native progress binding changed.")
       if (entry.relayAccepted) continue
-      observe({ phase: "recovery_delivery", status: "not_verified" })
+      observe({
+        phase: "recovery_delivery",
+        status: "not_verified",
+        recoveryCheckpoint: "saved_progress",
+      })
       const delivery = await retryMerchantCheckoutSparkProgress({
         record,
         signer,
@@ -393,7 +415,19 @@ export async function continueMerchantCheckoutSparkNativeTreasury(
           await assertDurable()
           if (JSON.stringify(state) !== JSON.stringify(expectedState))
             throw new CheckoutSparkSettledRepositoryConflictError()
-          observe({ phase: "recovery_delivery", status: "not_verified" })
+          const status = state.treasuryFinalization?.status
+          observe({
+            phase: "recovery_delivery",
+            status: "not_verified",
+            ...(status === "prepared" || status === "submitted"
+              ? {
+                  recoveryCheckpoint:
+                    status === "prepared"
+                      ? ("prepared_snapshot" as const)
+                      : ("submitted_snapshot" as const),
+                }
+              : {}),
+          })
           const delivery = await publishMerchantCheckoutSparkProgress({
             payload: createCheckoutSparkMerchantProgress({
               initialHandoffId: initial.handoffId,

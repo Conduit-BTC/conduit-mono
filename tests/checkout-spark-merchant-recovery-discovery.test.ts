@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { plainTestSigner } from "./helpers/plain-signer"
 import {
@@ -40,8 +40,22 @@ import {
 } from "./support/signed-bolt11-fixture"
 import { createCheckoutSparkPickupFixture } from "./support/checkout-spark-pickup-fixture"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
+import { nativeTreasuryFixture } from "./support/checkout-spark-native-treasury-fixture"
+import {
+  activateCheckoutSparkBuyer,
+  freezeCheckoutSparkSettledTreasuryPlan,
+} from "../packages/core/src/protocol/checkout-spark-settled-router"
 import { createInboxDeclarationFixtureEvidence } from "./helpers/inbox-declaration"
 import { __resetInboxDeclarationCache } from "../packages/core/src/protocol/private-message-routing"
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb"
+import { v2 } from "nostr-tools/nip44"
+import { wrapEvent } from "nostr-tools/nip59"
+import { ConduitDB } from "../packages/core/src/db"
+import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
+import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
+import { getProtectedReadAuthorization } from "../packages/core/src/protocol/protected-read-authorization"
+import type { NostrKeySigner } from "../packages/core/src/protocol/nostr-event-signer"
+import { startMerchantCheckoutSparkDiscovery } from "../apps/merchant/src/lib/checkout-spark-discovery-controller"
 import {
   applyAccountNetworkRelayExclusion,
   createInMemoryAccountNetworkLocalStateRepository,
@@ -467,6 +481,81 @@ function installMerchantSession() {
   })
 }
 
+async function waitForRecoveryChange(condition: () => boolean) {
+  for (let count = 0; count < 200 && !condition(); count += 1)
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  expect(condition()).toBe(true)
+}
+
+async function recoveryInboxFixture() {
+  const signer: NostrKeySigner = {
+    pubkey: MERCHANT,
+    authMethod: "nip07",
+    getPublicKey: async () => MERCHANT,
+    signEvent: async (event) => finalizeEvent(event, MERCHANT_SECRET),
+    encryptNip44: async (peer, value) =>
+      v2.encrypt(value, v2.utils.getConversationKey(MERCHANT_SECRET, peer)),
+    decryptNip44: async (peer, value) =>
+      v2.decrypt(value, v2.utils.getConversationKey(MERCHANT_SECRET, peer)),
+    decryptLegacy: async () => "",
+  }
+  installProtectedReadSigner(signer, MERCHANT, () => true)
+  const authorization = getProtectedReadAuthorization(MERCHANT)!
+  const database = new ConduitDB(`recovery-change-${crypto.randomUUID()}`, {
+    indexedDB: new IDBFactory(),
+    IDBKeyRange,
+  })
+  const owner = new CommerceInbox(
+    authorization,
+    signer,
+    new CommerceInboxStore(authorization, database)
+  )
+  __setCommerceTestOverrides({
+    getAccountSigner: () => signer,
+    getCommerceInbox: () => owner,
+    resolveInboxRelayUrls: async () => [FIRST_INBOX],
+    readProtectedInbox: async () => protectedRead([]),
+  })
+  await owner.initialize()
+  let comparisons = 0
+  const readDescriptors = owner.checkoutRecoveryDescriptors.bind(owner)
+  const reads = spyOn(owner, "checkoutRecoveryDescriptors").mockImplementation(
+    async (urls) => {
+      const result = await readDescriptors(urls)
+      comparisons += 1
+      return result
+    }
+  )
+  return {
+    owner,
+    database,
+    reads,
+    comparisons: () => comparisons,
+    async refresh() {
+      const before = comparisons
+      await owner.refresh()
+      await waitForRecoveryChange(() => comparisons > before)
+      for (let index = 0; index < 24; index += 1) await Promise.resolve()
+    },
+    encrypt(
+      payload:
+        | ReturnType<typeof settledFixtures>["initial"]
+        | ReturnType<typeof settledFixtures>["progress"]
+    ) {
+      return wrapEvent(
+        buildCheckoutSparkRecoveryRumor(payload),
+        BUYER_SECRET,
+        MERCHANT
+      )
+    },
+    async close() {
+      reads.mockRestore()
+      owner.stop()
+      await database.delete()
+    },
+  }
+}
+
 beforeEach(async () => {
   __resetCommerceTestOverrides()
   __resetProtectedReadSigner()
@@ -675,7 +764,453 @@ describe("exact signed Merchant recovery source reads", () => {
   })
 })
 
+describe("authenticated local Merchant recovery change hints", () => {
+  it("ignores general inbox changes, denied sources and rewrapped duplicate rumors", async () => {
+    const fixture = await recoveryInboxFixture()
+    const { initial, progress } = settledFixtures()
+    const session = await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+    const notifications: unknown[][] = []
+    const stop = await session.subscribeToRecoveryChanges!((...args) =>
+      notifications.push(args)
+    )
+    try {
+      await fixture.refresh()
+      expect(notifications).toHaveLength(0)
+      const first = fixture.encrypt(initial)
+      await fixture.owner.ingest(first, [SECOND_INBOX])
+      await fixture.owner.waitForDecode()
+      await fixture.refresh()
+      expect(notifications).toHaveLength(0)
+
+      await fixture.owner.ingest(first, [FIRST_INBOX])
+      await fixture.owner.waitForDecode()
+      await fixture.refresh()
+      expect(notifications).toEqual([[]])
+      await fixture.owner.ingest(fixture.encrypt(initial), [FIRST_INBOX])
+      await fixture.owner.waitForDecode()
+      await fixture.refresh()
+      expect(notifications).toEqual([[]])
+
+      const invalid = { ...fixture.encrypt(progress), sig: "0".repeat(128) }
+      await expect(
+        fixture.owner.ingest(invalid, [FIRST_INBOX])
+      ).rejects.toThrow()
+      await fixture.refresh()
+      expect(notifications).toEqual([[]])
+      await fixture.owner.ingest(fixture.encrypt(progress), [FIRST_INBOX])
+      await fixture.owner.waitForDecode()
+      await fixture.refresh()
+      expect(notifications).toEqual([[], []])
+      for (let count = 0; count < 3; count += 1) await fixture.refresh()
+      expect(notifications).toEqual([[], []])
+    } finally {
+      stop()
+      session.dispose()
+      await fixture.close()
+    }
+  })
+
+  it.each(["dispose", "revocation"] as const)(
+    "fences a pending descriptor comparison after %s",
+    async (end) => {
+      const fixture = await recoveryInboxFixture()
+      const session =
+        await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+      let hints = 0
+      const stop = await session.subscribeToRecoveryChanges!(() => {
+        hints += 1
+      })
+      let started = false
+      let release!: () => void
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      fixture.reads.mockImplementation(async () => {
+        started = true
+        await held
+        return []
+      })
+      try {
+        await fixture.owner.refresh()
+        await waitForRecoveryChange(() => started)
+        if (end === "dispose") session.dispose()
+        else __resetProtectedReadSigner()
+        release()
+        for (let count = 0; count < 24; count += 1) await Promise.resolve()
+        expect(hints).toBe(0)
+        await expect(session.nextPage()).rejects.toThrow()
+      } finally {
+        release()
+        stop()
+        session.dispose()
+        await fixture.close()
+      }
+    }
+  )
+
+  it.each(["owner", "projection"] as const)(
+    "falls back to strict discovery when the optional local %s is unavailable",
+    async (failure) => {
+      const fixture = await recoveryInboxFixture()
+      if (failure === "owner")
+        __setCommerceTestOverrides({
+          getCommerceInbox: () => {
+            throw new Error("private synthetic storage failure")
+          },
+        })
+      else
+        fixture.reads.mockRejectedValue(
+          new Error("private synthetic storage failure")
+        )
+      const session =
+        await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+      let hints = 0
+      try {
+        const stop = await session.subscribeToRecoveryChanges!(() => {
+          hints += 1
+        })
+        const page = await session.nextPage()
+        expect(page.history.pageStatus).toBe("source_eose")
+        expect(page.candidates).toHaveLength(0)
+        expect(hints).toBe(0)
+        stop()
+      } finally {
+        session.dispose()
+        await fixture.close()
+      }
+    }
+  )
+
+  it("coalesces pending local comparisons and does not turn inbox refresh into repeated hints", async () => {
+    const fixture = await recoveryInboxFixture()
+    const { initial } = settledFixtures()
+    await fixture.owner.ingest(fixture.encrypt(initial), [FIRST_INBOX])
+    await fixture.owner.waitForDecode()
+    const descriptors = await fixture.owner.checkoutRecoveryDescriptors([
+      FIRST_INBOX,
+    ])
+    expect(descriptors.length).toBe(1)
+    // Start without a local baseline record, then reveal the real authenticated
+    // descriptor behind a held optional-store read.
+    fixture.reads.mockResolvedValue([])
+    const session = await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+    let hints = 0
+    const stop = await session.subscribeToRecoveryChanges!(() => {
+      hints += 1
+    })
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let calls = 0
+    let active = 0
+    let maximum = 0
+    fixture.reads.mockImplementation(async () => {
+      calls += 1
+      active += 1
+      maximum = Math.max(maximum, active)
+      if (calls === 1) await held
+      active -= 1
+      return descriptors
+    })
+    try {
+      await fixture.owner.refresh()
+      await waitForRecoveryChange(() => calls === 1)
+      for (let count = 0; count < 3; count += 1) await fixture.owner.refresh()
+      expect(calls).toBe(1)
+      release()
+      await waitForRecoveryChange(() => calls === 2 && active === 0)
+      expect(hints).toBe(1)
+      expect(maximum).toBe(1)
+      await fixture.owner.refresh()
+      await waitForRecoveryChange(() => calls === 3)
+      expect(hints).toBe(1)
+    } finally {
+      release()
+      stop()
+      session.dispose()
+      await fixture.close()
+    }
+  })
+
+  it("does not lose progress that arrives after the first strict page while the optional baseline is pending", async () => {
+    const fixture = await recoveryInboxFixture()
+    const { initial, progress } = settledFixtures()
+    const initialWrap = fixture.encrypt(initial)
+    await fixture.owner.ingest(initialWrap, [FIRST_INBOX])
+    await fixture.owner.waitForDecode()
+    const events = [initialWrap]
+    __setCommerceTestOverrides({
+      readProtectedInbox: async () => protectedRead([...events]),
+    })
+    let started = false
+    let release!: () => void
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const read = CommerceInbox.prototype.checkoutRecoveryDescriptors.bind(
+      fixture.owner
+    )
+    fixture.reads.mockImplementation(async (urls) => {
+      started = true
+      await held
+      return read(urls)
+    })
+    const session = await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+    let hints = 0
+    const subscription = session.subscribeToRecoveryChanges!(() => {
+      hints += 1
+    })
+    try {
+      await waitForRecoveryChange(() => started)
+      expect((await session.nextPage()).candidates.length).toBe(1)
+      const progressWrap = fixture.encrypt(progress)
+      events.unshift(progressWrap)
+      await fixture.owner.ingest(progressWrap, [FIRST_INBOX])
+      await fixture.owner.waitForDecode()
+      release()
+      await subscription
+      await waitForRecoveryChange(() => hints === 1)
+    } finally {
+      release()
+      ;(await subscription)()
+      session.dispose()
+      await fixture.close()
+    }
+  })
+
+  it("bounds hint identities without evicting evidence or stopping ordinary discovery", async () => {
+    const fixture = await recoveryInboxFixture()
+    const { initial } = settledFixtures()
+    await fixture.owner.ingest(fixture.encrypt(initial), [FIRST_INBOX])
+    await fixture.owner.waitForDecode()
+    const [descriptor] = await fixture.owner.checkoutRecoveryDescriptors([
+      FIRST_INBOX,
+    ])
+    expect(descriptor !== undefined).toBe(true)
+    fixture.reads.mockResolvedValue(
+      Array.from({ length: 513 }, (_, index) => ({
+        ...descriptor!,
+        id: index.toString(16).padStart(64, "0"),
+      }))
+    )
+    const session = await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+    let hints = 0
+    try {
+      await session.subscribeToRecoveryChanges!(() => {
+        hints += 1
+      })
+      const calls = fixture.reads.mock.calls.length
+      await fixture.owner.refresh()
+      for (let count = 0; count < 24; count += 1) await Promise.resolve()
+      expect(fixture.reads.mock.calls.length).toBe(calls)
+      expect(hints).toBe(0)
+      expect((await session.nextPage()).history.pageStatus).toBe("source_eose")
+    } finally {
+      session.dispose()
+      await fixture.close()
+    }
+  })
+})
+
 describe("paginated Merchant Spark recovery discovery", () => {
+  it("automatically rescans when an authenticated permitted inbox receives Buyer activation after an exhausted scan", async () => {
+    const { takeoverAt: legacyDeadline, ...prepared } = nativeTreasuryFixture(
+      1111,
+      4,
+      MERCHANT
+    ).plan
+    expect(legacyDeadline).toBeGreaterThan(0)
+    const plan = freezeCheckoutSparkSettledTreasuryPlan({
+      ...prepared,
+      executionTiming: { type: "pay_activation_v1", windowMs: 120_000 },
+    })
+    const state = createCheckoutSparkSettledReconciliation(plan)
+    const initial = createCheckoutSparkSettledRecoveryPayload({
+      state,
+      senderPubkey: BUYER,
+      mnemonic: MNEMONIC,
+      accountNumber: 0,
+      preparedAt: CREATED_AT + 1_000,
+    })
+    const active = activateCheckoutSparkBuyer(state, {
+      buyerPubkey: BUYER,
+      activatedAt: CREATED_AT + 300_000,
+    })
+    const progress = createCheckoutSparkSettledRecoveryProgressPayload({
+      state: active,
+      senderPubkey: BUYER,
+      initialHandoffId: initial.handoffId,
+      preparedAt: CREATED_AT + 300_001,
+    })
+    const encrypt = (payload: typeof initial | typeof progress) =>
+      wrapEvent(
+        buildCheckoutSparkRecoveryRumor(payload),
+        BUYER_SECRET,
+        MERCHANT
+      )
+    const initialWrap = encrypt(initial)
+    const progressWrap = encrypt(progress)
+    const signer: NostrKeySigner = {
+      pubkey: MERCHANT,
+      authMethod: "nip07",
+      getPublicKey: async () => MERCHANT,
+      signEvent: async (event) => finalizeEvent(event, MERCHANT_SECRET),
+      encryptNip44: async (peer, value) =>
+        v2.encrypt(value, v2.utils.getConversationKey(MERCHANT_SECRET, peer)),
+      decryptNip44: async (peer, value) =>
+        v2.decrypt(value, v2.utils.getConversationKey(MERCHANT_SECRET, peer)),
+      decryptLegacy: async () => "",
+    }
+    installProtectedReadSigner(signer, MERCHANT, () => true)
+    const authorization = getProtectedReadAuthorization(MERCHANT)!
+    const database = new ConduitDB(`recovery-change-${crypto.randomUUID()}`, {
+      indexedDB: new IDBFactory(),
+      IDBKeyRange,
+    })
+    const owner = new CommerceInbox(
+      authorization,
+      signer,
+      new CommerceInboxStore(authorization, database)
+    )
+    const events = [initialWrap]
+    __setCommerceTestOverrides({
+      getAccountSigner: () => signer,
+      getCommerceInbox: () => owner,
+      resolveInboxRelayUrls: async () => [FIRST_INBOX],
+      readProtectedInbox: async () => protectedRead([...events]),
+    })
+    const pending: Array<{ run(): void; delayMs: number; cancelled: boolean }> =
+      []
+    const nextTimer = () => pending.find((timer) => !timer.cancelled)
+    const runTimer = () => {
+      const timer = nextTimer()
+      if (!timer) throw new Error("Expected bounded discovery timer")
+      timer.cancelled = true
+      timer.run()
+    }
+    let pages = 0
+    let activated = false
+    const controller = startMerchantCheckoutSparkDiscovery({
+      principalPubkey: MERCHANT,
+      schedule: (run, delayMs) => {
+        const timer = { run, delayMs, cancelled: false }
+        pending.push(timer)
+        return () => {
+          timer.cancelled = true
+        }
+      },
+      onPage: (page) => {
+        pages += 1
+        activated ||= page.candidates.some(
+          (candidate) =>
+            candidate.buyerActivationId === active.buyerActivation!.activationId
+        )
+      },
+      onStatus() {},
+    })
+    const until = async (condition: () => boolean) => {
+      for (let count = 0; count < 200 && !condition(); count += 1)
+        await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(condition()).toBe(true)
+    }
+    try {
+      await owner.ingest(initialWrap, [FIRST_INBOX])
+      await owner.waitForDecode()
+      runTimer()
+      await until(() => pages === 1 && nextTimer() !== undefined)
+      expect(activated).toBe(false)
+      expect(nextTimer()?.delayMs).toBe(60_000)
+
+      events.unshift(progressWrap)
+      await owner.ingest(progressWrap, [FIRST_INBOX])
+      await owner.waitForDecode()
+      await until(() => nextTimer()?.delayMs === 750)
+      // No manual requestRescan: authenticated local arrival wakes the same
+      // retained bounded scan, but cannot itself activate payment authority.
+      expect(activated).toBe(false)
+      runTimer()
+      await until(() => pages === 2 && nextTimer() !== undefined)
+      expect(activated).toBe(true)
+      expect(nextTimer()?.delayMs).toBe(60_000)
+    } finally {
+      await controller.stopAndDrain()
+      owner.stop()
+      await database.delete()
+    }
+  })
+
+  it("keeps Pay-activated recovery inactive until exact Buyer progress supplies its cutoff", async () => {
+    const { takeoverAt: legacyDeadline, ...prepared } = nativeTreasuryFixture(
+      1111,
+      4,
+      MERCHANT
+    ).plan
+    expect(legacyDeadline).toBeGreaterThan(0)
+    const plan = freezeCheckoutSparkSettledTreasuryPlan({
+      ...prepared,
+      executionTiming: { type: "pay_activation_v1", windowMs: 120_000 },
+    })
+    const state = createCheckoutSparkSettledReconciliation(plan)
+    const initial = createCheckoutSparkSettledRecoveryPayload({
+      state,
+      senderPubkey: BUYER,
+      mnemonic: MNEMONIC,
+      accountNumber: 0,
+      preparedAt: CREATED_AT + 1_000,
+    })
+    const active = activateCheckoutSparkBuyer(state, {
+      buyerPubkey: BUYER,
+      activatedAt: CREATED_AT + 300_000,
+    })
+    const progress = createCheckoutSparkSettledRecoveryProgressPayload({
+      state: active,
+      senderPubkey: BUYER,
+      initialHandoffId: initial.handoffId,
+      preparedAt: CREATED_AT + 300_001,
+    })
+    const initialWrap = wrap(1)
+    const progressWrap = wrap(301)
+    let includeProgress = false
+    __setCommerceTestOverrides({
+      resolveInboxRelayUrls: async () => [FIRST_INBOX],
+      readProtectedInbox: async () =>
+        protectedRead(
+          includeProgress ? [progressWrap, initialWrap] : [initialWrap]
+        ),
+      giftUnwrap: async (event) =>
+        buildCheckoutSparkRecoveryRumor(
+          event.id === progressWrap.id ? progress : initial
+        ),
+    })
+    const session = await createMerchantCheckoutSparkRecoveryDiscovery(MERCHANT)
+    try {
+      const inactive = await session.nextPage()
+      expect(inactive.candidates).toHaveLength(1)
+      expect(inactive.candidates[0]).toMatchObject({
+        initialBuyerPubkey: BUYER,
+        executionTiming: "pay_activation_v1",
+        buyerActivationId: null,
+        takeoverAt: null,
+      })
+      includeProgress = true
+      session.restartScan()
+      const activated = await session.nextPage()
+      expect(activated.conflictCount).toBe(0)
+      expect(activated.candidates).toHaveLength(1)
+      expect(activated.candidates[0]).toMatchObject({
+        initialBuyerPubkey: BUYER,
+        initialWrapId: initialWrap.id,
+        wrapId: progressWrap.id,
+        executionTiming: "pay_activation_v1",
+        buyerActivationId: active.buyerActivation!.activationId,
+        takeoverAt: CREATED_AT + 420_000,
+      })
+    } finally {
+      session.dispose()
+    }
+  })
+
   it.each(["merchant_handoff", "organizer_handoff"] as const)(
     "binds a historical %s order after resolving its exact absent-bundle graph",
     async (handoffMode) => {

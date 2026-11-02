@@ -2,6 +2,7 @@ import type { InboxCipher } from "../protocol/commerce-inbox-store"
 import type { EventMarketFreePurchaseDelivery } from "../protocol/event-market-free-purchase-delivery-record"
 import type { ReceivingWalletBinding } from "../wallets/receiving"
 import type { PortableWalletAccount } from "../wallets/portable-wallet-sync"
+import type { EventPickupReceiptStorageRow } from "../protocol/event-pickup-receipt-storage"
 import Dexie, {
   liveQuery,
   type DexieOptions,
@@ -1128,6 +1129,8 @@ export interface OrderLifecycle {
   }
   buyerPubkey: string
   buyerIdentityKind?: OrderBuyerIdentityKind
+  /** Exact private Event receipt commitment; no bearer code or paid authority. */
+  pickupReceiptCommitment?: string
   /** Local-only guest signing deadline; never extend it when preparation is slow. */
   guestSessionExpiresAt?: number
   merchantPubkey: string
@@ -1484,6 +1487,8 @@ export interface EventMarketOrganizerStockWriter {
 }
 
 export class ConduitDB extends Dexie {
+  /** Device-private pickup capabilities; separate from guest signing/lifecycle. */
+  eventPickupReceipts!: EntityTable<EventPickupReceiptStorageRow, "orderId">
   /** Exact encrypted checkout delivery state; never an evictable cache. */
   checkoutRecoveryStorage!: EntityTable<
     {
@@ -1900,6 +1905,9 @@ export class ConduitDB extends Dexie {
     })
     this.version(30).stores({ checkoutRecoveryStorage: "key" })
     this.version(31).stores({ portableWalletAccounts: "ownerPubkey" })
+    this.version(32).stores({
+      eventPickupReceipts: "orderId, owner, expiresAt",
+    })
   }
 }
 

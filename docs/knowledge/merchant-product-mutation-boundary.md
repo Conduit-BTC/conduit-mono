@@ -83,6 +83,16 @@ original signed event. A staged intent can be retired as unpublished only when
 the local evidence establishes that it has not been sent. Local coordination
 does not establish global relay convergence.
 
+Orders also exposes a collapsed, read-only **Saved stock update history** for
+completed orders as well as active ones. It projects the existing validated
+account/order-reference journal read into saved decision and delivery states,
+historical relay acknowledgement, and recorded local supersession. It shows no
+event identifiers, listing contents, quantities, relay addresses or raw errors,
+and offers no mutation or retry control. Failed reads remain unavailable; an
+empty successful local read is not proof that no update was published. These
+historical observations do not establish current stock, buyer identity, replay
+authority or global convergence.
+
 Supplier allocation edits use the same write boundary. Explicitly changing
 family-wide terms requires a complete current family baseline; unchanged terms
 remain attached to each product's exact revision. Signed public allocation

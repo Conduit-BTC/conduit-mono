@@ -263,6 +263,35 @@ async function merchantRecoveryAdmission(page: Page, orderId: string | null) {
   )
 }
 
+// Query-only facts at the new timing boundary. Never promote Buyer progress
+// to settlement, open a wallet, rescan discovery or mutate the current order.
+async function merchantActivationProgress(page: Page, orderId: string | null) {
+  const databasePath = viteFileModuleUrl(
+    fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url))
+  )
+  return page.evaluate(
+    async ({ databasePath, orderId }) => {
+      const { db } = await import(/* @vite-ignore */ databasePath)
+      const matching = (await db.checkoutSparkReconciliations.toArray()).filter(
+        (row: { state: { plan: { orderId: string } } }) =>
+          row.state.plan.orderId === orderId
+      )
+      const state = matching.length === 1 ? matching[0].state : null
+      const binding = state
+        ? await db.checkoutSparkPlanBindings.get(state.plan.checkoutId)
+        : null
+      return {
+        activeBuyerImported:
+          state?.plan.schemaVersion === 6 && state.buyerActivation != null,
+        exactOrderWitness: binding?.orderWitness?.orderId === orderId,
+        creditRecorded: binding?.merchantSettlement?.credit != null,
+        paidCommerceCount: binding?.merchantSettlement?.paidLegs.length ?? 0,
+      }
+    },
+    { databasePath, orderId }
+  )
+}
+
 // Re-read the original Merchant recovery through its authenticated discovery
 // path. Optional outgoing progress is not a recovery or guest-receipt gate.
 // Only this exact-order availability boolean leaves the isolated page.
@@ -460,6 +489,109 @@ async function merchantRemainingPayoutEvidence(
   )
 }
 
+// Observe only canonical timing and ACK booleans in the real entry-created
+// record. This never seeds reconciliation or changes payment authority.
+async function buyerActivationFacts(page: Page, orderId: string | null) {
+  const moduleUrl = (relative: string) =>
+    viteFileModuleUrl(fileURLToPath(new URL(relative, import.meta.url)))
+  return page.evaluate(
+    async ({
+      databasePath,
+      routerPath,
+      handoffPath,
+      recoveryPath,
+      preparationPath,
+      storagePath,
+      orderId,
+    }) => {
+      const [
+        { db },
+        { getCheckoutSparkBuyerTakeoverAt },
+        handoff,
+        recovery,
+        preparation,
+        storage,
+      ] = await Promise.all([
+        import(/* @vite-ignore */ databasePath),
+        import(/* @vite-ignore */ routerPath),
+        import(/* @vite-ignore */ handoffPath),
+        import(/* @vite-ignore */ recoveryPath),
+        import(/* @vite-ignore */ preparationPath),
+        import(/* @vite-ignore */ storagePath),
+      ])
+      const rows = await db.checkoutSparkReconciliations.toArray()
+      const matching = rows.filter(
+        (row: { state: { plan: { orderId: string } } }) =>
+          row.state.plan.orderId === orderId
+      )
+      if (matching.length !== 1) return null
+      const { state } = matching[0]
+      const deliveries = (
+        await handoff.listCheckoutSparkRecoveryDeliveries()
+      ).filter(
+        (saved: { record: { orderId: string } }) =>
+          saved.record.orderId === orderId
+      )
+      const initialHandoffId = preparation.getCheckoutSparkSettledPreparation(
+        state.plan.checkoutId
+      )?.recoveryHandoffId
+      const snapshotKey =
+        initialHandoffId && state.buyerActivation
+          ? recovery.deriveCheckoutSparkSettledRecoverySnapshotKey({
+              initialHandoffId,
+              state,
+            })
+          : null
+      const rawRegistry = await storage
+        .createCheckoutRecoveryStorage(localStorage)
+        .getItem("conduit:checkout-spark-recovery-snapshot-retries:v1")
+      const registry = rawRegistry ? JSON.parse(rawRegistry) : {}
+      const activationHandoffId = snapshotKey ? registry[snapshotKey] : null
+      return {
+        planVersion: state.plan.schemaVersion as number,
+        stateVersion: state.schemaVersion as number,
+        createdAt: state.plan.createdAt as number,
+        fundingExpiresAt: state.plan.funding.expiresAt as number,
+        activatedAt: (state.buyerActivation?.activatedAt ?? null) as
+          number | null,
+        takeoverAt: getCheckoutSparkBuyerTakeoverAt(
+          state.plan,
+          state.buyerActivation
+        ) as number | null,
+        activationAcknowledged:
+          snapshotKey !== null &&
+          deliveries.some(
+            (saved: {
+              record: { handoffId: string }
+              deliveryProgress: { acknowledgedRelayRefs: string[] }
+            }) =>
+              saved.record.handoffId === activationHandoffId &&
+              saved.deliveryProgress.acknowledgedRelayRefs.length > 0
+          ),
+      }
+    },
+    {
+      databasePath: moduleUrl("../packages/core/src/db/index.ts"),
+      routerPath: moduleUrl(
+        "../packages/core/src/protocol/checkout-spark-buyer-activation.ts"
+      ),
+      handoffPath: moduleUrl(
+        "../apps/market/src/lib/checkout-spark-recovery-handoff.ts"
+      ),
+      recoveryPath: moduleUrl(
+        "../packages/core/src/protocol/checkout-spark-recovery.ts"
+      ),
+      preparationPath: moduleUrl(
+        "../apps/market/src/lib/checkout-spark-settled-preparation.ts"
+      ),
+      storagePath: moduleUrl(
+        "../packages/core/src/protocol/checkout-recovery-storage.ts"
+      ),
+      orderId,
+    }
+  )
+}
+
 // Read only the isolated checkout's frozen clock facts. No invoice, wallet,
 // identity or order content leaves the page, and this helper never alters the
 // saved deadlines or produces payment authority.
@@ -467,13 +599,22 @@ async function frozenRouterTiming(page: Page, orderId: string | null) {
   const dbPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/db/index.ts", import.meta.url)).replaceAll("\\", "/")}`
   const lightningPath = `/@fs/${fileURLToPath(new URL("../packages/core/src/protocol/lightning.ts", import.meta.url)).replaceAll("\\", "/")}`
   const timingPath = `/@fs/${fileURLToPath(new URL("../apps/market/src/lib/checkout-spark-local-router-canary.ts", import.meta.url)).replaceAll("\\", "/")}`
+  const activationPath = viteFileModuleUrl(
+    fileURLToPath(
+      new URL(
+        "../packages/core/src/protocol/checkout-spark-buyer-activation.ts",
+        import.meta.url
+      )
+    )
+  )
   return page.evaluate(
-    async ({ dbPath, lightningPath, timingPath, orderId }) => {
-      const [{ db }, { decodeLightningInvoiceMetadata }, timing] =
+    async ({ dbPath, lightningPath, timingPath, activationPath, orderId }) => {
+      const [{ db }, { decodeLightningInvoiceMetadata }, timing, activation] =
         await Promise.all([
           import(/* @vite-ignore */ dbPath),
           import(/* @vite-ignore */ lightningPath),
           import(/* @vite-ignore */ timingPath),
+          import(/* @vite-ignore */ activationPath),
         ])
       const rows = await db.checkoutSparkReconciliations.toArray()
       const matching = rows.filter(
@@ -481,22 +622,31 @@ async function frozenRouterTiming(page: Page, orderId: string | null) {
           row.state.plan.orderId === orderId
       )
       if (matching.length !== 1) return null
-      const plan = matching[0].state.plan
+      const { state } = matching[0]
+      const plan = state.plan
       const invoice = decodeLightningInvoiceMetadata(
         plan.funding.paymentRequest
       )
       return {
+        planVersion: plan.schemaVersion as number,
+        stateVersion: state.schemaVersion as number,
         createdAt: plan.createdAt as number,
-        takeoverAt: plan.takeoverAt as number,
+        activatedAt: (state.buyerActivation?.activatedAt ?? null) as
+          number | null,
+        takeoverAt: activation.getCheckoutSparkBuyerTakeoverAt(
+          plan,
+          state.buyerActivation
+        ) as number | null,
         fundingCreatedAt: plan.funding.createdAt as number,
         fundingExpiresAt: plan.funding.expiresAt as number,
         signedFundingCreatedAt: invoice.createdAt as number | null,
         signedFundingExpiresAt: invoice.expiresAt as number | null,
-        configuredTakeoverAfterMs: timing.getCheckoutSparkSettledTiming()
-          .takeoverAfterMs as number,
+        configuredTakeoverAfterMs: (plan.schemaVersion === 6
+          ? plan.executionTiming.windowMs
+          : timing.getCheckoutSparkSettledTiming().takeoverAfterMs) as number,
       }
     },
-    { dbPath, lightningPath, timingPath, orderId }
+    { dbPath, lightningPath, timingPath, activationPath, orderId }
   )
 }
 
@@ -643,7 +793,9 @@ async function rehearseRouter(
     | null = null,
   capabilityRegression = false,
   scopedRecovery = false,
-  offlineTreasury = false
+  offlineTreasury = false,
+  delayedPay = false,
+  retainBuyerAfterHandoff = false
 ): Promise<void> {
   test.setTimeout(240_000)
   const phaseRecorder = createRouterSmokeRecorder(test.info().annotations)
@@ -1279,7 +1431,71 @@ async function rehearseRouter(
     expect(control().snapshot()).toEqual(beforeConsent)
     expect(lnurl.snapshot().invoicesIssued).toBe(0)
 
+    let delayedPreparation: Awaited<ReturnType<typeof buyerActivationFacts>> =
+      null
+    let payStartedAt = 0
+    const observationSuccessesBeforeMerchant = observationOpenSuccesses
+    if (delayedPay) {
+      setStage("buyer delayed Pay starts with inactive preparation")
+      const orderId = new URL(page.url()).searchParams.get("order")
+      delayedPreparation = await buyerActivationFacts(page, orderId)
+      expect(delayedPreparation).toMatchObject({
+        planVersion: 6,
+        stateVersion: 7,
+        activatedAt: null,
+        takeoverAt: null,
+        activationAcknowledged: false,
+      })
+      setStage("Merchant hides new stock and fulfillment before goods payment")
+      await merchantPage.goto(`${merchantUrl}/orders?order=${orderId}`)
+      await expect(
+        merchantPage.getByRole("heading", { name: "Inventory", exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+      await expect(
+        merchantPage.getByText(
+          "Verify the goods payment before pickup, fulfillment or new stock updates.",
+          { exact: true }
+        )
+      ).toBeVisible()
+      await expect(
+        merchantPage.getByRole("button", { name: /^Publish stock / })
+      ).toHaveCount(0)
+      await expect(
+        merchantPage.getByRole("button", {
+          name: "Confirm delivery",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      await page.clock.install({ time: new Date(sharedClock.nowMs()) })
+      const delayedNow = sharedClock.advanceBy(180_000)
+      await page.clock.setSystemTime(delayedNow)
+      await merchantPage.clock.install({ time: new Date(delayedNow) })
+      setStage("buyer delayed Pay preserves the inactive preparation")
+      expect(await buyerActivationFacts(page, orderId)).toEqual(
+        delayedPreparation
+      )
+      expect(control().snapshot()).toEqual(beforeConsent)
+      expect(lnurl.snapshot().invoicesIssued).toBe(0)
+      await expect(external).toBeEnabled()
+      payStartedAt = sharedClock.nowMs()
+    }
+
+    const coldPreparation =
+      continuation !== "buyer"
+        ? await frozenRouterTiming(
+            page,
+            new URL(page.url()).searchParams.get("order")
+          )
+        : null
+    if (continuation !== "buyer")
+      expect(coldPreparation).toMatchObject({
+        planVersion: 6,
+        stateVersion: 7,
+        activatedAt: null,
+        takeoverAt: null,
+      })
     setStage("single consent for external funding and automatic routing")
+    if (continuation !== "buyer") payStartedAt = sharedClock.nowMs()
     await external.click()
     // Hold only the synthetic provider's final native transfer status. The
     // application still prepares, submits, persists, and later reconciles its
@@ -1290,6 +1506,58 @@ async function rehearseRouter(
     await expect(
       page.getByText(/Pay once, then return here to check progress/)
     ).toBeVisible({ timeout: 30_000 })
+    const coldPayActivation =
+      continuation !== "buyer"
+        ? await buyerActivationFacts(
+            page,
+            new URL(page.url()).searchParams.get("order")
+          )
+        : null
+    if (continuation !== "buyer") {
+      setStage("buyer Pay retains acknowledged recovery")
+      expect(coldPayActivation).toMatchObject({
+        planVersion: 6,
+        stateVersion: 7,
+        activationAcknowledged: true,
+      })
+      expect(coldPayActivation!.activatedAt !== null).toBe(true)
+      expect(coldPayActivation!.activatedAt!).toBeGreaterThanOrEqual(
+        payStartedAt
+      )
+      expect(
+        coldPayActivation!.takeoverAt! - coldPayActivation!.activatedAt!
+      ).toBe(120_000)
+      if (retainBuyerAfterHandoff) {
+        setStage("retained Buyer remains mounted through merchant handoff")
+        await page.clock.install({ time: new Date(sharedClock.nowMs()) })
+      }
+    }
+    if (delayedPay) {
+      setStage("buyer Pay shares the fixed activation before funding")
+      const activated = await buyerActivationFacts(
+        page,
+        new URL(page.url()).searchParams.get("order")
+      )
+      setStage("buyer Pay binds the same prepared checkout")
+      expect(activated?.planVersion).toBe(6)
+      expect(activated?.stateVersion).toBe(7)
+      expect(activated?.createdAt).toBe(delayedPreparation?.createdAt)
+      expect(activated?.fundingExpiresAt).toBe(
+        delayedPreparation?.fundingExpiresAt
+      )
+      setStage("buyer Pay marker follows the first payment gesture")
+      expect(
+        activated?.activatedAt !== null &&
+          activated!.activatedAt! >= payStartedAt
+      ).toBe(true)
+      setStage("buyer Pay freezes exactly two minutes")
+      expect(activated!.takeoverAt! - activated!.activatedAt!).toBe(120_000)
+      expect(
+        activated!.activatedAt! - activated!.createdAt
+      ).toBeGreaterThanOrEqual(180_000)
+      setStage("buyer Pay retains acknowledged recovery")
+      expect(activated?.activationAcknowledged).toBe(true)
+    }
     if (continuation !== "buyer") {
       const partialRecovery = continuation === "partial-cold-merchant"
       if (partialRecovery) {
@@ -1312,17 +1580,33 @@ async function rehearseRouter(
       expect(typeof orderId === "string" && orderId.length > 0).toBe(true)
       setStage("buyer freezes independent funding and handoff deadlines")
       const frozenTiming = await frozenRouterTiming(page, orderId)
-      expect(frozenTiming !== null).toBe(true)
+      if (!frozenTiming || frozenTiming.takeoverAt === null)
+        throw new Error("Expected the original activated recovery deadline.")
       expect(frozenTiming!.configuredTakeoverAfterMs).toBe(120_000)
-      // The handoff starts at the original entry time. Provider invoice
-      // creation happens later and is floored to seconds, so those saved times
-      // do not imply an exact millisecond interval from provider creation.
-      expect(
-        frozenTiming!.takeoverAt - frozenTiming!.createdAt
-      ).toBeGreaterThan(0)
-      expect(
-        frozenTiming!.takeoverAt - frozenTiming!.createdAt
-      ).toBeLessThanOrEqual(120_999)
+      if (frozenTiming.planVersion === 6) {
+        expect(frozenTiming.stateVersion).toBe(7)
+        expect(frozenTiming.activatedAt !== null).toBe(true)
+        expect(frozenTiming.activatedAt!).toBeGreaterThanOrEqual(payStartedAt)
+        expect(frozenTiming.takeoverAt - frozenTiming.activatedAt!).toBe(
+          120_000
+        )
+        expect(frozenTiming.createdAt).toBe(coldPreparation?.createdAt)
+        expect(frozenTiming.fundingExpiresAt).toBe(
+          coldPreparation?.fundingExpiresAt
+        )
+        // Pay admission must acknowledge its exact state before funding. Later
+        // commerce changes that state hash, not the immutable activation.
+        expect(frozenTiming.activatedAt).toBe(coldPayActivation!.activatedAt)
+        expect(frozenTiming.takeoverAt).toBe(coldPayActivation!.takeoverAt)
+      } else {
+        // Historical plans keep their original entry-clock deadline unchanged.
+        expect(
+          frozenTiming.takeoverAt - frozenTiming.createdAt
+        ).toBeGreaterThan(0)
+        expect(
+          frozenTiming.takeoverAt - frozenTiming.createdAt
+        ).toBeLessThanOrEqual(120_999)
+      }
       expect(frozenTiming!.fundingCreatedAt).toBe(frozenTiming!.createdAt)
       expect(frozenTiming!.signedFundingCreatedAt !== null).toBe(true)
       expect(frozenTiming!.signedFundingExpiresAt !== null).toBe(true)
@@ -1395,6 +1679,43 @@ async function rehearseRouter(
         ).toBeVisible({ timeout: 45_000 })
         untouchedOrderId = new URL(otherPage.url()).searchParams.get("order")
         untouchedIdentity = identity
+        const otherPrepared = await buyerActivationFacts(
+          otherPage,
+          untouchedOrderId
+        )
+        expect(otherPrepared).toMatchObject({
+          planVersion: 6,
+          stateVersion: 7,
+          activatedAt: null,
+          takeoverAt: null,
+          activationAcknowledged: false,
+        })
+        // A preparation is not Pay consent. Use the same one-time external
+        // disclosure as the first Buyer, then wait for its durable shared ACK.
+        // Funding is still completed only after both Buyer contexts close.
+        await otherPage
+          .getByRole("button", { name: "Show QR code", exact: true })
+          .click()
+        await expect
+          .poll(() => buyerActivationFacts(otherPage, untouchedOrderId), {
+            timeout: 30_000,
+          })
+          .toMatchObject({ activationAcknowledged: true })
+        await expect(
+          otherPage.getByText(/Pay once, then return here to check progress/)
+        ).toBeVisible()
+        const otherActivated = await buyerActivationFacts(
+          otherPage,
+          untouchedOrderId
+        )
+        expect(otherActivated?.createdAt).toBe(otherPrepared?.createdAt)
+        expect(otherActivated?.fundingExpiresAt).toBe(
+          otherPrepared?.fundingExpiresAt
+        )
+        expect(otherActivated?.activatedAt !== null).toBe(true)
+        expect(otherActivated!.takeoverAt! - otherActivated!.activatedAt!).toBe(
+          120_000
+        )
         const otherTiming = await frozenRouterTiming(
           otherPage,
           untouchedOrderId
@@ -1406,6 +1727,12 @@ async function rehearseRouter(
             untouchedIdentity !== selectedIdentity &&
             otherTiming !== null
         ).toBe(true)
+        if (otherTiming!.takeoverAt === null)
+          throw new Error(
+            "Expected the second checkout's acknowledged deadline."
+          )
+        expect(otherTiming!.takeoverAt).toBe(otherActivated!.takeoverAt)
+        expect(otherTiming!.activatedAt).toBe(otherActivated!.activatedAt)
         untouchedTakeoverAt = otherTiming!.takeoverAt
         untouchedTiming = otherTiming
         expect(control().snapshot()).toEqual({
@@ -1418,11 +1745,12 @@ async function rehearseRouter(
         await otherContext.close()
         identity = selectedIdentity
       }
-      beginNetworkTeardown.get(buyerContext)?.()
+      const retainedBuyerUrl = retainBuyerAfterHandoff ? page.url() : null
+      if (!retainBuyerAfterHandoff) beginNetworkTeardown.get(buyerContext)?.()
       beginNetworkTeardown.get(merchantContext)?.()
-      await buyerContext.close()
+      if (!retainBuyerAfterHandoff) await buyerContext.close()
       await merchantContext.close()
-      if (!partialRecovery) {
+      if (!partialRecovery && !retainBuyerAfterHandoff) {
         control().completeFunding()
         expect(lnurl.snapshot().invoicesIssued).toBe(0)
         expect(control().snapshot().outgoingPaymentCount).toBe(0)
@@ -1599,6 +1927,24 @@ async function rehearseRouter(
       // Resume ticking at the exact post-cutoff instant. Newly issued provider
       // invoices use the same forward-only shared clock, not rewritten history.
       await coldPage.clock.setSystemTime(resumedClockTime)
+      if (retainBuyerAfterHandoff) {
+        setStage("retained Buyer waits past cutoff before funding")
+        // Keep the original page and network alive. Move Date forward without
+        // firing pending network timers or remounting the Buyer route.
+        await page.clock.setSystemTime(resumedClockTime)
+        expect(page.isClosed()).toBe(false)
+        expect(page.url()).toBe(retainedBuyerUrl)
+        expect(await page.evaluate(() => Date.now())).toBeGreaterThan(
+          frozenTiming.takeoverAt
+        )
+        expect(await coldPage.evaluate(() => Date.now())).toBeGreaterThan(
+          frozenTiming.takeoverAt
+        )
+        expect(await frozenRouterTiming(page, orderId)).toEqual(frozenTiming)
+        expect(control().snapshot()).toEqual(beforeHandoff)
+        expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(0)
+        control().completeFunding()
+      }
       setStage("cold Merchant stays paused across the isolated clock advance")
       await expect(
         recovery.getByRole("button", {
@@ -1807,6 +2153,152 @@ async function rehearseRouter(
           },
         ],
       })
+      if (retainBuyerAfterHandoff) {
+        setStage(
+          "retained Buyer has no payment authority after merchant handoff"
+        )
+        expect(page.isClosed()).toBe(false)
+        expect(page.url()).toBe(retainedBuyerUrl)
+        await expect(
+          page.getByText(
+            "Shopper routing authority moved to the merchant. Do not pay again.",
+            { exact: true }
+          )
+        ).toBeVisible({ timeout: 30_000 })
+        const assertNoBuyerDispatch = async () => {
+          for (const name of ["Pay for order", "Resume payment"] as const) {
+            const action = page.getByRole("button", { name, exact: true })
+            if ((await action.count()) > 0) await expect(action).toBeDisabled()
+          }
+        }
+        await assertNoBuyerDispatch()
+        const savedStatus = page.getByRole("button", {
+          name: "Refresh saved status",
+          exact: true,
+        })
+        await expect(savedStatus).toBeEnabled()
+        const paymentsBeforeRefresh = control().snapshot()
+        const nativeBeforeRefresh = control().nativeSnapshot()
+        const invoicesBeforeRefresh = lnurl.snapshot().invoicesIssued
+        expect(paymentsBeforeRefresh.fundingInvoiceCount).toBe(1)
+        expect(paymentsBeforeRefresh.sendInvocationCount).toBe(2)
+        expect(nativeBeforeRefresh.nativeSendInvocationCount).toBe(1)
+        setStage("retained Buyer refreshes saved status without replay")
+        const refreshRead = await page.evaluateHandle(
+          async ({ databasePath, repositoryPath, orderId }) => {
+            const [{ db }, { DexieCheckoutSparkSettledRepository }] =
+              await Promise.all([
+                import(/* @vite-ignore */ databasePath),
+                import(/* @vite-ignore */ repositoryPath),
+              ])
+            const matching = (
+              await db.checkoutSparkReconciliations.toArray()
+            ).filter(
+              (row: { state: { plan: { orderId: string } } }) =>
+                row.state.plan.orderId === orderId
+            )
+            if (matching.length !== 1)
+              throw new Error("Expected one saved Buyer checkout.")
+            const { checkoutId, planDigest } = matching[0].state.plan
+            const prototype = DexieCheckoutSparkSettledRepository.prototype
+            const original = prototype.load
+            let release!: () => void
+            const gate = new Promise<void>((resolve) => {
+              release = resolve
+            })
+            const observed = {
+              started: false,
+              finished: false,
+              succeeded: false,
+              release: () => release(),
+              restore() {
+                if (prototype.load === heldLoad) prototype.load = original
+                release()
+              },
+            }
+            async function heldLoad(
+              this: InstanceType<typeof DexieCheckoutSparkSettledRepository>,
+              selectedCheckoutId: string,
+              selectedPlanDigest: string
+            ) {
+              if (
+                selectedCheckoutId !== checkoutId ||
+                selectedPlanDigest !== planDigest ||
+                observed.started
+              )
+                return original.call(
+                  this,
+                  selectedCheckoutId,
+                  selectedPlanDigest
+                )
+              observed.started = true
+              await gate
+              try {
+                const snapshot = await original.call(
+                  this,
+                  selectedCheckoutId,
+                  selectedPlanDigest
+                )
+                observed.succeeded = true
+                return snapshot
+              } finally {
+                observed.finished = true
+              }
+            }
+            prototype.load = heldLoad
+            return observed
+          },
+          {
+            databasePath: viteFileModuleUrl(
+              fileURLToPath(
+                new URL("../packages/core/src/db/index.ts", import.meta.url)
+              )
+            ),
+            repositoryPath: viteFileModuleUrl(
+              fileURLToPath(
+                new URL(
+                  "../packages/core/src/protocol/checkout-spark-settled-router-repository.ts",
+                  import.meta.url
+                )
+              )
+            ),
+            orderId,
+          }
+        )
+        try {
+          // The click handler does not return its refetch Promise. Hold only
+          // this checkout's first genuine read until its busy state commits,
+          // then release the original data and await completed read + idle UI.
+          expect(await refreshRead.evaluate((read) => read.started)).toBe(false)
+          await savedStatus.click()
+          await expect
+            .poll(() => refreshRead.evaluate((read) => read.started))
+            .toBe(true)
+          await expect(savedStatus).toBeDisabled()
+          await refreshRead.evaluate((read) => read.release())
+          await expect
+            .poll(() =>
+              refreshRead.evaluate((read) => ({
+                finished: read.finished,
+                succeeded: read.succeeded,
+              }))
+            )
+            .toEqual({ finished: true, succeeded: true })
+          await expect(savedStatus).toBeEnabled()
+        } finally {
+          try {
+            await refreshRead.evaluate((read) => read.restore())
+          } finally {
+            await refreshRead.dispose()
+          }
+        }
+        await assertNoBuyerDispatch()
+        expect(page.url()).toBe(retainedBuyerUrl)
+        expect(await frozenRouterTiming(page, orderId)).toEqual(frozenTiming)
+        expect(control().snapshot()).toEqual(paymentsBeforeRefresh)
+        expect(control().nativeSnapshot()).toEqual(nativeBeforeRefresh)
+        expect(lnurl.snapshot().invoicesIssued).toBe(invoicesBeforeRefresh)
+      }
       if (scopedRecovery) {
         await expect(
           recovery.getByRole("progressbar", {
@@ -2102,6 +2594,67 @@ async function rehearseRouter(
         { timeout: 45_000 }
       )
       .toBe(1)
+    if (delayedPay) {
+      const orderId = new URL(page.url()).searchParams.get("order")
+      setStage("Merchant imports the authenticated Buyer activation")
+      // A page opened before Pay may have completed its initial bounded sweep.
+      // Its existing complete-source rescan is 60s, not a 30s UI SLA.
+      await expect
+        .poll(
+          async () =>
+            (await merchantActivationProgress(merchantPage, orderId))
+              .activeBuyerImported,
+          { timeout: 75_000 }
+        )
+        .toBe(true)
+      setStage("Merchant opens exact query-only native observation")
+      await expect
+        .poll(
+          () => observationOpenSuccesses - observationSuccessesBeforeMerchant,
+          { timeout: 15_000 }
+        )
+        .toBeGreaterThan(0)
+      setStage("Merchant records exact provider credit")
+      await expect
+        .poll(
+          async () =>
+            (await merchantActivationProgress(merchantPage, orderId))
+              .creditRecorded,
+          { timeout: 10_000 }
+        )
+        .toBe(true)
+      setStage("Merchant records exact commerce provider facts")
+      await expect
+        .poll(
+          async () =>
+            (await merchantActivationProgress(merchantPage, orderId))
+              .paidCommerceCount,
+          { timeout: 15_000 }
+        )
+        .toBe(2)
+      setStage("Merchant verifies goods independently of the pending fee")
+      await expect(
+        merchantPage.getByText("Payment verified", { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+      expect(control().nativeSnapshot().transfers[0]?.status).toBe(
+        "TRANSFER_STATUS_APPLYING_SENDER_KEY_TWEAK"
+      )
+      setStage("Merchant permits new stock and fulfillment after goods payment")
+      await expect(
+        merchantPage.getByRole("button", {
+          name: "Publish stock 2",
+          exact: true,
+        })
+      ).toBeEnabled()
+      await expect(
+        merchantPage.getByRole("button", {
+          name: "Confirm delivery",
+          exact: true,
+        })
+      ).toBeEnabled()
+      expect(control().snapshot().sendInvocationCount).toBe(2)
+      expect(control().nativeSnapshot().nativeSendInvocationCount).toBe(1)
+    }
     if (offlineTreasury) {
       const buyerOrderId = new URL(page.url()).searchParams.get("order")
       expect(typeof buyerOrderId === "string" && buyerOrderId.length > 0).toBe(
@@ -2277,9 +2830,10 @@ async function rehearseRouter(
       .click()
     await expect(partialReceipt).toBeVisible()
     await expect(
-      partialReceipt.getByText("Payments are still being completed.", {
-        exact: true,
-      })
+      partialReceipt.getByText(
+        "This device does not have records for every checkout payment.",
+        { exact: true }
+      )
     ).toBeVisible()
     await expect(
       partialReceipt.getByText("Unspent from recorded checkout credit", {
@@ -2330,9 +2884,10 @@ async function rehearseRouter(
         .click()
       await expect(partialReceipt).toBeVisible()
       await expect(
-        partialReceipt.getByText("Payments are still being completed.", {
-          exact: true,
-        })
+        partialReceipt.getByText(
+          "This device does not have records for every checkout payment.",
+          { exact: true }
+        )
       ).toBeVisible()
       setStage("partial execution stop preserves verified commerce")
       await expect(
@@ -2616,6 +3171,20 @@ async function rehearseRouter(
 test("native router funding automatically reconciles commerce and the exact native treasury payment without duplicate payouts @commerce", async ({
   browser,
 }) => rehearseRouter(browser))
+
+test("native router delayed Pay starts its fixed Buyer window after preparation and automatically routes every payment once @commerce", async ({
+  browser,
+}) =>
+  rehearseRouter(
+    browser,
+    "buyer",
+    "signed-in",
+    null,
+    false,
+    false,
+    false,
+    true
+  ))
 
 async function rehearseEventRouter(
   browser: Browser,
@@ -3089,16 +3658,22 @@ async function rehearseEventRouter(
       buyerPage.on("download", () => {
         receiptDownloads += 1
       })
-      await buyerPage
-        .getByRole("button", { name: "Show private receipt", exact: true })
-        .click()
       await expect(
-        buyerPage.getByRole("region", { name: "Private pickup receipt" })
+        buyerPage.getByRole("button", {
+          name: "Show private receipt",
+          exact: true,
+        })
+      ).toHaveCount(0)
+      await expect(
+        buyerPage.getByLabel("Private receipt code", { exact: true })
+      ).toHaveCount(0)
+      await expect(
+        buyerPage.getByText(/saved on this device before sending the order/)
       ).toBeVisible()
       expect(receiptDownloads).toBe(0)
-      await buyerPage
-        .getByRole("checkbox", { name: "I saved my private receipt" })
-        .check()
+      await expect(
+        buyerPage.getByRole("checkbox", { name: "I saved my private receipt" })
+      ).toHaveCount(0)
       await expect(buyerPage.locator("#ship-email")).toHaveCount(0)
       await expect(buyerPage.locator("#ship-phone")).toHaveCount(0)
       await expect(buyerPage.getByLabel(/Street address/i)).toHaveCount(0)
@@ -3115,6 +3690,9 @@ async function rehearseEventRouter(
     })
     setStage("event organizer fee disclosure")
     await expect(
+      buyerPage.getByRole("region", { name: "Pickup receipt", exact: true })
+    ).toHaveCount(0)
+    await expect(
       checkoutPrice.getByText("Event organizer fee", { exact: true })
     ).toBeVisible()
     await expect(checkoutPrice.getByText("₿25", { exact: true })).toBeVisible()
@@ -3130,6 +3708,14 @@ async function rehearseEventRouter(
     if (!orderId) throw new Error("Expected event order selection.")
     const timing = await frozenRouterTiming(buyerPage, orderId)
     if (!timing) throw new Error("Expected frozen event deadlines.")
+    const preparedActivation = await buyerActivationFacts(buyerPage, orderId)
+    let buyerTakeoverAt = timing.takeoverAt
+    if (preparedActivation?.planVersion === 6)
+      expect(preparedActivation).toMatchObject({
+        activatedAt: null,
+        takeoverAt: null,
+        activationAcknowledged: false,
+      })
     expect(await hasCurrentConduitFeePolicy(buyerPage, orderId)).toBe(true)
     expect(await hasActiveEncryptedRecovery(buyerPage, orderId)).toBe(true)
     expect(provider.control().snapshot()).toMatchObject({
@@ -3149,9 +3735,19 @@ async function rehearseEventRouter(
       await expect(pay).toBeEnabled()
       await pay.click()
     } else {
+      setStage("event external Pay action ready")
+      const pay = buyerPage.getByRole("button", {
+        name: "Pay for order",
+        exact: true,
+      })
+      await expect(pay).toBeEnabled()
+      setStage("event external Pay activation")
+      await pay.click()
+      setStage("event external funding QR")
       await buyerPage
         .getByRole("button", { name: "Show QR code", exact: true })
         .click()
+      setStage("event external funding visible")
       await expect(
         buyerPage.getByText(/Pay once, then return here to check progress/)
       ).toBeVisible()
@@ -3164,6 +3760,26 @@ async function rehearseEventRouter(
       provider.control().setNativeCompletion(false)
       provider.control().setNativeSenderCommitment(true)
     }
+    if (preparedActivation?.planVersion === 6) {
+      setStage("event first Pay preserves its exact acknowledged activation")
+      await expect
+        .poll(
+          async () =>
+            (await buyerActivationFacts(buyerPage, orderId))
+              ?.activationAcknowledged === true
+        )
+        .toBe(true)
+      const activation = await buyerActivationFacts(buyerPage, orderId)
+      expect(activation?.fundingExpiresAt).toBe(
+        preparedActivation.fundingExpiresAt
+      )
+      expect(activation!.takeoverAt! - activation!.activatedAt!).toBe(120_000)
+      buyerTakeoverAt = activation!.takeoverAt!
+    }
+    if (buyerTakeoverAt === null)
+      throw new Error(
+        "Expected Event Pay activation before funding or handoff."
+      )
     if (continuation === "buyer") {
       setStage("event buyer automatic payment routing")
       if (!nwc) provider.control().completeFunding()
@@ -3171,6 +3787,40 @@ async function rehearseEventRouter(
       await expect(
         buyerPage.getByText("Payment recorded", { exact: true })
       ).toBeVisible({ timeout: 60_000 })
+      const receipt = buyerPage.getByRole("region", {
+        name: "Pickup receipt",
+        exact: true,
+      })
+      const assertPickupReceipt = async () => {
+        await expect(receipt).toBeVisible()
+        await expect(receipt.locator("svg")).toHaveCount(1)
+        await expect(
+          receipt.getByLabel("Private receipt code", { exact: true })
+        ).toHaveCount(0)
+        expect(
+          /^[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/.test(
+            await receipt
+              .getByLabel("Pickup code", { exact: true })
+              .inputValue()
+          )
+        ).toBe(true)
+      }
+      setStage("event buyer paid pickup receipt")
+      await assertPickupReceipt()
+      if (buyerMode === "signed-in") {
+        // Keep the private claim in memory only; failed assertions expose no code.
+        const originalCode = await receipt
+          .getByLabel("Pickup code", { exact: true })
+          .inputValue()
+        setStage("event signed-in pickup receipt reload")
+        await buyerPage.reload()
+        await assertPickupReceipt()
+        expect(
+          (await receipt
+            .getByLabel("Pickup code", { exact: true })
+            .inputValue()) === originalCode
+        ).toBe(true)
+      }
       setStage("event buyer exact Lightning payments verified")
       expect(provider.control().snapshot()).toEqual({
         fundingInvoiceCount: 1,
@@ -3225,7 +3875,7 @@ async function rehearseEventRouter(
       exact: true,
     })
     await expect(continueOrder).toBeDisabled()
-    const advanceMs = timing.takeoverAt - sharedClock.nowMs() + 1_000
+    const advanceMs = buyerTakeoverAt - sharedClock.nowMs() + 1_000
     expect(advanceMs).toBeGreaterThan(0)
     sharedClock.advanceBy(advanceMs)
     await organizerPage.clock.fastForward(advanceMs)
@@ -3842,6 +4492,21 @@ test("native router records sender-committed treasury payment while receiver cla
 test("native router cold Merchant restores a funded checkout and finishes all payouts without the buyer @commerce", async ({
   browser,
 }) => rehearseRouter(browser, "cold-merchant"))
+
+test("native router retained Buyer loses dispatch at merchant handoff and refreshes saved status without replay @commerce", async ({
+  browser,
+}) =>
+  rehearseRouter(
+    browser,
+    "cold-merchant",
+    "signed-in",
+    null,
+    false,
+    false,
+    false,
+    false,
+    true
+  ))
 
 test("native router cold Merchant independently verifies supported recipients and finishes a partial checkout without replaying paid commerce @commerce", async ({
   browser,

@@ -17,6 +17,8 @@ import {
   proveSparkCheckoutReceiveCredit,
   type OrderRelayDeliveryRepository,
   type CheckoutSparkSettledPlan,
+  type CheckoutSparkSettledReconciliation,
+  getCheckoutSparkBuyerTakeoverAt,
 } from "@conduit/core"
 import {
   finalizeEvent,
@@ -32,12 +34,14 @@ import {
   resumeCheckoutSparkSettledFunding,
   prepareCheckoutSparkSettledFunding,
   type PrepareCheckoutSparkSettledFundingInput,
+  type PrepareCheckoutSparkSettledFundingDependencies,
 } from "../apps/market/src/lib/checkout-spark-settled-preparation"
 import {
   listCheckoutSparkRecoveryDeliveries,
   getCheckoutSparkRecoveryDelivery,
   publishCheckoutSparkSettledRecoveryHandoff,
   retryStoredCheckoutSparkRecoveryHandoff,
+  acknowledgeOrRetryCheckoutSparkSettledSnapshot,
 } from "../apps/market/src/lib/checkout-spark-recovery-handoff"
 import { findBlockingCheckoutSparkPreparation } from "../apps/market/src/lib/checkout-spark-router-purchase-claim"
 import {
@@ -95,6 +99,42 @@ const fundingInvoice = (grossSats: number) =>
     ],
   })
 const INVOICE = fundingInvoice(GROSS)
+
+// Opaque local adapter values only; this fixture never decodes a Spark address
+// or contacts a provider. The real dispatch gate still checks its scoped config.
+const NATIVE_TEST_ADDRESS = "offline-preparation-recovery-treasury"
+const nativePreparationOptions: Pick<
+  PrepareCheckoutSparkSettledFundingDependencies,
+  | "treasuryConfiguration"
+  | "validateTreasuryDestination"
+  | "prepareTreasuryRequest"
+> = {
+  treasuryConfiguration: { mainnetAddress: NATIVE_TEST_ADDRESS },
+  validateTreasuryDestination: async () => ({
+    sparkAddress: NATIVE_TEST_ADDRESS,
+    receiverIdentityPublicKey: `03${"b".repeat(64)}`,
+  }),
+  prepareTreasuryRequest: async (request) => ({
+    schemaVersion: 1,
+    sparkAddress: request.sparkAddress,
+    receiverIdentityPublicKey: request.receiverIdentityPublicKey,
+    senderIdentityPublicKey: request.senderIdentityPublicKey,
+    invoiceId: request.invoiceId,
+    invoiceRequest: "offline-preparation-recovery-native-request",
+    feePolicy: "zero_required",
+    residualPolicy: "unused_commerce_reserves",
+  }),
+}
+
+function allowNativeTestTreasury(): () => void {
+  const previous = process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+  process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = NATIVE_TEST_ADDRESS
+  return () => {
+    if (previous === undefined)
+      delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+    else process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = previous
+  }
+}
 
 class MemoryStorage {
   readonly values = new Map<string, string>()
@@ -627,12 +667,15 @@ describe("settled preparation phase recovery", () => {
     "unavailable_inspector",
     "invoice_expired",
   ] as const)(
-    "composes first exposure after handoff, preserving %s funding authority",
+    "composes delayed preparation then Pay activation, preserving %s funding authority",
     async (mode) => {
       const database = new ConduitDB(
         `preparation-recovery-${crypto.randomUUID()}`,
         { indexedDB, IDBKeyRange }
       )
+      const previousTreasuryAddress =
+        process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+      process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS = NATIVE_TEST_ADDRESS
       try {
         const repository = new DexieCheckoutSparkSettledRepository(database)
         const orders = orderRepository(database)
@@ -668,6 +711,7 @@ describe("settled preparation phase recovery", () => {
                 { ...value, storage, recoveryStorage: storage },
                 {
                   ...f.options,
+                  ...nativePreparationOptions,
                   repository,
                   now: () => time,
                   publishRecoveryHandoff: async (request) => {
@@ -756,7 +800,9 @@ describe("settled preparation phase recovery", () => {
           }
         )
         const plan = result.prepared.plan
-        expect(plan.takeoverAt).toBe(NOW + 120_000)
+        expect(plan.schemaVersion).toBe(6)
+        expect(Object.hasOwn(plan, "takeoverAt")).toBe(false)
+        expect(result.prepared.state.buyerActivation).toBeNull()
         expect(plan.funding.expiresAt).toBe(NOW + 900_000)
         expect(
           getCheckoutSparkSettledPreparation(plan.checkoutId, storage)
@@ -869,7 +915,32 @@ describe("settled preparation phase recovery", () => {
             timeoutMs: 5_000,
             appId: "market" as const,
           },
-          acknowledgeRecoverySnapshot: async () => undefined,
+          acknowledgeRecoverySnapshot: async (
+            state: CheckoutSparkSettledReconciliation
+          ) => {
+            await acknowledgeOrRetryCheckoutSparkSettledSnapshot({
+              initialHandoffId: result.prepared.recoveryHandoffId,
+              state,
+              identity: f.input.identity,
+              preparedAt: state.buyerActivation!.activatedAt,
+              storage,
+              now: () => time,
+              requireCrossTabLock: false,
+              transport: {
+                recipientInboxRelays: ["wss://merchant.inbox.relay.dev"],
+                inboxDeclarationEvidenceRepository: await f.inboxEvidence,
+                publishFn: async (_event, relayPlan) => {
+                  f.calls.transport++
+                  return {
+                    attemptedRelayUrls: relayPlan.exclusiveRelayUrls ?? [],
+                    successfulRelayUrls: relayPlan.exclusiveRelayUrls ?? [],
+                    failedRelayUrls: [],
+                    relayFailureMessages: {},
+                  }
+                },
+              },
+            })
+          },
         }
         if (mode === "invoice_expired") time = plan.funding.expiresAt
         const external = await advanceCheckoutSparkSettledShopper(
@@ -907,7 +978,38 @@ describe("settled preparation phase recovery", () => {
           external.status === "funding" &&
             external.funding.status === "external_ready"
         ).toBe(true)
+        const activated = await repository.load(
+          plan.checkoutId,
+          plan.planDigest
+        )
+        expect(
+          activated.status === "active" &&
+            activated.state.buyerActivation?.activatedAt === NOW + 180_000
+        ).toBe(true)
+        const cutoff =
+          activated.status === "active"
+            ? getCheckoutSparkBuyerTakeoverAt(
+                plan,
+                activated.state.buyerActivation
+              )
+            : null
+        expect(cutoff).toBe(NOW + 300_000)
+        const retainedActivation = (
+          await listCheckoutSparkRecoveryDeliveries(storage)
+        ).find(
+          (delivery) =>
+            delivery.record.handoffId !== result.prepared.recoveryHandoffId
+        )
+        expect(
+          retainedActivation?.deliveryProgress.acknowledgedRelayRefs.length
+        ).toBe(1)
+        expect(
+          activated.status === "active" &&
+            activated.state.plan.planDigest === plan.planDigest &&
+            activated.state.plan.walletId === plan.walletId
+        ).toBe(true)
         funded = true
+        time = NOW + 300_001
         const credited = await advanceCheckoutSparkSettledShopper(
           {
             ...step,
@@ -953,8 +1055,13 @@ describe("settled preparation phase recovery", () => {
         ).rejects.toThrow(CheckoutSparkBuyerPreparationAuthorityEndedError)
         expect(payoutCalls).toBe(0)
         expect(payerCalls).toBe(0)
-        expect(f.calls).toEqual({ open: 1, close: 0, invoice: 1, transport: 1 })
+        expect(f.calls).toEqual({ open: 1, close: 0, invoice: 1, transport: 2 })
       } finally {
+        if (previousTreasuryAddress === undefined)
+          delete process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS
+        else
+          process.env.VITE_CONDUIT_SPARK_TREASURY_ADDRESS =
+            previousTreasuryAddress
         database.close()
         await database.delete()
       }
@@ -972,6 +1079,7 @@ describe("settled preparation phase recovery", () => {
         `preparation-recovery-${crypto.randomUUID()}`,
         { indexedDB, IDBKeyRange }
       )
+      const restoreTreasury = allowNativeTestTreasury()
       try {
         const repository = new DexieCheckoutSparkSettledRepository(database)
         const orders = orderRepository(database)
@@ -995,7 +1103,7 @@ describe("settled preparation phase recovery", () => {
             prepareFunding: (value) =>
               prepareCheckoutSparkSettledFunding(
                 { ...value, storage, recoveryStorage: storage },
-                { ...f.options, repository }
+                { ...f.options, ...nativePreparationOptions, repository }
               ),
             publishOrder: (value) =>
               publishCheckoutSparkSettledBoundOrder(
@@ -1163,6 +1271,7 @@ describe("settled preparation phase recovery", () => {
           )
         ).toBe(true)
       } finally {
+        restoreTreasury()
         database.close()
         await database.delete()
       }
@@ -1291,6 +1400,7 @@ describe("settled preparation phase recovery", () => {
       `preparation-recovery-${crypto.randomUUID()}`,
       { indexedDB, IDBKeyRange }
     )
+    const restoreTreasury = allowNativeTestTreasury()
     try {
       const repository = new DexieCheckoutSparkSettledRepository(database)
       const storage = new MemoryStorage()
@@ -1345,7 +1455,7 @@ describe("settled preparation phase recovery", () => {
           prepareFunding: (request) =>
             prepareCheckoutSparkSettledFunding(
               { ...request, storage, recoveryStorage: storage },
-              { ...options, repository }
+              { ...options, ...nativePreparationOptions, repository }
             ),
           publishOrder: async () => {
             orderPublications += 1
@@ -1435,6 +1545,7 @@ describe("settled preparation phase recovery", () => {
         )
       ).toHaveLength(0)
     } finally {
+      restoreTreasury()
       database.close()
       await database.delete()
     }

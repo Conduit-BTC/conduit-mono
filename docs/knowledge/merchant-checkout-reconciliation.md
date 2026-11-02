@@ -488,8 +488,13 @@ allocation and unused authorized commerce reserves in one native Spark payment.
 The exact final amount comes from independently verified funding credit less
 verified commerce debits, not an aggregate wallet balance. Unknown activity,
 pending returns, nonzero native fees and uncertain attempts pause collection.
-Claimed terminal provider evidence, not a submitted response, is the receipt.
-Commerce remains paid while final collection needs attention.
+A finalized exact invoice and fresh exact transfer evidence of non-cancellable
+sender commitment to the frozen receiver and amount, with a recognized
+non-cancelled receiver claim state, can complete the payment while that wallet
+is offline. Submission, invoice finalization or zero sender balance alone is
+not payment proof. Receiver claim and safe wallet retirement remain separate;
+retain recovery while either remains pending. Commerce remains paid while final
+collection needs attention.
 
 Without a configured address, new plans keep the Lightning fee rail. Historical
 funded plans are never migrated. Native completion and retirement require their

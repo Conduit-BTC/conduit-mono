@@ -10,6 +10,7 @@ import {
 import type { CheckoutSparkSettledRecoveryPayload } from "./checkout-spark-recovery"
 import { assertCheckoutSparkSettledRecoveryProgression } from "./checkout-spark-settled-router-repository"
 import {
+  isCheckoutSparkEventMarketPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
@@ -38,7 +39,7 @@ export function selectCheckoutSparkOrganizerProgressForMerchant(input: {
     const { plan } = state
     const binding = plan.eventMarket
     if (
-      plan.schemaVersion !== 5 ||
+      !isCheckoutSparkEventMarketPlan(plan) ||
       binding?.mode !== "organizer_handoff" ||
       input.initial.merchantPubkey !== plan.merchantPubkey ||
       JSON.stringify(input.initial.plan) !== JSON.stringify(plan) ||
@@ -63,7 +64,10 @@ export function selectCheckoutSparkOrganizerProgressForMerchant(input: {
         entry.merchantPubkey !== plan.merchantPubkey ||
         JSON.stringify(entry.orderBinding) !==
           JSON.stringify(input.orderBinding) ||
-        JSON.stringify(entry.state.plan) !== JSON.stringify(plan)
+        JSON.stringify(entry.state.plan) !== JSON.stringify(plan) ||
+        (plan.schemaVersion === 6 &&
+          JSON.stringify(entry.state.buyerActivation) !==
+            JSON.stringify(state.buyerActivation))
       )
         return { status: "conflict" }
       writerManifests.add(JSON.stringify(entry.writerBindings))

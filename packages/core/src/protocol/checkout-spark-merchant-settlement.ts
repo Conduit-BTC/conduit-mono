@@ -1,10 +1,10 @@
 import type { SparkCheckoutReceiveCreditProof } from "./checkout-spark-receive-credit"
 import {
-  createCheckoutSparkSettledReconciliation,
-  recordCheckoutSparkSettledCredit,
+  projectCheckoutSparkSettledCredit,
   restoreCheckoutSparkSettledPlan,
   restoreCheckoutSparkSettledReconciliation,
   isCheckoutSparkNativeTreasuryPlan,
+  isCheckoutSparkEventMarketPlan,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
 } from "./checkout-spark-settled-router"
@@ -156,12 +156,15 @@ export function createCheckoutSparkMerchantSettlementRecord(
   const merchant = canonical.recipients.find((leg) => leg.kind === "merchant")
   const fee = canonical.recipients.find((leg) => leg.kind === "conduit")!
   return {
-    schemaVersion:
-      canonical.schemaVersion === 5 ? 3 : canonical.schemaVersion === 4 ? 2 : 1,
+    schemaVersion: isCheckoutSparkEventMarketPlan(canonical)
+      ? 3
+      : isCheckoutSparkNativeTreasuryPlan(canonical)
+        ? 2
+        : 1,
     ...(isCheckoutSparkNativeTreasuryPlan(canonical)
       ? { nativeTreasury: null }
       : {}),
-    ...(canonical.schemaVersion === 5
+    ...(isCheckoutSparkEventMarketPlan(canonical)
       ? {
           organizerLegId:
             canonical.recipients.find((leg) => leg.kind === "organizer")
@@ -175,7 +178,7 @@ export function createCheckoutSparkMerchantSettlementRecord(
     merchantLegId: merchant?.legId ?? null,
     requiredCommerceLegIds: canonical.recipients
       .filter((leg) =>
-        canonical.schemaVersion === 5
+        isCheckoutSparkEventMarketPlan(canonical)
           ? leg.kind === "merchant" || leg.kind === "supplier"
           : leg.kind !== "conduit"
       )
@@ -341,21 +344,20 @@ export function recordCheckoutSparkMerchantCredit(
 ): CheckoutSparkMerchantSettlementRecord {
   const current = restoreCheckoutSparkMerchantSettlementRecord(record, plan)
   if (proof.mode !== "ordinary_v3") invalid()
-  const verified = recordCheckoutSparkSettledCredit(
-    createCheckoutSparkSettledReconciliation(plan),
-    {
-      requestId: proof.requestId,
-      paymentHash: plan.funding.paymentHash,
-      transferId: proof.transferId,
-      receiverIdentityPublicKey: proof.receiverIdentityPublicKey,
-      grossSats: proof.grossSats,
-      creditedSats: proof.creditedSats,
-      observedAt: validTime(observedAt),
-    }
-  )
-  const credit = verified.credit!
+  const verified = projectCheckoutSparkSettledCredit(plan, {
+    requestId: proof.requestId,
+    paymentHash: plan.funding.paymentHash,
+    transferId: proof.transferId,
+    receiverIdentityPublicKey: proof.receiverIdentityPublicKey,
+    grossSats: proof.grossSats,
+    creditedSats: proof.creditedSats,
+    observedAt: validTime(observedAt),
+  })
+  const credit = verified.credit
   for (const paid of current.paidLegs) {
-    const expected = verified.legs.find((leg) => leg.legId === paid.legId)
+    const expected = verified.allocations.find(
+      (leg) => leg.legId === paid.legId
+    )
     if (expected?.allocationSats !== paid.allocationSats) invalid()
   }
   if (current.credit) {
@@ -419,18 +421,15 @@ export function recordCheckoutSparkMerchantPayout(
   }
   validTime(observedAt)
   if (current.credit) {
-    const allocation = recordCheckoutSparkSettledCredit(
-      createCheckoutSparkSettledReconciliation(plan),
-      {
-        requestId: plan.funding.requestId,
-        paymentHash: plan.funding.paymentHash,
-        transferId: current.credit.transferId,
-        receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
-        grossSats: plan.funding.grossFundingSats,
-        creditedSats: current.credit.creditedSats,
-        observedAt: current.credit.observedAt,
-      }
-    ).legs.find((leg) => leg.legId === target.legId)?.allocationSats
+    const allocation = projectCheckoutSparkSettledCredit(plan, {
+      requestId: plan.funding.requestId,
+      paymentHash: plan.funding.paymentHash,
+      transferId: current.credit.transferId,
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+      grossSats: plan.funding.grossFundingSats,
+      creditedSats: current.credit.creditedSats,
+      observedAt: current.credit.observedAt,
+    }).allocations.find((leg) => leg.legId === target.legId)?.allocationSats
     if (allocation !== target.allocationSats) invalid()
   }
   const next = {

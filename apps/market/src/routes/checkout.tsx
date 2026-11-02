@@ -24,7 +24,6 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   isContactFreeEventHandoff,
-  getEventGuestReceiptCommitment,
   formatEventMarketPickupDate,
   getProfilePaymentAddress,
   hasFreshProfilePaymentAddress,
@@ -99,10 +98,8 @@ import {
   SignerRecoveryNotice,
   Textarea,
 } from "@conduit/ui"
-import {
-  EventGuestReceiptDetails,
-  type EventGuestReceiptDraft,
-} from "../components/EventGuestReceiptDetails"
+import { EventGuestReceiptDetails } from "../components/EventGuestReceiptDetails"
+import { createCheckoutEventReceiptPreparation } from "../lib/checkout-event-pickup-receipt"
 import { CartEventFulfillmentChoice } from "../components/CartEventFulfillmentChoice"
 import {
   MerchantAvatarFallback,
@@ -1329,8 +1326,9 @@ function CheckoutPage() {
   )
   const [contactFreeRequested, setContactFreeRequested] = useState(false)
   const [pickupLabel, setPickupLabel] = useState("")
-  const [eventReceiptDraft, setEventReceiptDraft] =
-    useState<EventGuestReceiptDraft | null>(null)
+  const [prepareCheckoutEventReceipt] = useState(() =>
+    createCheckoutEventReceiptPreparation()
+  )
   const [note, setNote] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [shippingAttempted, setShippingAttempted] = useState(false)
@@ -1920,8 +1918,6 @@ function CheckoutPage() {
     getCartCommerceFingerprint(checkoutItems),
     rawCheckoutItems.map((item) => [item.cartLineId, item.quantity]),
   ])
-  const currentEventReceipt =
-    eventReceiptDraft?.scope === receiptScope ? eventReceiptDraft : null
   const contactFreeDetailsErrors: ShippingValidationError[] = contactFreeActive
     ? [
         ...(pickupLabel.trim().length === 0 || pickupLabel.trim().length > 80
@@ -1930,15 +1926,6 @@ function CheckoutPage() {
                 field: "firstName" as const,
                 message:
                   "Enter a name or pseudonym for handoff (up to 80 characters).",
-              },
-            ]
-          : []),
-        ...(!currentEventReceipt?.saved
-          ? [
-              {
-                field: "email" as const,
-                message:
-                  "Save your event receipt and confirm that you kept it.",
               },
             ]
           : []),
@@ -2786,23 +2773,24 @@ function CheckoutPage() {
     return { ...(email ? { email } : {}), ...(phone ? { phone } : {}) }
   }
 
-  function buildContactFreePickup(items: CartItem[], createdAt: number) {
+  function buildContactFreePickup(
+    items: CartItem[],
+    createdAt: number,
+    pickupReceiptCommitment: string | undefined
+  ) {
     if (!contactFreeActive) return undefined
     if (
-      !currentEventReceipt?.saved ||
-      currentEventReceipt.receipt.merchantPubkey !== selectedMerchant ||
+      !pickupReceiptCommitment ||
       !isContactFreeEventHandoff(items, createdAt) ||
       pickupLabel.trim().length === 0 ||
       pickupLabel.trim().length > 80
     )
       throw new Error(
-        "Review current event terms, enter a handoff name and retain your receipt before ordering."
+        "Review current event terms and enter a handoff name before ordering."
       )
     return {
       label: pickupLabel.trim(),
-      receiptCommitment: getEventGuestReceiptCommitment(
-        currentEventReceipt.receipt
-      ),
+      receiptCommitment: pickupReceiptCommitment,
     }
   }
 
@@ -3111,10 +3099,7 @@ function CheckoutPage() {
     setStep(isGuestCheckout ? "sending" : "signing")
     setError(null)
     const checkoutId = crypto.randomUUID()
-    const orderId =
-      contactFreeActive && currentEventReceipt?.saved
-        ? currentEventReceipt.receipt.orderId
-        : crypto.randomUUID()
+    let orderId: string = crypto.randomUUID()
     let guestIdentity: GuestOrderSigningIdentity | null = null
     const canContinueSettledPreparation = () => {
       if (!shouldContinueBuyerSession() || !isQuantumRouterEnabled()) {
@@ -3215,6 +3200,17 @@ function CheckoutPage() {
           if (!canContinueSettledPreparation()) {
             throw new Error("Buyer session changed before order preparation.")
           }
+          const receiptPreparation = await prepareCheckoutEventReceipt({
+            scope: receiptScope,
+            merchantPubkey: selectedMerchant,
+            buyerScope: signedIdentity
+              ? { kind: "signed_in", pubkey: signedIdentity.pubkey }
+              : { kind: "guest" },
+            items: authorization.items,
+            orderId,
+            shouldContinue: canContinueSettledPreparation,
+          })
+          orderId = receiptPreparation.orderId
           guestIdentity = isGuestCheckout
             ? createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
             : null
@@ -3233,9 +3229,11 @@ function CheckoutPage() {
             shouldContinue: canContinueSettledPreparation,
             note: submittedNote,
             guestContact,
+            pickupReceiptCommitment: receiptPreparation.pickupReceiptCommitment,
             contactFreePickup: buildContactFreePickup(
               authorization.items,
-              Date.now()
+              Date.now(),
+              receiptPreparation.pickupReceiptCommitment
             ),
             shippingAddress,
             relayAuthMethod: guestIdentity
@@ -3524,10 +3522,17 @@ function CheckoutPage() {
         amountSats: orderTotalSats,
       })
 
-      const orderId =
-        contactFreeActive && currentEventReceipt?.saved
-          ? currentEventReceipt.receipt.orderId
-          : crypto.randomUUID()
+      const receiptPreparation = await prepareCheckoutEventReceipt({
+        scope: receiptScope,
+        merchantPubkey: selectedMerchant,
+        buyerScope: signedBuyerPubkey
+          ? { kind: "signed_in", pubkey: signedBuyerPubkey }
+          : { kind: "guest" },
+        items: authoritativeCheckoutItems,
+        orderId: crypto.randomUUID(),
+        shouldContinue: shouldContinueBuyerSession,
+      })
+      const orderId = receiptPreparation.orderId
       publishedOrderId = orderId
       const guestIdentity = signedBuyerPubkey
         ? null
@@ -3567,9 +3572,11 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress: buildShippingAddress(),
         guestContact,
+        pickupReceiptCommitment: receiptPreparation.pickupReceiptCommitment,
         contactFreePickup: buildContactFreePickup(
           authoritativeCheckoutItems,
-          orderCreatedAt
+          orderCreatedAt,
+          receiptPreparation.pickupReceiptCommitment
         ),
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
@@ -3657,6 +3664,7 @@ function CheckoutPage() {
         buyerIdentityKind,
         merchantPubkey: selectedMerchant,
         checkoutMode: "pay_later",
+        pickupReceiptCommitment: receiptPreparation.pickupReceiptCommitment,
         merchantLightningAddress: checkoutPricing.paymentRequired
           ? (merchantLud16 ?? undefined)
           : undefined,
@@ -4260,10 +4268,17 @@ function CheckoutPage() {
         stepName: "checkout_revalidation",
       })
 
-      const orderId =
-        contactFreeActive && currentEventReceipt?.saved
-          ? currentEventReceipt.receipt.orderId
-          : crypto.randomUUID()
+      const receiptPreparation = await prepareCheckoutEventReceipt({
+        scope: receiptScope,
+        merchantPubkey: selectedMerchant,
+        buyerScope: connectedBuyerIdentity
+          ? { kind: "signed_in", pubkey: connectedBuyerIdentity.pubkey }
+          : { kind: "guest" },
+        items: authoritativeCheckoutItems,
+        orderId: crypto.randomUUID(),
+        shouldContinue: shouldContinueBuyerSession,
+      })
+      const orderId = receiptPreparation.orderId
       publishedOrderId = orderId
       publishedTotalSats = checkoutPricing.totalSats
       const guestIdentity = connectedBuyerIdentity
@@ -4299,9 +4314,11 @@ function CheckoutPage() {
         shippingCostStatus: checkoutPricing.shippingCost.status,
         shippingAddress,
         guestContact,
+        pickupReceiptCommitment: receiptPreparation.pickupReceiptCommitment,
         contactFreePickup: buildContactFreePickup(
           authoritativeCheckoutItems,
-          orderCreatedAt
+          orderCreatedAt,
+          receiptPreparation.pickupReceiptCommitment
         ),
         note: guestIdentity ? buildBuyerNote() : buildContactNote(),
         createdAt: orderCreatedAt,
@@ -4366,6 +4383,7 @@ function CheckoutPage() {
         buyerPubkey,
         buyerIdentityKind,
         merchantPubkey: selectedMerchant,
+        pickupReceiptCommitment: receiptPreparation.pickupReceiptCommitment,
         checkoutMode: requiresPublicZap
           ? checkoutMode
           : canAutoPay
@@ -5150,12 +5168,8 @@ function CheckoutPage() {
                     </label>
                     {contactFreeActive && selectedMerchant ? (
                       <EventGuestReceiptDetails
-                        merchantPubkey={selectedMerchant}
-                        scope={receiptScope}
                         label={pickupLabel}
                         onLabelChange={setPickupLabel}
-                        draft={currentEventReceipt}
-                        onDraftChange={setEventReceiptDraft}
                       />
                     ) : null}
                   </div>

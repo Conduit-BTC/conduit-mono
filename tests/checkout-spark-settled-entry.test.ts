@@ -271,7 +271,11 @@ describe("settled Spark checkout entry", () => {
         expect(terms.grossFundingSats).toBe(1_023)
         expect(terms.conduitFeePolicy).toBe("percentage-only-v1")
         expect(terms.fundingExpirySecs).toBe(15 * 60)
-        expect(terms.takeoverAt).toBe(NOW + 2 * 60_000)
+        expect(terms).not.toHaveProperty("takeoverAt")
+        expect(terms.executionTiming).toEqual({
+          type: "pay_activation_v1",
+          windowMs: 120_000,
+        })
         expect(terms.recipients).toEqual([
           {
             kind: "merchant",

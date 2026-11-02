@@ -177,6 +177,67 @@ async function guestOrder() {
 }
 
 describe("merchant opt-in contact-free immediate handoff", () => {
+  it("retains an Event pickup commitment for a signed-in buyer without guest contact-free metadata", async () => {
+    const { order, receipt } = await guestOrder()
+    const commitment = getEventGuestReceiptCommitment(receipt)
+    const signedIn = {
+      ...order,
+      buyerIdentityKind: "signed_in" as const,
+      contactFreePickup: undefined,
+      pickupReceiptCommitment: commitment,
+    }
+    const parsed = orderSchema.parse(signedIn)
+    expect(parsed).toHaveProperty("pickupReceiptCommitment", commitment)
+    expect(parsed.contactFreePickup).toBeUndefined()
+    expect(parsed.guestContact).toBeUndefined()
+    expect(JSON.stringify(parsed).includes(receipt.claimSecret)).toBe(false)
+  })
+  it("rejects malformed, ordinary-shipping and conflicting pickup commitments", async () => {
+    const { order, receipt } = await guestOrder()
+    const commitment = getEventGuestReceiptCommitment(receipt)
+    const signedIn = {
+      ...order,
+      buyerIdentityKind: "signed_in" as const,
+      contactFreePickup: undefined,
+    }
+    expect(
+      orderSchema.safeParse({ ...signedIn, pickupReceiptCommitment: "invalid" })
+        .success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...signedIn,
+        buyerIdentityKind: undefined,
+        pickupReceiptCommitment: commitment,
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({ ...signedIn, buyerIdentityKind: undefined })
+        .success
+    ).toBe(true)
+    const shipped = {
+      ...signedIn,
+      items: order.items.map((entry) => ({
+        ...entry,
+        fulfillment: { type: "shipping" as const },
+      })),
+    }
+    expect(orderSchema.safeParse(shipped).success).toBe(true)
+    expect(
+      orderSchema.safeParse({ ...shipped, pickupReceiptCommitment: commitment })
+        .success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({
+        ...order,
+        pickupReceiptCommitment: "0".repeat(64),
+      }).success
+    ).toBe(false)
+    expect(
+      orderSchema.safeParse({ ...order, pickupReceiptCommitment: commitment })
+        .success
+    ).toBe(true)
+  })
   it("uses a single exact signed opt-in; ambiguous and unknown policy require contact", async () => {
     expect(hasSignedEventGuestOptIn([])).toBe(false)
     expect(

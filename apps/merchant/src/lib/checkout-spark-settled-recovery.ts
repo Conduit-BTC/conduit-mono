@@ -14,6 +14,7 @@ import {
   getCheckoutSparkNativeTreasuryPolicyForSdkVersion,
   getCheckoutSparkSettledClosedGeneration,
   getCheckoutSparkSettledLegGeneration,
+  getCheckoutSparkBuyerTakeoverAt,
   inspectSparkCheckoutLightningReturnedAttempt,
   inspectSparkCheckoutLightningClosedReturnedAttempt,
   isCheckoutSparkNativeTreasuryPlan,
@@ -1098,7 +1099,11 @@ export async function verifyMerchantCheckoutSparkSettledRecoveryKey(
   ) => {
     const assertEligible = () => {
       assertCurrent()
-      if (now() < initial.plan.takeoverAt) {
+      const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+        initial.plan,
+        state.buyerActivation
+      )
+      if (takeoverAt === null || now() < takeoverAt) {
         throw new Error("Merchant checkout takeover is not yet available.")
       }
     }
@@ -1193,7 +1198,11 @@ export async function reconcileMerchantCheckoutSparkSettledCredit(
     const assertEligible = () => {
       dependencies.assertActive?.()
       assertCurrent()
-      if (now() < initial.plan.takeoverAt) {
+      const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+        initial.plan,
+        state.buyerActivation
+      )
+      if (takeoverAt === null || now() < takeoverAt) {
         throw new Error("Merchant checkout takeover is not yet available.")
       }
     }
@@ -1517,7 +1526,11 @@ export async function inspectMerchantCheckoutSparkSettledPayoutHistory(
     const assertEligible = () => {
       dependencies.assertActive?.()
       assertCurrent()
-      if (now() < initial.plan.takeoverAt) {
+      const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+        initial.plan,
+        state.buyerActivation
+      )
+      if (takeoverAt === null || now() < takeoverAt) {
         throw new Error("Merchant checkout takeover is not yet available.")
       }
     }

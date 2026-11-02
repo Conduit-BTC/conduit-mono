@@ -117,7 +117,8 @@ export function assessCheckoutSparkBuyerSettlement(input: {
     if (
       (plan.schemaVersion !== 3 &&
         plan.schemaVersion !== 4 &&
-        plan.schemaVersion !== 5) ||
+        plan.schemaVersion !== 5 &&
+        plan.schemaVersion !== 6) ||
       plan.checkoutId !== binding.checkoutId ||
       plan.planDigest !== binding.planDigest ||
       plan.walletId !== binding.walletId ||

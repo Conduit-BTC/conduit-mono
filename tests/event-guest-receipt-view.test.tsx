@@ -1,22 +1,16 @@
 import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { createEventGuestReceipt } from "@conduit/core"
 import { EventGuestReceiptDetails } from "../apps/market/src/components/EventGuestReceiptDetails"
 
-test("guest can retain a visible pickup receipt without a forced JSON download", () => {
-  const receipt = createEventGuestReceipt("a".repeat(64))
+test("guest checkout explains verified device saving without revealing a prepayment bearer receipt", () => {
   const markup = renderToStaticMarkup(
-    <EventGuestReceiptDetails
-      merchantPubkey={receipt.merchantPubkey}
-      scope="current"
-      label="Guest"
-      onLabelChange={() => {}}
-      draft={{ receipt, scope: "current", saved: false }}
-      onDraftChange={() => {}}
-    />
+    <EventGuestReceiptDetails label="Guest" onLabelChange={() => {}} />
   )
-  expect(markup.includes("Private pickup receipt")).toBe(true)
-  expect(markup.includes("screenshot")).toBe(true)
+  expect(markup.includes("saved on this device")).toBe(true)
+  expect(markup.includes("after payment is verified")).toBe(true)
   expect(markup.includes("not proof of payment")).toBe(true)
-  expect(markup.includes("I saved my private receipt")).toBe(true)
+  expect(markup.includes("I saved my private receipt")).toBe(false)
+  expect(markup.includes("Save event receipt")).toBe(false)
+  expect(markup.includes("Private receipt code")).toBe(false)
+  expect(markup.includes("<svg")).toBe(false)
 })

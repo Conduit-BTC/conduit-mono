@@ -1,4 +1,5 @@
 import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-expiry"
+import { getCheckoutSparkBuyerTakeoverAt } from "./checkout-spark-buyer-activation"
 import {
   recordCheckoutSparkSettledLegStatus,
   assertCheckoutSparkSettledFundingCoverage,
@@ -355,11 +356,19 @@ function result(
 }
 
 function hasAuthority(
-  plan: CheckoutSparkSettledPlan,
+  state: CheckoutSparkSettledReconciliation,
   actor: CheckoutSparkSettledOutgoingStepInput["actor"],
   now: number
 ): boolean {
-  return actor === "shopper" ? now < plan.takeoverAt : now >= plan.takeoverAt
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    state.plan,
+    state.buyerActivation
+  )
+  return (
+    takeoverAt !== null &&
+    (!state.buyerActivation || now >= state.buyerActivation.activatedAt) &&
+    (actor === "shopper" ? now < takeoverAt : now >= takeoverAt)
+  )
 }
 
 function evidence(
@@ -643,7 +652,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
     return result(state, "wait", "funding_shortfall")
   }
   const now = input.now()
-  if (!hasAuthority(state.plan, input.actor, now)) {
+  if (!hasAuthority(state, input.actor, now)) {
     return result(
       state,
       "wait",
@@ -715,7 +724,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
     )
   }
   const beforeSend = input.now()
-  if (!hasAuthority(state.plan, input.actor, beforeSend)) {
+  if (!hasAuthority(state, input.actor, beforeSend)) {
     return result(state, "wait", "authority_transferred")
   }
   if (
@@ -771,7 +780,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
   )
     throw new Error("Checkout Spark payout state changed before send.")
   const afterWriteAt = input.now()
-  if (!hasAuthority(state.plan, input.actor, afterWriteAt)) {
+  if (!hasAuthority(state, input.actor, afterWriteAt)) {
     await cancelPreProviderAdmission()
     return result(state, "wait", "authority_transferred")
   }

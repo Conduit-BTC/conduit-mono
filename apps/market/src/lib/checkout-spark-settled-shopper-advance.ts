@@ -5,6 +5,7 @@ import {
   runCheckoutSparkSettledOutgoingStep,
   runCheckoutSparkNativeTreasuryStep,
   runCheckoutSparkFinancialWorkflow,
+  getCheckoutSparkBuyerTakeoverAt,
   type CheckoutSparkSettledOutgoingObservation,
   type CheckoutSparkSettledOutgoingProvider,
   type CheckoutSparkSettledOutgoingTarget,
@@ -188,7 +189,8 @@ export async function advanceCheckoutSparkSettledShopper(
   if (
     (plan.schemaVersion !== 3 &&
       plan.schemaVersion !== 4 &&
-      plan.schemaVersion !== 5) ||
+      plan.schemaVersion !== 5 &&
+      plan.schemaVersion !== 6) ||
     plan.checkoutId !== input.checkoutId ||
     plan.planDigest !== input.planDigest ||
     plan.orderId !== input.orderId ||
@@ -205,6 +207,10 @@ export async function advanceCheckoutSparkSettledShopper(
   ) {
     throw new Error("Checkout Spark settled state is unavailable.")
   }
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    plan,
+    snapshot.state.buyerActivation
+  )
   let readOnlyExistingAttempt =
     input.inspectionOnly === true &&
     canInspectCheckoutSparkSettledSubmittedAttempt(snapshot.state, input.legId)
@@ -214,7 +220,7 @@ export async function advanceCheckoutSparkSettledShopper(
     if (!currentSessionMatches()) return false
     const time = now()
     if (!Number.isSafeInteger(time) || time < plan.createdAt) return false
-    if (time >= plan.takeoverAt)
+    if (takeoverAt === null || time >= takeoverAt)
       throw new CheckoutSparkBuyerPreparationAuthorityEndedError()
     return true
   }
@@ -225,7 +231,7 @@ export async function advanceCheckoutSparkSettledShopper(
       !readOnlyExistingAttempt &&
       admittedProviderDrained &&
       input.legId !== null &&
-      now() >= plan.takeoverAt
+      (takeoverAt === null || now() >= takeoverAt)
     ) {
       // This invocation has already drained its provider call. A fresh exact
       // possible-send marker permits only observation of that admitted attempt.
@@ -288,7 +294,7 @@ export async function advanceCheckoutSparkSettledShopper(
     }
     if (
       input.legId !== null &&
-      authorityTime >= plan.takeoverAt &&
+      (takeoverAt === null || authorityTime >= takeoverAt) &&
       !readOnlyExistingAttempt
     )
       throw new CheckoutSparkBuyerPreparationAuthorityEndedError()
@@ -299,7 +305,8 @@ export async function advanceCheckoutSparkSettledShopper(
     if (
       readOnlyExistingAttempt ||
       admittedProviderDrained ||
-      now() >= plan.takeoverAt
+      takeoverAt === null ||
+      now() >= takeoverAt
     ) {
       throw new Error("Checkout Spark inspection cannot admit a payment.")
     }
@@ -326,6 +333,11 @@ export async function advanceCheckoutSparkSettledShopper(
       beforeSend: async () => {
         await assertAuthority(true)
         await originalBeforeSend?.()
+        await assertAuthority(true)
+      },
+      acknowledgeRecoverySnapshot: async (state) => {
+        await assertAuthority(true)
+        await input.acknowledgeRecoverySnapshot(state)
         await assertAuthority(true)
       },
     })

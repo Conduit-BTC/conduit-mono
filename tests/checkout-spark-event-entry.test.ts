@@ -93,6 +93,7 @@ describe("event router entry and private order boundary", () => {
           nowMs: AT,
           shouldContinue: () => true,
           quoteAuthority: authority,
+          pickupReceiptCommitment: "c".repeat(64),
         },
         {
           now: () => AT,
@@ -111,6 +112,11 @@ describe("event router entry and private order boundary", () => {
           },
           prepareFunding: async (terms) => {
             prepared++
+            expect(terms).not.toHaveProperty("takeoverAt")
+            expect(terms.executionTiming).toEqual({
+              type: "pay_activation_v1",
+              windowMs: 120_000,
+            })
             expect(terms.grossFundingSats).toBe(f.plan.funding.grossFundingSats)
             expect(terms.eventMarket).toEqual(authority.eventMarket)
             expect(terms.recipients.map((recipient) => recipient.kind)).toEqual(
@@ -139,6 +145,10 @@ describe("event router entry and private order boundary", () => {
             published++
             expect(publish.order.subtotal).toBe(commerceTotalSats)
             expect(publish.order.createdAt).toBe(AT)
+            expect(publish.order).toHaveProperty(
+              "pickupReceiptCommitment",
+              "c".repeat(64)
+            )
             expect(publish.order.items[0]!.fulfillment?.type).toBe(
               "event_market_pickup"
             )

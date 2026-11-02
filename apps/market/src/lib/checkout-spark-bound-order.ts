@@ -21,6 +21,7 @@ import {
   validateAddressConsistency,
   orderSchema,
   isContactFreeEventHandoff,
+  isCheckoutSparkEventMarketPlan,
   type OrderLifecycle,
   type OrderSchema,
   type StagedOrderLifecycleInput,
@@ -211,7 +212,8 @@ async function publishBoundOrderFromFrozenPlan(
     order.currency !== "SATS" ||
     order.createdAt < plan.createdAt ||
     order.createdAt > now ||
-    (plan.schemaVersion === 5 && order.createdAt !== plan.createdAt) ||
+    (isCheckoutSparkEventMarketPlan(plan) &&
+      order.createdAt !== plan.createdAt) ||
     (!guest && order.guestContact !== undefined) ||
     order.subtotal !== plan.commerceQuote.commerceTotalSats ||
     JSON.stringify(
@@ -231,7 +233,7 @@ async function publishBoundOrderFromFrozenPlan(
     plan.commerceQuote,
     plan.createdAt
   )
-  if (plan.schemaVersion === 5) {
+  if (isCheckoutSparkEventMarketPlan(plan)) {
     assertCheckoutSparkSignedEventMarketSources({
       eventMarket: plan.eventMarket!,
       commerceQuote: plan.commerceQuote,
@@ -289,10 +291,12 @@ async function publishBoundOrderFromFrozenPlan(
           line,
           pricing: plan.commerceQuote.pricing,
           acceptedAtMs: plan.createdAt,
-          ...(plan.schemaVersion === 5 ? { allowZero: true as const } : {}),
+          ...(isCheckoutSparkEventMarketPlan(plan)
+            ? { allowZero: true as const }
+            : {}),
         })
       }
-      if (plan.schemaVersion === 5) {
+      if (isCheckoutSparkEventMarketPlan(plan)) {
         if (
           !line ||
           item.format !== "physical" ||
@@ -416,6 +420,7 @@ async function publishBoundOrderFromFrozenPlan(
     orderId: plan.orderId,
     buyerPubkey,
     buyerIdentityKind: guest ? "guest_ephemeral" : "signed_in",
+    pickupReceiptCommitment: order.pickupReceiptCommitment,
     ...(guest ? { guestSessionExpiresAt: guest.expiresAt } : {}),
     merchantPubkey,
     checkoutMode: "private_checkout",
@@ -470,11 +475,11 @@ async function publishBoundOrderFromFrozenPlan(
       ["amount", String(order.subtotal)],
       ["currency", "SATS"],
       [
-        ...(plan.schemaVersion === 5
+        ...(isCheckoutSparkEventMarketPlan(plan)
           ? CHECKOUT_SPARK_EVENT_ROUTER_ORDER_TAG
           : CHECKOUT_SPARK_ROUTER_ORDER_TAG),
       ],
-      ...(plan.schemaVersion === 5
+      ...(isCheckoutSparkEventMarketPlan(plan)
         ? buildEventMarketOrderRumorTags(order)
         : []),
       ...order.items.flatMap((item) => [
@@ -498,7 +503,7 @@ async function publishBoundOrderFromFrozenPlan(
         currentTime >= plan.funding.expiresAt
       )
         return false
-      if (plan.schemaVersion === 5)
+      if (isCheckoutSparkEventMarketPlan(plan))
         assertCheckoutSparkSignedEventMarketSources({
           eventMarket: plan.eventMarket!,
           commerceQuote: plan.commerceQuote,

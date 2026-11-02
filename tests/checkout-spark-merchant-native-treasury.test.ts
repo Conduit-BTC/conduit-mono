@@ -1109,6 +1109,14 @@ describe("Merchant native treasury continuation", () => {
     "does not send when native recovery snapshot ACK %s fails",
     async (ackFailure) => {
       const f = await fixture({ ackFailure })
+      const checkpoints: unknown[] = []
+      f.dependencies.onObservation = (observation) => {
+        const checkpoint = Object.getOwnPropertyDescriptor(
+          observation,
+          "recoveryCheckpoint"
+        )?.value
+        if (checkpoint !== undefined) checkpoints.push(checkpoint)
+      }
       try {
         expect((await f.run()).payout).toMatchObject({
           reason: "recovery_handoff_unavailable",
@@ -1116,11 +1124,85 @@ describe("Merchant native treasury continuation", () => {
         })
         expect(f.sends()).toBe(0)
         expect(f.calls.at(-1)).toBe("cleanup")
+        expect(checkpoints.at(-1)).toBe(
+          ackFailure === 1 ? "prepared_snapshot" : "submitted_snapshot"
+        )
       } finally {
         await f.database.delete()
       }
     }
   )
+  it("distinguishes a saved progress retry and recovers its exact ACK before one native send", async () => {
+    const f = await fixture({ ackFailure: 1 })
+    const checkpoints: unknown[] = []
+    f.dependencies.onObservation = (observation) => {
+      const checkpoint = Object.getOwnPropertyDescriptor(
+        observation,
+        "recoveryCheckpoint"
+      )?.value
+      if (checkpoint !== undefined) checkpoints.push(checkpoint)
+    }
+    try {
+      expect((await f.run()).payout).toMatchObject({
+        reason: "recovery_handoff_unavailable",
+        sendAttempted: false,
+      })
+      expect(checkpoints.at(-1)).toBe("prepared_snapshot")
+      const saved = await f.repository.load(
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(saved.status).toBe("active")
+      if (saved.status !== "active") throw new Error("Expected active fixture")
+      const intent = saved.state.treasuryFinalization!.intent
+      const staged = await f.dependencies.progressStore!.list(
+        MERCHANT,
+        f.plan.checkoutId,
+        f.plan.planDigest
+      )
+      expect(staged).toHaveLength(1)
+      expect(staged[0]!.relayAccepted).toBe(false)
+      const publish = f.dependencies.progressTransport!.publishFn!
+      f.dependencies.progressTransport!.publishFn = async (...args) => {
+        const delivery = await publish(...args)
+        return {
+          ...delivery,
+          successfulRelayUrls: [],
+          failedRelayUrls: [INBOX],
+        }
+      }
+      checkpoints.length = 0
+      f.calls.length = 0
+      expect((await f.run()).payout).toMatchObject({
+        reason: "recovery_handoff_unavailable",
+        sendAttempted: false,
+      })
+      expect(checkpoints).toEqual(["saved_progress"])
+      expect(f.calls).not.toContain("open")
+      expect(f.progress).toHaveLength(1)
+      expect(f.sends()).toBe(0)
+      expect(
+        (
+          await f.dependencies.progressStore!.list(
+            MERCHANT,
+            f.plan.checkoutId,
+            f.plan.planDigest
+          )
+        )[0]!.record
+      ).toEqual(staged[0]!.record)
+      f.dependencies.progressTransport!.publishFn = publish
+      expect((await f.run()).payout?.outcome).toBe("paid")
+      expect(f.sends()).toBe(1)
+      const paid = await f.repository.load(f.plan.checkoutId, f.plan.planDigest)
+      expect(
+        paid.status === "active" && paid.state.treasuryFinalization!.intent
+      ).toEqual(intent)
+      expect((await f.run()).payout?.outcome).toBe("already_paid")
+      expect(f.sends()).toBe(1)
+    } finally {
+      await f.database.delete()
+    }
+  }, 15_000)
   it("queries only after an ambiguous send and NOT_FOUND, including another continuation", async () => {
     const f = await fixture({ ambiguous: true })
     try {

@@ -20,6 +20,7 @@ function adjustment(
 }
 
 const handlers = {
+  newStockActionsAuthorized: true,
   onUpdate: () => undefined,
   onRetry: () => undefined,
   onRepublish: () => undefined,
@@ -27,6 +28,27 @@ const handlers = {
 }
 
 describe("merchant order stock UI", () => {
+  it("withholds new stock publication until goods and handout are verified", () => {
+    const item = adjustment()
+    const markup = renderToStaticMarkup(
+      <OrderStockPanel
+        adjustments={[item]}
+        unpublishedStockKeys={new Set([item.key])}
+        delivery={null}
+        deliveryNeedsAttention={false}
+        pending={false}
+        updatePending={false}
+        errorMessage={null}
+        {...handlers}
+        newStockActionsAuthorized={false}
+      />
+    )
+    expect(markup).not.toContain("Publish stock 10")
+    expect(markup).not.toContain("Publish custom stock")
+    expect(markup).not.toContain("Sign new listing for stock 10")
+    expect(markup).toContain("Verify the goods payment and pickup authority")
+  })
+
   it("shows the calculated publish action and a custom stock field", () => {
     const markup = renderToStaticMarkup(
       <OrderStockPanel
@@ -237,6 +259,7 @@ describe("merchant order stock UI", () => {
         updatePending={false}
         errorMessage={null}
         {...handlers}
+        newStockActionsAuthorized={false}
       />
     )
 
@@ -245,6 +268,35 @@ describe("merchant order stock UI", () => {
     expect(markup).toContain("Hide for now")
     expect(markup).toContain("exceeds tracked stock by 3")
     expect(markup).not.toContain("Publish stock 0")
+    expect(markup).not.toContain("Publish custom stock")
+  })
+
+  it("fences fresh stock signatures to verified selection while preserving exact signed retry", async () => {
+    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
+    const mutation = source.slice(
+      source.indexOf("const stockUpdateMutation ="),
+      source.indexOf("const confirmPaymentMutation =")
+    )
+    expect(mutation.indexOf('payload.action === "retry"')).toBeLessThan(
+      mutation.indexOf("const assertCurrentStockAction")
+    )
+    expect(mutation).toContain("current.orderId !== payload.orderId")
+    expect(mutation).toContain(
+      "current.orderMessageId !== selectedOrderMessage?.id"
+    )
+    expect(mutation).toContain("!current.authorized")
+    expect(mutation).toContain("await assertPaidForFulfillment(true)")
+    expect(mutation).toContain(
+      "await assertCurrentPickupAuthorization(authority)"
+    )
+    expect(mutation).toMatch(
+      /const assertCurrentWriteBaseline = async \(\) => \{\s*assertCurrentStockAction\(\)/
+    )
+    expect(
+      /newStockActionsAuthorized=\{\s*newStockActionsAuthorized\s*\}/.test(
+        source
+      )
+    ).toBe(true)
   })
 
   it("offers a new signature, not a second decrement or rejected-byte retry, after zero ACKs", () => {

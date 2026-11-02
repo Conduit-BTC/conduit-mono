@@ -12,6 +12,7 @@ import { requireCheckoutSparkSettledExactOutgoingRequest } from "./checkout-spar
 import type { CheckoutSparkSettledOutgoingTarget } from "./checkout-spark-settled-outgoing"
 import {
   getCheckoutSparkSettledLegGeneration,
+  isCheckoutSparkEventMarketPlan,
   restoreCheckoutSparkSettledReconciliation,
   type CheckoutSparkSettledPlan,
   type CheckoutSparkSettledReconciliation,
@@ -237,7 +238,7 @@ export function projectCheckoutSparkMerchantRecipientSettlement(
 ): CheckoutSparkMerchantSettlementProjection {
   const state = restoreCheckoutSparkSettledReconciliation(stateInput)
   const commerce = state.plan.recipients.filter((recipient) =>
-    state.plan.schemaVersion === 5
+    isCheckoutSparkEventMarketPlan(state.plan)
       ? recipient.kind === "merchant" || recipient.kind === "supplier"
       : recipient.kind !== "conduit"
   )

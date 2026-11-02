@@ -9,6 +9,7 @@ import {
   deriveCheckoutSparkSettledRenewalTransferId,
   deriveCheckoutSparkSettledTransferId,
   getCheckoutSparkSettledLegGeneration,
+  getCheckoutSparkBuyerTakeoverAt,
   isCheckoutSparkNativeTreasuryPlan,
   getAccountSigner,
   parseMerchantCheckoutSparkProgressDeliveryRecord,
@@ -32,6 +33,11 @@ import {
   type MerchantCheckoutSparkProgressTransport,
   type NostrKeySigner,
 } from "@conduit/core"
+import {
+  checkoutSparkRecoveryTiming,
+  checkoutSparkRecoveryTimingMatches,
+  restoreCheckoutSparkRecoveryTiming,
+} from "@conduit/core/protocol/checkout-spark-recovery-timing"
 
 import {
   deriveMerchantCheckoutSparkRecoveryIdentity,
@@ -116,6 +122,7 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
     shouldContinue: input.shouldContinue,
     allowRenewal: input.allowRenewal === true,
   }
+  restoreCheckoutSparkRecoveryTiming(selected)
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository()
   const now = dependencies.now ?? Date.now
@@ -156,6 +163,10 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
         plan.orderId !== selected.orderId ||
         plan.planDigest !== selected.planDigest ||
         plan.planDigest !== state.plan.planDigest ||
+        !checkoutSparkRecoveryTimingMatches(
+          selected,
+          checkoutSparkRecoveryTiming(plan, state.buyerActivation)
+        ) ||
         plan.walletId !== initial.wallet.walletId ||
         plan.network !== initial.wallet.network
       ) {
@@ -307,19 +318,25 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
     }
     const retainExisting = async () => {
       current = await load()
+      const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+        plan,
+        current.state.buyerActivation
+      )
+      if (takeoverAt === null)
+        throw new CheckoutSparkSettledRepositoryConflictError()
       if (
         !current.state.legs.find((leg) => leg.legId === input.legId)?.intent
       ) {
         throw new CheckoutSparkSettledRepositoryConflictError()
       }
-      if (current.state.updatedAt < plan.takeoverAt) {
+      if (current.state.updatedAt < takeoverAt) {
         // One metadata-only post-handoff snapshot preserves a buyer-prepared
         // intent exactly. Subsequent retries reuse this timestamp and wrapper.
         current = requireActive(
           await repository.save(
             {
               ...current.state,
-              updatedAt: Math.max(now(), plan.takeoverAt),
+              updatedAt: Math.max(now(), takeoverAt),
             },
             current.revision,
             assertEligible
@@ -714,7 +731,9 @@ export async function prepareNextMerchantCheckoutSparkSettledPayout(
   assertActive()
   await stopAndDrain?.()
   assertActive()
-  if (now() < selected.takeoverAt) return { status: "handoff_wait" }
+  const selectedTiming = restoreCheckoutSparkRecoveryTiming(selected)
+  if (selectedTiming.takeoverAt === null || now() < selectedTiming.takeoverAt)
+    return { status: "handoff_wait" }
   const saved = await repository.load(selected.checkoutId, selected.planDigest)
   assertActive()
   if (saved.status === "retired") return { status: "retired" }
@@ -725,11 +744,19 @@ export async function prepareNextMerchantCheckoutSparkSettledPayout(
     plan.checkoutId !== selected.checkoutId ||
     plan.orderId !== selected.orderId ||
     plan.planDigest !== selected.planDigest ||
-    plan.takeoverAt !== selected.takeoverAt
+    !checkoutSparkRecoveryTimingMatches(
+      selectedTiming,
+      checkoutSparkRecoveryTiming(plan, saved.state.buyerActivation)
+    )
   ) {
     throw new CheckoutSparkSettledRepositoryConflictError()
   }
-  if (now() < plan.takeoverAt) return { status: "handoff_wait" }
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    plan,
+    saved.state.buyerActivation
+  )
+  if (takeoverAt === null || now() < takeoverAt)
+    return { status: "handoff_wait" }
   const next = saved.state.legs.find((leg) => leg.status !== "paid")
   if (!next) return { status: "no_unpaid_leg" }
   const recovery = await prepareMerchantCheckoutSparkSettledPayout(

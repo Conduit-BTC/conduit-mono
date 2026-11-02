@@ -7,6 +7,46 @@ import type { MerchantCheckoutSparkPayoutHistory } from "../apps/merchant/src/li
 
 describe("Merchant finite payout observation display", () => {
   it.each([
+    ["saved_progress", "saved progress retry"],
+    ["prepared_snapshot", "prepared snapshot acknowledgement"],
+    ["submitted_snapshot", "submitted snapshot acknowledgement"],
+  ] as const)(
+    "retains %s beside the generic unsent handoff failure",
+    (checkpoint, label) => {
+      const observation = {
+        outcome: "wait",
+        reason: "recovery_handoff_unavailable",
+        sendAttempted: false,
+      }
+      const original = formatMerchantCheckoutSparkPayoutObservation(observation)
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation(observation, checkpoint)
+      ).toBe(`${original} Recovery checkpoint: ${label}.`)
+      for (const unknown of [
+        "private-checkpoint-sentinel",
+        "constructor",
+        {},
+        null,
+      ])
+        expect(
+          formatMerchantCheckoutSparkPayoutObservation(observation, unknown)
+        ).toBe(original)
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation(
+          { ...observation, sendAttempted: true },
+          checkpoint
+        )
+      ).not.toContain("Recovery checkpoint")
+      expect(
+        formatMerchantCheckoutSparkPayoutObservation(
+          { ...observation, reason: "fee_unavailable" },
+          checkpoint
+        )
+      ).not.toContain("Recovery checkpoint")
+    }
+  )
+
+  it.each([
     ["fee_over_cap", "The provider fee exceeded this payout's approved cap."],
     [
       "insufficient_funds",

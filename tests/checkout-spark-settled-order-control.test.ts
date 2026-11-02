@@ -15,6 +15,7 @@ import {
 
 import {
   createCheckoutSparkSettledReconciliation,
+  activateCheckoutSparkBuyer,
   deriveCheckoutSparkSettledTransferId,
   freezeCheckoutSparkSettledPlan,
   freezeCheckoutSparkSettledTreasuryPlan,
@@ -185,7 +186,7 @@ function fixture(takeoverAt = NOW + 60_000) {
   return { plan, input }
 }
 
-function nativeFixture(takeoverAt = NOW + 60_000) {
+function nativeFixture(takeoverAt = NOW + 60_000, payActivation = false) {
   const ordinary = fixture(takeoverAt)
   const nativeTreasuryIdentity = `03${"e".repeat(64)}`
   const nativeTreasuryBase = {
@@ -204,7 +205,14 @@ function nativeFixture(takeoverAt = NOW + 60_000) {
     walletId: ordinary.plan.walletId,
     network: ordinary.plan.network,
     createdAt: ordinary.plan.createdAt,
-    takeoverAt: ordinary.plan.takeoverAt,
+    ...(payActivation
+      ? {
+          executionTiming: {
+            type: "pay_activation_v1" as const,
+            windowMs: 120_000 as const,
+          },
+        }
+      : { takeoverAt: ordinary.plan.takeoverAt }),
     commerceQuote: ordinary.plan.commerceQuote,
     funding: ordinary.plan.funding,
     recipients: ordinary.plan.recipients.map((recipient) => ({
@@ -291,6 +299,56 @@ describe("current saved checkout presentation reads", () => {
 })
 
 describe("funding availability is independent of buyer payout takeover", () => {
+  it("keeps new preparations inactive until Pay, then uses the fixed activation cutoff", () => {
+    const { plan, input } = nativeFixture(NOW + 60_000, true)
+    expect(
+      assessCheckoutSparkSettledOrderControl({ ...input, now: NOW + 180_000 })
+        .status
+    ).toBe("pay_funding")
+    const active = activateCheckoutSparkBuyer(input.snapshot.state, {
+      buyerPubkey: BUYER,
+      activatedAt: NOW + 180_000,
+    })
+    const credit = {
+      requestId: plan.funding.requestId,
+      paymentHash: plan.funding.paymentHash,
+      transferId: "activation-funding",
+      receiverIdentityPublicKey: plan.funding.receiverIdentityPublicKey,
+      grossSats: 1113,
+      creditedSats: 1111,
+      observedAt: NOW + 181_000,
+    }
+    const funded = recordCheckoutSparkSettledCredit(active, credit)
+    const fundedInput = {
+      ...input,
+      snapshot: { ...input.snapshot, state: funded },
+    }
+    expect(
+      assessCheckoutSparkSettledOrderControl({
+        ...fundedInput,
+        now: NOW + 299_999,
+      }).status
+    ).toBe("prepare_payout")
+    expect(
+      assessCheckoutSparkSettledOrderControl({
+        ...fundedInput,
+        now: NOW + 300_000,
+      })
+    ).toMatchObject({ status: "blocked", cause: "authority_transferred" })
+    expect(() =>
+      recordCheckoutSparkSettledCredit(input.snapshot.state, credit)
+    ).toThrow("activation has not begun")
+    expect(
+      assessCheckoutSparkSettledOrderControl({
+        ...input,
+        now: NOW + 181_000,
+        snapshot: {
+          ...input.snapshot,
+          state: { ...funded, buyerActivation: null },
+        },
+      }).status
+    ).toBe("blocked")
+  })
   it("keeps exact funding available after takeover only while the original wallet remains open", () => {
     const { input } = fixture(NOW + 120_000)
     const late = { ...input, now: NOW + 180_000 }

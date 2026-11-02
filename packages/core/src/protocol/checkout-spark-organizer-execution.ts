@@ -1,4 +1,5 @@
 import type { ConduitDB } from "../db"
+import { getCheckoutSparkBuyerTakeoverAt } from "./checkout-spark-buyer-activation"
 import type { AccountSigner } from "./nostr-event-signer"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import {
@@ -29,6 +30,8 @@ import {
 export interface CheckoutSparkOrganizerPurchase {
   readonly handoffId: string
   readonly plan: CheckoutSparkSettledPlan
+  /** Authenticated timing projection only, never dispatch or payment authority. */
+  readonly buyerTakeoverAt: number | null
   readonly orderBinding: CheckoutSparkOrganizerOrderBinding
   readonly claimRef: string
   readonly merchandise: EventMarketOrganizerMerchandise
@@ -278,13 +281,19 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
       message.initialMerchantHandoffId !== initial.merchantHandoffId ||
       message.organizerPubkey !== initial.organizerPubkey ||
       message.senderPubkey !== initial.senderPubkey ||
-      message.plan.planDigest !== initial.plan.planDigest
+      message.plan.planDigest !== initial.plan.planDigest ||
+      (initial.plan.schemaVersion === 6 &&
+        (message.state.buyerActivation?.buyerPubkey !== initial.senderPubkey ||
+          message.state.buyerActivation.activatedAt < initial.preparedAt))
     )
       unavailable()
     observations.push(message)
   }
   observations.sort((a, b) => a.preparedAt - b.preparedAt)
   for (const update of observations) state = advance(state, update.state)
+  // Only authenticated Buyer progress can introduce Pay activation. Actor
+  // snapshots may carry that exact marker forward, never mint or renew it.
+  const buyerActivation = JSON.stringify(state.buyerActivation)
   const binding = initial.plan.eventMarket!
   const writerBindings = binding.lines
     .map((line) => ({
@@ -316,7 +325,10 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
       progress.state.plan.planDigest !== initial.plan.planDigest ||
       JSON.stringify(progress.orderBinding) !==
         JSON.stringify(initial.orderBinding) ||
-      JSON.stringify(progress.writerBindings) !== JSON.stringify(writerBindings)
+      JSON.stringify(progress.writerBindings) !==
+        JSON.stringify(writerBindings) ||
+      (initial.plan.schemaVersion === 6 &&
+        JSON.stringify(progress.state.buyerActivation) !== buyerActivation)
     )
       unavailable()
     state = advance(state, progress.state)
@@ -338,7 +350,9 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
       progress.merchantPubkey !== initial.merchantPubkey ||
       progress.state.plan.planDigest !== initial.plan.planDigest ||
       JSON.stringify(progress.orderBinding) !==
-        JSON.stringify(initial.orderBinding)
+        JSON.stringify(initial.orderBinding) ||
+      (initial.plan.schemaVersion === 6 &&
+        JSON.stringify(progress.state.buyerActivation) !== buyerActivation)
     )
       unavailable()
     state = advance(state, progress.state)
@@ -346,6 +360,10 @@ export async function openCheckoutSparkOrganizerRecoveryAuthority(
   const purchase: CheckoutSparkOrganizerPurchase = Object.freeze({
     handoffId: initial.handoffId,
     plan: initial.plan,
+    buyerTakeoverAt: getCheckoutSparkBuyerTakeoverAt(
+      state.plan,
+      state.buyerActivation
+    ),
     orderBinding: initial.orderBinding,
     merchandise: projectEventMarketOrganizerMerchandise({
       merchantPubkey: initial.merchantPubkey,
@@ -420,7 +438,11 @@ export async function assertCheckoutSparkOrganizerRecoveryWriterCurrent(
   const context = contexts.get(authority)
   if (!context) unavailable()
   context.assertCurrent()
-  if ((context.input.now ?? Date.now)() < context.initial.plan.takeoverAt)
+  const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+    context.state.plan,
+    context.state.buyerActivation
+  )
+  if (takeoverAt === null || (context.input.now ?? Date.now)() < takeoverAt)
     throw new Error("Buyer routing is still active for this checkout.")
   await assertStockWriters(context)
   const rows = await context.input.db.eventMarketOrganizerStockEntries

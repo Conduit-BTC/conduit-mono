@@ -40,6 +40,7 @@ import { isValidSignedPublicNostrEvent } from "./signed-event"
 import type { CheckoutSparkCommerceQuoteLine } from "./checkout-spark-reconciliation"
 import type { CheckoutSparkPricingRateAttestation } from "./checkout-spark-pricing-authority"
 import {
+  isCheckoutSparkEventMarketPlan,
   restoreCheckoutSparkSettledPlan,
   type CheckoutSparkSettledPlan,
 } from "./checkout-spark-settled-router"
@@ -387,9 +388,9 @@ export function createCheckoutSparkMerchantOrderWitness(
   try {
     const frozen = restoreCheckoutSparkSettledPlan(plan)
     const organizerHandoff =
-      frozen.schemaVersion === 5 &&
+      isCheckoutSparkEventMarketPlan(frozen) &&
       frozen.eventMarket?.mode === "organizer_handoff"
-    if (frozen.schemaVersion === 5)
+    if (isCheckoutSparkEventMarketPlan(frozen))
       validateCheckoutSparkPlanSources(frozen, sourceEvents ?? [])
     const quote = frozen.commerceQuote
     assertCheckoutSparkCommerceShippingPolicies(quote, frozen.createdAt)
@@ -414,7 +415,10 @@ export function createCheckoutSparkMerchantOrderWitness(
           ) ||
           evidence.organizerOrderBinding.createdAt !==
             evidence.orderCreatedAt ||
-          evidence.organizerOrderBinding.createdAt >= frozen.takeoverAt)) ||
+          evidence.organizerOrderBinding.createdAt >=
+            (frozen.schemaVersion === 6
+              ? frozen.funding.expiresAt
+              : frozen.takeoverAt))) ||
       evidence.commerceTotalSats !== quote.commerceTotalSats ||
       JSON.stringify(
         canonicalCheckoutSparkCommerceEvidence(evidence.pricing)
@@ -449,7 +453,9 @@ export function createCheckoutSparkMerchantOrderWitness(
             pricing: quote.pricing,
             acceptedAtMs:
               quote.pricingAuthority?.issuedAtMs ?? frozen.createdAt,
-            ...(frozen.schemaVersion === 5 ? { allowZero: true as const } : {}),
+            ...(isCheckoutSparkEventMarketPlan(frozen)
+              ? { allowZero: true as const }
+              : {}),
           })
         }
         let fulfillmentMatches =
@@ -458,7 +464,11 @@ export function createCheckoutSparkMerchantOrderWitness(
           item.shipping === undefined &&
           item.pickup === undefined &&
           item.eventPickup === undefined
-        if (frozen.schemaVersion === 5 && line && item.eventPickup) {
+        if (
+          isCheckoutSparkEventMarketPlan(frozen) &&
+          line &&
+          item.eventPickup
+        ) {
           fulfillmentMatches =
             item.shipping === undefined &&
             item.pickup === undefined &&
@@ -611,10 +621,13 @@ export function restoreCheckoutSparkMerchantOrderWitness(
       witness.checkoutId !== frozen.checkoutId ||
       witness.planDigest !== frozen.planDigest ||
       (witness.organizerOrderBinding !== undefined &&
-        (frozen.schemaVersion !== 5 ||
+        (!isCheckoutSparkEventMarketPlan(frozen) ||
           frozen.eventMarket?.mode !== "organizer_handoff" ||
           witness.organizerOrderBinding.createdAt < frozen.createdAt ||
-          witness.organizerOrderBinding.createdAt >= frozen.takeoverAt))
+          witness.organizerOrderBinding.createdAt >=
+            (frozen.schemaVersion === 6
+              ? frozen.funding.expiresAt
+              : frozen.takeoverAt)))
     ) {
       throw new Error("Checkout Spark order witness does not match plan.")
     }

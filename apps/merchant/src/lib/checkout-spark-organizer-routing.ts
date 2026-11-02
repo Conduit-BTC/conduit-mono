@@ -9,6 +9,8 @@ import {
   createCheckoutSparkSettledNativeOutgoingProvider,
   deriveCheckoutSparkNativeTreasuryBudget,
   isCheckoutSparkNativePreProviderRetry,
+  isCheckoutSparkEventMarketPlan,
+  getCheckoutSparkBuyerTakeoverAt,
   proveSparkCheckoutReceiveCredit,
   recordCheckoutSparkSettledCredit,
   restoreCheckoutSparkSettledReconciliation,
@@ -50,6 +52,7 @@ import {
 import { assertCheckoutSparkMerchantPricingAuthority } from "./checkout-spark-pricing-authority"
 import { assertCheckoutSparkRecoveryDestination } from "./checkout-spark-recovery-policy"
 import { verifySavedMerchantCheckoutSparkRecipients } from "./checkout-spark-invoice-recipient"
+import { createCheckoutSparkOrganizerRoutingObservation } from "./checkout-spark-organizer-routing-observation"
 
 export interface CheckoutSparkOrganizerRoutingInput {
   db: ConduitDB
@@ -57,6 +60,8 @@ export interface CheckoutSparkOrganizerRoutingInput {
   signer: AccountSigner
   authenticatedPubkey: string
   shouldContinue(): boolean
+  /** A process-local goods capability, independent of later fee reconciliation. */
+  onCommerceProof?(proof: CheckoutSparkOrganizerCommerceProof): void
 }
 export interface CheckoutSparkOrganizerRoutingDependencies {
   repository?: DexieCheckoutSparkSettledRepository
@@ -98,6 +103,10 @@ export async function routeCheckoutSparkOrganizerOrder(
   const now = dependencies.now ?? Date.now
   const startedAt = now()
   const deadline = startedAt + 2 * 60_000
+  const routingObservation = createCheckoutSparkOrganizerRoutingObservation(
+    now,
+    startedAt
+  )
   const repository =
     dependencies.repository ?? new DexieCheckoutSparkSettledRepository(input.db)
   const progressStore = new DexieCheckoutSparkOrganizerProgressRepository(
@@ -134,12 +143,13 @@ export async function routeCheckoutSparkOrganizerOrder(
   }
   const assertProcessing = () => {
     assertSession()
-    if (now() >= deadline)
-      throw new Error("Organizer payment processing is no longer active.")
+    if (now() >= deadline) throw routingObservation.timeout()
   }
   const assertWriter = async () => {
     assertProcessing()
-    await assertCheckoutSparkOrganizerRecoveryWriterCurrent(input.authority)
+    await routingObservation.checkWriter(() =>
+      assertCheckoutSparkOrganizerRecoveryWriterCurrent(input.authority)
+    )
     assertProcessing()
   }
   assertProcessing()
@@ -152,6 +162,12 @@ export async function routeCheckoutSparkOrganizerOrder(
       withCheckoutSparkOrganizerRecovery(input.authority, async (context) => {
         const { initial } = context
         const plan = initial.plan
+        const takeoverAt = getCheckoutSparkBuyerTakeoverAt(
+          plan,
+          context.state.buyerActivation
+        )
+        if (takeoverAt === null)
+          throw new Error("Organizer checkout Pay activation is unavailable.")
         const assertProofCurrent = () => {
           context.assertCurrent()
           assertSession()
@@ -166,7 +182,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           assertCurrent()
         }
         if (
-          plan.schemaVersion !== 5 ||
+          !isCheckoutSparkEventMarketPlan(plan) ||
           plan.eventMarket?.mode !== "organizer_handoff" ||
           !plan.nativeTreasury
         )
@@ -229,6 +245,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           )
           return saved
         }
+        routingObservation.stage("wallet")
         const wallet = await openWallet({
           mnemonic: initial.wallet.mnemonic,
           accountNumber: initial.wallet.accountNumber,
@@ -247,6 +264,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           )
             throw new Error("Organizer checkout wallet is unavailable.")
           const readFunding = async () => {
+            routingObservation.stage("funding")
             await check()
             const receive = await wallet.getLightningReceiveRequest(
               plan.funding.requestId
@@ -289,7 +307,7 @@ export async function routeCheckoutSparkOrganizerOrder(
             fundingProof: credit,
           })
           if (
-            expected.updatedAt < plan.takeoverAt &&
+            expected.updatedAt < takeoverAt &&
             expected.legs.some((leg) => leg.intent !== null)
           ) {
             const current = await load()
@@ -303,7 +321,7 @@ export async function routeCheckoutSparkOrganizerOrder(
             })
             const adopted = restoreCheckoutSparkSettledReconciliation({
               ...current.state,
-              updatedAt: Math.max(now(), plan.takeoverAt),
+              updatedAt: Math.max(now(), takeoverAt),
             })
             const saved = await repository.save(
               adopted,
@@ -322,6 +340,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           // original invoice-resolution capability. Reuse the existing exact
           // receiver verifier; unavailable evidence never grants dispatch.
           await load()
+          routingObservation.stage("recipients")
           await verifySavedMerchantCheckoutSparkRecipients({
             state: expected,
             repository,
@@ -340,6 +359,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           const acknowledgeExact = async (
             state: CheckoutSparkSettledReconciliation
           ) => {
+            routingObservation.stage("progress")
             await load()
             if (JSON.stringify(state) !== JSON.stringify(expected))
               throw new CheckoutSparkSettledRepositoryConflictError()
@@ -361,6 +381,11 @@ export async function routeCheckoutSparkOrganizerOrder(
                 },
                 transport: dependencies.progressTransport,
               })
+            routingObservation.progressAck(
+              delivery.merchantAccepted && delivery.selfAccepted
+                ? "accepted"
+                : "missing"
+            )
             await load()
             if (!delivery.merchantAccepted || !delivery.selfAccepted)
               throw new OrganizerProgressAckUnavailableError(
@@ -373,6 +398,8 @@ export async function routeCheckoutSparkOrganizerOrder(
             try {
               await acknowledgeExact(state)
             } catch (error) {
+              if (error instanceof RelayPublishDiagnosticsError)
+                routingObservation.progressAck("unavailable")
               if (
                 !(error instanceof RelayPublishDiagnosticsError) &&
                 !(error instanceof OrganizerProgressAckUnavailableError)
@@ -418,8 +445,19 @@ export async function routeCheckoutSparkOrganizerOrder(
               return saved
             },
           }
-          const inspect = (target: CheckoutSparkSettledOutgoingTarget) =>
-            inspectExactMerchantPayout(plan, target, wallet, assertCurrent)
+          const inspect = async (
+            target: CheckoutSparkSettledOutgoingTarget
+          ) => {
+            routingObservation.stage("payout")
+            const result = await inspectExactMerchantPayout(
+              plan,
+              target,
+              wallet,
+              assertCurrent
+            )
+            routingObservation.payout(result.status)
+            return result
+          }
           let dispatchTarget: CheckoutSparkSettledOutgoingTarget | null = null
           const provider = createCheckoutSparkSettledNativeOutgoingProvider({
             plan,
@@ -450,9 +488,17 @@ export async function routeCheckoutSparkOrganizerOrder(
               { status: "paid" }
             >
           ) => {
+            routingObservation.stage("recipients")
             const result = await verifyCheckoutSparkInvoiceRecipient(
               { plan, target, now: now(), assertCurrent },
               dependencies.receiverDependencies
+            )
+            routingObservation.recipient(
+              result.status === "verified"
+                ? result.settled
+                  ? "verified_settled"
+                  : "verified_unsettled"
+                : result.status
             )
             await check()
             if (result.status !== "verified" || !result.settled) return false
@@ -476,6 +522,7 @@ export async function routeCheckoutSparkOrganizerOrder(
           const nativeRequest = async (
             target: CheckoutSparkNativeTreasuryTarget
           ) => {
+            routingObservation.stage("fee")
             await load()
             if (
               target.planDigest !== plan.planDigest ||
@@ -488,6 +535,10 @@ export async function routeCheckoutSparkOrganizerOrder(
                 JSON.stringify(expected.treasuryFinalization?.intent)
             )
               throw new Error("Organizer native payment authority changed.")
+            routingObservation.nativeLoadedState(
+              expected.treasuryFinalization!.status,
+              expected.treasuryFinalization!.providerTransferId !== null
+            )
             return {
               network: plan.network,
               nativeTreasury: target.nativeTreasury,
@@ -503,6 +554,13 @@ export async function routeCheckoutSparkOrganizerOrder(
                 await wallet.nativeTreasury!.inspectCheckoutTreasury(
                   await nativeRequest(target)
                 )
+              routingObservation.nativeObservation(
+                result.status === "pending" && result.pendingPhase
+                  ? result.pendingPhase === "sender"
+                    ? "pending_sender"
+                    : "pending_receiver"
+                  : result.status
+              )
               await check()
               if (result.status === "paid") {
                 await proveMerchantCheckoutSparkNativeCommerce({
@@ -531,6 +589,7 @@ export async function routeCheckoutSparkOrganizerOrder(
               if (!admissible()) return "unavailable"
               const result =
                 await wallet.nativeTreasury!.preflightCheckoutTreasury(request)
+              routingObservation.nativePreflight(result)
               await load()
               if (!admissible()) return "unavailable"
               if (result === "ready")
@@ -560,10 +619,13 @@ export async function routeCheckoutSparkOrganizerOrder(
                     throw new Error("Organizer final payment amount changed.")
                 },
               })
+              routingObservation.nativeSend(result.status)
               return result
             },
           }
           const proveGoods = async () => {
+            if (commerceProof) return
+            routingObservation.stage("goods")
             try {
               let issued = false
               const proof = await proveCheckoutSparkOrganizerCommerce({
@@ -593,10 +655,28 @@ export async function routeCheckoutSparkOrganizerOrder(
               await check()
               commerceProof = null
             }
+            if (commerceProof) input.onCommerceProof?.(commerceProof)
           }
           let waitingReason = "bounded_reconciliation"
           for (let step = 0; step < plan.recipients.length * 3 + 12; step++) {
+            routingObservation.stage("routing")
             await load()
+            // Paid projections only schedule fresh proof work. The existing
+            // prover still checks funding, exact payouts and their receivers;
+            // fee waiting must not swallow an independently issued capability.
+            if (
+              !commerceProof &&
+              plan.recipients.every(
+                (recipient) =>
+                  (recipient.kind !== "merchant" &&
+                    recipient.kind !== "supplier") ||
+                  expected.legs.some(
+                    (leg) =>
+                      leg.legId === recipient.legId && leg.status === "paid"
+                  )
+              )
+            )
+              await proveGoods()
             progressFailure.failed = false
             delete progressFailure.error
             try {
@@ -625,10 +705,12 @@ export async function routeCheckoutSparkOrganizerOrder(
                   outgoing: {
                     reconcile: provider.reconcile,
                     preflight: (target) => {
+                      routingObservation.stage("preparation")
                       dispatchTarget = target
                       return provider.preflight(target)
                     },
                     send: (target) => {
+                      routingObservation.stage("payout")
                       dispatchTarget = target
                       return provider.send(target)
                     },
@@ -666,6 +748,7 @@ export async function routeCheckoutSparkOrganizerOrder(
                     acknowledgeRecoverySnapshot: acknowledge,
                     nowMs: now,
                     estimateFee: async (request) => {
+                      routingObservation.stage("preparation")
                       await check()
                       const value = await wallet.outgoing!.estimateFee({
                         paymentRequest: request.paymentRequest,
@@ -744,6 +827,14 @@ export async function routeCheckoutSparkOrganizerOrder(
                   },
                 }
               )
+              routingObservation.workflow(
+                result.status === "outgoing_step"
+                  ? result.step.outcome
+                  : result.status,
+                result.status === "outgoing_step"
+                  ? result.step.reason
+                  : undefined
+              )
               await load()
               if (progressFailure.failed) throw progressFailure.error
               if (result.status === "outgoing_step" && result.step.reason)
@@ -820,7 +911,10 @@ export async function routeCheckoutSparkOrganizerOrder(
               )
                 throw error
             }
-            await wait(Math.min(5_000, 1_000 * 2 ** Math.min(step, 2)))
+            routingObservation.stage("waiting")
+            const backoffMs = Math.min(5_000, 1_000 * 2 ** Math.min(step, 2))
+            routingObservation.backoff(backoffMs)
+            await wait(backoffMs)
           }
           await proveGoods()
           return {

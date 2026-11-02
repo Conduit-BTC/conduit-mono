@@ -95,7 +95,8 @@ export function formatEventGuestReceipt(receipt: EventGuestReceipt): string {
     `Private receipt code: ${parsed.claimSecret}`,
     "",
     "Keep this receipt private. Anyone with this code can present it.",
-    "Show it to the seller or organizer for pickup or support.",
+    "Keep this private receipt for the seller's pickup or support checks.",
+    "Show only the separate pickup code to an event organizer.",
     "This receipt is not proof of payment and does not guarantee a refund.",
   ].join("\n")
 }
@@ -174,5 +175,37 @@ export function verifyEventGuestReceipt(
     receipt.data.merchantPubkey === order.merchantPubkey &&
     getEventGuestReceiptCommitment(receipt.data) ===
       order.contactFreePickup.receiptCommitment
+  )
+}
+
+/**
+ * Match pickup possession for an explicit Event buyer identity. A match never
+ * proves payment, grants handout authority or consumes the once-only claim.
+ * Historical guest receipts keep their original exact commitment checks.
+ */
+export function verifyEventPickupReceipt(
+  value: unknown,
+  order: OrderSchema,
+  merchantPubkey: string
+): boolean {
+  if (order.pickupReceiptCommitment === undefined)
+    return verifyEventGuestReceipt(value, order, merchantPubkey)
+  const receipt = eventGuestReceiptSchema.safeParse(value)
+  return (
+    receipt.success &&
+    (order.buyerIdentityKind === "signed_in" ||
+      order.buyerIdentityKind === "guest_ephemeral") &&
+    order.items.length > 0 &&
+    order.items.every(
+      (item) => item.fulfillment?.type === "event_market_pickup"
+    ) &&
+    merchantPubkey === order.merchantPubkey &&
+    receipt.data.orderId === order.id &&
+    receipt.data.merchantPubkey === order.merchantPubkey &&
+    (!order.contactFreePickup ||
+      order.contactFreePickup.receiptCommitment ===
+        order.pickupReceiptCommitment) &&
+    getEventGuestReceiptCommitment(receipt.data) ===
+      order.pickupReceiptCommitment
   )
 }
