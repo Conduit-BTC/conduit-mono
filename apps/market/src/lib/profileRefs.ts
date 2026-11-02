@@ -1,5 +1,5 @@
 import { normalizePublicRelayHints, pubkeyToNpub } from "@conduit/core"
-import { nip19 } from "@nostr-dev-kit/ndk"
+import * as nip19 from "nostr-tools/nip19"
 
 type ResolvedProfileReference = {
   pubkey: string
