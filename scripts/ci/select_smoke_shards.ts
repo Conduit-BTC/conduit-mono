@@ -124,7 +124,7 @@ export function selectSmokeShards(paths: readonly string[]): SmokeShard[] {
       continue
     }
 
-    if (path.startsWith("apps/store-builder/") || isPublicContextOnly(path)) {
+    if (isPublicContextOnly(path)) {
       continue
     }
 

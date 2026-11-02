@@ -967,7 +967,7 @@ describe.each(["comments", "checks"] as const)(
 
     it.each([
       ["schemaVersion", 2],
-      ["app", "store-builder"],
+      ["app", "unsupported-app"],
       ["deploymentProfile", "production"],
       ["commitSha", "0".repeat(40)],
       ["publicConfigDigest", "other"],

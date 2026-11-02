@@ -84,12 +84,6 @@
       "outputDirectory": "apps/merchant/dist",
       "cloudflareProject": "conduit-merchant",
       "cloudflareStagingProject": "conduit-merchant-signet"
-    },
-    "store-builder": {
-      "package": "@conduit/store-builder",
-      "outputDirectory": "apps/store-builder/dist",
-      "cloudflareProject": null,
-      "cloudflareStagingProject": null
     }
   },
   "profiles": {

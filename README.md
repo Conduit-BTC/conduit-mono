@@ -27,7 +27,6 @@ see the
 | ---------------------------------------------------- | ---- | ------------------------------------------------------------------------ |
 | **Market / Conduit Shop** (`apps/market`)            | 3000 | Buyer marketplace: browse, checkout, orders, and device-local wallets    |
 | **Merchant Portal / Conduit Sell** (`apps/merchant`) | 3001 | Seller app at `sell.conduit.market`: listings, orders, payments, and DMs |
-| **Store Builder** (`apps/store-builder`)             | 3002 | Placeholder app shell                                                    |
 
 ## Shared Packages
 
@@ -56,7 +55,7 @@ bun install
 bun run dev
 ```
 
-This starts Market on http://localhost:3000, Merchant Portal on http://localhost:3001, and Store Builder on http://localhost:3002.
+This starts Market on http://localhost:3000 and Merchant Portal on http://localhost:3001.
 
 The plain `dev` command uses each app's normal Vite environment resolution. Use the `:mock` scripts with the local relay when you want isolated fake Lightning invoices and local-only relay traffic.
 
@@ -64,7 +63,6 @@ The plain `dev` command uses each app's normal Vite environment resolution. Use 
 # Or start individually
 bun run dev:market
 bun run dev:merchant
-bun run dev:store-builder
 ```
 
 ## Local Development Setup
@@ -272,8 +270,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full PR checklist and CI recovery
 conduit-mono/
 ├── apps/
 │   ├── market/              # Buyer marketplace
-│   ├── merchant/            # Seller portal
-│   └── store-builder/       # Placeholder app shell
+│   └── merchant/            # Seller portal
 ├── packages/
 │   ├── core/                # Types, protocol, schemas, hooks, DB, utils
 │   └── ui/                  # Components, theme, styles

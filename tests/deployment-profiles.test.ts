@@ -85,7 +85,7 @@ describe("deployment profiles", () => {
       ).not.toThrow()
     }
     expect(() =>
-      assertPagesWalletConfiguration("store-builder", true, { CF_PAGES: "1" })
+      assertPagesWalletConfiguration("anon-zap-signer", true, { CF_PAGES: "1" })
     ).not.toThrow()
     expect(() =>
       assertPagesWalletConfiguration("merchant", true, {})

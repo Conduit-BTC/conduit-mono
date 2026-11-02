@@ -8,7 +8,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Use this form for Conduit Market or Merchant Portal. Store Builder is not available or supported yet.
+        Thanks for reporting a bug. Use this form for Conduit Market or Merchant Portal.
 
         Do not include Nostr secret keys (`nsec`), signer connection URLs or codes, seed phrases, passwords, NWC connection strings, payment credentials, full shipping addresses, phone numbers, or other sensitive personal information.
 
