@@ -41,7 +41,6 @@ type WalletFixtureWindow = Window & {
     openedAccounts: number[]
     addressUnavailableReason?: string
     reloadHeld: boolean
-    reloadReleased: boolean
     recoveryReads: number
     releaseReload(): void
   }
@@ -279,6 +278,7 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
   test.setTimeout(20_000)
   const identity = createRuntimeSignerIdentity()
   try {
+    await installWalletReloadObservationBarrier(page)
     await prepareControlledWallet(page)
     await observeWalletController(page)
     await installRealTestSigner(page, identity, relay)
@@ -288,36 +288,28 @@ test("wallet reload cannot overwrite a newer lock state @market", async ({
     await saved(page)
     await expect(page.locator('[data-wallet-state="ready"]')).toHaveCount(1)
     await page.evaluate(
-      async ({ core, managerUrl }) => {
+      async ({ core }) => {
         const { db } = await import(core)
-        const { getSparkWalletManager } = await import(managerUrl)
-        const manager = getSparkWalletManager()
-        const read = manager.getBalance.bind(manager)
         const probe = (window as unknown as WalletFixtureWindow).__walletProbe
+        probe.recoveryReads = 0
         probe.reloadHeld = false
-        probe.releaseReload = () => {}
         const gate = new Promise<void>((resolve) => {
-          probe.releaseReload = () => {
-            probe.reloadReleased = true
-            resolve()
-          }
+          probe.releaseReload = resolve
         })
-        manager.getBalance = async (id: string) => {
-          const balance = await read(id)
-          if (!probe.reloadReleased) {
+        // Pause one descriptor reload after its provider sample. A shared
+        // balance getter can also be entered by unrelated balance refreshes.
+        ;(
+          window as unknown as WalletFixtureWindow
+        ).__controlledWalletReloadBarrier = async () => {
+          if (++probe.recoveryReads === 1) {
             probe.reloadHeld = true
             await gate
           }
-          return balance
         }
         const wallet = (await db.wallets.toArray())[0]
         await db.wallets.update(wallet.id, { label: "Reload gated wallet" })
       },
-      {
-        core,
-        managerUrl:
-          "/@fs" + path.resolve("packages/core/src/wallets/spark-sdk.ts"),
-      }
+      { core }
     )
     await expect
       .poll(() =>

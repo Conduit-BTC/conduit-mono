@@ -2,6 +2,42 @@
   "version": 1,
   "names": [
     {
+      "name": "bitcoinerliz",
+      "ownerPubkey": "563aa3075b57e57eabde84c4b18f844669974b0ce1d638d3cf32f61195cb2931",
+      "sparkIdentity": "03038ad10e792ddb993dd1669a71bd6b8363729dc8e34ee1bcf44a8a7c74d1562e",
+      "registration": true
+    },
+    {
+      "name": "btcblacksheep",
+      "ownerPubkey": "3a08af4a58631a3df30335517c3e3ba8e74ee5272cdc67a93d1e0c4fe076d53b",
+      "sparkIdentity": "039292be8d36a457c36d1a3a6aa226a1dc048a9d4b3663b6caae4e1e7ec9cf0656",
+      "registration": true
+    },
+    {
+      "name": "captainsats",
+      "ownerPubkey": "78fd7ff03a35023293728c0b490a057ac9b74b10ed50c50d7f21f26c1fec3f48",
+      "sparkIdentity": "0372853bfb63fe2ef271234867d1946a2beff023aa6249e57311f24644a1161345",
+      "registration": true
+    },
+    {
+      "name": "pdmonearth",
+      "ownerPubkey": "0a6863dfcf6534171557d9cac249ef47e0c5d6caa5c311a853149f535ef48681",
+      "sparkIdentity": "033bea184d89910ba4b2f8f16d198e0604fa3c296ba9b2bfe893883d0784c5aa1e",
+      "registration": true
+    },
+    {
+      "name": "satoshoes",
+      "ownerPubkey": "2e9130621de48a1b544a2c2b2b4a2e5b9f08afe473f773a1594ead071df2bffa",
+      "sparkIdentity": "02fddede953fedde5697ccd4010cca2155bce74722f1bcec546eeaa015e1c3adb8",
+      "registration": true
+    },
+    {
+      "name": "staci",
+      "ownerPubkey": "5f66ac39693c3c233316f141ff8bbdf43647c4854adb47a2da94fa855d7387e1",
+      "sparkIdentity": "024831746af922fa89026b7b5ea4a9baadf2fe44d64ecd2ed12a7ae36e9d33e283",
+      "registration": true
+    },
+    {
       "name": "release-check-1013",
       "ownerPubkey": "7821ccd67e51093e67751ad5fce9b9fc73fb545736dc29cf75f3f8dafcd5ecec",
       "sparkIdentity": "03742b3712bbe0dabb7e4acf2b391c6270a0f2812bdcb9ea2dac3490ad301086a0",

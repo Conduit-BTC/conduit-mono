@@ -38,6 +38,10 @@
 
   #root {
     position: relative;
+    /* Out-of-flow form/accessibility controls must not enlarge the document.
+       Unlike hidden, clip does not create another scroll owner: Market and
+       mobile Merchant keep their normal document scrolling and sticky chrome. */
+    overflow: clip;
   }
 }
 
