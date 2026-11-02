@@ -8,6 +8,8 @@ import { createRepositoryContributorsPlugin } from "../../scripts/vite/repositor
 import { createThemeBootstrapPlugin } from "../../scripts/vite/theme_bootstrap.ts"
 import { createAboutMetadataPlugin } from "../../scripts/vite/about_metadata.ts"
 
+import { createBrowserSecurityPlugin } from "../../scripts/vite/browser_security.ts"
+
 const appDir = fileURLToPath(new URL(".", import.meta.url))
 const buildContract = createConduitBuildContract(appDir)
 
@@ -15,6 +17,7 @@ export default defineConfig({
   define: buildContract.define,
   plugins: [
     createThemeBootstrapPlugin(),
+    createBrowserSecurityPlugin(),
     TanStackRouterVite({ autoCodeSplitting: true }),
     react(),
     createRepositoryContributorsPlugin(),
