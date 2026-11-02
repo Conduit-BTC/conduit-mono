@@ -134,10 +134,12 @@ export interface EventTimelineViewportProps {
   hiddenLaterCount: number
   nowAnchorRef: Ref<HTMLDivElement>
   onLoadEarlier: () => void
+  onHideEarlier?: () => void
   onLoadLater: () => void
   onScroll?: () => void
   pageSize: number
   pastEvents: ReactNode
+  visiblePastCount?: number
   viewportRef: Ref<HTMLDivElement>
 }
 
@@ -158,10 +160,12 @@ export function EventTimelineViewport({
   hiddenLaterCount,
   nowAnchorRef,
   onLoadEarlier,
+  onHideEarlier,
   onLoadLater,
   onScroll,
   pageSize,
   pastEvents,
+  visiblePastCount,
   viewportRef,
 }: EventTimelineViewportProps) {
   const timelineId = useId()
@@ -181,22 +185,48 @@ export function EventTimelineViewport({
       )}
       aria-busy={busy}
     >
-      {hiddenEarlierCount > 0 ? (
+      {hiddenEarlierCount > 0 ||
+      (onHideEarlier && (visiblePastCount ?? 0) > 0) ? (
         <div className="grid grid-cols-[3.5rem_0.75rem_minmax(0,1fr)] gap-x-2 pb-4 sm:grid-cols-[5.5rem_1rem_minmax(0,1fr)] sm:gap-x-4">
           <span />
           <span className="relative" aria-hidden="true">
             <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-[var(--border)]" />
           </span>
-          <div className="flex justify-center sm:justify-start">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-controls={`${timelineId}-past-events`}
-              onClick={onLoadEarlier}
-            >
-              {paginationControlLabel("earlier", hiddenEarlierCount, pageSize)}
-            </Button>
+          <div className="flex flex-wrap justify-center gap-2 sm:justify-start">
+            {hiddenEarlierCount > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-controls={`${timelineId}-past-events`}
+                aria-expanded={
+                  visiblePastCount === undefined
+                    ? undefined
+                    : visiblePastCount > 0
+                }
+                onClick={onLoadEarlier}
+              >
+                {visiblePastCount === 0
+                  ? "Show past events"
+                  : paginationControlLabel(
+                      "earlier",
+                      hiddenEarlierCount,
+                      pageSize
+                    )}
+              </Button>
+            ) : null}
+            {onHideEarlier && (visiblePastCount ?? 0) > 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                aria-controls={`${timelineId}-past-events`}
+                aria-expanded
+                onClick={onHideEarlier}
+              >
+                Hide past events
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}

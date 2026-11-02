@@ -98,7 +98,7 @@ export function MarketEventsTimeline({
   const filterKey = `${discovery.effectiveSource}:${accountPubkey ?? "guest"}:${search.organizer ?? "all"}:${search.location ?? "all"}`
   const [presentationLimits, setPresentationLimits] =
     useState<TimelinePresentationLimits>({
-      earlier: MARKET_EVENT_TIMELINE_PAGE_SIZE,
+      earlier: 0,
       key: filterKey,
       later: MARKET_EVENT_TIMELINE_PAGE_SIZE,
     })
@@ -106,7 +106,7 @@ export function MarketEventsTimeline({
     presentationLimits.key === filterKey
       ? presentationLimits
       : {
-          earlier: MARKET_EVENT_TIMELINE_PAGE_SIZE,
+          earlier: 0,
           key: filterKey,
           later: MARKET_EVENT_TIMELINE_PAGE_SIZE,
         }
@@ -280,6 +280,11 @@ export function MarketEventsTimeline({
     })
   }
 
+  function hideEarlier(): void {
+    timelineAnchor.prepareForPrepend()
+    setPresentationLimits({ ...activePresentationLimits, earlier: 0 })
+  }
+
   function renderFutureEntry({
     read,
     calendar,
@@ -436,9 +441,11 @@ export function MarketEventsTimeline({
           hiddenLaterCount={presentation.hiddenLaterCount}
           nowAnchorRef={timelineAnchor.nowAnchorRef}
           onLoadEarlier={loadEarlier}
+          onHideEarlier={hideEarlier}
           onLoadLater={loadLater}
           pageSize={MARKET_EVENT_TIMELINE_PAGE_SIZE}
           pastEvents={renderMixedEntries(presentation.past)}
+          visiblePastCount={presentation.past.length}
           viewportRef={timelineAnchor.timelineViewportRef}
         />
       ) : discovery.futureMarkets.length > 0 ? (

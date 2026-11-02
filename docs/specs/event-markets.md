@@ -102,9 +102,11 @@ bytes. Unrelated open/close, booth and merchant-approval/revocation edits preser
 existing fee tags, including unsupported versions, rather than silently
 dropping them. Disabling or revoking is an explicit newly signed revision.
 New or deliberately edited fee settings are percentage-only: emit minimum zero
-and omit expiry. Offer the organizer's selected profile receiving address as an
-explicit shortcut, alongside custom entry; saving freezes the actual normalized
-destination rather than a live profile reference. Existing minimum/expiry terms
+and omit expiry. Prefill a new blank fee destination from the organizer's selected
+profile receiving address only after the shared receiver-capability check qualifies
+it. Keep explicit custom entry and never overwrite a typed destination or existing
+signed fee. Saving freezes the actual normalized destination rather than a live
+profile reference. Existing minimum/expiry terms
 remain visible and unchanged until deliberately edited. Retained signed expiry
 must be later than that revision's signing time. Current financial admission
 checks signed creation time and exclusive expiry when present; historical parsing

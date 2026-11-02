@@ -9,7 +9,8 @@ const eventBannerConsumers = [
   {
     label: "host and merchant event view",
     path: "apps/merchant/src/components/FutureEventMarketManager.tsx",
-    imageSource: "imageUrl={selectedCalendar?.image ?? calendar?.image}",
+    imageSource:
+      "imageUrl={ detailsOpen ? undefined : (selectedCalendar?.image ?? calendar?.image) }",
   },
 ] as const
 
@@ -30,7 +31,9 @@ describe("event banner presentation", () => {
     for (const surface of eventBannerConsumers) {
       const source = await Bun.file(surface.path).text()
       expect(source, surface.label).toContain("<EventPageHeader")
-      expect(source, surface.label).toContain(surface.imageSource)
+      expect(source.replace(/\s+/g, " "), surface.label).toContain(
+        surface.imageSource
+      )
     }
   })
 

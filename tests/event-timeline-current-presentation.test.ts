@@ -142,4 +142,69 @@ describe("current Event Market calendar presentation", () => {
     stop()
     expect(clock.pendingTimerCount()).toBe(0)
   })
+
+  it("starts with current/upcoming only and reveals history without misclassifying older-start ongoing dates", async () => {
+    const ongoing = await calendar({
+      kind: 31922,
+      dTag: "multi-day-active",
+      title: "Long fair",
+      start: "2030-06-01",
+      end: "2030-06-05",
+    })
+    const ended = await calendar({
+      kind: 31922,
+      dTag: "later-start-ended",
+      title: "Past fair",
+      start: "2030-06-03",
+    })
+    const zoned = await calendar({
+      kind: 31923,
+      dTag: "local-evening-active",
+      title: "Evening fair",
+      start: Date.parse("2030-06-03T23:00:00Z") / 1_000,
+      end: Date.parse("2030-06-04T02:00:00Z") / 1_000,
+      startTzid: "America/Chicago",
+      endTzid: "America/Chicago",
+    })
+    const upcoming = await calendar({
+      kind: 31922,
+      dTag: "future-day",
+      title: "Future fair",
+      start: "2030-06-05",
+    })
+    const dates = [upcoming, ended, zoned, ongoing]
+    const rows = dates.map((date) => ({
+      key: date.coordinate,
+      start: date.start,
+      end: date.end,
+    }))
+    const snapshot = structuredClone(rows)
+    const now = Date.parse("2030-06-04T00:30:00Z")
+    const current = paginateEventTimeline(rows, { earlier: 0, later: 12 }, now)
+    expect(current.past).toEqual([])
+    expect(current.hiddenEarlierCount).toBe(1)
+    expect(current.currentAndFuture.map((row) => row.key)).toEqual([
+      ongoing.coordinate,
+      zoned.coordinate,
+      upcoming.coordinate,
+    ])
+    const history = paginateEventTimeline(
+      rows,
+      {
+        earlier: getNextEventTimelineLimit(0, current.hiddenEarlierCount),
+        later: 12,
+      },
+      now
+    )
+    expect(history.past.map((row) => row.key)).toEqual([ended.coordinate])
+    expect(history.currentAndFuture).toEqual(current.currentAndFuture)
+    expect(rows).toEqual(snapshot)
+    expect(
+      paginateEventTimeline(
+        rows,
+        { earlier: 0, later: 12 },
+        ongoing.end
+      ).currentAndFuture.map((row) => row.key)
+    ).toEqual([upcoming.coordinate])
+  })
 })
