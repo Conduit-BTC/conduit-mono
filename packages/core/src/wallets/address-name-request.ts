@@ -25,17 +25,39 @@ export type AddressNameRequestStatus =
   | "approved"
   | "declined"
   | "unavailable"
+  | "origin_forbidden"
+  | "preview_expired"
+  | "challenge_failed"
+  | "rate_limited"
+  | "invalid"
 
 /** Only an explicit gateway record-absence response can release a pending request. */
 export async function decodeAddressNameRequestResponse(
   result: Response
 ): Promise<AddressNameRequestStatus> {
-  if (!result.ok && result.status !== 404) return "pending"
   let value: unknown
   try {
     value = await result.json()
   } catch {
     return "pending"
+  }
+  if (!result.ok && result.status !== 404) {
+    const status =
+      value && typeof value === "object"
+        ? (value as Record<string, unknown>).status
+        : undefined
+    const expected: Record<string, number[]> = {
+      origin_forbidden: [403],
+      preview_expired: [403],
+      challenge_failed: [400],
+      rate_limited: [429],
+      invalid: [400, 401, 409],
+      unavailable: [503],
+    }
+    return typeof status === "string" &&
+      expected[status]?.includes(result.status)
+      ? (status as AddressNameRequestStatus)
+      : "pending"
   }
   if (result.status === 404)
     return value &&
@@ -172,5 +194,55 @@ export function verifyAddressRequestAuthority(
     )
   } catch {
     return false
+  }
+}
+
+/** Public readiness has no wallet data and cannot submit or activate anything. */
+export async function addressRequestAvailability(
+  fetcher: typeof fetch
+): Promise<"ready" | AddressNameRequestStatus> {
+  try {
+    const result = await fetcher(
+      `${ADDRESS_REQUEST_ORIGIN}${ADDRESS_REQUEST_PATH}/availability`,
+      {
+        method: "GET",
+        credentials: "omit",
+        redirect: "error",
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+        signal: AbortSignal.timeout(20_000),
+      }
+    )
+    if (result.ok) {
+      const value = (await result.json()) as { status?: string }
+      return value.status === "ready" ? "ready" : "unavailable"
+    }
+    const status = await decodeAddressNameRequestResponse(result)
+    return status === "origin_forbidden" || status === "preview_expired"
+      ? status
+      : "unavailable"
+  } catch {
+    return "unavailable"
+  }
+}
+
+export function addressRequestFailureMessage(
+  status: AddressNameRequestStatus
+): string {
+  switch (status) {
+    case "origin_forbidden":
+      return "This build is not authorized for real name requests. Open the current trusted preview or production app."
+    case "preview_expired":
+      return "This preview's authorization has expired. Open a newer preview or production app; your saved request is preserved."
+    case "challenge_failed":
+      return "The security check was rejected. Complete a fresh check, then retry the same saved request."
+    case "rate_limited":
+      return "Too many attempts. Wait a minute, then check your saved request's status."
+    case "invalid":
+      return "The gateway rejected the request's identity proof. Reconnect your signer and check the saved request."
+    case "unavailable":
+      return "Name-request service or preview authorization is unavailable. Saved progress is preserved; try again later or use production."
+    default:
+      return "Submission could not be confirmed. Check the same saved request before retrying."
   }
 }
