@@ -1,4 +1,4 @@
-import type { ProductSupplierAllocation } from "@conduit/core"
+import type { ProductImage, ProductSupplierAllocation } from "@conduit/core"
 import { isShippingWeightUnit } from "./shippingWeightUnits"
 import {
   getMerchantProductSupplierAllocationFormState,
@@ -213,8 +213,9 @@ function parseStoredProductDraft(raw: string): StoredProductDraft | null {
                   typeof (image as { alt?: unknown }).alt === "string")
             )
           ? form.images.map((image) => {
-              const candidateImage = image as { url: string; alt?: string }
+              const candidateImage = image as ProductImage
               return {
+                ...candidateImage,
                 url: candidateImage.url,
                 ...(candidateImage.alt ? { alt: candidateImage.alt } : {}),
               }

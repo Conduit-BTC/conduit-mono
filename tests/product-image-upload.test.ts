@@ -10,6 +10,7 @@ import {
   MAX_PRODUCT_IMAGE_DECODED_PIXELS,
   MAX_PRODUCT_IMAGE_INPUT_DIMENSION,
   MAX_PRODUCT_IMAGE_OUTPUT_DIMENSION,
+  PRODUCT_IMAGE_DEFAULT_SERVERS,
   PRODUCT_IMAGE_FALLBACK_SERVER,
   PRODUCT_IMAGE_UPLOAD_AUTH_TTL_SECONDS,
   ProductImageUploadError,
@@ -123,6 +124,69 @@ function decodeLegacyAuthorization(value: string): Record<string, unknown> {
 }
 
 describe("product image upload target resolution", () => {
+  it("bounds copies without blocking the preferred host or rewriting a long personal list", () => {
+    const serverUrls = Array.from(
+      { length: 12 },
+      (_, index) => `https://media-${index}.conduit.market`
+    )
+    const signedResolution = resolution({
+      status: "published",
+      publishedServerUrls: serverUrls,
+      publishedRevision: { eventId: "b".repeat(64), createdAt: 100 },
+      frontier: { eventId: "b".repeat(64), createdAt: 100, state: "valid" },
+    })
+    expect(
+      resolveProductImageUploadTarget({
+        owner: "a".repeat(64),
+        signerAvailable: true,
+        resolution: signedResolution,
+      })
+    ).toEqual({
+      kind: "configured",
+      serverUrl: serverUrls[0],
+      backupServerUrls: serverUrls.slice(1, 10),
+    })
+    expect(signedResolution.publishedServerUrls).toEqual(serverUrls)
+  })
+
+  it("uses the newer pending signed server list for every copy before relay acknowledgement", () => {
+    const serverUrls = [CONFIGURED_SERVER, DRAFT_SERVER]
+    const signedEvent = finalizeEvent(
+      {
+        kind: 10063,
+        created_at: 101,
+        content: "",
+        tags: serverUrls.map((server) => ["server", server]),
+      },
+      generateSecretKey()
+    )
+    const target = resolveProductImageUploadTarget({
+      owner: signedEvent.pubkey,
+      signerAvailable: true,
+      resolution: resolution({
+        owner: signedEvent.pubkey,
+        status: "lookup_partial",
+        coverage: "partial",
+        publishedServerUrls: ["https://old.conduit.market"],
+        publishedRevision: { eventId: "b".repeat(64), createdAt: 100 },
+        pending: {
+          signedEvent,
+          serverUrls,
+          publishRelayUrls: ["wss://relay.conduit.market"],
+          acknowledgedRelayUrls: [],
+          rejectedRelayUrls: [],
+          timedOutRelayUrls: [],
+          stagedAt: 101,
+        },
+      }),
+    })
+    expect(target).toEqual({
+      kind: "configured",
+      serverUrl: CONFIGURED_SERVER,
+      backupServerUrls: [DRAFT_SERVER],
+    })
+  })
+
   it("uses a clean local CND-186 mirror only when it matches signed authority", () => {
     const publishedRevision = {
       eventId: "b".repeat(64),
@@ -203,6 +267,7 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      backupServerUrls: ["https://blossom.nostr.build"],
     })
 
     expect(
@@ -308,6 +373,7 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      backupServerUrls: ["https://blossom.nostr.build"],
     })
   })
 
@@ -351,7 +417,11 @@ describe("product image upload target resolution", () => {
     ).toEqual({ kind: "unavailable", reason: "malformed_preferences" })
   })
 
-  it("offers the approved fallback only after complete positive absence", () => {
+  it("offers Ditto and nostr.build only after complete positive absence", () => {
+    expect(PRODUCT_IMAGE_DEFAULT_SERVERS).toEqual([
+      "https://blossom.ditto.pub",
+      "https://blossom.nostr.build",
+    ])
     expect(
       resolveProductImageUploadTarget({
         owner: "a".repeat(64),
@@ -361,6 +431,7 @@ describe("product image upload target resolution", () => {
     ).toEqual({
       kind: "fallback",
       serverUrl: PRODUCT_IMAGE_FALLBACK_SERVER,
+      backupServerUrls: ["https://blossom.nostr.build"],
     })
   })
 })
@@ -1171,8 +1242,6 @@ describe("verified Blossom product image upload", () => {
     ]
     const codes: ProductImageUploadFailureCode[] = [
       "unsupported_type",
-      "fallback_retry_mismatch",
-      "fallback_guard_unavailable",
       "payment_required",
       "policy_rejected",
       "integrity_failed",

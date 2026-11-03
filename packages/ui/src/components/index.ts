@@ -329,6 +329,7 @@ export {
 } from "./CommerceInboxRecovery"
 export { PrivateAttachment } from "./PrivateAttachment"
 
+export { RecoverableProductImage } from "./RecoverableProductImage"
 export {
   InvoicePayment,
   type ExternalInvoicePaymentAction,
