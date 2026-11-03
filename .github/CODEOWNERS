@@ -1,39 +1,41 @@
 # Require maintainer review for repository automation, dependency, and deploy
 # surfaces that can affect CI execution, preview publishing, or shipped builds.
+# Specialist reviews are requested explicitly for critical risks or decisions;
+# file ownership alone does not trigger a specialist review request.
 
-.github/** @ericfj2140 @bitkarrot
-package.json @ericfj2140 @bitkarrot
-bun.lock @ericfj2140 @bitkarrot
-apps/*/package.json @ericfj2140 @bitkarrot
-packages/*/package.json @ericfj2140 @bitkarrot
-.env.example @ericfj2140 @bitkarrot
-apps/*/.env.production @ericfj2140 @bitkarrot
-e2e/** @ericfj2140 @bitkarrot
-playwright.config.ts @ericfj2140 @bitkarrot
-scripts/smoke/** @ericfj2140 @bitkarrot
-scripts/ci/select_smoke_shards.ts @ericfj2140 @bitkarrot
-scripts/ci/validate_playwright_smoke_areas.ts @ericfj2140 @bitkarrot
-docs/specs/testing-e2e.md @ericfj2140 @bitkarrot
-tests/agent-credential-boundary.test.ts @ericfj2140 @bitkarrot
-tests/playwright-smoke-credential-fixtures.test.ts @ericfj2140 @bitkarrot
-tests/playwright-smoke-content-safety.test.ts @ericfj2140 @bitkarrot
-tests/playwright-smoke-areas.test.ts @ericfj2140 @bitkarrot
-tests/pr-evidence-contract.test.ts @ericfj2140 @bitkarrot
-tests/select-smoke-shards.test.ts @ericfj2140 @bitkarrot
-packages/ui/src/components/ProductLegal*.tsx @ericfj2140 @bitkarrot
-packages/ui/src/components/ProductLegalVersion.ts @ericfj2140 @bitkarrot
-packages/ui/src/components/ProductPrivacyPolicy.tsx @ericfj2140 @bitkarrot
-packages/ui/src/components/ProductTermsOfService.tsx @ericfj2140 @bitkarrot
-packages/ui/src/legal/** @ericfj2140 @bitkarrot
-LICENSE @ericfj2140 @bitkarrot
+.github/** @ericfj2140
+package.json @ericfj2140
+bun.lock @ericfj2140
+apps/*/package.json @ericfj2140
+packages/*/package.json @ericfj2140
+.env.example @ericfj2140
+apps/*/.env.production @ericfj2140
+e2e/** @ericfj2140
+playwright.config.ts @ericfj2140
+scripts/smoke/** @ericfj2140
+scripts/ci/select_smoke_shards.ts @ericfj2140
+scripts/ci/validate_playwright_smoke_areas.ts @ericfj2140
+docs/specs/testing-e2e.md @ericfj2140
+tests/agent-credential-boundary.test.ts @ericfj2140
+tests/playwright-smoke-credential-fixtures.test.ts @ericfj2140
+tests/playwright-smoke-content-safety.test.ts @ericfj2140
+tests/playwright-smoke-areas.test.ts @ericfj2140
+tests/pr-evidence-contract.test.ts @ericfj2140
+tests/select-smoke-shards.test.ts @ericfj2140
+packages/ui/src/components/ProductLegal*.tsx @ericfj2140
+packages/ui/src/components/ProductLegalVersion.ts @ericfj2140
+packages/ui/src/components/ProductPrivacyPolicy.tsx @ericfj2140
+packages/ui/src/components/ProductTermsOfService.tsx @ericfj2140
+packages/ui/src/legal/** @ericfj2140
+LICENSE @ericfj2140
 
 # Imported account secrets and shared authority/input changes need focused review.
-packages/core/src/protocol/local-key/** @ericfj2140 @bitkarrot
-packages/core/src/context/AuthContext.tsx @ericfj2140 @bitkarrot
-packages/core/src/protocol/auth-session*.ts @ericfj2140 @bitkarrot
-packages/core/src/protocol/session-signer.ts @ericfj2140 @bitkarrot
-packages/ui/src/components/LocalKeyImportForm.tsx @ericfj2140 @bitkarrot
-packages/ui/src/components/SignerSwitch.tsx @ericfj2140 @bitkarrot
-apps/*/src/components/SignerSwitch.tsx @ericfj2140 @bitkarrot
-tests/local-key*.test.ts @ericfj2140 @bitkarrot
-docs/knowledge/local-signer-security-review.md @ericfj2140 @bitkarrot
+packages/core/src/protocol/local-key/** @ericfj2140
+packages/core/src/context/AuthContext.tsx @ericfj2140
+packages/core/src/protocol/auth-session*.ts @ericfj2140
+packages/core/src/protocol/session-signer.ts @ericfj2140
+packages/ui/src/components/LocalKeyImportForm.tsx @ericfj2140
+packages/ui/src/components/SignerSwitch.tsx @ericfj2140
+apps/*/src/components/SignerSwitch.tsx @ericfj2140
+tests/local-key*.test.ts @ericfj2140
+docs/knowledge/local-signer-security-review.md @ericfj2140
