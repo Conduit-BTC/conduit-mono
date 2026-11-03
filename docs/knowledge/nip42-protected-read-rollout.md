@@ -22,6 +22,18 @@ ordinary connection metadata such as source IP, destination, timing, and
 traffic volume. A provider that terminates the WebSocket or TLS path may also
 process relay payloads.
 
+An explicit Network save or retry has one narrow exception: after an anonymous
+exact preference read returns `auth_required`, `account-network-readback.ts`
+may use the existing active external-signer lease and this executor to confirm
+that owner's exact kind `10002` or `10050` event on the same saved target. The
+filter requires one full event ID, one matching owner, one kind, and limit one.
+This is foreground confirmation of already signed work; general preference
+discovery and remote-account lookup remain anonymous. It never widens the saved
+relay plan or substitutes authentication/ACK for verified exact readback.
+AUTH and the retried REQ recheck relay admission, and account revocation closes
+the session's authenticated connection. Explicit Retry may clear the existing
+prompt-suppression gate; background refresh cannot.
+
 The executor boundary is NDK-neutral:
 
 - request filters and returned events are plain clone-safe Nostr objects;

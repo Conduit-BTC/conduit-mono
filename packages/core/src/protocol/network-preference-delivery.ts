@@ -13,6 +13,7 @@ export interface NetworkPreferencePublishObservation {
 export interface NetworkPreferenceReadbackObservation {
   relayUrl: string
   status: Exclude<NetworkPreferenceReadbackStatus, "pending">
+  authFailure?: "rejected"
 }
 
 export interface NetworkPreferenceDistributionOutcomeUpdate {
@@ -113,6 +114,11 @@ export function applyNetworkPreferenceDistributionOutcomes(
         READBACK_STRENGTH[next.readbackStatus]
       ) {
         next.readbackStatus = readback.status
+        if (readback.status === "auth_required" && readback.authFailure) {
+          next.readbackAuthFailure = readback.authFailure
+        } else {
+          delete next.readbackAuthFailure
+        }
         if (readback.status === "observed") {
           next.observedAt = update.observedAt
         }
