@@ -75,7 +75,7 @@ describe("pull request evidence contract", () => {
       "tests/pr-evidence-contract.test.ts",
       "tests/select-smoke-shards.test.ts",
     ]) {
-      expect(codeowners).toContain(`${path} @ericfj2140 @bitkarrot`)
+      expect(codeowners).toContain(`${path} @ericfj2140 @JamesTsetsekas`)
     }
   })
 

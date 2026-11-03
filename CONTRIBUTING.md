@@ -55,6 +55,19 @@ During review, mark one of:
 
 Request a durable contract update when the behavior has broad or long-lived public implications. Do not block an otherwise complete implementation solely because it lacks a new spec document.
 
+### Specialist Review Requests
+
+Request specialist review explicitly when a change presents a critical security,
+payment, authentication, privacy, data-loss, release-authority, or architecture
+risk that needs the specialist's judgment. Explain the concrete risk and the
+decision or validation needed. Routine dependency updates, tests, copy, and UI
+maintenance do not warrant a specialist request solely because of their file
+paths. Protocol or cryptographic dependency changes still require assessment of
+their actual impact before treating them as routine.
+
+CODEOWNERS assigns routine reviews to the repository maintainers across all files. Specialist review
+is additional to the existing human review, QA, and merge requirements.
+
 ### Commits
 
 - Use Conventional Commits for commit messages: `type(scope): description`
