@@ -5,7 +5,7 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 100
 
   - package-ecosystem: "bun"
     directory: "/"
@@ -14,7 +14,7 @@ updates:
       day: "monday"
       time: "09:00"
       timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 8
+    open-pull-requests-limit: 100
     cooldown:
       semver-patch-days: 1
       semver-minor-days: 3
