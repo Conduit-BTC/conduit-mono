@@ -65,7 +65,7 @@ maintenance do not warrant a specialist request solely because of their file
 paths. Protocol or cryptographic dependency changes still require assessment of
 their actual impact before treating them as routine.
 
-CODEOWNERS retains maintainer ownership of protected surfaces. Specialist review
+CODEOWNERS assigns routine reviews to the repository maintainers across all files. Specialist review
 is additional to the existing human review, QA, and merge requirements.
 
 ### Commits
