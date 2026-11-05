@@ -59,15 +59,7 @@ describe("Playwright CI runtime", () => {
   it("overlaps build with independent checks and keeps previews behind validated build", () => {
     expect(workflow.jobs["build-mainnet"]!.needs ?? []).toEqual([])
     expect(workflow.jobs["preview-links"]!.needs).toEqual(["build-mainnet"])
-    for (const check of [
-      "format",
-      "lint",
-      "typecheck",
-      "test",
-      "color-policy",
-      "telemetry-policy",
-      "e2e-smoke",
-    ]) {
+    for (const check of ["static-checks", "test", "e2e-smoke"]) {
       expect(workflow.jobs[check]).toBeDefined()
     }
   })
