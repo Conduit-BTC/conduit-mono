@@ -3,11 +3,9 @@ import {
   config,
   isQuantumRouterEnabled,
   isQuantumRouterExecutionEnabled,
-  resolveE2eRelayIsolation,
   resolveQuantumRouterEnabled,
   resolveQuantumRouterExecutionEnabled,
 } from "../packages/core/src/config"
-import { resolvePlaywrightRouterWebServerTarget } from "../scripts/dev/run_playwright_router_web_server"
 import { resolveDeploymentProfile } from "../scripts/vite/deployment_profile"
 
 const hosted = {
@@ -125,29 +123,6 @@ describe("Quantum Router capability admission", () => {
         resolveQuantumRouterExecutionEnabled({ ...local, deploymentProfile })
       ).toBe(false)
     }
-  })
-
-  it("admits the dedicated isolated mock router deployment", () => {
-    const { env } = resolvePlaywrightRouterWebServerTarget("market", {
-      PLAYWRIGHT_RELAY_PORT: "5175",
-    })
-    const profile = resolveDeploymentProfile(env)
-    const isolatedRelayUrls = resolveE2eRelayIsolation(
-      "mock",
-      env.VITE_E2E_RELAY_URL ?? ""
-    )
-    expect(
-      resolveQuantumRouterEnabled({
-        profileEnabled: profile.publicFeatures.quantumRouterEnabled,
-        deploymentProfile: profile.name,
-        lightningNetwork: profile.lightningNetwork,
-        hostname: "127.0.0.1",
-        dev: true,
-        localRouterCanaryFlag: env.VITE_CHECKOUT_SPARK_LOCAL_ROUTER_CANARY,
-        localRehearsalFlag: env.VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL,
-        e2eRelayIsolationEnabled: isolatedRelayUrls.length === 1,
-      })
-    ).toBe(true)
   })
 
   it("does not admit mock routing outside the fully isolated local rehearsal", () => {

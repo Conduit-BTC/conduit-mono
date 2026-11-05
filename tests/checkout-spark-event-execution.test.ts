@@ -76,7 +76,7 @@ import {
   wrapPrivateMessage,
   unwrapPrivateMessageEnvelope,
 } from "@conduit/core/protocol/private-message-primitives"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
 import { createCheckoutSparkSettledFundingBridge } from "../apps/market/src/lib/checkout-spark-settled-funding"
 import { prepareCheckoutSparkSettledOutgoingLeg } from "../apps/market/src/lib/checkout-spark-settled-leg-preparation"
 import { createCheckoutSparkSettledOutgoingProvider } from "../apps/market/src/lib/checkout-spark-settled-outgoing-provider"

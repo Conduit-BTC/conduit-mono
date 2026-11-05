@@ -4,8 +4,6 @@ import type {
 } from "../../apps/market/src/lib/spark-sdk"
 import type { CheckoutSparkNativeRetirementReader } from "@conduit/core"
 
-export const HERMETIC_SPARK_BINDING = "__conduitHermeticSparkNative"
-
 export type WalletMethod = Exclude<
   keyof SparkNativeWallet,
   "on" | "off" | "cleanup" | "openRetirementReader"
