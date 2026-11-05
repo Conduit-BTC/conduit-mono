@@ -176,6 +176,28 @@ export function normalizeCurrencyCode(currency: string): string {
   return currency.trim().toUpperCase()
 }
 
+export function normalizeFiatRates(
+  rates: Record<string, number>
+): Record<string, number> | undefined {
+  const normalized = Object.entries(rates).reduce<Record<string, number>>(
+    (accumulator, [currency, usdPerUnit]) => {
+      const normalizedCurrency = currency.trim().toUpperCase()
+      if (
+        /^[A-Z]{3}$/.test(normalizedCurrency) &&
+        normalizedCurrency !== "USD" &&
+        Number.isFinite(usdPerUnit) &&
+        usdPerUnit > 0
+      ) {
+        accumulator[normalizedCurrency] = usdPerUnit
+      }
+      return accumulator
+    },
+    {}
+  )
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
 export function isSupportedShopperDisplayCurrency(
   currency: string
 ): currency is ShopperDisplayCurrency {

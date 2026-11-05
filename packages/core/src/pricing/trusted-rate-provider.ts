@@ -1,4 +1,4 @@
-import type { BtcUsdRateQuote } from "./index"
+import { normalizeFiatRates, type BtcUsdRateQuote } from "./index"
 
 const MEMPOOL_PRICE_URL = "https://mempool.space/api/v1/prices"
 const COINBASE_SPOT_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
@@ -17,26 +17,6 @@ export type TrustedPricingRateOptions = {
   fetchImpl?: typeof fetch
   nowMs?: () => number
   timeoutMs?: number
-}
-
-function normalizeFiatRates(rates: FiatUsdRates): FiatUsdRates | undefined {
-  const normalized = Object.entries(rates).reduce<FiatUsdRates>(
-    (accumulator, [currency, usdPerUnit]) => {
-      const normalizedCurrency = currency.trim().toUpperCase()
-      if (
-        /^[A-Z]{3}$/.test(normalizedCurrency) &&
-        normalizedCurrency !== "USD" &&
-        Number.isFinite(usdPerUnit) &&
-        usdPerUnit > 0
-      ) {
-        accumulator[normalizedCurrency] = usdPerUnit
-      }
-      return accumulator
-    },
-    {}
-  )
-
-  return Object.keys(normalized).length > 0 ? normalized : undefined
 }
 
 function normalizeRequiredCurrencies(currencies: readonly string[]): string[] {
