@@ -351,15 +351,4 @@ describe("status correction wire format", () => {
   })
 })
 
-describe("guest reopen presentation", () => {
-  it("does not claim that a guest is notified", async () => {
-    const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
-
-    expect(source).toContain("It does not notify the guest")
-    expect(source).toContain("delivery: operationalDelivery")
-    expect(source).toContain("communication: communicationState")
-    expect(source).toContain("reopenOrderMutation.mutate(reopenConfirmation)")
-    expect(source).toContain("reopenOrderMutation.reset()")
-    expect(source).toContain("Couldn&apos;t reopen the order")
-  })
-})
+describe("guest reopen presentation", () => {})

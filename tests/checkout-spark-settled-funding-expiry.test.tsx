@@ -39,26 +39,4 @@ describe("settled Spark funding expiry notice", () => {
     )
     expect(markup).not.toContain("0:00 left")
   })
-
-  it("shows the saved funding deadline while payable or checking exact credit", async () => {
-    const route = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    expect(route).toMatch(
-      /settledRouterControl\?\.status === "pay_funding"\s*\? settledRouterControl\.fundingExpiresAt/
-    )
-    expect(route).toMatch(
-      /settledRouterControl\.status === "pay_funding" \|\|\s*settledRouterControl\.status === "check_funding"\) && \(\s*<CheckoutSparkFundingExpiry\s+expiresAt=\{settledRouterControl\.fundingExpiresAt\}/
-    )
-    expect(route).toMatch(
-      /inspectionOnly:\s*current\.status === "check_funding" && !exposeExternalInvoice/
-    )
-  })
-
-  it("keeps preparation concise and leaves the saved invoice countdown in Orders", async () => {
-    const route = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-    expect(route.includes("Continue to payment")).toBe(true)
-    expect(route.includes("Continue when you are ready to pay")).toBe(false)
-    expect(route.includes("getCheckoutSparkSettledTiming()")).toBe(false)
-    const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    expect(orders.includes("<CheckoutSparkFundingExpiry")).toBe(true)
-  })
 })

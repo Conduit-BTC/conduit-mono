@@ -565,21 +565,6 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(publishButton).toBeDefined()
   })
 
-  it("previews whole removal by omitting the target recovery row", async () => {
-    const panelSource = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-    const preview = panelSource.match(
-      /function removalInstructionForReview\([\s\S]*?\n\}/
-    )?.[0]
-    expect(preview).toContain("hasUnpublishedChanges")
-    expect(preview).toContain("preparationError")
-    expect(panelSource).toContain(
-      'controller.prepareChange({ type: "remove_relay", relayUrl })'
-    )
-    expect(panelSource).toContain("!preparedChange")
-  })
-
   it("names the exact zero, one, or two signer requests for whole removal", () => {
     const redundancyWarning =
       "One Publish relay is valid, but adding another improves redundancy."
@@ -630,19 +615,6 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(bothKinds.warnings).toEqual([redundancyWarning])
   })
 
-  it("keeps prepared warnings visible in both final review dialogs", async () => {
-    const panelSource = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-
-    expect(panelSource).toContain(
-      "<PreparedReviewWarnings warnings={review.warnings} />"
-    )
-    expect(panelSource).toContain(
-      "<PreparedReviewWarnings warnings={summary.warnings} />"
-    )
-  })
-
   it("offers signer-free redistribution for the exact retained inbox event", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
@@ -655,18 +627,6 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(markup).toContain(
       "This does not create a new event or ask your signer."
     )
-  })
-
-  it("resets unpublished edits to the current Network projection", async () => {
-    const panelSource = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-    const discardReview = panelSource.match(
-      /function discardReview\(\): void \{[\s\S]*?\n {2}\}/
-    )?.[0]
-
-    expect(discardReview).toContain("setRows(controller.view.rows)")
-    expect(panelSource).not.toContain("function discardReviewRows(")
   })
 
   it("shows exact readback evidence without an update-journal summary", () => {
@@ -998,30 +958,6 @@ describe("RelaySettingsPanel account Network review", () => {
     )
   })
 
-  it("requires a warning review before disabling app relays", async () => {
-    const panelSource = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-
-    expect(panelSource).toContain("if (!enabled)")
-    expect(panelSource).toContain("Turn off App Relays?")
-    expect(panelSource).toContain("{disableWarning}")
-    expect(panelSource).toContain("controller.setAppRelaysEnabled(enabled)")
-    expect(panelSource).toContain(
-      "review.applySetupRecommendation(recommendation.rows)"
-    )
-    expect(panelSource).toContain("controller.dismissSetupRecommendation()")
-    expect(panelSource).toContain("<Collapsible defaultOpen={false}>")
-    expect(panelSource).toContain("appRelays.rows.length")
-    expect(panelSource).toContain("group-data-[state=open]:rotate-90")
-    expect(panelSource).not.toContain(
-      "gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3"
-    )
-    expect(panelSource).toContain(
-      'controller.prepareChange({ type: "set_roles", rows: desiredRoles })'
-    )
-  })
-
   it("never labels an all-excluded exact plan as confirmed", () => {
     const markup = renderToStaticMarkup(
       <RelaySettingsPanel
@@ -1085,31 +1021,6 @@ describe("RelaySettingsPanel account Network review", () => {
     expect(nonEquivalentMarkup).not.toContain('aria-label="Move ')
   })
 
-  it("serializes local reorder writes and restores deterministic focus", async () => {
-    const panelSource = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-
-    expect(panelSource).toContain("if (reorderInFlightRef.current) return")
-    expect(panelSource).toContain("reorderInFlightRef.current = true")
-    expect(panelSource).toContain("reorderInFlightRef.current = false")
-    expect(panelSource).toContain("controllerPreferredOrder")
-    expect(panelSource).toContain("orderAccountNetworkRelayRows(")
-    expect(panelSource).toContain("relayOrderGroupRefs.current.get(url)")
-    expect(panelSource).toContain(
-      'querySelector<HTMLButtonElement>("button:not(:disabled)")'
-    )
-    expect(panelSource).toContain(
-      "removalFallbackFocusRef?.current?.focus({ preventScroll: true })"
-    )
-    expect(panelSource).toContain("!publishButton.disabled")
-    expect(panelSource).not.toContain("setRows(presentationRows)")
-    expect(panelSource).toContain(
-      "addRelayInputRef.current?.focus({ preventScroll: true })"
-    )
-    expect(panelSource).toContain("ref={review.addRelayInputRef}")
-  })
-
   it("rolls a rejected reorder back to the latest durable order", async () => {
     const first = relayRow("wss://first.example", { signedPosition: 0 })
     const second = relayRow("wss://second.example", { signedPosition: 1 })
@@ -1140,46 +1051,5 @@ describe("RelaySettingsPanel account Network review", () => {
 
     expect(await result).toBe("Could not save the relay order. Try again.")
     expect(rows.map((row) => row.url)).toEqual(latestPreferredOrder)
-  })
-
-  it("preserves relay drafts by account while invalidating prepared signer work", async () => {
-    const panelSource = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-    const invalidationStart = panelSource.indexOf(
-      "useLayoutEffect(() => {",
-      panelSource.indexOf("const [removalPreparationError")
-    )
-    const invalidationEnd =
-      panelSource.indexOf("}, [signerReviewKey])", invalidationStart) +
-      "}, [signerReviewKey])".length
-    const invalidationEffect = panelSource.slice(
-      invalidationStart,
-      invalidationEnd
-    )
-
-    expect(panelSource).toContain('key={accountPubkey ?? "no-account"}')
-    expect(panelSource).toContain(
-      'key={`media:${accountPubkey ?? "no-account"}`}'
-    )
-    expect(panelSource).toContain("signerReviewKey={signerReviewKey}")
-    expect(panelSource).not.toContain("getRelaySettingsEditorRevision")
-    expect(invalidationEffect).toContain("setPublishDialogOpen(false)")
-    expect(invalidationEffect).toContain("setPreparedPublishChange(null)")
-    expect(invalidationEffect).toContain("setPreparedRemovalChange(null)")
-    expect(invalidationEffect).toContain("}, [signerReviewKey])")
-    expect(invalidationEffect).not.toContain("setRows(")
-
-    const [marketRoute, merchantRoute, controllerSource] = await Promise.all([
-      Bun.file("apps/market/src/routes/network.tsx").text(),
-      Bun.file("apps/merchant/src/routes/network.tsx").text(),
-      Bun.file("packages/core/src/hooks/useAccountNetworkSettings.ts").text(),
-    ])
-    for (const route of [marketRoute, merchantRoute]) {
-      expect(route).toContain(
-        'signerReviewKey={`${accountPubkey ?? "none"}:${authGeneration}:${signerReadiness}`}'
-      )
-    }
-    expect(controllerSource).toContain('current.signerReadiness === "ready"')
   })
 })

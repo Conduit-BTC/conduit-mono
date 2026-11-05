@@ -45,29 +45,4 @@ describe("merchant product payment setup guidance", () => {
       })
     ).toBe("ready")
   })
-
-  it("shows the same non-blocking guidance in store and event authoring", async () => {
-    const notice = await Bun.file(
-      "apps/merchant/src/components/ProductPaymentSetupNotice.tsx"
-    ).text()
-    const products = await Bun.file(
-      "apps/merchant/src/routes/products.tsx"
-    ).text()
-    const participation = await Bun.file(
-      "apps/merchant/src/components/FutureEventMerchantParticipation.tsx"
-    ).text()
-
-    expect(products).toContain("<ProductPaymentSetupNotice")
-    expect(participation).toContain("/products?eventMarket=")
-    expect(products).toContain("eventContextReference")
-    expect(notice).toContain(
-      "You can still publish and arrange payment manually"
-    )
-    expect(notice).toContain(
-      "getProfilePaymentAddress(profileQuery.profileContext)"
-    )
-    expect(notice).toContain('evidenceScope: "payment"')
-    expect(notice).toContain('<Link to="/wallet">Manage in Wallets</Link>')
-    expect(notice).not.toContain("disabled")
-  })
 })

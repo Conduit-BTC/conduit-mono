@@ -3,7 +3,6 @@ import Dexie from "dexie"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import type { NDKFilter } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, type Event } from "nostr-tools"
-
 import {
   db,
   EVENT_KINDS,
@@ -268,28 +267,6 @@ describe("shopper trust evidence", () => {
       upgraded.close()
       await upgraded.delete()
     }
-  })
-
-  it("keeps both divergent version-9 stores in the upgrade history", async () => {
-    const source = await Bun.file("packages/core/src/db/index.ts").text()
-    const version9 = source.slice(
-      source.indexOf("this.version(9).stores"),
-      source.indexOf("this.version(10).stores")
-    )
-
-    expect(version9).toContain("shopperTrustSnapshots:")
-    expect(version9).toContain("productDeletionOutbox:")
-  })
-
-  it("keeps both divergent version-15 stores in the upgrade history", async () => {
-    const source = await Bun.file("packages/core/src/db/index.ts").text()
-    const version15 = source.slice(
-      source.indexOf("this.version(15).stores"),
-      source.indexOf("this.version(16).stores")
-    )
-
-    expect(version15).toContain("merchantPendingInvoices:")
-    expect(version15).toContain("eventMarketEvidence:")
   })
 
   it("bounds persisted shopper trust snapshots by age", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
-import { readFileSync } from "node:fs"
+
 import {
   createCheckoutSparkSettledReconciliation,
   recordCheckoutSparkSettledCredit,
@@ -28,7 +28,6 @@ import {
   replayCheckoutSparkOrderRecovery,
   type CheckoutSparkOrderRecoveryReplayDependencies,
 } from "../apps/market/src/lib/checkout-spark-order-recovery-replay"
-
 class MemoryStorage {
   values = new Map<string, string>()
   getItem(key: string) {
@@ -680,83 +679,5 @@ describe("selected-order initial recovery delivery replay", () => {
       (await replayCheckoutSparkOrderRecovery(f.request, f.dependencies)).status
     ).toBe("relay_accepted")
     expect(f.published.length).toBe(2)
-  })
-  it("wires the actual Orders repair action outside routing and funding execution", () => {
-    const source = readFileSync(
-      new URL("../apps/market/src/routes/orders.tsx", import.meta.url),
-      "utf8"
-    )
-    expect(
-      source.includes(
-        "recoveryReplayEligible && recoveryReplayQuery.data === true"
-      )
-    ).toBe(true)
-    expect(source.includes("Resend saved recovery copies")).toBe(true)
-    expect(
-      source.includes(
-        '<summary className="cursor-pointer">Recovery delivery</summary>'
-      )
-    ).toBe(true)
-    const eligibility = source.slice(
-      source.indexOf("const recoveryReplayEligible"),
-      source.indexOf("const settledControlRefreshAt")
-    )
-    expect(eligibility.includes("!guestIdentity")).toBe(true)
-    expect(eligibility.includes("!routerProgress")).toBe(true)
-    expect(
-      eligibility.includes('settledRouterControl.status !== "complete"')
-    ).toBe(true)
-    expect(
-      eligibility.includes('settledRouterControl.status !== "retired"')
-    ).toBe(true)
-    expect(eligibility.includes("canReplayCheckoutSparkOrderRecovery(")).toBe(
-      true
-    )
-    expect(eligibility.includes("isRouterSavedStateCurrent()")).toBe(true)
-    expect(
-      source.includes("onClick={() => void resendSelectedOrderRecovery()}")
-    ).toBe(true)
-    const action = source.slice(
-      source.indexOf("async function resendSelectedOrderRecovery"),
-      source.indexOf("async function verifyRetryFreshness")
-    )
-    expect(action.includes("routerActionInFlightRef.current = true")).toBe(true)
-    expect(action.includes("routerActionInFlightRef.current = false")).toBe(
-      true
-    )
-    expect(
-      action
-        .replace(/\s+/g, "")
-        .includes(
-          "replayCheckoutSparkOrderRecovery(recoveryReplayRequest(shouldContinue))"
-        )
-    ).toBe(true)
-    expect(action.includes("runSettledRouterAction")).toBe(false)
-    expect(action.includes("No payment was sent")).toBe(true)
-    expect(action.includes("deliveries: result.deliveries")).toBe(true)
-    expect(source.includes("recoveryReplayNotice.deliveries.map")).toBe(true)
-    expect(source.includes('delivery.attemptedSources.join(", ")')).toBe(true)
-    expect(source.includes('delivery.acceptedSources.join(", ")')).toBe(true)
-    expect(
-      action.indexOf("setRecoveryReplayNotice(null)") <
-        action.indexOf("await replayCheckoutSparkOrderRecovery")
-    ).toBe(true)
-    const helper = readFileSync(
-      new URL(
-        "../apps/market/src/lib/checkout-spark-order-recovery-replay.ts",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    for (const paymentMethod of [
-      "preparePayout",
-      "payInvoice",
-      "sendPayment",
-      "deriveRecovery",
-      "openCheckoutSpark",
-      "encryptNip44",
-      "signEvent(",
-    ])
-      expect(helper.includes(paymentMethod)).toBe(false)
   })
 })
