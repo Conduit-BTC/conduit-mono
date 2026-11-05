@@ -54,7 +54,7 @@ import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
 import type {
   ReadProtectedInboxOptions,
-  type ProtectedInboxReadResult,
+  ProtectedInboxReadResult,
 } from "../packages/core/src/protocol/protected-inbox-read"
 import type {
   NostrKeySigner,
