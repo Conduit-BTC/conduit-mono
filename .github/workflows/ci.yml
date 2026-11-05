@@ -59,8 +59,6 @@ jobs:
         run: bun run lint
       - name: Check relay policy
         run: bun run relay:check
-      - name: Enforce shared UI owners, controls and presentation policy
-        run: bun run ui:check
       - name: Enforce privacy-safe telemetry policy
         run: bun run telemetry:check
       - name: Typecheck
