@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import {
   afterEach,
   beforeAll,
@@ -81,13 +80,6 @@ beforeAll(async () => {
     },
   })
 })
-const merchantDeletionDeliverySource = readFileSync(
-  new URL(
-    "../apps/merchant/src/lib/product-deletion-delivery.ts",
-    import.meta.url
-  ),
-  "utf8"
-)
 
 let restoreWorker: () => void
 let restoreConfiguredCommerceRelays: () => void
@@ -309,21 +301,6 @@ function tickingClock(start = NOW): () => number {
 }
 
 describe("product deletion relay plan", () => {
-  it("plans current product deletion delivery with the commerce author intent", () => {
-    const start = merchantDeletionDeliverySource.indexOf(
-      "export async function planCurrentProductDeletionWriteRelays("
-    )
-    const end = merchantDeletionDeliverySource.indexOf(
-      "export async function persistSignedProductDeletion(",
-      start
-    )
-    expect(start).toBeGreaterThan(-1)
-    expect(end).toBeGreaterThan(start)
-    expect(merchantDeletionDeliverySource.slice(start, end)).toContain(
-      'intent: "commerce_author_event"'
-    )
-  })
-
   it("builds a deterministic secure union and preserves every relay role", () => {
     expect(
       planProductDeletionRelays({

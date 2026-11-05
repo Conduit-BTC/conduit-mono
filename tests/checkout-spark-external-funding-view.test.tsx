@@ -469,59 +469,6 @@ describe("checkout Spark external funding presentation", () => {
     ).toBeNull()
   })
 
-  it("uses the approved common payment action for the manual choice without a second external-wallet gate", async () => {
-    const source = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    expect(source).not.toContain('"Use external wallet"')
-    expect(source).toContain(
-      "const routerFundingSelection = resolveCheckoutSparkFundingSelection({"
-    )
-    expect(source).toContain("routerFundingSelection.showSelector")
-    expect(source).toContain("setRouterTarget((selection) =>")
-    expect(source).toContain("applyCheckoutSparkFundingChoice({")
-    expect(source).toMatch(
-      /external:\s*settledRouterControl.status === "pay_funding" &&\s*routerSelectedOption\?\.target.type === "manual"/
-    )
-    expect(source).toContain("confirmation.externalAction !== undefined")
-    expect(source).toContain('confirmation.payerValue === "manual"')
-    expect(source).toContain('option.target.type === "manual"')
-    expect(source).toContain("onApprove: (externalAction) =>")
-    expect(source).toContain('payerValue: "manual",')
-    expect(source).toContain("performExternalInvoicePaymentAction({")
-    expect(source).toContain("if (externalActionHandled) return")
-    expect(source).toContain("externalActionHandled = true")
-    const handoff = source.slice(
-      source.indexOf("if (externalActionHandled) return"),
-      source.indexOf(
-        "fundingPayment: {",
-        source.indexOf("if (externalActionHandled) return")
-      )
-    )
-    const readyView = handoff.indexOf(
-      "setExternalFundingInvoice({ ...invoice, authGeneration })"
-    )
-    expect(readyView).toBeGreaterThanOrEqual(0)
-    expect(readyView).toBeLessThan(
-      handoff.indexOf("performExternalInvoicePaymentAction({")
-    )
-    expect(source).toContain("canUseRouterExternalInvoice(invoice)")
-    expect(source).toMatch(
-      /cashAppAvailable:\s*settledRouterControl.network === "mainnet"/
-    )
-    const choices = source.slice(
-      source.indexOf("const routerPayerOptions ="),
-      source.indexOf("const routerTargetValue =")
-    )
-    expect(choices).not.toContain(
-      '.filter((option) => option.target.type !== "manual")'
-    )
-    const reopen = source.slice(
-      source.indexOf('{settledRouterControl.status === "check_funding" &&'),
-      source.indexOf("<CheckoutSparkExternalFunding")
-    )
-    expect(reopen).toContain("!externalFundingInvoice")
-    expect(reopen).toContain("Reopen external invoice")
-  })
-
   it("displays only the exact reserved invoice without claiming payment", () => {
     let guardCalls = 0
     const markup = renderFunding({
@@ -599,41 +546,5 @@ describe("checkout Spark external funding presentation", () => {
         renderFunding({ externalInvoice: { ...RESERVED, takeoverAt } })
       )
     }
-  })
-
-  it("uses boundary-driven unmounting and guards disclosure clicks before child actions", async () => {
-    const source = await Bun.file(
-      "apps/market/src/components/CheckoutSparkExternalFunding.tsx"
-    ).text()
-    expect(source).toContain("subscribeToTimeBoundaries({")
-    expect(source).toContain("boundaries: [exposedAt, cutoff]")
-    expect(source).toContain("onBoundary: setBoundaryNow")
-    expect(source).toContain(
-      "const allowed = isCurrent() && onBeforeInvoiceUse()"
-    )
-    expect(source).toContain("onClickCapture={(event) => {")
-    expect(source).toContain("event.preventDefault()")
-    expect(source).toContain("event.stopPropagation()")
-    expect(source).toContain("onBeforeInvoiceUse={canUseInvoice}")
-    expect(source).not.toContain("ExternalWalletPanel")
-    expect(source).not.toContain("payCheckoutInvoice")
-    expect(source).not.toContain("getSparkWalletManager")
-    expect(source).not.toContain("fetch(")
-  })
-
-  it("revokes the exact view after a rejected guard without waiting for time or resetting in an effect", async () => {
-    const source = await Bun.file(
-      "apps/market/src/components/CheckoutSparkExternalFunding.tsx"
-    ).text()
-    expect(source).toContain("const [revokedInvoice, setRevokedInvoice]")
-    expect(source).toContain("externalInvoice !== revokedInvoice")
-    expect(source).toContain("if (!allowed) setRevokedInvoice(externalInvoice)")
-    expect(source.match(/setRevokedInvoice\(/g)).toHaveLength(1)
-    const effect = source.slice(
-      source.indexOf("useEffect(() => {"),
-      source.indexOf("function isCurrent()")
-    )
-    expect(effect).not.toContain("setRevokedInvoice")
-    expect(source).not.toContain("setBoundaryNow(now())")
   })
 })

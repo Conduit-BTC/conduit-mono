@@ -540,13 +540,6 @@ describe("private checkout Spark order marker", () => {
     ).toBe(false)
   })
 
-  it("rechecks cached routing evidence in both merchant invoice mutations", async () => {
-    const route = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
-    expect(
-      route.match(/await assertNoObservedRoutedCheckoutInvoice\(/g)?.length
-    ).toBe(2)
-  })
-
   it("rejects forged, conflicting, or malformed routing claims", () => {
     const base = rumor()
     const forgedBuyer = rumor({

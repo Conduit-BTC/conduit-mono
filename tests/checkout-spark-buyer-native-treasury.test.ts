@@ -60,7 +60,7 @@ import {
 } from "../apps/market/src/lib/checkout-spark-settled-route-session"
 import { getCheckoutSparkSettledOutcomeMessage } from "../apps/market/src/lib/checkout-spark-settled-outcome-message"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
 import { plainTestSigner } from "./helpers/plain-signer"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { resolveCheckoutSparkFixtureInvoice } from "./support/checkout-spark-invoice-origin"

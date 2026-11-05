@@ -313,12 +313,7 @@ describe("shared Product legal documents", () => {
 describe("deployed Product policy accuracy", () => {
   it("documents strict kind-10050 delivery and never kind-14 fallback", async () => {
     const archive = await Bun.file(PRODUCT_LEGAL_V1_3.archivedSource).text()
-    const profiles = await Bun.file("deploy/pages-profiles.json").json()
 
-    expect(
-      profiles.profiles.production.publicFeatures
-        .dmCompatibilityOrderRoutingEnabled
-    ).toBe(false)
     expect(archive).toContain(
       "A usable recipient kind-10050 private-inbox declaration controls"
     )

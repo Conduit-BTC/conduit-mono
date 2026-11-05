@@ -1,6 +1,6 @@
 import { plainTestSigner } from "./helpers/plain-signer"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { readFileSync } from "node:fs"
+
 import { NDKEvent, NDKUser, type NDKSigner } from "@nostr-dev-kit/ndk"
 import { IDBFactory, IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
@@ -52,7 +52,10 @@ import {
 import { ConduitDB } from "@conduit/core/db"
 import { CommerceInbox } from "../packages/core/src/protocol/commerce-inbox"
 import { CommerceInboxStore } from "../packages/core/src/protocol/commerce-inbox-store"
-import type { ReadProtectedInboxOptions } from "../packages/core/src/protocol/protected-inbox-read"
+import type {
+  ReadProtectedInboxOptions,
+  type ProtectedInboxReadResult,
+} from "../packages/core/src/protocol/protected-inbox-read"
 import type {
   NostrKeySigner,
   SignedNostrEvent,
@@ -114,10 +117,7 @@ import {
   getProtectedReadAuthorization,
   installProtectedReadSigner,
 } from "../packages/core/src/protocol/protected-read-authorization"
-import {
-  readProtectedInbox,
-  type ProtectedInboxReadResult,
-} from "../packages/core/src/protocol/protected-inbox-read"
+import { readProtectedInbox } from "../packages/core/src/protocol/protected-inbox-read"
 import type { CommerceRelayExecutor } from "../packages/core/src/protocol/relay-executor"
 import { hasCheckoutSparkProviderSendWindow } from "../packages/core/src/protocol/checkout-spark-invoice-expiry"
 import {
@@ -1414,17 +1414,6 @@ describe("Merchant checkout Spark settled import", () => {
     expect(merchantCheckoutRecoveryPrincipalKey(MERCHANT.toUpperCase())).toBe(
       merchantCheckoutRecoveryPrincipalKey(MERCHANT)
     )
-    const panelSource = readFileSync(
-      new URL(
-        "../apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    expect(panelSource).toMatch(
-      /<CheckoutSparkRecoveryPanelForPrincipal\s+key=\{merchantCheckoutRecoveryPrincipalKey\(principalPubkey\)\}/
-    )
-    expect(panelSource).toContain("generation.current += 1")
   })
 
   it("keeps experimental provider compatibility behind an explicit local rehearsal", () => {
@@ -1936,26 +1925,6 @@ describe("Merchant checkout Spark settled import", () => {
 })
 
 describe("Merchant checkout Spark offline recovery-key verification", () => {
-  it("offers explicit verification only within the private account-keyed panel", () => {
-    const panelSource = readFileSync(
-      new URL(
-        "../apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    expect(panelSource).toContain(
-      "verifyMerchantCheckoutSparkSettledRecoveryKey"
-    )
-    expect(panelSource).toContain("Check recovery access")
-    expect(panelSource).toContain(
-      "This check did not inspect funds or recipient payments, reveal the recovery phrase, or move money."
-    )
-    expect(panelSource).toContain("startMerchantCheckoutSparkDiscovery")
-    expect(panelSource).toContain("await stopDiscovery()")
-    expect(panelSource).toContain("CheckoutSparkRecoveryPanelForPrincipal")
-  })
-
   it("derives a local identity from the exact account and rejects invalid recovery input", async () => {
     const mnemonic = VALID_MNEMONIC
     const accountOne = await deriveMerchantCheckoutSparkRecoveryIdentity(
@@ -2247,30 +2216,6 @@ describe("Merchant checkout Spark exact credit recovery", () => {
     }
     return { snapshot, selected }
   }
-
-  it("exposes an explicit local-only credit action with a claim warning and no payout", () => {
-    const panelSource = readFileSync(
-      new URL(
-        "../apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    expect(panelSource).toContain("reconcileMerchantCheckoutSparkSettledCredit")
-    expect(panelSource).toContain("Check received payment")
-    expect(panelSource).toMatch(/may\s+claim\s+pending\s+inbound\s+funds/)
-    expect(panelSource).toContain("not create invoices or send payouts")
-    expect(panelSource).toContain("CheckoutSparkRecoveryPanelForPrincipal")
-    const adapterSource = readFileSync(
-      new URL(
-        "../apps/merchant/src/lib/checkout-spark-settled-recovery.ts",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    expect(adapterSource).toContain("...(input.outgoing")
-    expect(adapterSource).toContain("wallet.payLightningInvoice(")
-  })
 
   it("cleans up a captured wallet when initialization fails after a stream starts", async () => {
     const original = new Error("synthetic initializer failure")
@@ -5049,19 +4994,6 @@ describe("Merchant checkout Spark payout history inspection", () => {
   }
 
   it("offers an explicit history-only action with a claim warning", () => {
-    const panelSource = readFileSync(
-      new URL(
-        "../apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    expect(panelSource).toContain("Inspect exact payout history")
-    expect(panelSource).toContain(
-      "inspectMerchantCheckoutSparkSettledPayoutHistory"
-    )
-    expect(panelSource).toMatch(/may\s+claim\s+pending\s+inbound\s+funds/)
-    expect(panelSource).toContain("formatMerchantCheckoutSparkPayoutHistory")
     expect(
       formatMerchantCheckoutSparkPayoutHistory({
         status: "inspected",

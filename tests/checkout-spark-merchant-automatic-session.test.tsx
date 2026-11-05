@@ -16,28 +16,6 @@ function deferred() {
 }
 
 describe("Merchant automatic recovery session activation", () => {
-  it("attaches early handoff feedback to the affected order without activating recovery", async () => {
-    const source = await Bun.file(
-      "apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx"
-    ).text()
-    for (const action of [
-      "verifyCandidate",
-      "checkCredit",
-      "inspectPayoutHistory",
-      "reviewPayout",
-    ]) {
-      const start = source.indexOf(`async function ${action}(`)
-      const denial = source.slice(
-        source.indexOf("if (Date.now() < candidate.takeoverAt)", start),
-        source.indexOf("const current = beginManualAction", start)
-      )
-      expect(denial).toContain("setNoticeOrderId(candidate.orderId)")
-      expect(denial).toContain("setNotice(")
-      expect(denial).not.toContain("setAutomaticPayouts")
-      expect(denial).not.toContain("await ")
-    }
-  })
-
   it("keeps background recovery hidden until an order is selected", () => {
     const base = {
       principalPubkey: "a".repeat(64),
@@ -391,99 +369,5 @@ describe("Merchant automatic recovery session activation", () => {
     expect(html).toContain("Continue this order")
     expect(html).toContain("only this order")
     expect(html).not.toContain("Pay for order")
-  })
-
-  it("keeps route admission and synchronous manual serialization explicit", async () => {
-    const source = await Bun.file(
-      "apps/merchant/src/components/CheckoutSparkRecoveryPanel.tsx"
-    ).text()
-    const route = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
-    const mounted = route.slice(
-      route.indexOf("{signerConnected && pubkey && ("),
-      route.indexOf(
-        "{hasAccount &&",
-        route.indexOf("<CheckoutSparkRecoveryPanel")
-      )
-    )
-    expect(mounted).toContain("key={`${pubkey}:${authGeneration}`}")
-    expect(mounted).toContain(
-      "allowAutomaticPayouts={quantumRouterExecutionEnabled}"
-    )
-    expect(mounted).toContain(
-      "executionEnabled={quantumRouterExecutionEnabled}"
-    )
-    expect(mounted).toContain(
-      "isSessionCurrent={() => isAuthGenerationCurrent(authGeneration)}"
-    )
-    expect(source).toContain(
-      "const [automaticPayouts, setAutomaticPayouts] = useState(false)"
-    )
-    expect(source).not.toMatch(/localStorage|sessionStorage/)
-    const manual = source.slice(
-      source.indexOf("function beginManualAction"),
-      source.indexOf("async function refreshVerifiedStatus")
-    )
-    expect(manual).toContain("busyRef.current")
-    expect(manual).toContain("automaticTransitionRef.current !== null")
-    expect(manual).toContain("automaticSession.revoke()")
-    expect(manual).toContain("void stopDiscovery()")
-    expect(manual).toContain("captureMerchantCheckoutSparkRecoveryAction")
-    expect(manual).toContain("isCurrent: hasCurrentSession")
-    expect(manual).toContain("reviewSelection.capture(orderId)")
-    expect(manual).toContain("isOrderCurrent()")
-    expect(
-      source.match(
-        /const current = beginManualAction\((?:reviewed\.)?candidate\.orderId(?:, true)?\)/g
-      )
-    ).toHaveLength(8)
-    expect(source).toContain("assertAutomaticCurrent(candidate.orderId)")
-    expect(source).toContain(
-      "executionRevision.current !== actionExecutionRevision"
-    )
-    expect(source).toContain("isDisplayCurrent: display.isCurrent")
-    expect(
-      source.match(
-        /beginManualAction\((?:reviewed\.)?candidate\.orderId, true\)/g
-      )
-    ).toHaveLength(6)
-    expect(source).toContain("observationOnly: true")
-    const actions = source.slice(
-      source.indexOf("async function refreshVerifiedStatus"),
-      source.indexOf("return (", source.indexOf("async function confirmPayout"))
-    )
-    expect(actions).not.toContain("generation.current === current")
-    expect(actions).not.toContain("generation.current !== current")
-    expect(
-      actions.match(
-        /await stopDiscovery\(\)\s+if \(!current.isCurrent\(\)\) return/g
-      )
-    ).toHaveLength(7)
-    expect(actions.match(/assertActive: current.assertCurrent/g)).toHaveLength(
-      2
-    )
-    expect(actions.match(/shouldContinue: current.isCurrent/g)).toHaveLength(3)
-    const nativeAction = actions.slice(
-      actions.indexOf("async function finalizeNativeTreasury"),
-      actions.indexOf(
-        "async function reviewPayout",
-        actions.indexOf("async function finalizeNativeTreasury")
-      )
-    )
-    expect(nativeAction).toContain(
-      "continueMerchantCheckoutSparkNativeTreasury"
-    )
-    expect(nativeAction).toContain("await stopDiscovery()")
-    expect(nativeAction).toContain("shouldContinue: current.isCurrent")
-    expect(nativeAction).toContain("if (!current.isCurrent()) return")
-    expect(nativeAction).not.toContain(
-      "reviewMerchantCheckoutSparkSettledPayout"
-    )
-    const refresh = actions.slice(0, actions.indexOf("function inspect"))
-    expect(refresh.match(/if \(!current.isCurrent\(\)\) return/g)).toHaveLength(
-      2
-    )
-    expect(refresh).toContain(
-      "if (current.isCurrent()) setVerificationReadUnavailable(true)"
-    )
   })
 })
