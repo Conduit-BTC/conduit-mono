@@ -27,6 +27,9 @@ concurrency:
 jobs:
   bun-audit:
     name: Bun audit
+    # OSV PR scan already gates newly introduced advisories on pull requests;
+    # Bun audit stays on push/merge_group/schedule as a second-source high gate.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
