@@ -417,10 +417,8 @@ function HowConduitWorks() {
 
 function OpenStandards({
   protocols,
-  inventoryUrl,
 }: {
   protocols: readonly AboutPageProtocol[]
-  inventoryUrl: string
 }) {
   return (
     <section aria-labelledby="open-standards" className="space-y-4">
@@ -459,15 +457,6 @@ function OpenStandards({
           </li>
         ))}
       </ul>
-      <a
-        href={inventoryUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--link-text)] underline-offset-4 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
-      >
-        Explore all supported protocols and current limits
-        <ExternalLink className="size-4" aria-hidden="true" />
-      </a>
     </section>
   )
 }
@@ -762,10 +751,7 @@ export function AboutPagePanel({
         releaseChannel={buildInfo.releaseChannel}
       />
       <HowConduitWorks />
-      <OpenStandards
-        protocols={protocols}
-        inventoryUrl={`${repositoryUrl}/blob/${buildInfo.commitSha ?? "main"}/docs/PROTOCOLS.md`}
-      />
+      <OpenStandards protocols={protocols} />
 
       <div className="grid items-start gap-5 lg:grid-cols-2">
         <SourceAndSupportCard

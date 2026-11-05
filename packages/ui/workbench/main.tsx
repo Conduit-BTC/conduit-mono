@@ -26,7 +26,7 @@ import {
 } from "@conduit/ui/theme"
 import { Commerce, Events, Orders, type ExampleState } from "./Commerce"
 import { Controls, FormExample, Overlays, Settings } from "./Controls"
-import { Baseline, Foundations } from "./Reference"
+import { Foundations } from "./Reference"
 import "@conduit/ui/styles/site.css"
 import "./styles.css"
 
@@ -40,7 +40,6 @@ const sections = [
   ["orders", "Orders"],
   ["events", "Event / inventory"],
   ["settings", "Settings / status"],
-  ["baseline", "Baseline report"],
 ] as const
 
 function Workbench() {
@@ -241,9 +240,6 @@ function Workbench() {
           </TabsContent>
           <TabsContent value="settings">
             <Settings />
-          </TabsContent>
-          <TabsContent value="baseline">
-            <Baseline />
           </TabsContent>
         </Tabs>
       </main>

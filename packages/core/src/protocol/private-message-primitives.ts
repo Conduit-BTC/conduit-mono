@@ -401,7 +401,7 @@ export function createValidatedGuestOrderCompanion(input: {
   return { companion, scope }
 }
 
-/** Coarse, content-free decrypt-failure reason (docs/specs/messaging.md). */
+/** Coarse, content-free decrypt-failure reason. */
 export type DecryptFailureReason =
   "nip44_failed" | "nip04_failed" | "timeout" | "malformed"
 
