@@ -75,7 +75,7 @@ import { continueMerchantCheckoutSparkSettledPayout } from "../apps/merchant/src
 import { continueMerchantCheckoutSparkNativeTreasury } from "../apps/merchant/src/lib/checkout-spark-native-treasury-continuation"
 import { prepareNextMerchantCheckoutSparkSettledPayout } from "../apps/merchant/src/lib/checkout-spark-settled-leg-preparation"
 import { verifySavedMerchantCheckoutSparkRecipients } from "../apps/merchant/src/lib/checkout-spark-invoice-recipient"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
 import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
 import {
   EVENT_MARKET_FIXTURE_AT as AT,

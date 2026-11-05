@@ -1,12 +1,8 @@
 import { expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
-import type { BrowserContext } from "@playwright/test"
 import { DefaultSparkSigner } from "../apps/market/node_modules/@buildonspark/spark-sdk/src/signer/signer"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
-import {
-  createHermeticSparkTransport,
-  installHermeticSparkTransport,
-} from "../e2e/helpers/hermetic-spark-transport"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
+import { createHermeticSparkTransport } from "./support/hermetic-spark-transport"
 
 const MNEMONIC = createRuntimeMnemonic()
 
@@ -338,53 +334,6 @@ it("authenticates a distinct exact-query session without opening an RPC wallet o
     expect(fixture.control.forIdentity(identityPublicKey).snapshot()).toEqual(
       before
     )
-  } finally {
-    await transport.close()
-  }
-})
-
-it("installs native RPC for only the exact isolated app main frame", async () => {
-  const transport = createTransport()
-  let handler: Parameters<BrowserContext["exposeBinding"]>[1] | undefined
-  const context: Pick<BrowserContext, "exposeBinding"> = {
-    async exposeBinding(_name, callback) {
-      handler = callback
-    },
-  }
-  const source = (url: string, child = false) =>
-    ({
-      frame: { url: () => url, parentFrame: () => (child ? {} : null) },
-    }) as unknown as Parameters<NonNullable<typeof handler>>[0]
-  const request = {
-    type: "wallet.open",
-    input: {
-      mnemonicOrSeed: MNEMONIC,
-      accountNumber: 0,
-      options: { network: "REGTEST", log: false },
-    },
-  }
-  try {
-    await expect(
-      installHermeticSparkTransport(context, transport, {
-        appUrl: "http://127.0.0.1:3000",
-      })
-    ).rejects.toThrow("unavailable")
-    expect(handler).toBeUndefined()
-    await installHermeticSparkTransport(context, transport, {
-      appUrl: "http://127.0.0.1:7100",
-    })
-    await expect(
-      handler!(source("http://127.0.0.1:7101/checkout"), request)
-    ).rejects.toThrow("unavailable")
-    await expect(
-      handler!(source("https://example.com/checkout"), request)
-    ).rejects.toThrow("unavailable")
-    await expect(
-      handler!(source("http://127.0.0.1:7100/checkout", true), request)
-    ).rejects.toThrow("unavailable")
-    expect(
-      await handler!(source("http://127.0.0.1:7100/checkout"), request)
-    ).toHaveProperty("handle")
   } finally {
     await transport.close()
   }

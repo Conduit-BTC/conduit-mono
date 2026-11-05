@@ -4,9 +4,9 @@ import { mock } from "bun:test"
 import {
   createHermeticSparkNative,
   HERMETIC_SPARK_SSP_IDENTITY_PUBLIC_KEY as SSP_IDENTITY,
-} from "../../e2e/helpers/hermetic-spark-native"
-import { createHermeticSparkTransport } from "../../e2e/helpers/hermetic-spark-transport"
-import { createHermeticSparkSdkFacade } from "../../e2e/helpers/hermetic-spark-sdk-facade"
+} from "./hermetic-spark-native"
+import { createHermeticSparkTransport } from "./hermetic-spark-transport"
+import { createHermeticSparkSdkFacade } from "./hermetic-spark-sdk-facade"
 import { collectCheckoutSparkNativeRetirementEvidence } from "../../packages/core/src/protocol/checkout-spark-native-retirement"
 import { prepareCheckoutSparkNativeTreasuryRequest } from "../../packages/core/src/protocol/checkout-spark-treasury-sdk"
 import {
