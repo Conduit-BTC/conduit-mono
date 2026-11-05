@@ -220,7 +220,9 @@ export function validateTelemetryEvents(
   const errors: string[] = []
 
   if (events.length === 0) {
-    errors.push("docs/analytics/events.md must define telemetry-event markers.")
+    errors.push(
+      "scripts/ci/telemetry-events.md must define telemetry-event markers."
+    )
   }
 
   for (const event of events) {
@@ -304,7 +306,7 @@ export function validateTelemetrySourceUsage(input: {
       )
     } else if (!input.allowedEventNames.has(eventName)) {
       errors.push(
-        `${input.relativePath} uses telemetry event ${eventName} outside docs/analytics/events.md`
+        `${input.relativePath} uses telemetry event ${eventName} outside scripts/ci/telemetry-events.md`
       )
     }
 
@@ -488,7 +490,7 @@ export function checkPackageManifests(repoRoot: string): string[] {
 }
 
 export function checkTelemetryPolicy(repoRoot: string): TelemetryPolicyResult {
-  const allowlistPath = join(repoRoot, "docs/analytics/events.md")
+  const allowlistPath = join(repoRoot, "scripts/ci/telemetry-events.md")
   const allowlist = readFileSync(allowlistPath, "utf8")
   const events = parseTelemetryEventMarkers(allowlist)
   const errors = [

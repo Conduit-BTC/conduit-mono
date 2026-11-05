@@ -235,7 +235,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 /**
  * Nostr Connect pairing relays (two to three). Clave's push relay leads so a
  * backgrounded iOS signer still receives later requests; Conduit retains this
- * set for the session (docs/knowledge/nip46-connected-relay-retention.md).
+ * set for the session.
  */
 export const NOSTR_CONNECT_RELAYS = [
   CLAVE_PUSH_RELAY,

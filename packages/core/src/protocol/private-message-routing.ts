@@ -56,7 +56,7 @@ export { normalizeSecureRelayUrls as secureRelayUrls } from "./relay-settings"
  * preferred and eventual exclusive delivery route. This module adds the typed
  * declaration/readiness model plus the named temporary validated-order
  * compatibility route for kind-16 order traffic during
- * migration. See docs/knowledge/nip17-inbox-bootstrap-migration.md.
+ * migration.
  */
 
 /** Typed result of a kind-10050 declaration lookup. */
@@ -1828,7 +1828,7 @@ export function isApprovedCompatibilityOrderRelayPlan(
 /**
  * Select the delivery lane for one outgoing private message.
  *
- * Invariants (docs/knowledge/nip17-inbox-bootstrap-migration.md):
+ * Invariants:
  * - A valid current or cached declaration always outranks compatibility.
  * - Compatibility writes use only the explicit operator-approved registry and
  *   only for validated kind-16 order traffic while the flag is enabled.

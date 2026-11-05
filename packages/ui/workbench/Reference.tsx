@@ -168,28 +168,3 @@ export function Foundations() {
     </div>
   )
 }
-
-export function Baseline() {
-  return (
-    <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Baseline and shared inventory</h2>
-      <p className="max-w-prose text-base text-[var(--text-secondary)]">
-        Read the{" "}
-        <a
-          className="underline"
-          href="https://github.com/Conduit-BTC/conduit-mono/blob/feat/shared-ui-workbench/docs/knowledge/shared-ui-baseline.md"
-        >
-          baseline report
-        </a>{" "}
-        for the inventory, prior art and approved foundation, and the{" "}
-        <a
-          className="underline"
-          href="https://github.com/Conduit-BTC/conduit-mono/blob/feat/shared-ui-workbench/packages/ui/workbench/README.md"
-        >
-          workbench guide
-        </a>{" "}
-        for composition and validation guidance.
-      </p>
-    </section>
-  )
-}

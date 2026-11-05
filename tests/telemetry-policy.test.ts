@@ -74,7 +74,7 @@ describe("telemetry policy", () => {
     })
 
     expect(errors).toContain(
-      "apps/market/src/analytics.ts uses telemetry event merchant_pubkey_seen outside docs/analytics/events.md"
+      "apps/market/src/analytics.ts uses telemetry event merchant_pubkey_seen outside scripts/ci/telemetry-events.md"
     )
   })
 

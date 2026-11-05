@@ -21,7 +21,6 @@ const allShardSmokeInfrastructure = new Set([
   "scripts/dev/run_playwright_e2e.ts",
   "tests/playwright-smoke-areas.test.ts",
   "tests/run-playwright-e2e.test.ts",
-  "tests/pr-evidence-contract.test.ts",
   "tests/select-smoke-shards.test.ts",
   "tests/support/bolt11-fixture.ts",
 ])
