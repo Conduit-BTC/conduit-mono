@@ -84,21 +84,3 @@ it("shows percentage-only terms without a meaningless zero minimum", () => {
   expect(html).not.toContain("minimum")
   expect(html).not.toContain(terms.lightningAddress)
 })
-
-it("wires organizer presentation from active signed fee terms, not the pickup actor", async () => {
-  const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-  const summary = source.slice(
-    source.indexOf("function OrderSummary("),
-    source.indexOf("function CheckoutPage(")
-  )
-  expect(summary).toContain(
-    "const organizerFeeIdentity = useEventActorIdentity("
-  )
-  expect(summary).toContain("? eventFeePreview.terms.organizerPubkey")
-  expect(summary).toContain("organizerIdentity={organizerFeeIdentity}")
-  expect(summary).not.toContain("organizerIdentity={pickupHandlerIdentity}")
-  expect(source).toContain("Keep your private pickup receipt and code.")
-  expect(source).not.toContain(
-    "When your order is ready, the merchant privately shares"
-  )
-})

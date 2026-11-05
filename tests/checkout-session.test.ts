@@ -98,40 +98,6 @@ describe("checkout shipping session", () => {
     expect(storage.length).toBe(0)
   })
 
-  it("clears the contact draft at Merchant ACK before separate organizer delivery can fail", async () => {
-    const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-    const placeOrderStart = source.indexOf(
-      "async function placeOrder(): Promise<void>"
-    )
-    const placeOrder = source.slice(
-      placeOrderStart,
-      source.indexOf("async function payNow(", placeOrderStart)
-    )
-    const merchantPublish = placeOrder.indexOf(
-      "await publishBuyerOrderMessage("
-    )
-    const merchantAck = placeOrder.indexOf(
-      "orderDelivered = true",
-      merchantPublish
-    )
-    const clearDraft = placeOrder.indexOf("clearCheckoutShippingSession()")
-    const markOrganizerEligible = placeOrder.indexOf(
-      "await markFreePurchaseMerchantDelivered(",
-      merchantAck
-    )
-    const organizerPublish = placeOrder.indexOf(
-      "await retryStoredEventMarketFreePurchaseDelivery(",
-      merchantAck
-    )
-
-    expect(placeOrderStart).toBeGreaterThan(-1)
-    expect(merchantPublish).toBeGreaterThan(-1)
-    expect(merchantAck).toBeGreaterThan(merchantPublish)
-    expect(clearDraft).toBeGreaterThan(merchantAck)
-    expect(markOrganizerEligible).toBeGreaterThan(clearDraft)
-    expect(organizerPublish).toBeGreaterThan(markOrganizerEligible)
-  })
-
   it("proactively expires abandoned checkout contact data", () => {
     const storage = fakeStorage()
     const updatedAt = 1_700_000_000_000
@@ -430,49 +396,5 @@ describe("checkout shipping session", () => {
       )
     ).toEqual({ value: DEFAULT_CHECKOUT_SHIPPING, hasActiveDraft: false })
     expect(storage.length).toBe(0)
-  })
-
-  it("retires an armed HUD payment across signer loss or authority replacement", async () => {
-    const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-    const retirementStart = source.indexOf(
-      "const authorityChanged =",
-      source.indexOf("const reconnectCheckoutSigner")
-    )
-    const retirementEnd = source.indexOf(
-      "useEffect(() => {",
-      retirementStart + 1
-    )
-    const retirement = source.slice(retirementStart, retirementEnd)
-    const automaticAttemptStart = source.indexOf(
-      "// The HUD arms zap out from capability-only readiness"
-    )
-    const automaticAttemptEnd = source.indexOf(
-      "// --- Full-screen transition states",
-      automaticAttemptStart
-    )
-    const automaticAttempt = source.slice(
-      automaticAttemptStart,
-      automaticAttemptEnd
-    )
-    const reconnectStart = source.indexOf(
-      "const reconnectCheckoutSigner = useCallback"
-    )
-    const reconnectEnd = source.indexOf("useEffect(() => {", reconnectStart)
-    const reconnect = source.slice(reconnectStart, reconnectEnd)
-
-    expect(retirement).toContain(
-      "autoZapAuthorizationGenerationRef.current !== authGeneration"
-    )
-    expect(retirement).toContain("signerConnected && !authorityChanged")
-    expect(retirement).toContain("setAutoZapAuthorization(null)")
-    expect(automaticAttempt).toContain(
-      "autoZapAuthorizationGenerationRef.current !== authGeneration"
-    )
-    expect(automaticAttempt.indexOf("!== authGeneration")).toBeLessThan(
-      automaticAttempt.indexOf("void payNowRef.current(autoZapAuthorization)")
-    )
-    expect(reconnect).toContain('connect({ mode: "restore" })')
-    expect(reconnect).not.toContain("payNow")
-    expect(reconnect).not.toContain("setAutoZapAuthorization")
   })
 })

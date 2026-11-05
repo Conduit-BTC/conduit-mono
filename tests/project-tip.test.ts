@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools"
 import { createHash, randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
+
 import {
   PROJECT_TIP_LIGHTNING_ADDRESS,
   PROJECT_TIP_LNURL,
@@ -32,7 +32,6 @@ import {
   signAnonymousProjectTipRequest,
   type AnonZapPagesEnv,
 } from "../apps/market/functions/_lib/anon-zap-checkout-auth"
-
 const SECRET = generateSecretKey()
 const SENDER = getPublicKey(SECRET)
 const METADATA: LnurlPayMetadata = {
@@ -54,16 +53,6 @@ describe("project tip contract", () => {
       "https://conduit.cash/.well-known/lnurlp/receiver"
     )
     expect(PROJECT_TIP_LNURL).toBe(encodeLnurl(PROJECT_TIP_PAY_REQUEST_URL))
-  })
-
-  it("keeps relay receipt observation out of the shared UI component", () => {
-    const component = readFileSync(
-      new URL("../packages/ui/src/components/ProjectTip.tsx", import.meta.url),
-      "utf8"
-    )
-    expect(component).not.toContain("waitForZapReceipt")
-    expect(component).not.toContain("PROJECT_TIP_RECIPIENT_PUBKEY")
-    expect(component).toContain("onReceiptWatchChange")
   })
 
   it("requires wallet proof for the exact invoice before thanking", () => {

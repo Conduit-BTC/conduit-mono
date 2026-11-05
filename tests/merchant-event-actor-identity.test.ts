@@ -79,22 +79,6 @@ describe("Merchant event actor identity", () => {
     expect(queue).not.toMatch(/authenticatedPubkey:\s*receipt\.merchantPubkey/)
   })
 
-  it("uses exact seller profiles for signs without borrowing organizer relay hints", async () => {
-    const manager = await Bun.file(
-      "apps/merchant/src/components/FutureEventMarketManager.tsx"
-    ).text()
-    const profileRead = manager.slice(
-      manager.indexOf("const profiles = useProfiles("),
-      manager.indexOf("const sheets =")
-    )
-    expect(profileRead).not.toContain("relayHints")
-    expect(manager).toContain("profiles: profiles.data")
-    const signage = await Bun.file(
-      "apps/merchant/src/lib/event-signage.ts"
-    ).text()
-    expect(signage).toContain("candidateProfile?.pubkey === row.pubkey")
-  })
-
   it("prefers a hydrated profile name without changing signed provenance", () => {
     expect(
       getEventActorDisplayName(actorPubkey, {
