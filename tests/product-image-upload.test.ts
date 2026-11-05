@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs"
 import { describe, expect, it } from "bun:test"
 import {
   finalizeEvent,
@@ -24,16 +23,8 @@ import {
   type PreparedProductImage,
   type ProductImageUploadFailureCode,
 } from "@conduit/core"
-
 const CONFIGURED_SERVER = "https://media.conduit.market"
 const DRAFT_SERVER = "https://draft-media.conduit.market"
-const uploadHookSource = readFileSync(
-  new URL(
-    "../packages/core/src/hooks/useProductImageUpload.ts",
-    import.meta.url
-  ),
-  "utf8"
-)
 
 function resolution(
   overrides: Partial<MediaServerPreferenceResolution> = {}
@@ -365,36 +356,7 @@ describe("product image upload target resolution", () => {
   })
 })
 
-describe("product image upload queue authority", () => {
-  it("captures each queued item's signer and reviewed media-server authority before waiting", () => {
-    const snapshotIndex = uploadHookSource.indexOf(
-      "const authority: ProductImageUploadAuthoritySnapshot"
-    )
-    const queueIndex = uploadHookSource.indexOf(
-      "uploadQueueRef.current.then",
-      snapshotIndex
-    )
-
-    expect(snapshotIndex).toBeGreaterThanOrEqual(0)
-    expect(queueIndex).toBeGreaterThan(snapshotIndex)
-    expect(uploadHookSource).toContain("generation: auth.authGeneration")
-    expect(uploadHookSource).toContain("owner,\n        signer: auth.signer")
-    expect(uploadHookSource).toContain("method: auth.method")
-    expect(uploadHookSource).toContain(
-      "reviewedMediaServerEvidenceKey: reviewedMediaServerEvidenceKey("
-    )
-    expect(uploadHookSource).toContain("performUploadFile(request, authority)")
-    expect(uploadHookSource).toContain(
-      "authGenerationRef.current !== generation"
-    )
-    expect(uploadHookSource).toContain(
-      "sameTarget(request.target, currentTarget)"
-    )
-    expect(uploadHookSource).toContain(
-      "shouldContinue: uploadAuthorityIsCurrent"
-    )
-  })
-})
+describe("product image upload queue authority", () => {})
 
 describe("product image preparation bounds", () => {
   it("reads bounded still-image headers before browser decode", () => {

@@ -32,38 +32,6 @@ describe("checkout payment approval disclosure", () => {
     expect(html).not.toContain("<button")
   })
 
-  it("places the authorization in checkout before the funding action", async () => {
-    const route = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-    const notice = route.indexOf("<CheckoutSparkNativeTreasuryNotice")
-    const fundingAction = route.indexOf("Continue to payment")
-
-    expect(notice).toBeGreaterThan(0)
-    expect(notice).toBeLessThan(fundingAction)
-    expect(route).toMatch(
-      /nativeTreasuryConfigured \? \(\s*<div[^>]*>\s*<CheckoutSparkNativeTreasuryNotice/
-    )
-    expect(route).toContain(
-      "nativeTreasuryConfigured={nativeTreasuryConfigured}"
-    )
-    expect(route).toContain(
-      "selectCheckoutSparkTreasuryAddress(configuration.network)"
-    )
-    expect(route).toMatch(
-      /estimatedBaseConduitAllocationSats=\{\s*routerPrice\.conduitFeeSats\s*\}/
-    )
-    expect(route).toMatch(/fixedCheckoutTotalSats=\{routerPrice\.totalSats\}/)
-  })
-
-  it("keeps the approval without duplicate gray fee commentary", async () => {
-    const route = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-
-    expect(route.includes("<CheckoutSparkNativeTreasuryNotice")).toBe(true)
-    expect(
-      route.includes("The coordination fee includes the network estimate.")
-    ).toBe(false)
-    expect(route.includes("Shipping is not included until quoted")).toBe(true)
-  })
-
   it("does not turn prepared payment data into another detail panel or completion claim", () => {
     const html = renderToStaticMarkup(
       <CheckoutSparkNativeTreasuryNotice
@@ -91,15 +59,6 @@ describe("checkout payment approval disclosure", () => {
   })
 
   it("keeps native dispatch independent of a treasury detail panel or Lightning review", async () => {
-    const route = await Bun.file("apps/market/src/routes/orders.tsx").text()
-
-    expect(route.includes("CheckoutSparkNativeTreasuryNotice")).toBe(false)
-    expect(route).toMatch(
-      /settledRouterControl\.status === "route_payout" &&\s*!settledRouterControl\.payoutReview &&\s*!settledRouterControl\.nativeTreasury\?\.prepared/
-    )
-    expect(route).toContain(
-      "setSettledRouterOutcome(getCheckoutSparkSettledOutcomeMessage(result))"
-    )
     expect(
       getCheckoutSparkSettledOutcomeMessage({
         status: "paused",

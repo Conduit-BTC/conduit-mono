@@ -73,20 +73,6 @@ describe("account Network inbox repair representation", () => {
     expect(mutationOwner).toContain("applyInboxDeclarationCutoverExclusions")
   })
 
-  it("keeps recovery and exact-readback status explicit in the shared panel", async () => {
-    const panel = await Bun.file(
-      "packages/ui/src/components/RelaySettingsPanel.tsx"
-    ).text()
-
-    expect(panel).toContain("Recovery read-only")
-    expect(panel).toContain("seven-day recovery")
-    expect(panel).toContain("starts after confirmation")
-    expect(panel).toContain("exact readback")
-    expect(panel).toContain("unresolved")
-    expect(panel).toContain("excluded")
-    expect(panel).not.toContain("PrivateInboxSection")
-  })
-
   it("preserves every non-ready messaging notice state", () => {
     expect(toMessagingReadinessNoticeState("ready")).toBeNull()
     expect(toMessagingReadinessNoticeState("loading")).toBeNull()

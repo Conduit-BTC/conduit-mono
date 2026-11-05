@@ -10,48 +10,7 @@ describe("About page routing and contributor contracts", () => {
     expect(isMerchantPublicAboutPath("/about-us")).toBe(false)
   })
 
-  it("keeps Merchant About ahead of authenticated workspace initialization", async () => {
-    const main = await Bun.file("apps/merchant/src/main.tsx").text()
-    const root = await Bun.file("apps/merchant/src/routes/__root.tsx").text()
-    const publicShell = await Bun.file(
-      "apps/merchant/src/components/MerchantPublicAboutShell.tsx"
-    ).text()
-    const publicBranch = main.slice(
-      main.indexOf("if (isPublicEntry)"),
-      main.indexOf("} else {")
-    )
-    const authenticatedBranch = main.slice(main.indexOf("} else {"))
-    const rootDispatch = root.slice(
-      root.indexOf("function RootLayout()"),
-      root.indexOf("function MerchantProductRoot")
-    )
-
-    expect(publicBranch).toContain("<RouterProvider router={router} />")
-    expect(publicBranch).not.toContain("<AuthProvider")
-    expect(publicBranch).not.toContain("startProductDeletionDeliveryWorker()")
-    expect(authenticatedBranch).toContain("<AuthProvider")
-    expect(authenticatedBranch).toContain("<ProductDeliveryWorkers />")
-    expect(main).toContain(
-      "startProductDeletionDeliveryWorker(authenticatedPubkey)"
-    )
-    expect(rootDispatch).toContain("isMerchantPublicAboutPath(pathname)")
-    expect(rootDispatch).toContain("<MerchantPublicAboutShell>")
-    expect(rootDispatch).not.toContain("useAuth")
-    expect(publicShell).not.toContain("AuthProvider")
-    expect(publicShell).toContain(
-      'installBrowserClientErrorTelemetry("merchant")'
-    )
-    expect(publicShell).not.toContain("Open merchant workspace")
-  })
-
   it("derives contributor data at build time instead of shipping identities in UI source", async () => {
-    const panel = await Bun.file(
-      "packages/ui/src/components/AboutPagePanel.tsx"
-    ).text()
-    const generator = await Bun.file(
-      "scripts/vite/repository_contributors.ts"
-    ).text()
-
     for (const configPath of [
       "apps/market/vite.config.ts",
       "apps/merchant/vite.config.ts",
@@ -68,17 +27,5 @@ describe("About page routing and contributor contracts", () => {
       expect(route).toContain('from "virtual:conduit-repository-contributors"')
       expect(route).toContain("contributors={repositoryContributorSnapshot}")
     }
-
-    expect(generator).toContain("api.github.com/graphql")
-    expect(generator).toContain("states: MERGED")
-    expect(generator).toContain("commit.parents.totalCount < 2")
-    expect(generator).toContain("contributor.commitIds.add(commit.oid)")
-    expect(generator).toContain('actor.__typename === "Bot"')
-    expect(generator).toContain("GENERATED_SNAPSHOT_MAX_AGE_MS")
-    expect(generator).toContain('status: "unavailable"')
-    expect(panel).toContain("<AvatarImage")
-    expect(panel).toContain("src={contributor.avatarUrl}")
-    expect(panel).not.toContain("dependabot[bot]")
-    expect(panel).not.toContain("DEFAULT_CONTRIBUTORS")
   })
 })

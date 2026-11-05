@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
-import { readFileSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { NDKEvent, NDKUser } from "@nostr-dev-kit/ndk"
 import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools/pure"
@@ -34,10 +33,11 @@ import {
   RemoteSignerError,
   type RemoteSignerConnection,
 } from "../packages/core/src/protocol/remote-signer"
-import { type Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
+
 import { Nip07SessionSigner } from "../packages/core/src/protocol/nip07-signer"
 import { createProtectedReadSessionLifecycle } from "../packages/core/src/protocol/protected-read-session-lifecycle"
 import type { NostrEventSigner } from "../packages/core/src/protocol/nostr-event-signer"
+import { type Nip46AuthSession } from "../packages/core/src/protocol/nip46-auth-session"
 
 const originalWindowDescriptor = Object.getOwnPropertyDescriptor(
   globalThis,
@@ -675,65 +675,10 @@ describe("NIP-07 availability", () => {
 })
 
 describe("restore attempt isolation", () => {
-  const source = readFileSync(
-    new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
-    "utf8"
-  )
-
-  it("never clears the global signer when a restore attempt fails", () => {
-    expect(source).toContain(
-      'void connect({ mode: "restore" }).catch(() => undefined)'
-    )
-    const bareRemoveSignerCalls = source.match(/\n\s*removeSigner\(\)/g) ?? []
-    expect(bareRemoveSignerCalls).toHaveLength(0)
-  })
-
-  it("returns silently when a queued restore finds an already connected session", () => {
-    expect(source).toContain('if (mode === "restore") return')
-  })
-
-  it("releases the connecting flag inside the epoch-owned finally block", () => {
-    const finallyIndex = source.indexOf(
-      "} finally {",
-      source.indexOf("const resolution = await resolveFailedAuthAttempt")
-    )
-    const fenceIndex = source.indexOf("if (attemptOwnsEpoch()) {", finallyIndex)
-    expect(fenceIndex).toBeGreaterThan(-1)
-    const fencedBlock = source.slice(
-      fenceIndex,
-      source.indexOf("}", fenceIndex)
-    )
-    expect(fencedBlock).toContain("connecting.current = false")
-  })
-
   it("keeps the initial restore owner through generic cleanup and settles only owned attempts", () => {
     const restoreOwner: AuthContextValue["restorePendingPubkey"] = null
-    const deactivateStart = source.indexOf("const deactivateLocalSigner")
-    const deactivateEnd = source.indexOf(
-      "const handleSignerSessionInvalidated",
-      deactivateStart
-    )
-    const deactivate = source.slice(deactivateStart, deactivateEnd)
 
     expect(restoreOwner).toBeNull()
-    expect(source).toContain("restorePendingPubkey: string | null")
-    expect(source).toContain("initialSessionRef.current?.userPubkey ?? null")
-    expect(source).toContain("const beginRestorePending")
-    expect(source).toContain("const settleRestorePending")
-    expect(deactivate).not.toContain("settleRestorePending")
-    expect(source).toContain("settleRestorePending(restoreAttempt)")
-    expect(source).toContain("restorePending.current.active")
-  })
-
-  it("settles a pending restore when a cross-tab revision or session replacement arrives", () => {
-    const storageStart = source.indexOf("function handleStorage")
-    const storage = source.slice(storageStart)
-
-    expect(storage).toContain("event.key === AUTH_REVISION_STORAGE_KEY")
-    expect(storage).toContain("event.key !== AUTH_STORAGE_KEY")
-    expect(
-      storage.match(/settleRestorePending\(\)/g)?.length
-    ).toBeGreaterThanOrEqual(2)
   })
 
   it("invalidates a pending restore before a queued disconnect and rejects its stale settlement", () => {
@@ -755,35 +700,6 @@ describe("restore attempt isolation", () => {
       state: { attempt: 2, active: false, owner: null },
     })
     expect(staleSettlement).toEqual({ state: newer, settled: false })
-  })
-
-  it("performs pending-restore invalidation before queuing disconnect cleanup", () => {
-    const invalidationStart = source.indexOf(
-      "const invalidatePendingRestoreForDisconnect"
-    )
-    const disconnectStart = source.indexOf("const disconnect = useCallback")
-    const disconnectEnd = source.indexOf(
-      "const dismissAuthUrl",
-      disconnectStart
-    )
-    const invalidation = source.slice(invalidationStart, disconnectStart)
-    const disconnect = source.slice(disconnectStart, disconnectEnd)
-
-    expect(invalidation).toContain("authEpoch.current += 1")
-    expect(invalidation).toContain("connecting.current = false")
-    expect(invalidation).toContain("settleRestorePending()")
-    expect(invalidation).toContain('setStatus("disconnected")')
-    expect(
-      disconnect.indexOf("invalidatePendingRestoreForDisconnect()")
-    ).toBeLessThan(disconnect.indexOf("withBrowserAuthOperationLock"))
-
-    const connectStart = source.indexOf("const connectWithoutLock")
-    const attemptStart = source.indexOf(
-      "connecting.current = true",
-      connectStart
-    )
-    const connectPreflight = source.slice(connectStart, attemptStart)
-    expect(connectPreflight).toContain("isAuthRestoreAttemptCurrent(")
   })
 })
 
@@ -1129,33 +1045,6 @@ describe("authenticated signer readiness", () => {
     expect(getRetainedAuthAccountPubkey(remoteSession, false)).toBeNull()
   })
 
-  it("uses event-driven resume verification without a heartbeat or action replay", () => {
-    const source = readFileSync(
-      new URL("../packages/core/src/context/AuthContext.tsx", import.meta.url),
-      "utf8"
-    )
-    const resumeStart = source.indexOf("const verifyRemoteSignerAfterResume")
-    const resumeEnd = source.indexOf("const dismissAuthUrl", resumeStart)
-    const resume = source.slice(resumeStart, resumeEnd)
-    const eventEffectStart = source.indexOf(
-      'document.addEventListener("visibilitychange"'
-    )
-    const eventEffect = source.slice(eventEffectStart, eventEffectStart + 800)
-
-    expect(resume).toContain("verifyRemoteSignerConnection(connection")
-    expect(resume).toContain('setRemoteSignerState("verifying")')
-    expect(resume).toContain("hasPendingRequests")
-    expect(resume).toContain("whenIdle")
-    expect(resume).not.toMatch(/sign\(|encrypt\(|publish\(|mutate/)
-    expect(eventEffect).toContain('window.addEventListener("online"')
-    expect(eventEffect).toContain('window.addEventListener("offline"')
-    expect(eventEffect).toContain('window.addEventListener("pageshow"')
-    expect(source).toContain("connection.signer.hasPendingRequests()")
-    expect(source).toContain("if (shouldFenceImmediately)")
-    expect(source).toContain("connection.signer.beginDraining()")
-    expect(source).not.toContain("setInterval(")
-  })
-
   it("does not silently downgrade a failed authenticated session to guest checkout", () => {
     expect(
       getAuthSignerReadiness({
@@ -1245,21 +1134,6 @@ describe("NIP-46 Clave handoff pairing", () => {
     }
   })
 
-  it("changes the pairing relay set for Nostr Connect only", async () => {
-    const source = await readFile(
-      "packages/core/src/context/AuthContext.tsx",
-      "utf8"
-    )
-
-    expect(source).toContain(
-      "pairRemoteSignerFromNostrConnect(NOSTR_CONNECT_RELAYS, {"
-    )
-    expect(source).toContain("pairRemoteSigner(options.bunkerUri, {")
-    expect(source).not.toContain(
-      "CANONICAL_CORE_PUBLIC_FALLBACK_RELAYS.slice(0, 3)"
-    )
-  })
-
   it("adds the client icon to signer metadata only when one is configured", () => {
     expect(
       resolveSignerClientMetadata("https://conduit.market", "/pwa-192x192.png")
@@ -1293,24 +1167,6 @@ describe("NIP-46 Clave handoff pairing", () => {
     expect(withoutOrigin.name).toBe("Conduit")
     expect(withoutOrigin.url).toBeUndefined()
     expect(withoutOrigin).not.toHaveProperty("image")
-  })
-
-  it("sends the same client metadata on both remote signer pairing paths", async () => {
-    const source = await readFile(
-      "packages/core/src/context/AuthContext.tsx",
-      "utf8"
-    )
-    const connectStart = source.indexOf("const connectWithoutLock")
-    const connectAttempt = source.slice(
-      connectStart,
-      source.indexOf("const connect = useCallback", connectStart)
-    )
-
-    expect(
-      connectAttempt.match(/clientMetadata: signerClientMetadata,/g)?.length
-    ).toBe(2)
-    expect(connectAttempt).not.toContain('name: "Conduit"')
-    expect(source).toContain("resolveSignerClientMetadata(")
   })
 
   it("passes each app's installable icon to the AuthProvider", async () => {

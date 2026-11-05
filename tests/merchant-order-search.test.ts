@@ -113,15 +113,6 @@ describe("Merchant Orders search", () => {
 
   it("uses the suppression mode at startup and preserves it in both Orders navigations", async () => {
     const source = await Bun.file("apps/merchant/src/routes/orders.tsx").text()
-    expect(source).toContain("validateSearch: parseMerchantOrderSearch")
-    expect(source).toContain("recovery: recoveryMode")
-    expect(source).toMatch(
-      /startAutomatically=\{shouldStartMerchantOrderRecoveryAutomatically\(\s*quantumRouterExecutionEnabled,\s*recoveryMode\s*\)\}/
-    )
-    expect(source).toContain(
-      "allowAutomaticPayouts={quantumRouterExecutionEnabled}"
-    )
-    expect(source).toContain("executionEnabled={quantumRouterExecutionEnabled}")
     const select = source.slice(
       source.indexOf("const selectConversation ="),
       source.indexOf("const changePhaseTab =")

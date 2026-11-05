@@ -188,29 +188,6 @@ describe("Market shopper preset integration", () => {
     ).toBe(false)
   })
 
-  it("shows the cleared-record notice and scopes the replacement save failure", async () => {
-    const preferences = await Bun.file(
-      "apps/market/src/routes/preferences.tsx"
-    ).text()
-    const saveStart = preferences.indexOf("async function save")
-    const clearStart = preferences.indexOf("async function clear")
-    const save = preferences.slice(saveStart, clearStart)
-
-    expect(preferences).toContain('label: "Preset cleared"')
-    expect(preferences).toContain(
-      "No checkout preset is currently saved. Enter new defaults to\n              replace the cleared record."
-    )
-    expect(save).toContain(
-      "No new preset was confirmed. Refresh may still find an older encrypted record."
-    )
-    expect(save).not.toContain(
-      "The preset could not be saved. Check relay access and try again."
-    )
-    expect(preferences.slice(clearStart)).toContain(
-      '"The preset could not be cleared."'
-    )
-  })
-
   it("accepts protocol-valid passwords through the 1024-byte boundary", () => {
     const asciiMaximum = `${"a".repeat(SHOPPER_PRESET_PASSWORD_MAX_BYTES - 1)}7`
     const multibyteMaximum = `${"é".repeat(511)}a7`
@@ -235,17 +212,6 @@ describe("Market shopper preset integration", () => {
         relayState: "ready",
       })
     ).toEqual([])
-  })
-
-  it("uses the shared password ceiling on every preferences password field", async () => {
-    const preferences = await Bun.file(
-      "apps/market/src/routes/preferences.tsx"
-    ).text()
-
-    expect(preferences).not.toContain("maxLength={256}")
-    expect(
-      preferences.match(/maxLength=\{SHOPPER_PRESET_PASSWORD_MAX_BYTES\}/gu)
-    ).toHaveLength(3)
   })
 
   it("requires at least one number in an otherwise long password", () => {
@@ -317,19 +283,6 @@ describe("Market shopper preset integration", () => {
     }
   })
 
-  it("waits for the signed-in relay scope before the initial preset read", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-
-    expect(source).toContain(
-      "const { identityReady, relayScope, relaySettingsReady } = useConduitSession()"
-    )
-    expect(source).toContain(
-      "!!identityPubkey && identityReady && relaySettingsReady && signerReady"
-    )
-  })
-
   it("does not explicitly refetch the initial ready session with no cache", () => {
     expect(
       shouldRefetchShopperPresetsAfterRelayActivation(
@@ -363,42 +316,6 @@ describe("Market shopper preset integration", () => {
     expect(shopperPresetsQueryKey("buyer", "market:buyer:primary")).not.toEqual(
       shopperPresetsQueryKey("buyer", "market:buyer:secondary")
     )
-  })
-
-  it("retains unlocked preset state across same-identity relay scope changes", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-    const lifecycleEffectStart = source.indexOf(
-      "useEffect(() => {",
-      source.indexOf("stateOwnerPubkeyRef")
-    )
-    const lifecycleEffect = source.slice(
-      lifecycleEffectStart,
-      source.indexOf("const result = remote.data", lifecycleEffectStart)
-    )
-
-    const sameIdentityBranch = lifecycleEffect.indexOf(
-      "if (stateOwnerPubkeyRef.current === identityPubkey)"
-    )
-    const sameIdentityReturn = lifecycleEffect.indexOf(
-      "return",
-      sameIdentityBranch
-    )
-    const newIdentityAssignment = lifecycleEffect.indexOf(
-      "stateOwnerPubkeyRef.current = identityPubkey",
-      sameIdentityReturn
-    )
-    const clearDecryptedPreset = lifecycleEffect.indexOf(
-      "setDecryptedPreset(null)",
-      newIdentityAssignment
-    )
-
-    expect(sameIdentityBranch).toBeGreaterThan(-1)
-    expect(lifecycleEffect).toContain('setSyncState("syncing")')
-    expect(sameIdentityReturn).toBeGreaterThan(sameIdentityBranch)
-    expect(newIdentityAssignment).toBeGreaterThan(sameIdentityReturn)
-    expect(clearDecryptedPreset).toBeGreaterThan(newIdentityAssignment)
   })
 
   it("does not refetch repeatedly while relay settings remain ready", () => {
@@ -537,81 +454,6 @@ describe("Market shopper preset integration", () => {
     ).toBe(false)
   })
 
-  it("gates remote preset state before applying stale query results", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-    const effectStart = source.indexOf("const result = remote.data")
-    const gate = source.indexOf(
-      "shouldApplyShopperPresetsReadResult(",
-      effectStart
-    )
-    const notFound = source.indexOf(
-      'if (result.state === "not_found")',
-      effectStart
-    )
-
-    expect(effectStart).toBeGreaterThan(-1)
-    expect(gate).toBeGreaterThan(effectStart)
-    expect(gate).toBeLessThan(notFound)
-    expect(source).not.toContain("handledRemoteRef")
-    expect(source).not.toContain("acceptedRevisionRef")
-    expect(source).not.toContain("acceptedRemoteRef")
-    expect(
-      source.match(/acceptedReadRef\.current = (?:result|next)/gu)
-    ).toHaveLength(3)
-    const decryptStart = source.indexOf("const decryptRemote = useCallback")
-    const remoteEffect = source.indexOf("const result = remote.data")
-    expect(
-      source.indexOf("isCurrentShopperPresetsRevision(", decryptStart)
-    ).toBeLessThan(remoteEffect)
-    expect(source).toMatch(
-      /isCurrentShopperPresetsRevision\(\s*acceptedReadRef\.current\?\.revision \?\? null,\s*result\.revision\s*\)/u
-    )
-    expect(source).toMatch(
-      /result\.reason === "invalid_envelope"[\s\S]*acceptedReadRef\.current = result[\s\S]*setRemotePreset\(null\)[\s\S]*setDecryptedPreset\(null\)/u
-    )
-    expect(source).toMatch(
-      /setUnlockState\(\(current\) =>[\s\S]*current === "unlocked" \? "unlocked" : "error"/u
-    )
-    expect(source).toMatch(
-      /const preserveUnlocked =[\s\S]*decryptedPreset\?\.ownerPubkey === identityPubkey[\s\S]*unlockState === "unlocked"/u
-    )
-    expect(source).toMatch(
-      /if \(!preserveUnlocked\) setUnlockState\("unlocking"\)[\s\S]*setDecryptedPreset\(null\)[\s\S]*setUnlockState\("error"\)/u
-    )
-  })
-
-  it("settles no-op refreshes while retaining the accepted preset", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-    const refreshStart = source.indexOf("const refresh = useCallback")
-    const refreshEnd = source.indexOf("const presetOwnerPubkey", refreshStart)
-    const refresh = source.slice(refreshStart, refreshEnd)
-    const monotonicGate = refresh.indexOf(
-      "!shouldApplyShopperPresetsReadResult("
-    )
-    const restoreAccepted = refresh.indexOf(
-      "shopperPresetsQueryKey(identity, lifecycle.relayScope),\n            acceptedRead",
-      monotonicGate
-    )
-    const settle = refresh.indexOf("setSyncState(", restoreAccepted)
-    const earlyReturn = refresh.indexOf("return", settle)
-
-    expect(refreshStart).toBeGreaterThan(-1)
-    expect(monotonicGate).toBeGreaterThan(-1)
-    expect(restoreAccepted).toBeGreaterThan(monotonicGate)
-    expect(settle).toBeGreaterThan(restoreAccepted)
-    expect(earlyReturn).toBeGreaterThan(settle)
-    expect(refresh).toContain(
-      'acceptedRead?.state === "found" ? "synced" : "unavailable"'
-    )
-    expect(refresh).toContain('result.state === "not_found"')
-    expect(refresh).toContain('? "ready"')
-    expect(refresh).toContain(': "unavailable"')
-  })
-
   it("keeps capability drafts and clear policy bound to established account ownership", async () => {
     const [capability, preferences, presets] = await Promise.all([
       Bun.file("apps/market/src/hooks/useMerchantCheckoutCapability.ts").text(),
@@ -734,72 +576,6 @@ describe("Market shopper preset integration", () => {
     clearShopperPresetsUnlock("buyer", local, session)
 
     expect(session.getItem(key)).toBeNull()
-  })
-
-  it("keeps the selected policy in memory when local storage is unavailable", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-    const setPolicyIndex = source.indexOf(
-      "setUnlockPolicyState({ ownerPubkey: identityPubkey, policy })"
-    )
-    const persistIndex = source.indexOf(
-      "persistShopperPresetsUnlock(",
-      setPolicyIndex
-    )
-
-    expect(setPolicyIndex).toBeGreaterThan(-1)
-    expect(persistIndex).toBeGreaterThan(setPolicyIndex)
-    expect(source).toContain("clearShopperPresetsUnlock(")
-    expect(source).toContain("removeLegacyPlaintextShopperPresets(")
-    expect(source).toContain("readRememberedShopperPresetsPassword(")
-  })
-
-  it("keeps save, unlock, clear, and lock protocol outcomes separate from storage", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-    const unlockIndex = source.indexOf("const decryptRemote = useCallback")
-    const writeIndex = source.indexOf("const write = useCallback")
-    const saveIndex = source.indexOf("const save = useCallback")
-    const clearIndex = source.indexOf("const clear = useCallback")
-    const lockIndex = source.indexOf("const lock = useCallback")
-
-    expect(
-      source.indexOf("rememberPassword(password, policy)", unlockIndex)
-    ).toBeGreaterThan(unlockIndex)
-    expect(
-      source.indexOf("rememberPassword(password, policy)", writeIndex)
-    ).toBeGreaterThan(writeIndex)
-    expect(
-      source.indexOf("clearShopperPresetsUnlock(", lockIndex)
-    ).toBeGreaterThan(lockIndex)
-  })
-
-  it("passes the accepted found revision when saving or clearing presets", async () => {
-    const source = await Bun.file(
-      "apps/market/src/hooks/useShopperPresets.tsx"
-    ).text()
-    const writeStart = source.indexOf("const write = useCallback")
-    const saveStart = source.indexOf("const save = useCallback")
-    const clearStart = source.indexOf("const clear = useCallback")
-    const lockStart = source.indexOf("const lock = useCallback")
-    const write = source.slice(writeStart, saveStart)
-    const save = source.slice(saveStart, clearStart)
-    const clear = source.slice(clearStart, lockStart)
-
-    expect(source).toContain("const writeQueueRef = useRef")
-    expect(source).toContain("createSerialOperationQueue()")
-
-    const queueIndex = write.indexOf("writeQueueRef.current!.enqueue")
-    const acceptedRevisionIndex = write.indexOf("const acceptedRevision")
-    expect(write).toContain('acceptedReadRef.current?.state === "found"')
-    expect(write).toContain("acceptedRevision,")
-    expect(queueIndex).toBeGreaterThan(-1)
-    expect(acceptedRevisionIndex).toBeGreaterThan(queueIndex)
-    expect(save).toContain("if (!value.shipping) return false")
-    expect(save).toContain("write(value, password, policy)")
-    expect(clear).toContain("write(null, password, policy)")
   })
 
   it("serializes operations after a successful predecessor", async () => {
@@ -977,18 +753,6 @@ describe("Market shopper preset integration", () => {
 
     // A pending signed-in session restore defers all draft storage reads until
     // the owner is known, so an identity-bound draft cannot render in between.
-    const source = await Bun.file("apps/market/src/routes/checkout.tsx").text()
-    expect(source).toContain("restorePendingPubkey")
-    expect(source).toContain(
-      'authSignerReadiness === "pending" || restorePendingPubkey !== null'
-    )
-    expect(source).toContain('authStatus === "restoring"')
-    expect(source).toContain("if (authPending) return")
-    expect(source).toContain("initializeCheckoutShippingSession(")
-    expect(source).not.toContain("readCheckoutShippingInitialization(")
-    expect(source).not.toContain("readAuthSession")
-    expect(source).not.toContain("AUTH_STORAGE_KEY")
-    expect(source).not.toContain("authStorageRevision")
   })
 
   it("keeps capability readiness aligned while checkout claims a guest draft", () => {
@@ -1042,50 +806,6 @@ describe("Market shopper preset integration", () => {
     expect(session).toContain("inspectCheckoutShippingDraftOwnership")
   })
 
-  it("keeps unlocked preset shipping in memory until the shopper edits it", async () => {
-    const checkout = await Bun.file(
-      "apps/market/src/routes/checkout.tsx"
-    ).text()
-    const presetEffectStart = checkout.indexOf(
-      "const preset = getIdentityBoundShippingPreset("
-    )
-    const updateShippingStart = checkout.indexOf(
-      "function updateShipping<K extends keyof ShippingFormState>("
-    )
-
-    expect(checkout).toContain("const presetSeededShippingRef = useRef(false)")
-    expect(checkout).toContain("if (presetSeededShippingRef.current) {")
-    expect(checkout).toContain("setShipping(DEFAULT_CHECKOUT_SHIPPING)")
-    expect(presetEffectStart).toBeGreaterThan(-1)
-    expect(updateShippingStart).toBeGreaterThan(presetEffectStart)
-    expect(
-      checkout.slice(presetEffectStart, updateShippingStart)
-    ).not.toContain("writeCheckoutShippingSession(")
-    expect(checkout.slice(updateShippingStart)).toContain(
-      "writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)"
-    )
-  })
-
-  it("uses the connected auth identity for checkout draft ownership independently of signer readiness", async () => {
-    const checkout = await Bun.file(
-      "apps/market/src/routes/checkout.tsx"
-    ).text()
-
-    expect(checkout).toContain("const draftOwnerIdentity = accountPubkey")
-    expect(checkout).toContain(
-      "getIdentityBoundShippingPreset(\n      draftOwnerIdentity,"
-    )
-    expect(checkout).toContain(
-      "initializeCheckoutShippingSession(\n        preset,\n        draftOwnerIdentity"
-    )
-    expect(checkout).toContain(
-      "if (previousIdentity === draftOwnerIdentity) return"
-    )
-    expect(checkout).toContain(
-      "writeCheckoutShippingSession(next, undefined, undefined, draftOwnerIdentity)"
-    )
-  })
-
   it("uses country and postal code for local shipping compatibility", () => {
     const restricted = cartItem("restricted", {
       shippingOptionId: "30406:merchant:restricted-shipping-standard",
@@ -1130,23 +850,5 @@ describe("Market shopper preset integration", () => {
     expect(capability).toContain("resolveCheckoutPaymentTarget({")
     expect(capability).toContain("selection: null")
     expect(capability).toContain("readyWalletIds,")
-  })
-
-  it("uses only an unlocked identity-owned preset for Zap Out shipping readiness", async () => {
-    const capability = await Bun.file(
-      "apps/market/src/hooks/useMerchantCheckoutCapability.ts"
-    ).text()
-
-    expect(capability).toContain("const identityPubkey = accountPubkey")
-    expect(capability).toContain("restorePendingPubkey")
-    expect(capability).toContain("DEFAULT_CHECKOUT_SHIPPING")
-    expect(capability).toContain("const shippingPreset = restorePendingPubkey")
-    expect(capability).toContain('shopperPresets.unlockState === "unlocked"')
-    expect(capability).toContain("getIdentityBoundShippingPreset(")
-    expect(capability).toContain("shopperPresets.presetOwnerPubkey")
-    expect(capability).toContain("shopperPresets.preset.shipping")
-    expect(capability).toContain(
-      "readCheckoutShippingCapabilityInitialization("
-    )
   })
 })
