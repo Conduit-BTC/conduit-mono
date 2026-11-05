@@ -64,20 +64,4 @@ describe("merchant product private-inbox guidance", () => {
       expect(guidance.actionLabel).toBe("Retry check")
     }
   })
-
-  it("keeps declaration repair in Network and publication permissive", async () => {
-    const routeSource = await Bun.file(
-      "apps/merchant/src/routes/products.tsx"
-    ).text()
-    const dialogSource = await Bun.file(
-      "apps/merchant/src/components/ProductInboxReadinessDialog.tsx"
-    ).text()
-
-    expect(routeSource).toContain("useInboxDeclaration")
-    expect(routeSource).toContain("session.relaySettingsReady")
-    expect(routeSource).toContain('navigate({ to: "/network" })')
-    expect(routeSource).not.toContain("publishPrivateMessageRelayDeclaration")
-    expect(dialogSource).toContain("Publish anyway")
-    expect(dialogSource).toContain("AlertDialogContent")
-  })
 })

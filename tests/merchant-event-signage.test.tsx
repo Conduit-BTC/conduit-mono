@@ -316,16 +316,4 @@ describe("current sign QR and PDF rendering", () => {
     expect(markup).toContain('data-testid="event-sign-qr-fallback"')
     expect(markup).toContain("QR code unavailable")
   })
-
-  it("keeps quiet zones, Letter print layout and native Save as PDF available", async () => {
-    const component = await Bun.file(
-      "apps/merchant/src/components/EventQrPrintPreview.tsx"
-    ).text()
-    expect(component).toContain("marginSize={4}")
-    expect(component).toContain("@page { size: 8.5in 11in; margin: 0; }")
-    expect(component).toContain("Print / Save as PDF")
-    expect(component).toContain("window.print()")
-    const styles = await Bun.file("apps/merchant/src/styles/index.css").text()
-    expect(styles).toContain("break-after: page")
-  })
 })

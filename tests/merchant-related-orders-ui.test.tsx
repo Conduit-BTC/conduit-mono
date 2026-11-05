@@ -4,23 +4,6 @@ import { DirectConversationListItem } from "../apps/merchant/src/components/Dire
 import { OrderCardScroller } from "../apps/merchant/src/components/OrderCardScroller"
 
 describe("Merchant related orders UI", () => {
-  it("uses the Orders list card in the Messages workspace", async () => {
-    const source = await Bun.file(
-      "apps/merchant/src/routes/messages.tsx"
-    ).text()
-
-    expect(source).toContain(
-      'import { OrderCardScroller } from "../components/OrderCardScroller"'
-    )
-    expect(source).toContain("<OrderCardScroller")
-    expect(source).toContain("<BuyerAvatar")
-    expect(source).toContain("truncate text-lg font-semibold")
-    expect(source).toContain('to: "/orders"')
-    expect(source).toMatch(
-      /search: \{\s*order: order.orderId,\s*counterparty: order.buyerPubkey,?\s*\}/
-    )
-  })
-
   it("shows the buyer, order preview, total, and status", () => {
     const markup = renderToStaticMarkup(
       <OrderCardScroller

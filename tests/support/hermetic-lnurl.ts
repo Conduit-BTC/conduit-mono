@@ -8,11 +8,11 @@ import {
 import {
   bolt11DescriptionHashField,
   bolt11PaymentHashField,
-} from "../../tests/support/bolt11-fixture"
+} from "./bolt11-fixture"
 import {
   bolt11PaymentSecretField,
   makeSignedBolt11Fixture,
-} from "../../tests/support/signed-bolt11-fixture"
+} from "./signed-bolt11-fixture"
 
 export interface HermeticLnurlIssuedInvoice {
   lud16: string

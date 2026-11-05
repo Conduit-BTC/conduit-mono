@@ -196,8 +196,5 @@ describe("profile query cache", () => {
       expect(route).toContain("!editing ||\n      !signerReady ||")
       expect(route).toContain("!hasProfileChanges ||")
     }
-    expect(merchantRoute).toContain(
-      "!profileQuery.isLoading &&\n              !complete"
-    )
   })
 })

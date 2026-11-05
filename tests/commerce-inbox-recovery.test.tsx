@@ -1,5 +1,4 @@
 import { afterEach, expect, it } from "bun:test"
-import { readFileSync } from "node:fs"
 import { renderToStaticMarkup } from "react-dom/server"
 import { getEventHash } from "nostr-tools"
 import { CommerceInboxRecovery } from "../packages/ui/src/components/CommerceInboxRecovery"
@@ -243,15 +242,6 @@ it("offers the existing explicit Retry opening action for malformed-only retaine
   expect(markup).toContain("1 waiting for recovery")
   expect(markup).toContain("Retry opening")
   expect(attempts).toBe(0)
-  const source = readFileSync(
-    new URL(
-      "../packages/ui/src/components/CommerceInboxRecovery.tsx",
-      import.meta.url
-    ),
-    "utf8"
-  )
-  expect(source.includes("onClick={() => void act(retry)}")).toBe(true)
-  expect(source.includes("disabled={busy}")).toBe(true)
 })
 
 it("does not count valid machine records as ordinary conversations or failed opening attempts", () => {

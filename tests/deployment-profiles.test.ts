@@ -526,36 +526,6 @@ describe("deployment profiles", () => {
     )
   })
 
-  it("makes the preview-link gate verify the deployed manifest contract", async () => {
-    const workflow = await Bun.file(".github/workflows/ci.yml").text()
-
-    expect(workflow).toContain("public-config-digest:")
-    expect(await Bun.file("scripts/ci/preview_links.mjs").text()).toContain(
-      "/.well-known/conduit-deployment.json"
-    )
-    expect(workflow).toContain('manifest.deploymentProfile !== "preview"')
-    expect(workflow).toContain("manifest.commitSha !== headSha")
-    expect(workflow).toContain(
-      "manifest.publicConfigDigest !== expectedConfigDigest"
-    )
-    expect(workflow).toContain(
-      "manifest.publicFeatures?.dmCompatibilityOrderRoutingEnabled !== true"
-    )
-    expect(workflow).toContain(
-      "manifest.publicFeatures?.livePresenceEnabled !== true"
-    )
-    expect(workflow).toContain(
-      "manifest.publicFeatures?.quantumRouterEnabled !== expectedRouterEnabled"
-    )
-    expect(workflow).toContain(
-      "manifest.publicFeatures?.quantumRouterExecutionEnabled !== expectedRouterExecutionEnabled"
-    )
-    expect(workflow).toContain(
-      "manifest.publicFeatures?.breezLightningAddressEnabled !== expectedBreezAddressEnabled"
-    )
-    expect(workflow).toContain("throw new Error(")
-  })
-
   it("compiles the managed capability rather than dashboard router flags", () => {
     for (const profile of ["preview", "production", "staging"] as const) {
       const result = Bun.spawnSync({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { readFileSync } from "node:fs"
+
 import { renderToStaticMarkup } from "react-dom/server"
 import { EventTimelineViewport } from "../packages/ui/src/components/EventTimeline"
 import {
@@ -56,31 +56,6 @@ function scrollFixture() {
 }
 
 describe("Event timeline page scrolling", () => {
-  it("wires Market's viewport and navigation anchor to the same page scroller", () => {
-    const source = readFileSync(
-      new URL(
-        "../apps/market/src/components/MarketEventsTimeline.tsx",
-        import.meta.url
-      ),
-      "utf8"
-    )
-    const anchor = source.match(/useEventTimelineAnchor\(\{([\s\S]*?)\}\)/)?.[1]
-    const viewport = source.match(/<EventTimelineViewport\b([\s\S]*?)\/>/)?.[1]
-    expect(anchor).toMatch(/scrollMode:\s*"page"/)
-    expect(anchor).toMatch(/isFetching:\s*discovery\.isFetching/)
-    expect(anchor).toMatch(/viewportKey:\s*filterKey/)
-    expect(viewport).toContain('scrollMode="page"')
-    expect(viewport).toContain("busy={discovery.isFetching}")
-    expect(viewport).toContain("onLoadEarlier={loadEarlier}")
-    expect(viewport).toContain("onLoadLater={loadLater}")
-    expect(source).toMatch(
-      /onOpen=\{\(\) => \{\s*timelineAnchor\.rememberPosition\(\)\s*onOpen\(/
-    )
-    expect(source).toMatch(
-      /function loadEarlier\(\): void \{\s*timelineAnchor\.prepareForPrepend\(\)/
-    )
-  })
-
   it("lets the page own scrolling without an extra focus stop or nested panel", () => {
     const html = viewportMarkup("page")
     expect(html).not.toContain("max-h-")

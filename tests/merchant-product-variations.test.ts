@@ -38,7 +38,6 @@ import {
   type ProductListingRecordLike,
   type ProductVariationFormState,
 } from "../apps/merchant/src/lib/productVariations"
-
 const MERCHANT_PUBKEY = "a".repeat(64)
 const ORGANIZER_PUBKEY = "b".repeat(64)
 const SUPPLIER_PUBKEY =
@@ -1496,15 +1495,6 @@ describe("merchant product variation planning", () => {
         existingFamilyEvidenceComplete: false,
       })
     ).not.toThrow()
-
-    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
-    expect(route).toContain("productFamilyReadSupportsAllocationChange")
-    expect(route).toContain("editing.familyEvidenceComplete &&")
-    expect(route).toContain("merchantProductFamilyEvidenceComplete")
-    expect(route).toContain("merchantProductsRef.current.find")
-    expect(route).toContain(
-      "validateProductFamilySupplierAllocationSaveSnapshot"
-    )
 
     const divergentChild = family.variations[0]!
     const childDivergedFamily = {

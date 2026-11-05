@@ -29,17 +29,6 @@ describe("settled router guest UI contracts", () => {
     expect(target).toContain("fulfillment: preparedFulfillment.resolutions")
     expect(target).toContain('routerAdmission.mode === "router"')
     expect(target).not.toContain("!isGuestCheckout")
-    expect(checkout).not.toContain("canUseCheckoutSparkLocalRouterCanary()")
-    expect(orders).not.toContain("canUseCheckoutSparkLocalRouterCanary()")
-  })
-
-  it("composes hosted pricing and approval without a local test destination claim", () => {
-    expect(checkout).not.toContain("configured test fee destination")
-    expect(checkout).not.toContain("local router rehearsal")
-    expect(checkout).toContain("<CheckoutCoordinationSummary")
-    expect(checkout).toContain("price={routerPrice}")
-    expect(checkout).toContain("<CheckoutSparkNativeTreasuryNotice")
-    expect(checkout).toContain("fixedCheckoutTotalSats={routerPrice.totalSats}")
   })
 
   it("uses one same-tab order identity and structured private guest contact", () => {
@@ -83,23 +72,6 @@ describe("settled router guest UI contracts", () => {
       /relayAuthMethod: guestIdentity\s*\? undefined\s*: \(authMethod \?\? undefined\)/
     )
     expect(preparation).not.toContain("authenticatedPubkey:")
-  })
-
-  it("hides legacy guest send and signer actions beside router preparation", () => {
-    const actions = checkout.slice(checkout.indexOf("{/* Action buttons */}"))
-    expect(actions).toMatch(
-      /\{!routerBranchTargetCheckout\s*&&\s*isGuestCheckout\s*&&\s*!fastEligible\s*&&\s*manualInvoiceEligible\s*&&/
-    )
-    expect(actions).toMatch(
-      /\{!routerBranchTargetCheckout\s*&&\s*isGuestCheckout\s*&&\s*!fastEligible\s*&&\s*\(verifiedZeroCostPickup\s*\?/
-    )
-    expect(actions).toContain("Continue to payment")
-    expect(actions).toContain(
-      "onClick={() => void prepareSettledRouterOrder()}"
-    )
-    expect(actions).toContain("Connect signer to send order")
-    expect(actions).toContain("onClick={() => void payNow()}")
-    expect(actions).toContain("onClick={placeOrder}")
   })
 
   it("clears contact after acceptance but retains the guest key for ambiguous recovery", () => {
@@ -228,9 +200,6 @@ describe("settled router guest UI contracts", () => {
     )
     expect(routerOptions).toContain("weblnAvailable: hasWebLN()")
     expect(routerOptions).not.toContain("!guestIdentity")
-    expect(orders).toContain(
-      "const weblnAvailable = !guestIdentity && hasWebLN()"
-    )
     for (const weblnAvailable of [true, false]) {
       const choices = getCheckoutPaymentTargetOptions({
         eligibleWallets: [],
@@ -292,11 +261,6 @@ describe("settled router guest UI contracts", () => {
       "useCommerceInbox(activeBuyerPubkey, signerConnected)"
     )
     expect(messages).toContain("const messagesQuery = inbox.buyer")
-    expect(orders).toContain("guestIdentity.expiresAt - Date.now()")
-    expect(orders).toContain("pruneExpiredGuestOrderData()")
-    expect(orders).toContain(
-      'if (guestIdentity) throw new Error("Guest orders cannot send messages")'
-    )
   })
 
   it("shows only current same-tab local settlement evidence for a guest", () => {

@@ -32,7 +32,7 @@ import { routeCheckoutSparkOrganizerOrder } from "../apps/merchant/src/lib/check
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
 import { SparkWalletManager } from "../apps/market/src/lib/spark-wallet"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
 import { checkoutSparkOrganizerFixture } from "./support/checkout-spark-organizer-fixture"
 import {
   eventMarketFixtureInvoice,

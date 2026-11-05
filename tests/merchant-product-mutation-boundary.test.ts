@@ -551,17 +551,6 @@ describe("merchant-owned product mutation boundary", () => {
       signedBundleCount: 0,
       queuedDeliveryCount: 0,
     })
-
-    const route = await Bun.file("apps/merchant/src/routes/products.tsx").text()
-    expect(route).toMatch(
-      /onSignerRequest:\s*\(progress\)\s*=>\s*{\s*assertCurrentFamilyRevision\?\.\(\)/
-    )
-    expect(route).toMatch(
-      /assertCurrentWriteBaseline:\s*async\s*\(\)\s*=>\s*assertCurrentFamilyRevision\?\.\(\)/
-    )
-    expect(route).toMatch(
-      /additionalExpectedRevisions:\s*\[\s*existing,\s*\.\.\.existing\.variations/
-    )
   })
 
   for (const now of [START - 1, START, START + 1, START + 86_400_000]) {

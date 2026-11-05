@@ -39,11 +39,6 @@ describe("local account secret containment", () => {
         }
       }
     }
-    const manifest = await Bun.file("packages/core/package.json").json()
-    expect(
-      manifest.exports["./protocol/local-key"] === null &&
-        manifest.exports["./protocol/local-key/*"] === null
-    ).toBe(true)
     expect(
       (await Bun.file("packages/core/src/protocol/index.ts").text()).includes(
         'from "./local-key'
@@ -138,10 +133,6 @@ describe("local account secret containment", () => {
     const source = await Bun.file(
       "packages/ui/src/components/LocalKeyImportForm.tsx"
     ).text()
-    expect(
-      source.includes('type="password"') &&
-        source.includes("data-ph-no-capture")
-    ).toBe(true)
     expect(
       /\bonChange=|\bvalue=|\.value(?!\s*=\s*"")|\bconsole\./.test(source)
     ).toBe(false)

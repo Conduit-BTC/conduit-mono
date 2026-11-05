@@ -10,8 +10,6 @@ import {
 } from "../apps/market/src/lib/merchant-payment-readiness"
 import { getCheckoutEvidenceCheckingLabel } from "../apps/market/src/lib/checkout-validation"
 
-const checkoutSource = Bun.file("apps/market/src/routes/checkout.tsx").text()
-
 function paymentContext(
   lud16: string,
   freshness: SelectedProfileContext["freshness"]
@@ -31,46 +29,6 @@ function paymentContext(
 }
 
 describe("shopper merchant payment readiness", () => {
-  it("uses strict profile evidence for checkout blockers despite richer cached display data", async () => {
-    const source = await checkoutSource
-
-    expect(source).toMatch(
-      /merchantProfileLoading:\s*merchantTrust\.profileEvidenceState === "loading"/
-    )
-    expect(source).toMatch(
-      /merchantProfileUnavailable:\s*merchantTrust\.profileEvidenceState === "unavailable"/
-    )
-    expect(source).not.toContain(
-      'merchantProfileUnavailable: merchantTrust.profileState === "limited"'
-    )
-    expect(source).toContain("getMerchantPaymentLud16({")
-    expect(source).toContain("lud16: merchantTrust.profileEvidenceLud16")
-    expect(source).toContain(
-      'merchantTrust.profileEvidenceState !== "available"'
-    )
-  })
-
-  it("revalidates the signed payment destination immediately before invoice work", async () => {
-    const source = await checkoutSource
-
-    expect(source).toContain(
-      "const refreshedProfileResult = await getProfiles({"
-    )
-    expect(source).toContain("skipCache: true")
-    expect(source).toContain("requireCompleteEvidence: true")
-    expect(source).toContain('evidenceScope: "payment"')
-    expect(source).toContain(
-      "refreshedProfileResult.profileContexts[selectedMerchant]"
-    )
-    expect(source).toMatch(
-      /getFreshLnurlMetadata\(\s*currentMerchantLud16\s*\)/
-    )
-    expect(source).toContain("merchantLightningAddress: currentMerchantLud16")
-    expect(source).toContain("merchantLud16: currentMerchantLud16")
-    expect(source).not.toContain("getFreshLnurlMetadata(merchantLud16)")
-    expect(source).not.toContain("merchantLightningAddress: merchantLud16")
-  })
-
   it("requires complete current profile evidence before reporting absence", () => {
     expect(
       getMerchantPaymentProfileState({

@@ -2,9 +2,9 @@ import { expect, it } from "bun:test"
 import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { fileURLToPath } from "node:url"
 import * as pureSdk from "../apps/market/node_modules/@buildonspark/spark-sdk"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
-import { createHermeticSparkTransport } from "../e2e/helpers/hermetic-spark-transport"
-import { createHermeticSparkSdkFacade } from "../e2e/helpers/hermetic-spark-sdk-facade"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
+import { createHermeticSparkTransport } from "./support/hermetic-spark-transport"
+import { createHermeticSparkSdkFacade } from "./support/hermetic-spark-sdk-facade"
 import { openMerchantCheckoutSparkObservationWallet } from "../apps/merchant/src/lib/checkout-spark-observation-wallet"
 import {
   bolt11PaymentHashField,

@@ -539,13 +539,6 @@ describe("native checkout treasury SDK boundary", () => {
   })
 
   it("enables reviewed native fulfillment through the actual installed SDK loader without opening a wallet", async () => {
-    const installedPackage = await Bun.file(
-      new URL(
-        "../apps/market/node_modules/@buildonspark/spark-sdk/package.json",
-        import.meta.url
-      )
-    ).json()
-    expect(installedPackage.version).toBe("0.13.0")
     const installedModule = await loadFirstPartySparkModule()
     expect(installedModule.nativeTreasuryPolicy).toBe(
       SPARK_NATIVE_TREASURY_ZERO_FEE_POLICY

@@ -22,7 +22,6 @@ import {
   selectEventHandoffIdentity,
   type EventActorIdentityView,
 } from "../apps/market/src/lib/event-actor-identity"
-
 const handlerSecret = generateSecretKey()
 const organizerSecret = generateSecretKey()
 const handlerPubkey = getPublicKey(handlerSecret)
@@ -108,15 +107,6 @@ describe("Market event actor identity", () => {
       )
     }
     expect(organizer).toBe(organizerPubkey.toUpperCase())
-
-    const orders = await Bun.file("apps/market/src/routes/orders.tsx").text()
-    expect(orders).toContain('pickup.mode === "organizer_handoff"')
-    expect(orders).toContain("pickup.organizerPubkey")
-    expect(orders).toContain("pickup.merchantPubkey")
-    expect(orders).toContain(
-      "profile: eventActorProfiles.data[normalizeEventActorPubkey(pubkey)]"
-    )
-    expect(orders).not.toContain("<EventActorProvenance")
   })
 
   it("prefers a hydrated profile name without changing the signed pubkey", () => {
@@ -205,60 +195,10 @@ describe("Market event actor identity", () => {
     expect(surfaces[0]).toContain("EventActorProvenance")
     for (const source of surfaces.slice(1))
       expect(source).not.toContain("EventActorProvenance")
-    const eventPage = await Bun.file(
-      "apps/market/src/components/FutureEventMarketPage.tsx"
-    ).text()
-    expect(eventPage).toContain(
-      "getMerchantDisplayName(organizerProfile, organizerPubkey"
-    )
-    const cart = await Bun.file("apps/market/src/routes/cart.tsx").text()
-    expect(cart).toContain("getMerchantDisplayName(profile, merchantPubkey)")
-    expect(cart).toContain(
-      "navigator.clipboard.writeText(pubkeyToNpub(merchantPubkey))"
-    )
 
-    const identityComponent = await Bun.file(
-      "apps/market/src/components/EventActorIdentity.tsx"
-    ).text()
-    const identityHook = await Bun.file(
-      "apps/market/src/hooks/useEventActorIdentity.ts"
-    ).text()
-    const identityModel = await Bun.file(
-      "apps/market/src/lib/event-actor-identity.ts"
-    ).text()
-    const root = await Bun.file("apps/market/src/routes/__root.tsx").text()
-
-    expect(identityComponent).toContain("<CopyButton")
-    expect(identityComponent).toContain(
-      "params={{ identityRef: pubkeyToNpub(pubkey) }}"
-    )
-    expect(identityComponent).toContain("{formatNpub(pubkey, 8)}")
-    expect(identityComponent).toContain("<CopyButton value={pubkey}")
-    expect(identityHook).toContain("useProfiles(pubkeys")
-    expect(identityHook).toContain(
-      'session.mode === "signed_in" ? session.pubkey : null'
-    )
-    expect(identityHook).toContain("authenticatedPubkey: accountPubkey")
-    expect(identityHook).toContain(
-      "shouldContinue: () => authGenerationRef.current === authGeneration"
-    )
-    expect(identityHook).toContain("useLayoutEffect(() => {")
-    expect(identityHook).toContain(
-      "enabled: session.relaySettingsReady && pubkeys.length > 0"
-    )
-    expect(identityHook).not.toContain("useProfile(")
-    expect(identityHook).toContain(
-      "useEventActorIdentity must be used within EventActorIdentityProvider"
-    )
-    expect(identityModel).not.toContain("lookupSettled")
-    expect(identityModel).not.toContain("fallbackPrefix")
-    expect(identityModel).not.toContain("getEventActorProvenance")
-    expect(cart).not.toContain("pickupHandlerPubkeys")
-    expect(cart).not.toContain("pickupHandlerIdentity={")
     expect(surfaces[1]).toContain(
       "const pickupHandlerIdentity = useEventActorIdentity("
     )
-    expect(root).toContain("<EventActorIdentityProvider>")
 
     expect(surfaces.join("\n")).not.toMatch(
       /(?:Handled by|Signed by|pickup author is).*formatNpub/

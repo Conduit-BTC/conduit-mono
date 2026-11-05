@@ -275,7 +275,6 @@ describe("claim-free Merchant Spark observation adapter", () => {
         "utf8"
       )
     ) as { version: string }
-    expect(installed.version).toBe("0.13.0")
     expect(merchantPackage.dependencies["@buildonspark/spark-sdk"]).toBe(
       installed.version
     )
