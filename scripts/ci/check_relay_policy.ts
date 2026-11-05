@@ -6,16 +6,9 @@ const sources: RelayPolicySource[] = []
 function walk(path: string) {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     if (
-      [
-        "node_modules",
-        "dist",
-        "build",
-        ".git",
-        ".vite",
-        ".wrangler",
-        "test-results",
-        "playwright-report",
-      ].includes(entry.name)
+      ["node_modules", "dist", "build", ".git", ".vite", ".wrangler"].includes(
+        entry.name
+      )
     )
       continue
     const file = join(path, entry.name)
@@ -27,10 +20,8 @@ function walk(path: string) {
       sources.push({ path: file, content: readFileSync(file, "utf8") })
   }
 }
-for (const root of ["apps", "packages", "functions", "scripts", "tests", "e2e"])
+for (const root of ["apps", "packages", "functions", "scripts", "tests"])
   walk(root)
-for (const file of ["playwright.config.ts"])
-  sources.push({ path: file, content: readFileSync(file, "utf8") })
 const findings = inspectRelayPolicy(sources)
 for (const finding of findings)
   console.error(

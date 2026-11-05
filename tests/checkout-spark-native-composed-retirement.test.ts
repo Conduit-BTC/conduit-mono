@@ -3,7 +3,7 @@ import { createRuntimeMnemonic } from "./support/runtime-wallet-fixtures"
 import { createHash } from "node:crypto"
 import { FirstPartySparkSdkFactory } from "../apps/market/src/lib/spark-sdk"
 import { deriveMerchantCheckoutSparkRecoveryIdentity } from "../apps/merchant/src/lib/checkout-spark-settled-recovery"
-import { createHermeticSparkNative } from "../e2e/helpers/hermetic-spark-native"
+import { createHermeticSparkNative } from "./support/hermetic-spark-native"
 import { collectCheckoutSparkNativeRetirementEvidence } from "../packages/core/src/protocol/checkout-spark-native-retirement"
 import {
   bolt11PaymentHashField,

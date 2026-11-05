@@ -27,9 +27,6 @@ pnpm-debug.log*
 
 # Testing
 coverage/
-playwright-report/
-test-results/
-playwright-smoke-*-results.json
 
 # Ephemeral context files (call transcripts, meeting notes, temp checklists)
 /context/

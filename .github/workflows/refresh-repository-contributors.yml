@@ -103,10 +103,6 @@ jobs:
           commit-message: "chore(about): refresh repository contributors"
           title: "chore(about): refresh repository contributors"
           body: |
-            ## Preview Settings
-
-            - [ ] Show commit-level mainnet preview links (Cloudflare creates deployments automatically)
-
             ## Summary
 
             Refresh the checked-in repository contributor activity snapshot used by Market and Merchant About pages.
@@ -130,12 +126,6 @@ jobs:
             | ID | Observable criterion | Evidence / test | Gap / owner |
             | --- | --- | --- | --- |
             | AC-1 | Snapshot reflects merged PR activity at its recorded source revision | Successful refresh command and JSON diff | Reviewer checks contributor changes |
-
-            ## Smoke and Playwright Coverage
-
-            - Critical flows changed: None; static build data only.
-            - Existing coverage relied on: About page contributor tests.
-            - No browser smoke changed because the rendered data contract is unchanged.
 
             ## PR Checks
 
