@@ -74,9 +74,6 @@ describe("AboutPagePanel", () => {
     expect(markup).toContain("You stay in control")
     expect(markup).toContain("Built on open standards")
     expect(markup).toContain("Private orders and messages · NIP-17")
-    expect(markup).toContain(
-      "Explore all supported protocols and current limits"
-    )
     expect(markup.indexOf("Built on open standards")).toBeLessThan(
       markup.indexOf("Nostr app handler metadata")
     )

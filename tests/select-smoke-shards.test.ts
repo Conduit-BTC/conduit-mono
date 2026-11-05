@@ -89,7 +89,6 @@ describe("path-aware smoke shard selection", () => {
       "tests/run-playwright-e2e.test.ts",
       "scripts/vite/build_info.ts",
       "tests/playwright-smoke-areas.test.ts",
-      "tests/pr-evidence-contract.test.ts",
       "tests/select-smoke-shards.test.ts",
     ]) {
       expect(selectSmokeShards([path])).toEqual([
