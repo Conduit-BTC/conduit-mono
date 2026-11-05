@@ -28,8 +28,8 @@
     "./wallets/*": "./src/wallets/*.ts"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "bun ../../node_modules/@typescript/native/bin/tsc",
+    "typecheck": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -58,6 +58,6 @@
     "@tanstack/react-query": "^5.104.5",
     "@types/country-list": "^2.1.4",
     "@types/react": "^19.2.18",
-    "typescript": "^7.0.2"
+    "@typescript/native": "npm:typescript@^7.0.2"
   }
 }

@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "bun ../../node_modules/@typescript/native/bin/tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
@@ -32,7 +32,7 @@
     "@vitejs/plugin-react-swc": "^4.3.3",
     "postcss": "^8.5.31",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "vite": "^8.3.5"
   }
 }

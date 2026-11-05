@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "routes:gen": "bun scripts/generate-routes.ts",
-    "build": "bun run routes:gen && tsc && vite build",
+    "build": "bun run routes:gen && bun ../../node_modules/@typescript/native/bin/tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "bun run routes:gen && tsc --noEmit",
+    "typecheck": "bun run routes:gen && bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
@@ -36,7 +36,7 @@
     "@vitejs/plugin-react-swc": "^4.3.3",
     "postcss": "^8.5.31",
     "tailwindcss": "^4.3.3",
-    "typescript": "^7.0.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "vite": "^8.3.5"
   }
 }

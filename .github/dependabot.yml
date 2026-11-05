@@ -63,6 +63,7 @@ updates:
         applies-to: version-updates
         patterns:
           - "typescript"
+          - "@typescript/native"
 
       type-definitions:
         applies-to: version-updates
