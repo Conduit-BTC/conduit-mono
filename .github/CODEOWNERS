@@ -14,16 +14,8 @@ apps/*/package.json @ericfj2140 @JamesTsetsekas
 packages/*/package.json @ericfj2140 @JamesTsetsekas
 .env.example @ericfj2140 @JamesTsetsekas
 apps/*/.env.production @ericfj2140 @JamesTsetsekas
-e2e/** @ericfj2140 @JamesTsetsekas
-playwright.config.ts @ericfj2140 @JamesTsetsekas
 scripts/smoke/** @ericfj2140 @JamesTsetsekas
-scripts/ci/select_smoke_shards.ts @ericfj2140 @JamesTsetsekas
-scripts/ci/validate_playwright_smoke_areas.ts @ericfj2140 @JamesTsetsekas
 tests/agent-credential-boundary.test.ts @ericfj2140 @JamesTsetsekas
-tests/playwright-smoke-credential-fixtures.test.ts @ericfj2140 @JamesTsetsekas
-tests/playwright-smoke-content-safety.test.ts @ericfj2140 @JamesTsetsekas
-tests/playwright-smoke-areas.test.ts @ericfj2140 @JamesTsetsekas
-tests/select-smoke-shards.test.ts @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/ProductLegal*.tsx @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/ProductLegalVersion.ts @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/ProductPrivacyPolicy.tsx @ericfj2140 @JamesTsetsekas

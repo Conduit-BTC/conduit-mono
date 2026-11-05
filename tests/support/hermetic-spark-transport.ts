@@ -3,7 +3,6 @@ import {
   schnorr,
   secp256k1,
 } from "../../packages/core/node_modules/@noble/curves/secp256k1.js"
-import type { BrowserContext } from "@playwright/test"
 import type { SparkNativeWallet } from "../../apps/market/src/lib/spark-sdk"
 import type { CheckoutSparkNativeRetirementReader } from "@conduit/core"
 import type { createHermeticSparkNative } from "./hermetic-spark-native"
@@ -11,10 +10,7 @@ import type {
   HermeticSparkRequest,
   WalletMethod,
 } from "./hermetic-spark-transport-types"
-import {
-  HERMETIC_SPARK_BINDING,
-  OBSERVATION_METHODS,
-} from "./hermetic-spark-transport-types"
+import { OBSERVATION_METHODS } from "./hermetic-spark-transport-types"
 
 const walletMethods = new Set<WalletMethod>([
   "setPrivacyEnabled",
@@ -379,36 +375,4 @@ export function createHermeticSparkTransport(
       )
     },
   }
-}
-
-/** Install before app navigation; the retained transport belongs to the runner. */
-export async function installHermeticSparkTransport(
-  context: Pick<BrowserContext, "exposeBinding">,
-  transport: Pick<ReturnType<typeof createHermeticSparkTransport>, "request">,
-  options: { appUrl: string }
-): Promise<void> {
-  const app = new URL(options.appUrl)
-  if (
-    app.protocol !== "http:" ||
-    !["127.0.0.1", "[::1]"].includes(app.hostname) ||
-    !app.port ||
-    ["0", "3000", "3001", "3002"].includes(app.port) ||
-    app.username ||
-    app.password ||
-    app.pathname !== "/" ||
-    app.search ||
-    app.hash
-  )
-    unavailable()
-  await context.exposeBinding(
-    HERMETIC_SPARK_BINDING,
-    async ({ frame }, command: HermeticSparkRequest) => {
-      if (
-        frame.parentFrame() !== null ||
-        new URL(frame.url()).origin !== app.origin
-      )
-        unavailable()
-      return transport.request(command)
-    }
-  )
 }

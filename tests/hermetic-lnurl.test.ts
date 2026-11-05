@@ -5,7 +5,7 @@ import { verifyCheckoutSparkReceiverInvoice } from "../packages/core/src/protoco
 import {
   createHermeticLnurlFixture,
   type HermeticLnurlIssuedInvoice,
-} from "../e2e/helpers/hermetic-lnurl"
+} from "./support/hermetic-lnurl"
 import {
   assertCheckoutSparkLnurlInvoiceOrigin,
   resolveCheckoutSparkLnurlInvoice,
