@@ -44,7 +44,7 @@ describe("paired Conduit app origins", () => {
         protocol: "https:",
         port: "",
       })
-    ).toBe("https://fix-293.conduit-market-signet.pages.dev")
+    ).toBe("https://shop.conduit.market")
   })
 
   it("uses the shared branch alias when commit preview hashes differ", () => {

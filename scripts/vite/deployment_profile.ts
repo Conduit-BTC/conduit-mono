@@ -16,7 +16,6 @@ export type DeploymentProfileName = "preview" | "production" | "staging"
 
 export interface PublicDeploymentFeatures {
   dmCompatibilityOrderRoutingEnabled: boolean
-  livePresenceEnabled: boolean
   quantumRouterEnabled: boolean
   quantumRouterExecutionEnabled: boolean
   breezLightningAddressEnabled: boolean
@@ -157,11 +156,6 @@ function assertProfile(
   if (typeof value.publicFeatures.breezLightningAddressEnabled !== "boolean") {
     throw new Error(
       `Deployment profile ${name} must explicitly set breezLightningAddressEnabled.`
-    )
-  }
-  if (typeof value.publicFeatures.livePresenceEnabled !== "boolean") {
-    throw new Error(
-      `Deployment profile ${name} must explicitly set livePresenceEnabled.`
     )
   }
   if (typeof value.publicFeatures.quantumRouterEnabled !== "boolean") {
@@ -364,9 +358,6 @@ export function resolveDeploymentProfile(
         ),
         dmCompatibilityOrderRoutingEnabled: ["1", "true", "on"].includes(
           env.VITE_DM_BOOTSTRAP_WRITES?.trim().toLowerCase() ?? ""
-        ),
-        livePresenceEnabled: ["1", "true", "on"].includes(
-          env.VITE_LIVE_PRESENCE_ENABLED?.trim().toLowerCase() ?? ""
         ),
         quantumRouterEnabled: ["1", "true", "on"].includes(
           env.VITE_QUANTUM_ROUTER_ENABLED?.trim().toLowerCase() ?? ""

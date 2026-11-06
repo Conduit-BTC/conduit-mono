@@ -52,7 +52,7 @@ test("keeps signed, provider and historical destinations distinct from default a
     ])
   ).toEqual([])
 })
-test("rejects a new unchecked transport without blocking the existing presence adapter", () => {
+test("rejects a new unchecked transport without blocking the existing relay adapter", () => {
   expect(
     inspectRelayPolicy([{ path, content: "new WebSocket(destination)" }]).map(
       (finding) => finding.rule
@@ -61,7 +61,7 @@ test("rejects a new unchecked transport without blocking the existing presence a
   expect(
     inspectRelayPolicy([
       {
-        path: "apps/market/src/hooks/useLivePresenceCount.ts",
+        path: "packages/core/src/protocol/relay-reader.ts",
         content: "new WebSocket(url)",
       },
     ])
@@ -80,9 +80,9 @@ test("presentation and non-Nostr exceptions do not exempt executable defaults in
   expect(
     inspectRelayPolicy([
       {
-        path: "apps/market/src/lib/live-presence.ts",
+        path: "scripts/dev/measure_checkout_spark_merchant_lifecycle.ts",
         content:
-          'const PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL="wss://presence.example"; const nostrDefaults=["wss://hidden.example"]',
+          'const INBOX="wss://inbox.example"; const nostrDefaults=["wss://hidden.example"]',
       },
     ]).map((finding) => finding.rule)
   ).toEqual(["endpoint-owner"])

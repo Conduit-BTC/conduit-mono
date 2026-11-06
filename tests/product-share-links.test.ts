@@ -171,11 +171,10 @@ describe("product share links", () => {
     }
   })
 
-  it("accepts production, preview, signet, and forwarded local Market origins", () => {
+  it("accepts production, preview, and forwarded local Market origins", () => {
     for (const origin of [
       "https://shop.conduit.market",
       "https://share-links.conduit-market-coo.pages.dev",
-      "https://share-links.conduit-market-signet.pages.dev",
       "http://127.0.0.1:7000",
       "http://mybox.tailnet.ts.net:7000",
     ]) {
@@ -193,6 +192,7 @@ describe("product share links", () => {
 
     for (const origin of [
       "https://attacker.example",
+      "https://share-links.conduit-market-signet.pages.dev",
       "https://shop.conduit.market.attacker.example",
       "https://sell.conduit.market",
       credentialOrigin.toString(),
