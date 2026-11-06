@@ -222,7 +222,6 @@ import {
   assertCheckoutEventDirectCheckoutAllowed,
   getCheckoutEventFeePreview,
 } from "../lib/checkout-event-fee-preview"
-import { isAnonZapSignerConfigured } from "../lib/anon-zap-signer"
 import {
   findCheckoutOrderRecovery,
   forgetCheckoutOrderAttempt,
@@ -1366,10 +1365,7 @@ function CheckoutPage() {
   >(async () => undefined)
   const [autoZapAuthorization, setAutoZapAuthorization] =
     useState<HudZapAuthorization | null>(null)
-  const anonZapSignerAvailable = isAnonZapSignerConfigured()
-  const defaultPublicZapMode: CheckoutZapMode = anonZapSignerAvailable
-    ? "anonymous_public_zap"
-    : "public_zap_as_shopper"
+  const defaultPublicZapMode: CheckoutZapMode = "public_zap_as_shopper"
   const [zapMode, setZapMode] = useState<CheckoutZapMode>(defaultPublicZapMode)
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
@@ -2061,13 +2057,7 @@ function CheckoutPage() {
     lud16: merchantLud16,
     lnurlStatus: lnurlPreflight.status,
   })
-  const guestZapMode: CheckoutZapMode =
-    !isPickupCheckout &&
-    anonZapSignerAvailable &&
-    lnurlAllowsNostr &&
-    publicZapPolicy.publicZapsAllowed
-      ? "anonymous_public_zap"
-      : "private_checkout"
+  const guestZapMode: CheckoutZapMode = "private_checkout"
   const selectedZapMode =
     isPickupCheckout || hasShippingPolicyQuote
       ? "private_checkout"
@@ -2089,9 +2079,6 @@ function CheckoutPage() {
       : shopperZapContentEditable
         ? "Include an editable public zap comment."
         : "Use the merchant's generic public zap comment."
-  const anonZapModeDescription = !anonZapSignerAvailable
-    ? "Anon Conduit Shopper signing is not configured yet."
-    : "Use a fixed item-count message without identifying the shopper."
   const merchantName = merchantTrust.merchantName
   const selectZapMode = useCallback(
     (nextMode: CheckoutZapMode) => {
@@ -2128,14 +2115,6 @@ function CheckoutPage() {
       setZapMode("private_checkout")
     }
   }, [isGuestCheckout, publicZapPolicy.publicZapsAllowed, zapMode])
-
-  useEffect(() => {
-    if (isGuestCheckout) return
-    if (zapMode === "anonymous_public_zap" && !anonZapSignerAvailable) {
-      setZapMode("public_zap_as_shopper")
-      setZapContentEdited(false)
-    }
-  }, [anonZapSignerAvailable, isGuestCheckout, zapMode])
 
   useEffect(() => {
     if (!zapContentEditable && zapContentEdited) {
@@ -4491,17 +4470,6 @@ function CheckoutPage() {
           productAddress: item.productId,
           quantity: item.quantity,
         })),
-        anonZapPreparation:
-          checkoutMode === "anonymous_public_zap"
-            ? {
-                localPricing: checkoutPricing,
-                destination: {
-                  country: shippingAddress?.country ?? shipping.country,
-                  postalCode:
-                    shippingAddress?.postalCode ?? shipping.postalCode,
-                },
-              }
-            : undefined,
         paymentTarget: storedPaymentTarget,
         formatSatsAmount: (sats) =>
           shopperPricing.formatSatsAmount(sats).primary,
@@ -5781,35 +5749,7 @@ function CheckoutPage() {
                       <div className="text-sm font-medium text-[var(--text-primary)]">
                         Zap visibility
                       </div>
-                      <div className="mt-4 grid gap-2 lg:grid-cols-3">
-                        {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
-                        <button
-                          type="button"
-                          aria-pressed={zapMode === "anonymous_public_zap"}
-                          disabled={
-                            !anonZapSignerAvailable ||
-                            !lnurlAllowsNostr ||
-                            !publicZapPolicy.publicZapsAllowed
-                          }
-                          onClick={() => selectZapMode("anonymous_public_zap")}
-                          className={[
-                            "rounded-[var(--radius-md)] border px-4 py-3 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500",
-                            zapMode === "anonymous_public_zap"
-                              ? "border-[color-mix(in_srgb,var(--primary-500)_40%,transparent)] bg-[color-mix(in_srgb,var(--primary-500)_2%,transparent)] text-[var(--text-primary)]"
-                              : !anonZapSignerAvailable ||
-                                  !lnurlAllowsNostr ||
-                                  !publicZapPolicy.publicZapsAllowed
-                                ? "cursor-not-allowed border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] opacity-70"
-                                : "border-[var(--border)] bg-[var(--surface)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
-                          ].join(" ")}
-                        >
-                          <span className="block font-medium">
-                            Anonymous public zap
-                          </span>
-                          <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
-                            {anonZapModeDescription}
-                          </span>
-                        </button>
+                      <div className="mt-4 grid gap-2 lg:grid-cols-2">
                         {/* eslint-disable-next-line no-restricted-syntax -- Legacy control; adopt @conduit/ui when this surface changes. */}
                         <button
                           type="button"

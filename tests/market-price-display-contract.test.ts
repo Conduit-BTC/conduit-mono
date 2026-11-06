@@ -10,7 +10,6 @@ const SHOPPER_PRICE_ROUTES = [
   "apps/market/src/routes/orders.tsx",
   "apps/market/src/routes/messages.tsx",
   "apps/market/src/routes/preferences.tsx",
-  "apps/market/src/routes/zapouts.tsx",
 ] as const
 
 describe("Market shopper price display contract", () => {

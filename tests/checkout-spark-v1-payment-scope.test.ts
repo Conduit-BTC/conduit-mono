@@ -31,9 +31,10 @@ describe("Quantum Router V1 ordinary payment scope", () => {
     expect(checkout).toContain("const buyer = guestIdentity ?? signedIdentity")
   })
 
-  it("keeps unrelated direct-payment public zap controls", () => {
+  it("keeps shopper-signed public zaps and private checkout without anonymous signing", () => {
     expect(checkout).toContain("!routerBranchTargetCheckout")
-    expect(checkout).toContain('selectZapMode("anonymous_public_zap")')
+    expect(checkout).not.toContain('selectZapMode("anonymous_public_zap")')
+    expect(checkout).toContain('selectZapMode("private_checkout")')
     expect(checkout).toContain('selectZapMode("public_zap_as_shopper")')
   })
 
