@@ -1,8 +1,6 @@
 import {
-  buildPaymentAttemptResultTelemetryProperties,
   getWeblnPaymentFailurePhase,
   hasWebLN,
-  recordBrowserTelemetryEvent,
   weblnSendPayment,
   type ConduitAppId,
   type OrderPaymentTarget,
@@ -59,9 +57,6 @@ type PaymentRailDependencies = {
   walletPaymentCoordinator: Pick<WalletPaymentCoordinator, "payInvoice">
   hasWebLN: typeof hasWebLN
   weblnSendPayment: typeof weblnSendPayment
-  recordPaymentAttemptResult?: (
-    input: Parameters<typeof buildPaymentAttemptResultTelemetryProperties>[0]
-  ) => void
 }
 
 const defaultDependencies: PaymentRailDependencies = {
@@ -70,27 +65,8 @@ const defaultDependencies: PaymentRailDependencies = {
   weblnSendPayment,
 }
 
-function recordMarketPaymentAttemptResult(
-  input: Parameters<typeof buildPaymentAttemptResultTelemetryProperties>[0]
-): void {
-  recordBrowserTelemetryEvent({
-    app: "market",
-    eventName: "payment_attempt_result",
-    properties: buildPaymentAttemptResultTelemetryProperties(input),
-  })
-}
-
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
-}
-
-function getWalletDiagnosticTelemetryStatus(
-  diagnostic: WalletPaymentDiagnostic
-): "blocked" | "unavailable" | "ambiguous" {
-  if (diagnostic.safeManualFallback === false) return "ambiguous"
-  return /amount|budget|permission|network|rejected/i.test(diagnostic.title)
-    ? "blocked"
-    : "unavailable"
 }
 
 export async function payCheckoutInvoice(
@@ -108,10 +84,6 @@ export async function payCheckoutInvoice(
   },
   dependencies: PaymentRailDependencies = defaultDependencies
 ): Promise<CheckoutInvoicePaymentResult> {
-  const amountSats = input.amountMsats / 1_000
-  const recordPaymentAttemptResult =
-    dependencies.recordPaymentAttemptResult ?? recordMarketPaymentAttemptResult
-
   if (input.paymentTarget.type === "wallet") {
     if (!input.walletPaymentAttemptId) {
       return {
@@ -121,7 +93,7 @@ export async function payCheckoutInvoice(
       }
     }
     const providerId = input.paymentTarget.providerId
-    const startedAt = Date.now()
+
     const result = await dependencies.walletPaymentCoordinator.payInvoice(
       {
         walletId: input.paymentTarget.walletId,
@@ -139,12 +111,6 @@ export async function payCheckoutInvoice(
       }
     )
     if (result.status === "paid") {
-      recordPaymentAttemptResult({
-        amountSats,
-        latencyMs: Date.now() - startedAt,
-        rail: "wallet",
-        status: "success",
-      })
       return {
         status: "paid",
         rail: "wallet",
@@ -156,22 +122,6 @@ export async function payCheckoutInvoice(
 
     const diagnostic =
       result.status === "declined" ? undefined : result.diagnostics?.[0]
-    const telemetryStatus =
-      result.status === "declined"
-        ? "blocked"
-        : result.status === "ambiguous"
-          ? "ambiguous"
-          : diagnostic
-            ? getWalletDiagnosticTelemetryStatus(diagnostic)
-            : result.phase === "before_publish"
-              ? "unavailable"
-              : "failure"
-    recordPaymentAttemptResult({
-      amountSats,
-      latencyMs: Date.now() - startedAt,
-      rail: "wallet",
-      status: telemetryStatus,
-    })
 
     if (result.status === "ambiguous") {
       throw new Error(`${result.reason} ${AMBIGUOUS_PAYMENT_WARNING}`)
@@ -190,29 +140,17 @@ export async function payCheckoutInvoice(
 
   if (input.paymentTarget.type === "webln") {
     if (!dependencies.hasWebLN()) {
-      recordPaymentAttemptResult({
-        amountSats,
-        rail: "webln",
-        status: "unavailable",
-      })
       return {
         status: "retryable_failure",
         phase: "before_publish",
         reason: "The selected browser wallet is unavailable.",
       }
     }
-    const startedAt = Date.now()
+
     try {
       const result = await dependencies.weblnSendPayment({
         invoice: input.invoice,
         beforeSend: input.beforeSend,
-      })
-
-      recordPaymentAttemptResult({
-        amountSats,
-        latencyMs: Date.now() - startedAt,
-        rail: "webln",
-        status: "success",
       })
 
       return {
@@ -229,35 +167,18 @@ export async function payCheckoutInvoice(
         phase === "enable" ||
         phase === "admission"
       ) {
-        recordPaymentAttemptResult({
-          amountSats,
-          latencyMs: Date.now() - startedAt,
-          rail: "webln",
-          status: phase === "unavailable" ? "unavailable" : "failure",
-        })
         return {
           status: "retryable_failure",
           phase: "before_publish",
           reason: message,
         }
       }
-      recordPaymentAttemptResult({
-        amountSats,
-        latencyMs: Date.now() - startedAt,
-        rail: "webln",
-        status: "ambiguous",
-      })
+
       throw new Error(`${message} ${AMBIGUOUS_PAYMENT_WARNING}`, {
         cause: error,
       })
     }
   }
-
-  recordPaymentAttemptResult({
-    amountSats,
-    rail: "none",
-    status: "unavailable",
-  })
 
   return {
     status: "manual_required",

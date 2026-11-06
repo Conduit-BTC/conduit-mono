@@ -21,12 +21,6 @@ interface ImportMetaEnv {
   readonly VITE_CHECKOUT_SPARK_PRICING_URL?: string
   readonly VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?: string
   readonly VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST?: string
-  readonly VITE_ENABLE_TELEMETRY?: string
-  readonly VITE_TELEMETRY_ALLOWED_HOSTS?: string
-  readonly VITE_PLAUSIBLE_DOMAIN?: string
-  readonly VITE_PLAUSIBLE_SRC?: string
-  readonly VITE_POSTHOG_KEY?: string
-  readonly VITE_POSTHOG_HOST?: string
   readonly VITE_APP_VERSION?: string
   readonly VITE_BUILD_COMMIT?: string
   readonly VITE_BUILD_BRANCH?: string

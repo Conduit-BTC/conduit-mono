@@ -1,7 +1,5 @@
 import {
-  recordBrowserTelemetryEvent,
   resolveCheckoutAttribution,
-  checkoutAttributionTelemetryProperties,
   type CheckoutAttribution,
   type CheckoutIntent,
 } from "@conduit/core"
@@ -20,7 +18,6 @@ type Context = CheckoutReferralClaim & {
   lines: { coordinate: string; quantity: number }[]
   sessionScope: string
   createdAt: number
-  orderSubmitted: boolean
 }
 
 // Failed writes/removals must never revive an older persisted purchase.
@@ -114,7 +111,6 @@ export function bindCheckoutReferral(
       .sort((a, b) => a.coordinate.localeCompare(b.coordinate)),
     sessionScope,
     createdAt,
-    orderSubmitted: false,
   })
 }
 
@@ -146,31 +142,4 @@ export function getCheckoutReferralClaim(
     ...(current.partnerCode ? { partnerCode: current.partnerCode } : {}),
     linkMode: current.linkMode,
   }
-}
-
-export function recordCheckoutReferralOrderSubmitted(
-  merchantPubkey: string | undefined,
-  purchaseId: string | undefined,
-  items: readonly CartItem[],
-  sessionScope: string | undefined
-): void {
-  const claim = getCheckoutReferralClaim(
-    merchantPubkey,
-    purchaseId,
-    items,
-    sessionScope
-  )
-  const current = read()
-  if (!claim || !current || current.orderSubmitted) return
-  save({ ...current, orderSubmitted: true })
-  recordBrowserTelemetryEvent({
-    app: "market",
-    eventName: "checkout_handoff_result",
-    properties: {
-      surface: "checkout",
-      handoff_stage: "order_submitted",
-      mode: claim.linkMode,
-      ...checkoutAttributionTelemetryProperties(claim),
-    },
-  })
 }

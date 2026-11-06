@@ -583,7 +583,7 @@ function MessagesWorkspace() {
           senderPubkey: input.accountPubkey,
           recipientPubkey: input.merchantPubkey,
         }),
-        telemetryApp: "market",
+
         onRecipientAccepted: checkpoint.onRecipientAccepted,
       })
       if (sent.selfCopyError) {

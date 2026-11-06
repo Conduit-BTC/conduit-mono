@@ -11,10 +11,6 @@ import type { ReactNode } from "react"
 import {
   buildBugReportUrl,
   getClientErrorMessage,
-  installBrowserClientErrorTelemetry,
-  recordBrowserClientError,
-  recordBrowserTelemetryEvent,
-  recordBrowserTelemetryPageView,
   useAuth,
   useNip07Availability,
 } from "@conduit/core"
@@ -95,8 +91,6 @@ function RootLayout() {
 
   if (isProductLegalPath(pathname)) return <Outlet />
   if (isMerchantPublicAboutPath(pathname)) {
-    throwSyntheticClientErrorForTelemetryTest()
-
     return (
       <MerchantPublicAboutShell>
         <Outlet />
@@ -124,9 +118,7 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     status,
   } = useAuth()
   const [authFallbackReady, setAuthFallbackReady] = useState(false)
-  const appLoadTelemetrySentRef = useRef(false)
-  const previousAuthStatusRef = useRef(status)
-  const previousAuthMethodRef = useRef(method)
+
   const deviceWalletRoute = pathname === "/wallet" || pathname === "/wallet/"
   const signerConnected = status === "connected" && !!pubkey
   const signerRecoveryRequired = !!remoteSignerRecovery && !!pubkey
@@ -138,56 +130,6 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     !signerRecoveryRequired
   const shouldDelayAuthFallback =
     !!pubkey && !signerWorkspaceAvailable && !authFallbackReady
-
-  useEffect(() => {
-    // The public shell owns its error listener while it is mounted.
-    if (isNotFound && !signerWorkspaceAvailable) return
-    return installBrowserClientErrorTelemetry("merchant")
-  }, [isNotFound, signerWorkspaceAvailable])
-
-  useEffect(() => {
-    if (appLoadTelemetrySentRef.current) return
-    appLoadTelemetrySentRef.current = true
-    recordBrowserTelemetryEvent({
-      app: "merchant",
-      eventName: "app_load_result",
-      properties: {
-        network: "browser",
-        status: "success",
-      },
-    })
-  }, [])
-
-  useEffect(() => {
-    if (
-      status === "connected" &&
-      previousAuthStatusRef.current !== "connected"
-    ) {
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "signer_connected",
-        properties: {
-          method: method ?? "nip07",
-          status: "success",
-        },
-      })
-    }
-    if (
-      status === "disconnected" &&
-      previousAuthStatusRef.current === "connected"
-    ) {
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "signer_disconnected",
-        properties: {
-          method: previousAuthMethodRef.current ?? "nip07",
-          status: "success",
-        },
-      })
-    }
-    previousAuthStatusRef.current = status
-    if (method) previousAuthMethodRef.current = method
-  }, [method, status])
 
   useEffect(() => {
     if (!pubkey || signerWorkspaceAvailable) {
@@ -223,12 +165,6 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
     signerRestoring,
     signerWorkspaceAvailable,
   ])
-
-  useEffect(() => {
-    recordBrowserTelemetryPageView({ app: "merchant", pathname })
-  }, [pathname])
-
-  throwSyntheticClientErrorForTelemetryTest()
 
   // Settle a saved signer before choosing the missing-page shell. Starting the
   // public video only to unmount it during restore can stall WebKit media load.
@@ -274,41 +210,6 @@ function MerchantProductRoot({ pathname }: { pathname: string }) {
       )}
     </RootShell>
   )
-}
-
-function throwSyntheticClientErrorForTelemetryTest(): void {
-  const enabled =
-    import.meta.env.MODE === "mock" &&
-    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
-    typeof window !== "undefined"
-  if (!enabled) return
-
-  const testCase = new URLSearchParams(window.location.search).get(
-    "__conduit_telemetry_test"
-  )
-  if (testCase === "react_error_boundary") {
-    throw new TypeError("Synthetic client error telemetry test")
-  }
-  if (testCase === "react_error_boundary_proxy_prototype") {
-    throw new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          throw new Error("Private proxy prototype detail")
-        },
-      }
-    )
-  }
-  if (testCase === "react_error_boundary_proxy_message") {
-    throw new Proxy(new Error("Private proxy message detail"), {
-      get(target, property, receiver) {
-        if (property === "name" || property === "message") {
-          throw new Error("Private proxy property detail")
-        }
-        return Reflect.get(target, property, receiver)
-      },
-    })
-  }
 }
 
 function AuthGateGrace() {
@@ -361,21 +262,13 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
   }
 
   if (isMerchantPublicAboutPath(pathname)) {
-    return <MerchantPublicRootError error={error} />
+    return <MerchantPublicRootError />
   }
 
   return <MerchantProductRootError error={error} />
 }
 
-function MerchantPublicRootError({ error }: { error: unknown }) {
-  useEffect(() => {
-    recordBrowserClientError({
-      app: "merchant",
-      error,
-      source: "react_error_boundary",
-    })
-  }, [error])
-
+function MerchantPublicRootError() {
   return (
     <div className="min-h-dvh bg-[var(--background)] px-4 py-12 text-[var(--text-primary)]">
       <ErrorPage
@@ -390,14 +283,6 @@ function MerchantPublicRootError({ error }: { error: unknown }) {
 function MerchantProductRootError({ error }: { error: unknown }) {
   const { pubkey, status } = useAuth()
   const signerConnected = status === "connected" && !!pubkey
-
-  useEffect(() => {
-    recordBrowserClientError({
-      app: "merchant",
-      error,
-      source: "react_error_boundary",
-    })
-  }, [error])
 
   const errorPage = (
     <ErrorPage

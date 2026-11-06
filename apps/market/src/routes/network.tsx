@@ -38,7 +38,7 @@ function SettingsPage() {
     signerReadiness === "ready",
     false
   )
-  const networkSettings = useAccountNetworkSettings({ telemetryApp: "market" })
+  const networkSettings = useAccountNetworkSettings()
   const [reconnecting, setReconnecting] = useState(false)
   const [hasUnpublishedRelayChanges, setHasUnpublishedRelayChanges] =
     useState(false)
