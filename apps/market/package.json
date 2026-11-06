@@ -18,7 +18,6 @@
     "@buildonspark/spark-sdk": "0.13.0",
     "@conduit/core": "workspace:*",
     "@conduit/ui": "workspace:*",
-    "@getalby/sdk": "^8.1.1",
     "@nostr-dev-kit/ndk": "^3.0.3",
     "@scure/bip39": "2.4.0",
     "@tanstack/react-query": "^5.105.3",
@@ -27,7 +26,6 @@
     "nostr-tools": "2.25.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "react-hook-form": "^7.90.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   },
