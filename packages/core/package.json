@@ -47,7 +47,7 @@
     "tailwind-merge": "^3.7.0",
     "tldts": "7.4.19",
     "zod": "^4.6.7",
-    "@buildonspark/spark-sdk": "0.13.0",
+    "@buildonspark/spark-sdk": "0.14.0",
     "@scure/bip39": "2.4.0"
   },
   "peerDependencies": {
