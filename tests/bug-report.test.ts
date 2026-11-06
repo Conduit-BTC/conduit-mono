@@ -13,7 +13,6 @@ const buildInfo: ConduitBuildInfo = {
   publicConfigDigest: "digest",
   publicFeatures: {
     dmCompatibilityOrderRoutingEnabled: true,
-    livePresenceEnabled: true,
     quantumRouterEnabled: true,
     quantumRouterExecutionEnabled: true,
     breezLightningAddressEnabled: false,
