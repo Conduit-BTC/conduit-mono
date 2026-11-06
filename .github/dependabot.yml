@@ -73,6 +73,7 @@ updates:
       css-tooling:
         applies-to: version-updates
         patterns:
+          - "@tailwindcss/*"
           - "autoprefixer"
           - "class-variance-authority"
           - "clsx"

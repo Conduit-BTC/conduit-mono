@@ -34,7 +34,7 @@ import {
 import { acquireCheckoutSparkWalletRetentionLock } from "../apps/market/src/lib/checkout-spark-wallet-retention-lock"
 import { createCheckoutSparkSettledFundingBridge } from "../apps/market/src/lib/checkout-spark-settled-funding"
 import { payCheckoutInvoice } from "../apps/market/src/lib/payment-rails"
-import { closeUnusedSparkWallets } from "../apps/market/src/lib/checkout-spark-router-wallet-retention"
+import { closeUnusedSparkWallets } from "@conduit/core/wallets/checkout-spark-router-wallet-retention"
 import { checkoutSparkQuoteFixture } from "./support/checkout-spark-quote-fixture"
 import { createSessionGuestOrderSigningIdentity } from "../apps/market/src/lib/guest-order-identity"
 import {
@@ -305,6 +305,54 @@ function feePolicyDependencies(grossFundingSats: number) {
     },
   }
 }
+
+describe("settled funding provider terms", () => {
+  it.each([
+    ["wallet", { walletId: "another-wallet" }],
+    ["network", { network: "regtest" as const }],
+    ["net amount", { requiredNetSats: GROSS - 1 }],
+    ["gross amount", { grossFundingSats: GROSS + 1 }],
+    ["expiry", { expirySecs: 600 }],
+    ["receiver identity", { receiverIdentityPublicKey: "invalid" }],
+  ] as const)(
+    "rejects mismatched %s before recording a plan or publishing recovery",
+    async (_label, mismatch) => {
+      const storage = new MemoryStorage()
+      const input = request(storage)
+      const { calls, options } = dependencies(true)
+      let recorded = 0
+      await expect(
+        prepareCheckoutSparkSettledFunding(input, {
+          ...options,
+          createFundingReceive: async () => ({
+            ...(await options.createFundingReceive()),
+            ...mismatch,
+          }),
+          repository: {
+            ...options.repository,
+            create: async (plan) => {
+              recorded++
+              return options.repository.create(plan)
+            },
+          },
+        })
+      ).rejects.toMatchObject({
+        name: "CheckoutSparkSettledPreparationAbandonedError",
+        preparationStep: "funding_validation",
+        cause: new Error(
+          "Settled checkout receive does not match its invoice terms."
+        ),
+      })
+      expect(calls.invoice).toBe(1)
+      expect(calls.close).toBe(1)
+      expect(calls.publish).toBe(0)
+      expect(recorded).toBe(0)
+      expect(
+        getCheckoutSparkSettledPreparation(input.checkoutId, storage)
+      ).toBeNull()
+    }
+  )
+})
 
 describe("new percentage-only funding admission", () => {
   it.each([2, 10, 47])(
