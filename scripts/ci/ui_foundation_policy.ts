@@ -163,7 +163,7 @@ export async function readUiSources(): Promise<UiSource[]> {
       sources.push({ path, content: await Bun.file(path).text() })
     }
   }
-  for (const app of ["market", "merchant", "store-builder"]) {
+  for (const app of ["market", "merchant"]) {
     const path = `apps/${app}/tailwind.config.js`
     sources.push({ path, content: await Bun.file(path).text() })
   }

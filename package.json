@@ -50,7 +50,6 @@
     "dev:mainnet": "bun run dev:market:mainnet & bun run dev:merchant:mainnet",
     "dev:prod-relays": "bun run dev:market:prod-relays & bun run dev:merchant:prod-relays",
     "dev:mock": "bun run dev:market:mock & bun run dev:merchant:mock",
-    "dev:store-builder": "bun run --filter @conduit/store-builder dev",
     "build": "bun run --filter @conduit/core build && bun run --filter @conduit/ui build && bun run --filter './apps/*' build",
     "build:preview": "CONDUIT_DEPLOYMENT_PROFILE=preview bun run build && bun scripts/ci/verify_deployment_artifacts.ts preview",
     "build:production": "CONDUIT_DEPLOYMENT_PROFILE=production bun run build && bun scripts/ci/verify_deployment_artifacts.ts production",
