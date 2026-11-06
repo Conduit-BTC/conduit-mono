@@ -1,4 +1,4 @@
-import { nip19 } from "@nostr-dev-kit/ndk"
+import * as nip19 from "nostr-tools/nip19"
 import { EVENT_KINDS } from "./kinds"
 import type { PublicRelayReadOptions } from "./relay-reader"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
