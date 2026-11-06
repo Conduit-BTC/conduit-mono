@@ -7696,36 +7696,6 @@ function resolveProductAvailabilityIssue(input: {
   return "product_missing"
 }
 
-/**
- * Resolve one exact atomic kind-30402 listing.
- *
- * Unlike getProductDetail, variation coordinates are not projected to their
- * variable parent. Mutation workflows use this interface so stock and other
- * child-specific fields are always verified and republished on the selected
- * leaf.
- */
-export async function getAtomicProductDetail(
-  query: ProductDetailQuery
-): Promise<CommerceResult<CommerceProductRecord | null>> {
-  const { addressId } = getProductLookupIds(query.productId)
-  if (!addressId) {
-    return {
-      data: null,
-      meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES),
-    }
-  }
-
-  const result = await getProductsByIds([addressId], {
-    includeMarketHidden: query.includeMarketHidden,
-    authenticatedPubkey: query.authenticatedPubkey,
-    shouldContinue: query.shouldContinue,
-  })
-  return {
-    data: result.data.find((record) => record.addressId === addressId) ?? null,
-    meta: result.meta,
-  }
-}
-
 export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }

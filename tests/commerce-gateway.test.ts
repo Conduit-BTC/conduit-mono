@@ -25,7 +25,6 @@ import {
   decodeProductReference,
   encodeProductNaddr,
   getFollowPubkeys,
-  getAtomicProductDetail,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
   getMerchantConversationList,
@@ -2075,10 +2074,6 @@ describe("commerce gateway", () => {
     const childDetail = await getProductDetail({
       productId: `30402:${merchantPubkey}:shirt-l`,
     })
-    const atomicChild = await getAtomicProductDetail({
-      productId: `30402:${merchantPubkey}:shirt-l`,
-      includeMarketHidden: true,
-    })
     const incompleteFamily = await getProductDetail({
       productId: `30402:${merchantPubkey}:empty-family`,
       includeMarketHidden: true,
@@ -2109,9 +2104,6 @@ describe("commerce gateway", () => {
     expect(merchant.data).toHaveLength(8)
     expect(childDetail.data?.addressId).toBe(parentProductId)
     expect(childDetail.data?.family?.children).toHaveLength(4)
-    expect(atomicChild.data?.addressId).toBe(`30402:${merchantPubkey}:shirt-l`)
-    expect(atomicChild.data?.product.type).toBe("variation")
-    expect(atomicChild.data?.family).toBeUndefined()
     expect(incompleteFamily.data?.family?.state).toBe("parent_only")
     expect(incompleteFamily.data?.family?.readEvidence).toMatchObject({
       source: incompleteFamily.meta.source,
@@ -2119,6 +2111,11 @@ describe("commerce gateway", () => {
       degraded: incompleteFamily.meta.degraded,
       capped: incompleteFamily.meta.capped,
     })
+    expect(selectedVariation.data[0]?.addressId).toBe(
+      `30402:${merchantPubkey}:shirt-l`
+    )
+    expect(selectedVariation.data[0]?.product.type).toBe("variation")
+    expect(selectedVariation.data[0]?.family).toBeUndefined()
     expect(selectedVariation.data[0]?.product.stock).toBe(5)
     expect(orphanVariation.data).toHaveLength(0)
   })
