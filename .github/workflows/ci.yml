@@ -16,7 +16,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  payment-recovery-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+      - run: bun install --frozen-lockfile
+      - name: Run payment, recovery, and gateway release tests
+        run: bun test
+
   build-mainnet:
+    needs: payment-recovery-tests
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -24,6 +40,10 @@ jobs:
       VITE_BUILD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
       VITE_BUILD_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
     steps:
+      - name: Require successful payment and recovery tests
+        env:
+          TEST_RESULT: ${{ needs.payment-recovery-tests.result }}
+        run: test "$TEST_RESULT" = success
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
