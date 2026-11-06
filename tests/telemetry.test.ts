@@ -39,7 +39,6 @@ describe("browser telemetry", () => {
   const productAddress = `30402:${storePubkey}:testing-digital-jxwwl7`
   const productNaddr = encodeProductNaddr(productAddress)
   const secondProductAddress = `30402:${storePubkey}:second-product`
-  const secondProductNaddr = encodeProductNaddr(secondProductAddress)
 
   it("is disabled by default", () => {
     const config = resolveBrowserTelemetryConfig("market", {})
@@ -410,7 +409,7 @@ describe("browser telemetry", () => {
     }
   })
 
-  it("keeps provider failures out of user-visible flows", () => {
+  it("does not call an existing provider during the telemetry pause", () => {
     const previousDocument = Object.getOwnPropertyDescriptor(
       globalThis,
       "document"
@@ -463,7 +462,7 @@ describe("browser telemetry", () => {
           },
         })
       ).not.toThrow()
-      expect(plausibleCalls).toBe(1)
+      expect(plausibleCalls).toBe(0)
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
       restoreProcessEnvValue(
@@ -478,7 +477,7 @@ describe("browser telemetry", () => {
     }
   })
 
-  it("fails closed without a host allowlist and limits wildcards to one label", () => {
+  it("keeps pageviews disabled across host allowlist changes", () => {
     const previousDocument = Object.getOwnPropertyDescriptor(
       globalThis,
       "document"
@@ -547,9 +546,7 @@ describe("browser telemetry", () => {
       location.pathname = "/profile"
       recordBrowserTelemetryPageView({ app: "market", pathname: "/profile" })
 
-      expect(pageUrls).toEqual([
-        "https://preview.conduit-market-coo.pages.dev/cart",
-      ])
+      expect(pageUrls).toEqual([])
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
       restoreProcessEnvValue(
@@ -564,7 +561,7 @@ describe("browser telemetry", () => {
     }
   })
 
-  it("deduplicates only exact routes before sanitizing dynamic pageviews", () => {
+  it("does not emit repeated or distinct product pageviews", () => {
     const previousDocument = Object.getOwnPropertyDescriptor(
       globalThis,
       "document"
@@ -629,10 +626,7 @@ describe("browser telemetry", () => {
         pathname: `/products/${encodeURIComponent(secondProductAddress)}`,
       })
 
-      expect(pageUrls).toEqual([
-        `https://preview.example/products/${productNaddr}`,
-        `https://preview.example/products/${secondProductNaddr}`,
-      ])
+      expect(pageUrls).toEqual([])
     } finally {
       restoreProcessEnvValue("VITE_ENABLE_TELEMETRY", previousEnableTelemetry)
       restoreProcessEnvValue(

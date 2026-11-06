@@ -1,4 +1,3 @@
-import { getOfficialProductTelemetryApp } from "./telemetry-contract"
 import type { OrderSchema } from "./schemas"
 
 export type CommerceGmvEstimateInput = {
@@ -45,11 +44,8 @@ export function getCommerceGmvEstimateFromOrder(input: {
   return isCommerceGmvEstimateInput(estimate) ? estimate : null
 }
 
-const COMMERCE_GMV_ENDPOINT = "https://e.conduit.market/gmv"
 const ORDER_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const reportedOrders = new Set<string>()
-const inFlightReports = new Map<string, Promise<boolean>>()
 
 export function isCommerceGmvEstimateInput(
   input: CommerceGmvEstimateInput
@@ -65,66 +61,16 @@ export function isCommerceGmvEstimateInput(
   )
 }
 
-/**
- * Best-effort, aggregate-only GMV reporting. Every qualifying commerce signal
- * may call this function; the Worker turns the shared order UUID into the one
- * opaque PostHog event UUID that deduplicates those attempts. This narrowly
- * scoped first-party measurement is independent from optional browser
- * analytics and its generic GPC/configuration gate.
- */
+/** Reporting is paused independently of browser configuration and GPC. */
 export async function reportCommerceGmvEstimate(
   input: CommerceGmvEstimateInput,
   options: CommerceGmvEstimateOptions = {}
 ): Promise<boolean> {
-  if (!isCommerceGmvEstimateInput(input)) return false
-  const hostname =
-    options.hostname ??
-    (typeof window === "undefined" ? "" : window.location.hostname)
-  if (!getOfficialProductTelemetryApp(hostname)) return false
-
-  const orderId = input.orderId.toLowerCase()
-  const orderDate = new Date(input.orderCreatedAt).toISOString().slice(0, 10)
-  if (reportedOrders.has(orderId)) return true
-  const existing = inFlightReports.get(orderId)
-  if (existing) return existing
-
-  const fetchImpl =
-    options.fetchImpl ?? ((url: string, init: RequestInit) => fetch(url, init))
-  const request = (async () => {
-    try {
-      const response = await fetchImpl(COMMERCE_GMV_ENDPOINT, {
-        method: "POST",
-        headers: {
-          accept: "application/json",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          orderId,
-          orderDate,
-          invoicedAmountSats: input.invoicedAmountSats,
-        }),
-        cache: "no-store",
-        credentials: "omit",
-        keepalive: true,
-        referrerPolicy: "no-referrer",
-        signal: AbortSignal.timeout(5_500),
-      })
-      const accepted = response.ok
-      await response.body?.cancel()
-      if (accepted) reportedOrders.add(orderId)
-      return accepted
-    } catch {
-      return false
-    } finally {
-      inFlightReports.delete(orderId)
-    }
-  })()
-
-  inFlightReports.set(orderId, request)
-  return request
+  void input
+  void options
+  return false
 }
 
 export function __resetCommerceGmvEstimateSessionForTests(): void {
-  reportedOrders.clear()
-  inFlightReports.clear()
+  // No reporting state remains during the telemetry pause.
 }

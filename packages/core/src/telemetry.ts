@@ -105,18 +105,6 @@ export function applyPlausibleInitOptions(
   plausible.o = options
 }
 
-interface PostHogClient {
-  init: (key: string, config: ConduitPostHogConfig) => void
-  capture: (
-    eventName: PostHogTelemetryEventName | BrowserTelemetryEventName,
-    properties: Record<string, PostHogPropertyValue>
-  ) => void
-}
-
-type PostHogModule = {
-  default?: PostHogClient
-} & Partial<PostHogClient>
-
 export interface ConduitPostHogConfig {
   api_host: string
   ui_host: "https://us.posthog.com"
@@ -178,7 +166,6 @@ const postHogTelemetryEventNames = [
   "$pageview",
   "$web_vitals",
 ] as const
-type PostHogTelemetryEventName = (typeof postHogTelemetryEventNames)[number]
 type PostHogPropertyValue = string | boolean | number
 const postHogTelemetryEventNameSet = new Set<string>(postHogTelemetryEventNames)
 const postHogWebVitalValueNames = [
@@ -249,11 +236,6 @@ const browserTelemetryEventNameSet = new Set<string>(browserTelemetryEventNames)
 const browserTelemetryPropertyNameSet = new Set<string>(
   browserTelemetryPropertyNames
 )
-
-let plausibleInitializedFor: string | null = null
-let posthogInitializedFor: string | null = null
-let posthogClientPromise: Promise<PostHogClient | null> | null = null
-let lastPageViewSignature: string | null = null
 
 function clean(value: string | undefined): string | null {
   const trimmed = value?.trim()
@@ -768,128 +750,16 @@ function getTelemetryAppForPageUrl(
   }
 }
 
+/** Collection is paused. Keep callers inert until instrumentation is removed. */
 export function recordBrowserTelemetryEvent(input: TelemetryEventInput): void {
-  try {
-    recordBrowserTelemetryEventUnsafe(input)
-  } catch {
-    // Telemetry is best-effort and must never change the user-visible flow.
-  }
+  void input
 }
 
-function recordBrowserTelemetryEventUnsafe(input: TelemetryEventInput): void {
-  if (typeof window === "undefined" || typeof document === "undefined") return
-  if (!isBrowserTelemetryEventName(input.eventName)) return
-
-  const config = constrainOfficialBrowserTelemetryConfig(
-    resolveBrowserTelemetryConfig(input.app),
-    window.location.hostname
-  )
-  if (!config.enabled) return
-  if (!isTelemetryAllowedForCurrentHost(config)) return
-  if (isGlobalPrivacyControlEnabled()) return
-  if (
-    isCheckoutAttributionTelemetryEvent(
-      input.eventName,
-      input.properties ?? {}
-    ) &&
-    getOfficialProductTelemetryApp(window.location.hostname) !== input.app
-  )
-    return
-
-  const sanitizedProperties = sanitizeTelemetryEventProperties(input)
-  if (!sanitizedProperties) return
-
-  const properties = {
-    ...sanitizedProperties,
-    ...buildTelemetryEventPageContext({
-      origin: window.location.origin,
-      pathname: window.location.pathname,
-    }),
-  }
-  if (
-    !hasRequiredBrowserTelemetryEventProperties(input.eventName, properties)
-  ) {
-    return
-  }
-
-  if (config.plausible) {
-    ensurePlausible(config.plausible)
-    window.plausible?.(input.eventName, {
-      url: properties.page_url as string,
-      props: properties,
-    })
-  }
-
-  if (config.posthog) {
-    void ensurePostHog(config.posthog)
-      .then((client) => {
-        client?.capture(input.eventName, {
-          ...properties,
-          $current_url: properties.page_url,
-          $pathname: properties.page_path,
-          $process_person_profile: false,
-          distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
-        })
-      })
-      .catch(() => undefined)
-  }
-}
-
+/** No provider initialization, storage, queue, or network request is permitted. */
 export function recordBrowserTelemetryPageView(
   input: TelemetryPageViewInput
 ): void {
-  try {
-    recordBrowserTelemetryPageViewUnsafe(input)
-  } catch {
-    // Telemetry is best-effort and must never change the user-visible flow.
-  }
-}
-
-function recordBrowserTelemetryPageViewUnsafe(
-  input: TelemetryPageViewInput
-): void {
-  if (typeof window === "undefined" || typeof document === "undefined") return
-
-  const config = constrainOfficialBrowserTelemetryConfig(
-    resolveBrowserTelemetryConfig(input.app),
-    window.location.hostname
-  )
-  if (!config.enabled) return
-  if (!isTelemetryAllowedForCurrentHost(config)) return
-  if (isGlobalPrivacyControlEnabled()) return
-
-  const pageUrl = buildTelemetryPageViewUrl({
-    origin: input.origin ?? window.location.origin,
-    pathname: input.pathname,
-  })
-  const sanitizedPath = sanitizeTelemetryPageViewPath(input.pathname)
-  // Keep the raw route only in memory for exact duplicate suppression.
-  // Invalid dynamic routes share a redacted provider URL, but distinct route
-  // transitions must still count as separate pageviews.
-  const pageViewSignature = `${input.app}:${input.origin ?? window.location.origin}:${input.pathname}`
-  if (lastPageViewSignature === pageViewSignature) return
-  lastPageViewSignature = pageViewSignature
-
-  if (config.plausible) {
-    ensurePlausible(config.plausible)
-    window.plausible?.("pageview", { url: pageUrl })
-  }
-
-  if (config.posthog) {
-    void ensurePostHog(config.posthog)
-      .then((client) => {
-        client?.capture("$pageview", {
-          $current_url: pageUrl,
-          $pathname: sanitizedPath,
-          $process_person_profile: false,
-          app: input.app,
-          distinct_id: POSTHOG_ANONYMOUS_DISTINCT_ID,
-          page_path: sanitizedPath,
-          page_url: pageUrl,
-        })
-      })
-      .catch(() => undefined)
-  }
+  void input
 }
 
 function getStringProperty(
@@ -938,99 +808,4 @@ function parseAllowedTelemetryHosts(raw: string | undefined): string[] {
       .map((host) => host.trim().toLowerCase())
       .filter(Boolean) ?? []
   )
-}
-
-function isTelemetryAllowedForCurrentHost(
-  config: BrowserTelemetryConfig
-): boolean {
-  if (config.allowedHosts.length === 0) return false
-  const hostname = window.location.hostname.toLowerCase()
-  return config.allowedHosts.some((pattern) =>
-    isTelemetryHostnameMatch(hostname, pattern)
-  )
-}
-
-function isTelemetryHostnameMatch(hostname: string, pattern: string): boolean {
-  if (!pattern.startsWith("*.")) return hostname === pattern
-
-  const suffix = pattern.slice(2)
-  if (!suffix || suffix.includes("*")) return false
-  if (!hostname.endsWith(`.${suffix}`)) return false
-
-  const prefix = hostname.slice(0, -(suffix.length + 1))
-  return !!prefix && !prefix.includes(".")
-}
-
-function isGlobalPrivacyControlEnabled(): boolean {
-  if (typeof navigator === "undefined") return false
-  return (
-    (navigator as Navigator & { globalPrivacyControl?: boolean })
-      .globalPrivacyControl === true
-  )
-}
-
-function ensurePlausible(config: PlausibleTelemetryConfig): void {
-  const configKey = config.domain ?? config.scriptSrc
-  if (plausibleInitializedFor === configKey) return
-
-  const existing = window.plausible
-  const plausible: PlausibleFunction =
-    existing ??
-    (((...args: Parameters<PlausibleFunction>) => {
-      plausible.q = plausible.q ?? []
-      plausible.q.push(args)
-    }) as PlausibleFunction)
-
-  plausible.init =
-    plausible.init ??
-    ((options) => {
-      applyPlausibleInitOptions(plausible, options)
-    })
-  window.plausible = plausible
-  window.plausible.init?.({ autoCapturePageviews: false, logging: false })
-
-  const alreadyLoaded = document.querySelector<HTMLScriptElement>(
-    `script[data-conduit-telemetry="plausible"][data-config-key="${configKey}"]`
-  )
-  if (!alreadyLoaded) {
-    const script = document.createElement("script")
-    script.async = true
-    script.src = config.scriptSrc
-    if (config.domain) script.dataset.domain = config.domain
-    script.dataset.configKey = configKey
-    script.dataset.conduitTelemetry = "plausible"
-    script.addEventListener("load", () => {
-      window.plausible?.init?.({ autoCapturePageviews: false, logging: false })
-    })
-    document.head.appendChild(script)
-  }
-
-  plausibleInitializedFor = configKey
-}
-
-async function ensurePostHog(
-  config: PostHogTelemetryConfig
-): Promise<PostHogClient | null> {
-  const key = `${config.host}:${config.key}`
-  if (posthogInitializedFor === key && posthogClientPromise) {
-    return posthogClientPromise
-  }
-
-  posthogInitializedFor = key
-  posthogClientPromise = Promise.all([
-    import("posthog-js"),
-    // Load the typed web-vitals extension before initializing the client.
-    import("posthog-js/dist/web-vitals"),
-  ])
-    .then(([mod]) => {
-      const postHogModule = mod as unknown as PostHogModule
-      const client = (postHogModule.default ?? postHogModule) as
-        PostHogClient | undefined
-      if (!client?.init || !client.capture) return null
-      client.init(config.key, getConduitPostHogConfig(config))
-      return client
-    })
-    .catch(() => null)
-
-  return posthogClientPromise
 }

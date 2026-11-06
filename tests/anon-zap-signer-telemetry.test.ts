@@ -17,41 +17,20 @@ const EVENT_PROPERTIES: AnonZapSignerTelemetryProperties = {
 }
 
 describe("anon zap signer telemetry", () => {
-  it("captures only aggregate properties with a static service identity", async () => {
-    let capturedUrl: string | null = null
-    let capturedInit: RequestInit | null = null
-    const propertiesWithUntrustedFields = {
-      ...EVENT_PROPERTIES,
-      $process_person_profile: true,
-      order_id: "private-order",
-    } as AnonZapSignerTelemetryProperties
-
+  it("does not send even with a valid project token and properties", async () => {
+    let requests = 0
     await recordTelemetryEvent(
       "anon_zap_signer_request_result",
-      propertiesWithUntrustedFields,
+      EVENT_PROPERTIES,
       { POSTHOG_PROJECT_TOKEN: PROJECT_KEY },
       {
-        async fetchImpl(input, init) {
-          capturedUrl = input
-          capturedInit = init
-          return new Response(JSON.stringify({ status: "Ok" }), {
-            status: 200,
-          })
+        fetchImpl: async () => {
+          requests += 1
+          throw new Error("must not send")
         },
       }
     )
-
-    expect(capturedUrl).toBe("https://us.i.posthog.com/capture/")
-    expect(capturedInit?.method).toBe("POST")
-    expect(JSON.parse(String(capturedInit?.body))).toEqual({
-      token: PROJECT_KEY,
-      distinct_id: "conduit-anon-zap-signer",
-      event: "anon_zap_signer_request_result",
-      properties: {
-        $process_person_profile: false,
-        ...EVENT_PROPERTIES,
-      },
-    })
+    expect(requests).toBe(0)
   })
 
   it("does not send without a valid project key or approved ingest host", async () => {
