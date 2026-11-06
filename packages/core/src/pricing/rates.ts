@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import {
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
   isPricingRateQuoteFresh,
+  normalizeFiatRates,
   type BtcUsdRateQuote,
 } from "./index"
 import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
@@ -14,26 +15,6 @@ export const BTC_USD_RATE_STALE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
 
 type FiatUsdRates = Record<string, number>
-
-function normalizeFiatRates(rates: FiatUsdRates): FiatUsdRates | undefined {
-  const normalized = Object.entries(rates).reduce<FiatUsdRates>(
-    (accumulator, [currency, usdPerUnit]) => {
-      const normalizedCurrency = currency.trim().toUpperCase()
-      if (
-        /^[A-Z]{3}$/.test(normalizedCurrency) &&
-        normalizedCurrency !== "USD" &&
-        Number.isFinite(usdPerUnit) &&
-        usdPerUnit > 0
-      ) {
-        accumulator[normalizedCurrency] = usdPerUnit
-      }
-      return accumulator
-    },
-    {}
-  )
-
-  return Object.keys(normalized).length > 0 ? normalized : undefined
-}
 
 function parseEnvFiatUsdRates(): FiatUsdRates | undefined {
   const raw = import.meta.env.VITE_FIAT_USD_RATES

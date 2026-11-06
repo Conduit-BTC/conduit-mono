@@ -1,5 +1,6 @@
 import { signFixture, publicFixturePubkey } from "./helpers/public-event"
 import { describe, expect, it } from "bun:test"
+import { normalizeFiatRates } from "@conduit/core/pricing"
 import {
   BTC_USD_RATE_STALE_MS,
   type BtcUsdRateQuote,
@@ -44,6 +45,29 @@ const testRates: BtcUsdRateQuote = {
 }
 
 describe("commerce pricing", () => {
+  it("normalizes fiat maps without mutating input or narrowing historical codes", () => {
+    const rates = Object.freeze({
+      " eur ": 1,
+      EUR: 2,
+      " EUR ": NaN,
+      XYZ: 3,
+      USD: 1,
+    })
+    expect(normalizeFiatRates(rates)).toEqual({ EUR: 2, XYZ: 3 })
+    expect(
+      normalizeFiatRates({
+        USD: 1,
+        EUR: 0,
+        GBP: -1,
+        CAD: NaN,
+        JPY: Infinity,
+        NO: 1,
+        USDT: 1,
+      })
+    ).toBeUndefined()
+    expect(normalizeFiatRates({})).toBeUndefined()
+  })
+
   it("normalizes currency aliases without collapsing distinct Bitcoin units", () => {
     expect(normalizeCurrencyIdentity(" sat ")).toBe("SATS")
     expect(normalizeCurrencyIdentity("SATS")).toBe("SATS")
