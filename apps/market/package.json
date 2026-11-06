@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "vite",
     "routes:gen": "bun scripts/generate-routes.ts",
-    "build": "tsc && vite build",
+    "build": "bun ../../node_modules/@typescript/native/bin/tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "dev:ui": "vite --config vite.ui.config.ts",
     "build:ui": "vite build --config vite.ui.config.ts",
@@ -41,7 +41,7 @@
     "@vitejs/plugin-react-swc": "^4.3.3",
     "postcss": "^8.5.32",
     "tailwindcss": "^4.3.4",
-    "typescript": "^6.0.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "vite": "^8.3.5"
   }
 }

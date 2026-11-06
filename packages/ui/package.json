@@ -11,8 +11,8 @@
     "./styles/*": "./src/styles/*"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "bun ../../node_modules/@typescript/native/bin/tsc",
+    "typecheck": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
@@ -40,7 +40,7 @@
   "devDependencies": {
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "typescript": "^6.0.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "tailwindcss": "^4.3.4"
   }
 }
