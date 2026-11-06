@@ -177,9 +177,7 @@ describe("deployment profiles", () => {
 
   it("fails a staging-misclassified bundle closed on the production host", () => {
     const compiledProfile = selectDeploymentProfileName({
-      CF_PAGES: "1",
-      CF_PAGES_BRANCH: "main",
-      CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+      CONDUIT_DEPLOYMENT_PROFILE: "staging",
     })
 
     expect(compiledProfile).toBe("staging")
@@ -192,7 +190,7 @@ describe("deployment profiles", () => {
     ).toBe(false)
   })
 
-  it("configures compatibility routing, presence and Quantum Router by profile", () => {
+  it("configures compatibility routing and Quantum Router by profile", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -208,9 +206,6 @@ describe("deployment profiles", () => {
       false
     )
     expect(staging.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(true)
-    expect(preview.publicFeatures.livePresenceEnabled).toBe(true)
-    expect(production.publicFeatures.livePresenceEnabled).toBe(true)
-    expect(staging.publicFeatures.livePresenceEnabled).toBe(false)
     expect(preview.publicFeatures.quantumRouterEnabled).toBe(true)
     expect(production.publicFeatures.quantumRouterEnabled).toBe(true)
     expect(staging.publicFeatures.quantumRouterEnabled).toBe(false)
@@ -327,29 +322,15 @@ describe("deployment profiles", () => {
     ).toThrow("Cloudflare branch requires preview")
   })
 
-  it("selects staging only for the repo-owned Signet Pages projects", () => {
+  it("has no published staging projects and retains explicit local Signet builds", () => {
+    for (const app of Object.values(loadPagesProfiles().apps)) {
+      expect(app.cloudflareStagingProject).toBeNull()
+    }
     expect(
       selectDeploymentProfileName({
-        CF_PAGES: "1",
-        CF_PAGES_BRANCH: "main",
-        CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
+        CONDUIT_DEPLOYMENT_PROFILE: "staging",
       })
     ).toBe("staging")
-    expect(
-      selectDeploymentProfileName({
-        CF_PAGES: "1",
-        CF_PAGES_BRANCH: "feat/rollout-smoke",
-        CF_PAGES_URL: "https://abc123.conduit-merchant-signet.pages.dev",
-      })
-    ).toBe("staging")
-    expect(() =>
-      selectDeploymentProfileName({
-        CF_PAGES: "1",
-        CF_PAGES_BRANCH: "main",
-        CF_PAGES_URL: "https://conduit-market-signet.pages.dev",
-        CONDUIT_DEPLOYMENT_PROFILE: "production",
-      })
-    ).toThrow("Cloudflare branch requires staging")
   })
 
   it("requires each preview feature value but accepts explicit false", () => {
@@ -369,14 +350,6 @@ describe("deployment profiles", () => {
       parsePagesProfiles(explicitFalse).profiles.preview.publicFeatures
         .dmCompatibilityOrderRoutingEnabled
     ).toBe(false)
-
-    const missingPresence = structuredClone(profiles) as unknown as {
-      profiles: { preview: { publicFeatures: Record<string, unknown> } }
-    }
-    delete missingPresence.profiles.preview.publicFeatures.livePresenceEnabled
-    expect(() => parsePagesProfiles(missingPresence)).toThrow(
-      "must explicitly set livePresenceEnabled"
-    )
 
     const missingRouter = structuredClone(profiles) as unknown as {
       profiles: { preview: { publicFeatures: Record<string, unknown> } }
@@ -425,16 +398,6 @@ describe("deployment profiles", () => {
         VITE_CHECKOUT_SPARK_SETTLED_REHEARSAL: "true",
       }).publicFeatures.quantumRouterEnabled
     ).toBe(false)
-  })
-
-  it("keeps local presence disabled unless explicitly enabled", () => {
-    expect(
-      resolveDeploymentProfile({}).publicFeatures.livePresenceEnabled
-    ).toBe(false)
-    expect(
-      resolveDeploymentProfile({ VITE_LIVE_PRESENCE_ENABLED: "true" })
-        .publicFeatures.livePresenceEnabled
-    ).toBe(true)
   })
 
   it("retains unset local execution inheritance and a separate explicit stop", () => {
@@ -497,13 +460,11 @@ describe("deployment profiles", () => {
     expect(manifest.publicFeatures.dmCompatibilityOrderRoutingEnabled).toBe(
       true
     )
-    expect(manifest.publicFeatures.livePresenceEnabled).toBe(true)
     expect(manifest.publicFeatures.quantumRouterEnabled).toBe(true)
     expect(manifest.publicFeatures.quantumRouterExecutionEnabled).toBe(true)
     expect(Object.keys(manifest.publicFeatures).sort()).toEqual([
       "breezLightningAddressEnabled",
       "dmCompatibilityOrderRoutingEnabled",
-      "livePresenceEnabled",
       "localKeySignerEnabled",
       "quantumRouterEnabled",
       "quantumRouterExecutionEnabled",

@@ -621,19 +621,18 @@ describe("managed router public trust configuration", () => {
     for (const app of ["market", "merchant"] as const) {
       for (const name of ["preview", "production", "staging"] as const) {
         const appConfig = file.apps[app]!
-        const cloudflareProject =
-          name === "staging"
-            ? appConfig.cloudflareStagingProject!
-            : `${appConfig.cloudflareProject!}${app === "market" ? "-coo" : "-33n"}`
+        const cloudflareProject = `${appConfig.cloudflareProject!}${app === "market" ? "-coo" : "-33n"}`
         const baseline = resolveDeploymentProfile({
           CONDUIT_DEPLOYMENT_PROFILE: name,
         })
         const profile = resolveDeploymentProfile(
-          {
-            CF_PAGES: "1",
-            CF_PAGES_BRANCH: name === "production" ? "main" : "fixture",
-            CF_PAGES_URL: `https://fixture.${cloudflareProject}.pages.dev`,
-          },
+          name === "staging"
+            ? { CONDUIT_DEPLOYMENT_PROFILE: "staging" }
+            : {
+                CF_PAGES: "1",
+                CF_PAGES_BRANCH: name === "production" ? "main" : "fixture",
+                CF_PAGES_URL: `https://fixture.${cloudflareProject}.pages.dev`,
+              },
           file
         )
         expect(profile.name).toBe(name)

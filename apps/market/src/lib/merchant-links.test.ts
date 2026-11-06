@@ -9,7 +9,7 @@ test("uses the Merchant app as the canonical production origin", () => {
   expect(inferMerchantOrigin(undefined)).toBe("https://sell.conduit.market")
 })
 
-test("pairs production previews and signet previews", () => {
+test("pairs production previews and falls back for retired signet previews", () => {
   expect(
     inferMerchantOrigin({
       hostname: "branch.conduit-market-coo.pages.dev",
@@ -23,7 +23,7 @@ test("pairs production previews and signet previews", () => {
       protocol: "https:",
       port: "",
     })
-  ).toBe("https://branch.conduit-merchant-signet.pages.dev")
+  ).toBe("https://sell.conduit.market")
 })
 
 test("pairs supported local Market and Merchant ports", () => {

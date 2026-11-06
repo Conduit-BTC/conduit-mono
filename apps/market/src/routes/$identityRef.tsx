@@ -61,7 +61,6 @@ import {
 } from "../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../components/ResolvedProductGridCard"
 import { CopyButton } from "../components/CopyButton"
-import { LivePresenceIndicator } from "../components/LivePresenceIndicator"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -72,7 +71,6 @@ import { ProfileBanner } from "../components/ProfileBanner"
 import { StorefrontFollowButton } from "../components/StorefrontFollowButton"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
-import { useLivePresenceCount } from "../hooks/useLivePresenceCount"
 import { useProgressiveProducts } from "../hooks/useProgressiveProducts"
 import { filterProductsByFacets, getCategoryFacetOptions } from "../lib/facets"
 import {
@@ -209,10 +207,6 @@ function PublicIdentityPage() {
   )
   const storeProducts = productsQuery.products
   const productCount = storeProducts.length
-  const storePresenceCount = useLivePresenceCount({
-    canonicalId: productCount > 0 ? pubkey : null,
-    pageType: "store",
-  })
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: pubkey || null,
     listingCount: productCount > 0 ? productCount : undefined,
@@ -635,13 +629,6 @@ function PublicIdentityPage() {
                       </span>
                     </span>
                   </div>
-                  {productCount > 0 && (
-                    <LivePresenceIndicator
-                      className="mt-3"
-                      count={storePresenceCount}
-                      pageType="store"
-                    />
-                  )}
                 </div>
               </div>
 

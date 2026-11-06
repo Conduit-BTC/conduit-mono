@@ -25,7 +25,6 @@ const PRODUCTION_ORIGINS: Record<ConduitAppTarget, string> = {
 
 const APP_HOST_PAIRS = [
   ["conduit-market-coo.pages.dev", "conduit-merchant-33n.pages.dev"],
-  ["conduit-market-signet.pages.dev", "conduit-merchant-signet.pages.dev"],
 ] as const
 
 const LOCAL_PORT_PAIRS = [
