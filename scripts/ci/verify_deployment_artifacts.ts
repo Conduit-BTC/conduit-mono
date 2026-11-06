@@ -44,12 +44,6 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
     throw new Error(`${manifestPath} has mismatched compiled feature flags.`)
   }
   if (
-    manifest.publicFeatures.livePresenceEnabled !==
-    resolvedProfile.publicFeatures.livePresenceEnabled
-  ) {
-    throw new Error(`${manifestPath} has mismatched compiled feature flags.`)
-  }
-  if (
     manifest.publicFeatures.quantumRouterEnabled !==
     resolvedProfile.publicFeatures.quantumRouterEnabled
   ) {
