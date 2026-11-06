@@ -516,6 +516,7 @@ export class SparkWalletManager {
     string,
     {
       walletId: string
+      dispatch: { submitted: boolean }
       result: Promise<SparkPayInvoiceResult>
     }
   >()
@@ -1470,8 +1471,11 @@ export class SparkWalletManager {
     if (existing) {
       return existing.result
     }
-    const attempt = this.#payInvoice(walletId, input)
-    const record = { walletId, result: attempt }
+    const dispatch = { submitted: false }
+    const attempt = this.#payInvoice(walletId, input, () => {
+      dispatch.submitted = true
+    })
+    const record = { walletId, dispatch, result: attempt }
     this.#invoiceAttempts.set(attemptKey, record)
     void attempt.then(
       (result) => {
@@ -1724,7 +1728,8 @@ export class SparkWalletManager {
 
   async #payInvoice(
     walletId: string,
-    input: SparkPayInvoiceInput
+    input: SparkPayInvoiceInput,
+    markSubmitted: () => void
   ): Promise<SparkPayInvoiceResult> {
     const client = this.#clients.get(walletId)
     if (
@@ -1836,6 +1841,9 @@ export class SparkWalletManager {
 
     try {
       await input.beforeSend?.()
+      // Fee review, persistence and caller admission can outlive this session.
+      if (this.#getClient(walletId) !== client)
+        throw new Error("Wallet session changed.")
     } catch (error) {
       return {
         status: "pre_publish_failed",
@@ -1844,6 +1852,8 @@ export class SparkWalletManager {
     }
 
     try {
+      // From this handoff onward, closure cannot establish non-submission.
+      markSubmitted()
       const { payment } = await client.sendPayment({
         prepareResponse: prepared,
         options: {
@@ -2083,7 +2093,16 @@ export class SparkWalletManager {
 
   #purgeInvoiceAttempts(walletId: string): void {
     for (const [attemptKey, attempt] of this.#invoiceAttempts) {
-      if (attempt.walletId === walletId) {
+      if (attempt.walletId !== walletId) continue
+      if (attempt.dispatch.submitted) {
+        // Drop cached proofs on lock, but retain a content-free retry blocker.
+        // The original caller still receives its original pending outcome.
+        attempt.result = Promise.resolve({
+          status: "ambiguous",
+          reason:
+            "This Spark payment was already submitted. Check the wallet before retrying.",
+        })
+      } else {
         this.#invoiceAttempts.delete(attemptKey)
       }
     }
