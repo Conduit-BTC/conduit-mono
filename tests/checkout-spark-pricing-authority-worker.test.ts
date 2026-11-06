@@ -14,10 +14,10 @@ import productionWorker, {
   createCheckoutSparkPricingAuthorityCache,
   handleCheckoutSparkPricingAuthorityRequest,
   type CheckoutSparkPricingAuthorityEnv,
-} from "../apps/anon-zap-signer/src/checkout-pricing-authority"
-import previewWorker from "../apps/anon-zap-signer/src/checkout-pricing-preview"
-import type { PricingSnapshotStore } from "../apps/anon-zap-signer/src/checkout-pricing-cache"
-import { previewPricingQualification } from "../apps/anon-zap-signer/src/checkout-pricing-qualification"
+} from "../apps/checkout-pricing/src/checkout-pricing-authority"
+import previewWorker from "../apps/checkout-pricing/src/checkout-pricing-preview"
+import type { PricingSnapshotStore } from "../apps/checkout-pricing/src/checkout-pricing-cache"
+import { previewPricingQualification } from "../apps/checkout-pricing/src/checkout-pricing-qualification"
 import { PRICING_PROVIDER_URLS } from "@conduit/core/pricing/common-rate-provider"
 
 const FIXTURE_SIGNING_KEY = Buffer.from(generateSecretKey()).toString("hex")
@@ -646,7 +646,7 @@ describe("pricing Worker project-scoped preview origins", () => {
   }
 
   it("selects the preview entry only in the preview deployment configuration", () => {
-    const path = "apps/anon-zap-signer/wrangler.checkout-pricing.jsonc"
+    const path = "apps/checkout-pricing/wrangler.checkout-pricing.jsonc"
     const { config, error } = parseConfigFileTextToJson(
       path,
       readFileSync(path, "utf8")

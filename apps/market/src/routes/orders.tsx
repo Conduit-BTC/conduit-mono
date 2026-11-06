@@ -150,10 +150,6 @@ import { assertCreatedEventMarketPickupTerms } from "../lib/order-pickup-retry"
 import { assertCartPickupHandlerReady } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
-  authorizeCheckoutWithAnonSigner,
-  signAuthorizedAnonZapCheckout,
-} from "../lib/anon-zap-signer"
-import {
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
   isOrderPaymentRunning,
@@ -200,10 +196,7 @@ import {
   hasCheckoutPaymentProgress,
   requiresAcceptedOrderPaymentContinuation,
 } from "../lib/checkout-order-attempt"
-import {
-  doesAuthorizedAnonZapPricingMatchOrder,
-  type CheckoutZapMode,
-} from "../lib/checkout-payment"
+import { type CheckoutZapMode } from "../lib/checkout-payment"
 import {
   getDeliveryNotice,
   publishBuyerOrderMessage,
@@ -1801,32 +1794,12 @@ function OrderDetail({
             shouldContinueBeforePaymentClaim: () =>
               isGeneralPaymentRetryEligible(currentViewRef.current),
           })
-    if (ctx.zapMode !== "anonymous_public_zap") {
-      await run(ctx)
-      return
-    }
-
-    const authorization = await authorizeCheckoutWithAnonSigner({
-      merchantPubkey: ctx.merchantPubkey,
-      items: ctx.items,
-    })
-    if (
-      !row.lifecycle ||
-      !doesAuthorizedAnonZapPricingMatchOrder(
-        row.lifecycle,
-        authorization.pricing
-      )
-    ) {
+    if (ctx.zapMode === "anonymous_public_zap") {
       throw new Error(
-        "Current signed listing pricing or fulfillment terms no longer match this order. No payment was attempted; use a private invoice or contact the merchant."
+        "Anonymous public zaps have been retired. Use the private-invoice recovery option for this order."
       )
     }
-    const preparedAnonZap = await signAuthorizedAnonZapCheckout(authorization)
-    await run({
-      ...ctx,
-      zapContent: preparedAnonZap.rawEvent.content,
-      preparedAnonZap,
-    })
+    await run(ctx)
   }
 
   async function finishAcceptedOrderRecovery(

@@ -1413,10 +1413,6 @@ describe("runOrderPayment", () => {
           status: "snapshot_mismatch",
           lifecycle: existing,
         }),
-        prepareAnonZapCheckout: async () => {
-          externalCalls += 1
-          throw new Error("must not prepare")
-        },
         fetchLnurlPayMetadata: async () => {
           externalCalls += 1
           throw new Error("must not fetch")
@@ -1706,7 +1702,6 @@ describe("runOrderPayment", () => {
     const originalPut = table.put
     const requestedVisibilities: string[] = []
     let paymentCalls = 0
-    let preparationCalls = 0
 
     table.get = (async () => stored) as typeof table.get
     table.put = (async (next: OrderLifecycle) => {
@@ -1720,31 +1715,8 @@ describe("runOrderPayment", () => {
           orderId,
           merchantLud16: "merchant@wallet.example",
           zapMode: "anonymous_public_zap",
-          anonZapPreparation: {
-            localPricing: {
-              status: "ok",
-              itemSubtotalSats: 1,
-              totalSats: 1,
-              totalMsats: 1_000,
-              items: [],
-              shippingCost: {
-                status: "not_required",
-                totalSats: 0,
-                missingProductIds: [],
-              },
-              approximate: false,
-            },
-            destination: { country: "US", postalCode: "94107" },
-          },
         }),
         paymentDependencies({
-          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
-          prepareAnonZapCheckout: async () => {
-            preparationCalls += 1
-            throw new Error(
-              "Anon zap signer host allow-list is not configured."
-            )
-          },
           fetchLnurlPayMetadata: async () => lnurlMetadata(),
           requestCheckoutLnurlInvoice: async (params, requestDependencies) => {
             requestedVisibilities.push(params.visibility)
@@ -1778,7 +1750,6 @@ describe("runOrderPayment", () => {
       )
 
       expect(requestedVisibilities).toEqual(["private_checkout"])
-      expect(preparationCalls).toBe(1)
       expect(paymentCalls).toBe(1)
       expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
       expect(state.lifecycle?.publicZapSigner).toBeUndefined()
@@ -1794,101 +1765,7 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("blocks payment when authorized pricing requires buyer review", async () => {
-    const orderId = "anon-zap-pricing-review"
-    let stored = lifecycle({
-      orderId,
-      checkoutMode: "anonymous_public_zap",
-      publicZapSigner: "anon",
-      invoice: undefined,
-      invoiceStatus: "not_requested",
-      paymentStatus: "not_started",
-    })
-    const table = db.orderLifecycles as typeof db.orderLifecycles & {
-      get: typeof db.orderLifecycles.get
-      put: typeof db.orderLifecycles.put
-    }
-    const originalGet = table.get
-    const originalPut = table.put
-    let invoiceCalls = 0
-    let paymentCalls = 0
-
-    table.get = (async () => stored) as typeof table.get
-    table.put = (async (next: OrderLifecycle) => {
-      stored = next
-      return next.orderId
-    }) as typeof table.put
-
-    try {
-      const state = await runOrderPayment(
-        basePaymentContext({
-          orderId,
-          merchantLud16: "merchant@wallet.example",
-          zapMode: "anonymous_public_zap",
-          anonZapPreparation: {
-            localPricing: {
-              status: "ok",
-              itemSubtotalSats: 1,
-              totalSats: 1,
-              totalMsats: 1_000,
-              items: [],
-              shippingCost: {
-                status: "not_required",
-                totalSats: 0,
-                missingProductIds: [],
-              },
-              approximate: false,
-            },
-            destination: { country: "US", postalCode: "94107" },
-          },
-        }),
-        paymentDependencies({
-          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
-          fetchLnurlPayMetadata: async () => lnurlMetadata(),
-          prepareAnonZapCheckout: async () => ({
-            status: "review_required",
-            authorization: {} as never,
-            checkoutPricing: {
-              status: "ok",
-              itemSubtotalSats: 2,
-              totalSats: 2,
-              totalMsats: 2_000,
-              items: [],
-              shippingCost: {
-                status: "not_required",
-                totalSats: 0,
-                missingProductIds: [],
-              },
-              approximate: false,
-            },
-          }),
-          requestCheckoutLnurlInvoice: async () => {
-            invoiceCalls += 1
-            throw new Error("must not request")
-          },
-          payCheckoutInvoice: async () => {
-            paymentCalls += 1
-            throw new Error("must not pay")
-          },
-        })
-      )
-
-      expect(invoiceCalls).toBe(0)
-      expect(paymentCalls).toBe(0)
-      expect(state.error).toContain(
-        "Current signed listing pricing changed from 1 to 2 sats."
-      )
-      expect(state.lifecycle?.checkoutMode).toBe("anonymous_public_zap")
-      expect(state.lifecycle?.publicZapFallback).not.toBe(true)
-      expect(state.lifecycle?.invoiceStatus).toBe("failed")
-      expect(state.lifecycle?.paymentStatus).toBe("failed")
-    } finally {
-      table.get = originalGet
-      table.put = originalPut
-    }
-  })
-
-  it("falls back privately when public zap invoice issuance fails before payment", async () => {
+  it("ignores a legacy prepared anonymous zap and only requests a private invoice", async () => {
     const orderId = "anon-zap-prepared-before-order"
     const merchantPubkey = "b".repeat(64)
     const zapContent = "Zapped out 1 item at https://shop.conduit.market/"
@@ -1953,7 +1830,6 @@ describe("runOrderPayment", () => {
           preparedAnonZap,
         }),
         paymentDependencies({
-          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
           fetchLnurlPayMetadata: async () => lnurlMetadata(),
           requestCheckoutLnurlInvoice: async (params, requestDependencies) => {
             requestedVisibilities.push(params.visibility)
@@ -1983,7 +1859,7 @@ describe("runOrderPayment", () => {
         })
       )
 
-      expect(requestedVisibilities).toEqual(["public_zap", "private_checkout"])
+      expect(requestedVisibilities).toEqual(["private_checkout"])
       expect(paymentCalls).toBe(1)
       expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
       expect(state.lifecycle?.publicZapSigner).toBeUndefined()
@@ -1998,7 +1874,7 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("falls back privately when the public zap invoice fails payment validation", async () => {
+  it("never submits an invalid legacy prepared anonymous zap to a provider", async () => {
     const orderId = "anon-zap-invalid-public-invoice"
     const privateFallbackInvoice = privateInvoice()
     let stored = lifecycle({
@@ -2051,7 +1927,7 @@ describe("runOrderPayment", () => {
         })
       )
 
-      expect(requestedVisibilities).toEqual(["public_zap", "private_checkout"])
+      expect(requestedVisibilities).toEqual(["private_checkout"])
       expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
       expect(state.lifecycle?.publicZapFallback).toBe(true)
       expect(state.lifecycle?.invoice).toBe(privateFallbackInvoice)
@@ -2063,7 +1939,7 @@ describe("runOrderPayment", () => {
     }
   })
 
-  it("does not switch invoices after a public invoice reaches the payment rail", async () => {
+  it("does not switch invoices after the retired anonymous mode selects a private payment", async () => {
     const orderId = "anon-zap-payment-ambiguous"
     const merchantPubkey = "b".repeat(64)
     const zapContent = "Zapped out 1 item at https://shop.conduit.market/"
@@ -2130,7 +2006,6 @@ describe("runOrderPayment", () => {
           preparedAnonZap,
         }),
         paymentDependencies({
-          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
           fetchLnurlPayMetadata: async () => lnurlMetadata(),
           requestCheckoutLnurlInvoice: async (params) => {
             requestedVisibilities.push(params.visibility)
@@ -2152,9 +2027,9 @@ describe("runOrderPayment", () => {
         })
       )
 
-      expect(requestedVisibilities).toEqual(["public_zap"])
-      expect(state.lifecycle?.checkoutMode).toBe("anonymous_public_zap")
-      expect(state.lifecycle?.publicZapFallback).not.toBe(true)
+      expect(requestedVisibilities).toEqual(["private_checkout"])
+      expect(state.lifecycle?.checkoutMode).toBe("private_checkout")
+      expect(state.lifecycle?.publicZapFallback).toBe(true)
       expect(state.lifecycle?.invoiceStatus).toBe("received")
       expect(state.lifecycle?.paymentStatus).toBe("ambiguous")
     } finally {
@@ -2314,7 +2189,6 @@ describe("runOrderPayment", () => {
           preparedAnonZap,
         }),
         paymentDependencies({
-          anonZapSignerPubkey: ANON_SIGNER_PUBKEY,
           fetchLnurlPayMetadata: async () => lnurlMetadata(),
           requestCheckoutLnurlInvoice: async () => ({
             invoice,

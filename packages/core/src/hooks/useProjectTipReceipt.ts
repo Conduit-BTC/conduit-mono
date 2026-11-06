@@ -14,20 +14,27 @@ export function useProjectTipReceipt(
   )
 
   useEffect(() => {
-    if (!tip || confirmedRequestId === tip.zapRequestId) return
+    if (
+      !tip?.zapRequestId ||
+      !tip.lnurlNostrPubkey ||
+      confirmedRequestId === tip.zapRequestId
+    )
+      return
+    const zapRequestId = tip.zapRequestId
+    const lnurlNostrPubkey = tip.lnurlNostrPubkey
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const expiresAt = Date.now() + 5 * 60_000
     const check = async () => {
       try {
         const receipt = await waitForZapReceipt({
-          zapRequestId: tip.zapRequestId,
+          zapRequestId,
           requestCreatedAt: tip.requestCreatedAt,
           recipientPubkey: PROJECT_TIP_RECIPIENT_PUBKEY,
           expectedAmountMsats: tip.amountMsats,
           expectedLnurl: tip.lnurl,
           expectedInvoice: tip.invoice,
-          lnurlNostrPubkey: tip.lnurlNostrPubkey,
+          lnurlNostrPubkey,
           relayUrls: tip.relayUrls,
           timeoutMs: 5_000,
         })

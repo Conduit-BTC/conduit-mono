@@ -110,11 +110,11 @@ export function assertProjectTipSignature(
 
 export type PreparedProjectTip = {
   invoice: string
-  zapRequestId: string
+  zapRequestId: string | null
   requestCreatedAt: number
   amountMsats: number
   lnurl: string
-  lnurlNostrPubkey: string
+  lnurlNostrPubkey: string | null
   relayUrls: string[]
 }
 

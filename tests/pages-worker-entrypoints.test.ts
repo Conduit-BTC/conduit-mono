@@ -5,11 +5,11 @@ import { pathToFileURL } from "node:url"
 import { afterAll, beforeAll, describe, expect, it } from "bun:test"
 
 const ENTRYPOINTS = {
-  "anon-zap-authorize.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
-  "anon-zap-config.ts": ["onRequest", "onRequestGet"],
-  "anon-zap-sign.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
-  "project-tip-sign.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
-  "zapout-authority.ts": ["onRequest", "onRequestOptions", "onRequestPost"],
+  "anon-zap-authorize.ts": ["onRequest"],
+  "anon-zap-config.ts": ["onRequest"],
+  "anon-zap-sign.ts": ["onRequest"],
+  "project-tip-sign.ts": ["onRequest"],
+  "zapout-authority.ts": ["onRequest"],
 } as const
 
 describe("Cloudflare Pages worker entrypoints", () => {
