@@ -15,16 +15,8 @@ import {
   nip19,
   type Event as NostrEvent,
 } from "nostr-tools"
-import {
-  getAnonZapSignerLatencyBucket,
-  recordTelemetryEvent,
-  type AnonZapSignerTelemetryAction,
-  type AnonZapSignerTelemetryEnv,
-  type AnonZapSignerTelemetryProperties,
-  type AnonZapSignerTelemetryStatus,
-} from "./telemetry"
 
-export type AnonZapSignerEnv = AnonZapSignerTelemetryEnv & {
+export type AnonZapSignerEnv = {
   ANON_CONDUIT_SHOPPER_PRIVATE_KEY_HEX?: string
   ANON_CONDUIT_SHOPPER_PUBKEY?: string
   ANON_SIGNER_REQUEST_AUTH_SECRET?: string
@@ -45,18 +37,6 @@ export type AnonZapSignerEnv = AnonZapSignerTelemetryEnv & {
   }
 }
 
-type AnonZapSignerTelemetryRecorder = (
-  eventName: "anon_zap_signer_request_result",
-  properties: AnonZapSignerTelemetryProperties,
-  env: AnonZapSignerTelemetryEnv
-) => Promise<void>
-
-export type AnonZapSignerRequestOptions = {
-  nowMs?: () => number
-  telemetryRecorder?: AnonZapSignerTelemetryRecorder
-  waitUntil?: (promise: Promise<unknown>) => void
-}
-
 type CheckoutSigningAuthorization = {
   checkoutSessionId: string
   merchantPubkey: string
@@ -72,59 +52,6 @@ const DEFAULT_MAX_CLOCK_SKEW_SECONDS = 5 * 60
 const AUTH_TIMESTAMP_HEADER = "x-conduit-anon-signer-timestamp"
 const AUTH_SIGNATURE_HEADER = "x-conduit-anon-signer-signature"
 const ANON_PUBLIC_ZAP_POLICY = "anonymous_public_zap_allowed"
-
-function getTelemetryStatus(status: number): AnonZapSignerTelemetryStatus {
-  if (status >= 200 && status < 300) return "success"
-  if (status === 400) return "invalid_request"
-  if (status === 429) return "rate_limited"
-  if (status >= 500) return "unavailable"
-  return "failure"
-}
-
-function scheduleTelemetry(
-  response: Response,
-  action: AnonZapSignerTelemetryAction,
-  startedAtMs: number,
-  env: AnonZapSignerEnv,
-  options: AnonZapSignerRequestOptions
-): Response {
-  const nowMs = options.nowMs ?? Date.now
-  const properties: AnonZapSignerTelemetryProperties = {
-    event_name: "anon_zap_signer_request_result",
-    app: "anon_zap_signer",
-    surface: "worker",
-    action,
-    status: getTelemetryStatus(response.status),
-    latency_bucket: getAnonZapSignerLatencyBucket(
-      Math.max(0, nowMs() - startedAtMs)
-    ),
-  }
-
-  try {
-    const task = (
-      options.telemetryRecorder
-        ? options.telemetryRecorder(
-            "anon_zap_signer_request_result",
-            properties,
-            env
-          )
-        : recordTelemetryEvent(
-            "anon_zap_signer_request_result",
-            properties,
-            env
-          )
-    ).catch(() => undefined)
-    if (options.waitUntil) {
-      options.waitUntil(task)
-    } else {
-      void task
-    }
-  } catch {
-    // Telemetry is best effort and must never affect signer availability.
-  }
-
-  return response
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
@@ -679,15 +606,10 @@ export async function signAnonZapRequestDraft(
 
 export async function handleAnonZapSignerRequest(
   request: Request,
-  env: AnonZapSignerEnv,
-  options: AnonZapSignerRequestOptions = {}
+  env: AnonZapSignerEnv
 ): Promise<Response> {
-  const nowMs = options.nowMs ?? Date.now
-  const startedAtMs = nowMs()
   const origin = request.headers.get("origin")
   const corsHeaders = getCorsHeaders(origin, env)
-  let authenticated = false
-  let telemetryAction: AnonZapSignerTelemetryAction = "sign"
 
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -705,45 +627,23 @@ export async function handleAnonZapSignerRequest(
   try {
     const bodyText = await readRequestText(request)
     await assertAuthenticatedRequest(request, bodyText, env)
-    authenticated = true
     if (new URL(request.url).pathname === "/internal/rate-limit") {
-      telemetryAction = "rate_limit"
-      return scheduleTelemetry(
-        await handleInternalRateLimitRequest(bodyText, env, corsHeaders),
-        telemetryAction,
-        startedAtMs,
-        env,
-        options
-      )
+      return await handleInternalRateLimitRequest(bodyText, env, corsHeaders)
     }
     const body = JSON.parse(bodyText)
     if (!isRecord(body)) {
-      return scheduleTelemetry(
-        errorResponse("Invalid request body.", 400, corsHeaders),
-        telemetryAction,
-        startedAtMs,
-        env,
-        options
-      )
+      return errorResponse("Invalid request body.", 400, corsHeaders)
     }
     const draft = parseDraft(body.zapRequest)
     if (!draft) {
-      return scheduleTelemetry(
-        errorResponse("Invalid zap request.", 400, corsHeaders),
-        telemetryAction,
-        startedAtMs,
-        env,
-        options
-      )
+      return errorResponse("Invalid zap request.", 400, corsHeaders)
     }
     const authorization = parseAuthorization(body.authorization, draft)
     if (!authorization) {
-      return scheduleTelemetry(
-        errorResponse("Invalid zap request authorization.", 400, corsHeaders),
-        telemetryAction,
-        startedAtMs,
-        env,
-        options
+      return errorResponse(
+        "Invalid zap request authorization.",
+        400,
+        corsHeaders
       )
     }
     assertAuthorizedDraft(draft, authorization)
@@ -753,22 +653,14 @@ export async function handleAnonZapSignerRequest(
       corsHeaders
     )
     if (rateLimitError) {
-      return scheduleTelemetry(
-        rateLimitError,
-        telemetryAction,
-        startedAtMs,
-        env,
-        options
-      )
+      return rateLimitError
     }
 
     const rawEvent = await signAnonZapRequestDraft(draft, env)
-    return scheduleTelemetry(
-      jsonResponse({ id: rawEvent.id, rawEvent }, { status: 200 }, corsHeaders),
-      telemetryAction,
-      startedAtMs,
-      env,
-      options
+    return jsonResponse(
+      { id: rawEvent.id, rawEvent },
+      { status: 200 },
+      corsHeaders
     )
   } catch (error) {
     const message = error instanceof Error ? error.message : "Signing failed."
@@ -777,8 +669,6 @@ export async function handleAnonZapSignerRequest(
       /not configured/i.test(message) ? 503 : 400,
       corsHeaders
     )
-    return authenticated
-      ? scheduleTelemetry(response, telemetryAction, startedAtMs, env, options)
-      : response
+    return response
   }
 }

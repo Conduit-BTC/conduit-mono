@@ -9,7 +9,6 @@ import {
   getMerchantShippingPolicyCoordinate,
   SHIPPING_COUNTRIES,
   SUPPORTED_PRODUCT_PRICE_CURRENCIES,
-  buildProductPublishResultTelemetryProperties,
   canonicalizeProductPrice,
   decodeEventMarketReference,
   compileProductFulfillmentIntent,
@@ -25,7 +24,6 @@ import {
   type SignedPublicNostrEvent,
   isCommerceReadIncomplete,
   prepareProductCatalog,
-  recordBrowserTelemetryEvent,
   readProductSupplierReadiness,
   type CommerceResult,
   type PreparedProductFamily,
@@ -1159,7 +1157,7 @@ function ProductsPage() {
   const focusProductTitleOnOpenRef = useRef(false)
   const productDraftStoreRef = useRef(new ProductDraftStore())
   const discardedProductDraftKeyRef = useRef<string | null>(null)
-  const productPublishStartedAtRef = useRef<number | null>(null)
+
   const productPublishInFlightRef = useRef(false)
   const dirtyCreateDraftKeyRef = useRef<string | null>(null)
   const productWorkOwnerRef = useRef(accountPubkey)
@@ -1911,7 +1909,7 @@ function ProductsPage() {
     },
     onMutate: (payload) => {
       if (!isCurrentProductOwner(payload.merchantPubkey)) return
-      productPublishStartedAtRef.current = Date.now()
+
       setProductSignerProgress(null)
       setProductSignerRequestsComplete(!!payload.signedBundle)
       if (!payload.signedBundle) setProductDeliveryRetry(null)
@@ -1925,21 +1923,7 @@ function ProductsPage() {
         data,
         variables.previousNotice
       )
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "product_publish_result",
-        properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedBundle
-            ? "delivery_retry"
-            : variables.existing
-              ? "update"
-              : "create",
-          latencyMs:
-            Date.now() - (productPublishStartedAtRef.current ?? Date.now()),
-          status: notice.failedRelayUrls.length === 0 ? "success" : "failure",
-        }),
-      })
-      productPublishStartedAtRef.current = null
+
       if (!isCurrentProductOwner(variables.merchantPubkey)) {
         await refreshProductQueries(variables.merchantPubkey)
         return
@@ -1962,21 +1946,7 @@ function ProductsPage() {
     },
     onError: async (error, variables) => {
       productPublishInFlightRef.current = false
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "product_publish_result",
-        properties: buildProductPublishResultTelemetryProperties({
-          eventFamily: variables.signedBundle
-            ? "delivery_retry"
-            : variables.existing
-              ? "update"
-              : "create",
-          latencyMs:
-            Date.now() - (productPublishStartedAtRef.current ?? Date.now()),
-          status: "failure",
-        }),
-      })
-      productPublishStartedAtRef.current = null
+
       if (!isCurrentProductOwner(variables.merchantPubkey)) {
         await refreshProductQueries(variables.merchantPubkey)
         return

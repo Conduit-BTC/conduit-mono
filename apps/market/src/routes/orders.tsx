@@ -52,7 +52,7 @@ import {
   type ShopperPriceDisplay,
   type ShopperPriceDisplayOptions,
 } from "@conduit/core"
-import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
+
 import {
   CommerceInboxRecovery,
   AlertDialog,
@@ -3918,30 +3918,6 @@ function OrdersPage() {
     }
     return rows.sort((a, b) => b.updatedAt - a.updatedAt)
   }, [activeBuyerPubkey, buyerSettlements, conversations, lifecycles])
-
-  useEffect(() => {
-    for (const row of orders) {
-      const lifecycle = row.lifecycle
-      if (!lifecycle || !isBuyerOrderPaid(row.vm)) continue
-      if (
-        row.vm.checkoutSparkRouted &&
-        (!canReadRouterSettlement || !isAuthGenerationCurrent(authGeneration))
-      )
-        continue
-      void reportCommerceGmvEstimate({
-        orderId: lifecycle.orderId,
-        orderCreatedAt: lifecycle.createdAt,
-        invoicedAmountSats: lifecycle.totalSats,
-      })
-    }
-  }, [
-    authGeneration,
-    canReadRouterSettlement,
-    isAuthGenerationCurrent,
-    lifecyclesQuery.dataUpdatedAt,
-    messagesQuery.dataUpdatedAt,
-    orders,
-  ])
 
   const merchantPubkeys = useMemo(
     () =>

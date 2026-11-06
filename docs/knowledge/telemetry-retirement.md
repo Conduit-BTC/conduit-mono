@@ -1,37 +1,39 @@
-# Telemetry collection pause
+# Product telemetry retirement
 
-Browser analytics collection is unconditionally disabled in the shared Market
-and Merchant reporting entry points. They do not load a provider, queue events,
-create provider storage, or send events, even with legacy environment settings.
-The browser PostHog dependency and its web-vitals extension are removed.
+Market and Merchant contain no browser analytics reporting entry points,
+provider SDK, event contracts, GMV reporting, analytics error listeners, or
+analytics test hooks. Anonymous-signer reporting and the PostHog proxy workspace
+are removed. Old analytics environment settings cannot enable collection in
+these builds. The policy check rejects retired provider APIs/configuration and
+continues to enforce the cookieless source and dependency restrictions.
 
-Commerce GMV reporting is independently disabled and returns false without
-retaining orders or issuing requests. Anonymous-signer analytics delivery is
-also disabled; signer authorization, rate limits and responses are unchanged.
+Checkout referral data used in order creation, payment state and recovery,
+local error presentation, and content-free local performance/NIP-17 observers
+remain. The retained payment/recovery and gateway test suite is unchanged.
+Removed test suites are not restored.
 
-Pure legacy configuration/sanitization helpers and inert instrumentation callers
-remain temporarily to keep this release separate from their wider removal.
-The proxy source and deployed Worker remain until the retirement release is
-verified. This change does not delete infrastructure or historical PostHog data.
-Existing legal archives are unchanged; publication of updated disclosures is a
-separate release step.
+Removing source does not delete the deployed proxy, its hostname, credentials,
+or historical PostHog data. Existing legal archives and the selected policy
+are unchanged. See [the disclosure draft](telemetry-disclosure-draft.md) for
+proposed copy pending release evidence and maintainer/legal approval.
 
-## Release verification and remaining removal
+## Release and operator sequence
 
-1. Review focused no-delivery tests, workspace checks and built assets.
-2. Verify approved preview and production builds on Linux: browser navigation,
-   checkout/order recovery and merchant flows must emit no analytics traffic.
-3. Verify a retained old client keeps functioning when the analytics endpoint
-   rejects requests, times out or fails DNS. Old cached clients may still try
-   to send; errors must remain independent of product and payment behavior.
-4. Remove inert instrumentation, obsolete provider contracts/tests, test hooks,
-   environment declarations and the proxy workspace in a scoped follow-up.
-   Preserve functional attribution, local observers and operational monitoring.
-5. Publish reviewed disclosures using the append-only legal version process.
-6. Only after release verification and explicit operator approval, remove the
-   deployed proxy, its custom domain/DNS and proven-exclusive configuration.
-   Preserve the PostHog account/history, shared credentials and other Workers.
+1. Review current-head checks and production artifact scans. Verify approved
+   previews on Linux: navigation, signer reconnect, checkout/order recovery,
+   and merchant actions must produce no retired analytics requests.
+2. Verify a retained old client remains functional when analytics requests are
+   rejected, time out, or fail DNS. Cached old clients can continue attempting
+   collection until replaced; record this limitation with the release cutoff.
+3. Obtain release approval, deploy the exact verified product builds, confirm
+   the live builds and absence of analytics requests, and publish the reviewed
+   disclosure as a new legal version with an approved effective date.
+4. Inventory the live proxy, custom domain/DNS, rate-limit bindings, and
+   analytics settings. Obtain explicit approval for the exact deletion set.
+   Delete only resources and credentials proven exclusive to this integration.
+5. Verify retirement and record the cutoff. Preserve the PostHog account,
+   historical data, shared credentials, other Workers, and functional services.
 
-A normal rollback to an older client build restores that build's analytics
-behavior. Prefer a forward fix that retains the pause; review any rollback
-against the current disclosure and infrastructure state before using it.
+A rollback to an older client restores that client's analytics behavior. Prefer
+forward fixes; check any rollback against the current disclosure and service
+state. Source and asset scans do not replace browser or production observation.

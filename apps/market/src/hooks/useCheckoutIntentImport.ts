@@ -16,7 +16,6 @@ import {
 import {
   clearStagedCheckoutIntent,
   getStagedCheckoutIntent,
-  recordCheckoutHandoffStage,
 } from "../lib/checkout-intent-stage"
 import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { getCartRepositorySnapshot } from "../lib/cart-repository"
@@ -87,7 +86,7 @@ export function useCheckoutIntentImport() {
           },
           replace: true,
         })
-        if (stage) recordCheckoutHandoffStage(stage, "checkout_ready")
+
         clearStagedCheckoutIntent()
         setStage(null)
         setState({ status: "idle" })
@@ -133,17 +132,10 @@ export function useCheckoutIntentImport() {
       return
     }
     if (prepared.status === "error") {
-      recordCheckoutHandoffStage(
-        stage,
-        prepared.error === "relay_unavailable" ||
-          prepared.error === "product_unresolved"
-          ? "retryable_lookup_failure"
-          : "rejected_link"
-      )
       setState({ status: "error", error: prepared.error })
       return
     }
-    recordCheckoutHandoffStage(stage, "products_resolved")
+
     if (!shouldContinue()) return
     const result = await installCheckoutIntentPurchase(
       prepared.items,
@@ -157,7 +149,6 @@ export function useCheckoutIntentImport() {
       return
     }
     if (result.status === "cart_conflict") {
-      recordCheckoutHandoffStage(stage, "cart_conflict")
       setState({
         status: "conflict",
         prepared,

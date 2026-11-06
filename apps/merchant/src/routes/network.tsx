@@ -52,9 +52,7 @@ function NetworkPage() {
     signerReadiness === "ready",
     false
   )
-  const networkSettings = useAccountNetworkSettings({
-    telemetryApp: "merchant",
-  })
+  const networkSettings = useAccountNetworkSettings()
   const navigate = useNavigate()
   const autoReturnStartedRef = useRef(false)
   const [hasProductDraftReturn, setHasProductDraftReturn] = useState(false)

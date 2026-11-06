@@ -1,15 +1,5 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  type ReactNode,
-} from "react"
-import {
-  buildMerchantSetupStepResultTelemetryProperties,
-  recordBrowserTelemetryEvent,
-  type MerchantSetupTelemetryStep,
-} from "@conduit/core"
+import { createContext, useContext, type ReactNode } from "react"
+
 import { useMerchantReadiness } from "./useMerchantReadiness"
 import type { MerchantSetupReadiness } from "../lib/readiness"
 
@@ -23,53 +13,6 @@ export function MerchantReadinessProvider({
   children: ReactNode
 }) {
   const readiness = useMerchantReadiness()
-  const emittedResultSignaturesRef = useRef(new Set<string>())
-
-  useEffect(() => {
-    const stepResults: Array<{
-      complete: boolean
-      pending: boolean
-      step: MerchantSetupTelemetryStep
-    }> = [
-      {
-        complete: readiness.profileComplete,
-        pending: readiness.profileCheckPending,
-        step: "profile",
-      },
-      {
-        complete: readiness.paymentsComplete,
-        pending: readiness.paymentsCheckPending,
-        step: "payments",
-      },
-      {
-        complete: readiness.shippingComplete,
-        pending: readiness.shippingCheckPending,
-        step: "shipping",
-      },
-      {
-        complete: readiness.networkComplete,
-        pending: false,
-        step: "network",
-      },
-    ]
-
-    for (const result of stepResults) {
-      if (result.pending) continue
-      const status = result.complete ? "success" : "blocked"
-      const signature = `${result.step}:${status}`
-      if (emittedResultSignaturesRef.current.has(signature)) continue
-
-      emittedResultSignaturesRef.current.add(signature)
-      recordBrowserTelemetryEvent({
-        app: "merchant",
-        eventName: "merchant_setup_step_result",
-        properties: buildMerchantSetupStepResultTelemetryProperties({
-          status,
-          step: result.step,
-        }),
-      })
-    }
-  }, [readiness])
 
   return (
     <MerchantReadinessContext.Provider value={readiness}>
