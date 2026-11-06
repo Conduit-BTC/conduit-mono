@@ -24,7 +24,6 @@ import {
   type FetchZapInvoiceResult,
   type SignedAnonZapRequest,
   type BtcUsdRateQuote,
-  type NwcDiagnostic,
   type OrderLifecycle,
   type PricingRateInput,
   type Product,
@@ -32,7 +31,6 @@ import {
   type ResolvedCartShippingCostSummary,
   type ShippingDestinationEligibility,
   type SourcePriceQuote,
-  type StoredPaymentAttempt,
 } from "@conduit/core"
 import type { CartItem } from "./cart-model"
 import { allocateShippingPolicyCosts } from "./shipping-policy-pricing"
@@ -730,25 +728,6 @@ export function hasAuthorizedAnonZapPricingChanged(
   })
 }
 
-export function getCheckoutPaymentStageLabel(
-  stage: CheckoutPaymentStage | null
-): string {
-  switch (stage) {
-    case "checking_order_delivery":
-      return "Checking order delivery"
-    case "requesting_invoice":
-      return "Requesting invoice"
-    case "paying_invoice":
-      return "Paying"
-    case "sending_receipt":
-      return "Sending receipt"
-    case "checking_receipt":
-      return "Checking receipt"
-    case null:
-      return "Zap out"
-  }
-}
-
 // --- Payment tracker row mapping ------------------------------------------
 //
 // Pure helper: maps the payNow async-boundary state into the four buyer-facing
@@ -1003,29 +982,6 @@ export function getPaymentTrackerHeadline(input: PaymentTrackerInput): string {
     case "failed_pre_delivery":
     default:
       return "Order could not be sent"
-  }
-}
-
-/**
- * Build a `PaymentTrackerInput` from a persisted `StoredPaymentAttempt`. Used
- * by views that render the tracker after the original checkout session has
- * ended (e.g. the orders page reopening an in-flight fast-zap order).
- *
- * Persisted attempts are saved AFTER the wallet returns a preimage, so funds
- * are guaranteed to have moved -- the only remaining variance is whether the
- * payment proof DM successfully reached the merchant. The returned input is
- * therefore "finished + paymentMoved", with `proofStatus` mirroring the
- * stored field.
- */
-export function getPaymentTrackerInputForStoredAttempt(
-  attempt: StoredPaymentAttempt
-): PaymentTrackerInput {
-  return {
-    stage: null,
-    orderDelivered: true,
-    paymentMoved: true,
-    proofStatus: attempt.proofDeliveryStatus,
-    finished: true,
   }
 }
 
@@ -1356,24 +1312,6 @@ export type CheckoutInvoiceRequestResult = {
   expectedLnurl?: string
   lnurlNostrPubkey?: string
   shouldWaitForZapReceipt: boolean
-}
-
-export type PendingCheckoutManualInvoice = {
-  orderId: string
-  merchantPubkey: string
-  amountMsats: number
-  amountSats: number
-  invoice: string
-  zapRequestId?: string
-  reason: string
-  deliveryNotice: string | null
-  diagnostics?: NwcDiagnostic[]
-}
-
-export function buildPendingCheckoutManualInvoice(
-  input: PendingCheckoutManualInvoice
-): PendingCheckoutManualInvoice {
-  return input
 }
 
 type CheckoutInvoiceRequestDependencies = {

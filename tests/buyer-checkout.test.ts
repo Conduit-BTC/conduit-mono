@@ -36,7 +36,6 @@ import {
   buildCheckoutPricingIntent,
   applyAuthorizedAnonZapPricing,
   buildDefaultZapContent,
-  buildPendingCheckoutManualInvoice,
   buildZapRequestContent,
   CHECKOUT_QUOTE_MAX_AGE_MS,
   getCheckoutPublicZapSigner,
@@ -2286,28 +2285,6 @@ describe("checkout payment helpers", () => {
     expect(signZapRequest).toHaveBeenCalledTimes(0)
     expect(fetchZap).toHaveBeenCalledTimes(0)
     expect(fetchLnurl).toHaveBeenCalledTimes(0)
-  })
-
-  it("preserves invoice, amount, and recovery state for manual invoice fallback", () => {
-    expect(
-      buildPendingCheckoutManualInvoice({
-        orderId: "order-1",
-        merchantPubkey: FAKE_PUBKEY,
-        amountMsats: 50_000,
-        amountSats: 50,
-        invoice: "lnbc1manual",
-        reason: "No automatic Lightning payment rail is currently available.",
-        deliveryNotice: "Order delivered to merchant relay only.",
-      })
-    ).toEqual({
-      orderId: "order-1",
-      merchantPubkey: FAKE_PUBKEY,
-      amountMsats: 50_000,
-      amountSats: 50,
-      invoice: "lnbc1manual",
-      reason: "No automatic Lightning payment rail is currently available.",
-      deliveryNotice: "Order delivered to merchant relay only.",
-    })
   })
 })
 
