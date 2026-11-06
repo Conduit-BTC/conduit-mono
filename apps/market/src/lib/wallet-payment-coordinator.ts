@@ -1,9 +1,7 @@
 import {
   classifyNwcPaymentError,
   config,
-  getNwcErrorCode,
   getWalletNetworkFromLightningConfig,
-  isNwcPrePublishDiagnosticCode,
   isNwcWalletRefusalErrorCode,
   isWalletNetwork,
   resolveWalletPaymentInstance,
@@ -251,19 +249,10 @@ async function payInvoiceWithNwcProvider(
     return getNwcFailureResult(result, connection)
   } catch (error) {
     const diagnostic = classifyNwcPaymentError(error, connection)
-    if (
-      !isNwcWalletRefusalErrorCode(getNwcErrorCode(error)) &&
-      !isNwcPrePublishDiagnosticCode(diagnostic.code)
-    ) {
-      return {
-        status: "ambiguous",
-        reason: diagnostic.detail,
-        diagnostics: [diagnostic],
-      }
-    }
+    // Known pre-send failures are structured session results. An unexpected
+    // exception provides no positive evidence that the payment was not sent.
     return {
-      status: "failed",
-      phase: "before_publish",
+      status: "ambiguous",
       reason: diagnostic.detail,
       diagnostics: [diagnostic],
     }

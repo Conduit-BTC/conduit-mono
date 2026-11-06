@@ -1,7 +1,5 @@
 import {
   NWCClient,
-  Nip47NetworkError,
-  Nip47PublishError,
   Nip47PublishTimeoutError,
   Nip47ReplyTimeoutError,
   Nip47TimeoutError,
@@ -251,9 +249,21 @@ export class BuyerNwcSession {
       }
     }
 
-    const amount = getNwcPayInvoiceAmount(input)
-    const preconnectResult = await this.prepareClientForPayment()
-    if (!preconnectResult.ok) return preconnectResult.result
+    let amount: number | undefined
+    let client: NwcSessionClientLike
+    try {
+      amount = getNwcPayInvoiceAmount(input)
+      const prepared = await this.prepareClientForPayment()
+      if (!prepared.ok) return prepared.result
+      client = prepared.client
+    } catch (error) {
+      // Only this control-flow boundary proves the SDK payment was not called.
+      return {
+        status: "pre_publish_failed",
+        phase: "before_publish",
+        reason: getErrorMessage(error, "NWC payment preparation failed."),
+      }
+    }
 
     const request: Nip47PayInvoiceRequest = {
       invoice: input.invoice,
@@ -274,7 +284,7 @@ export class BuyerNwcSession {
 
     try {
       const result = await withTimeout(
-        preconnectResult.client.payInvoice(request),
+        client.payInvoice(request),
         input.timeoutMs,
         "pay_invoice"
       )
@@ -323,23 +333,8 @@ export class BuyerNwcSession {
         }
       }
 
-      if (isNwcPrePublishError(error)) {
-        this.snapshot = {
-          ...this.snapshot,
-          status: "unreachable",
-          connection: this.connection,
-          lastWarmAt: Date.now(),
-          error: reason,
-        }
-        this.notify()
-
-        return {
-          status: "pre_publish_failed",
-          phase: "before_publish",
-          reason: "Failed to connect to NWC relay(s).",
-        }
-      }
-
+      // SDK handoff may have sent the request even if publication acknowledgment
+      // fails. Error names and reconnection cannot prove non-payment.
       return {
         status: "published_timeout",
         phase: "after_publish",
@@ -936,16 +931,6 @@ function isNip47WalletError(error: unknown): boolean {
 function getNip47WalletErrorMessage(error: unknown, fallback: string): string {
   const code = getNip47ErrorCode(error)
   return code ? `${code}: ${fallback}` : fallback
-}
-
-function isNwcPrePublishError(error: unknown): boolean {
-  const name = getErrorConstructorName(error)
-  return (
-    error instanceof Nip47NetworkError ||
-    error instanceof Nip47PublishError ||
-    name === "Nip47NetworkError" ||
-    name === "Nip47PublishError"
-  )
 }
 
 function isNwcAmbiguousPaymentError(error: unknown): boolean {
