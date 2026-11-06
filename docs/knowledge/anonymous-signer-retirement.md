@@ -2,7 +2,7 @@
 
 Guest payments remain supported. Market guests tip `receiver@conduit.cash` with an ordinary Lightning invoice and check their wallet for confirmation. A connected wallet must provide the matching payment preimage before the app confirms payment. Plain tips do not publish a zap message or wait for a Nostr receipt. Signed-in public tips and shopper-signed checkout zaps retain their existing behavior.
 
-New guest checkout uses private invoices. Historical anonymous orders and receipts remain readable; existing private-invoice recovery remains available. New invoice preparation for a historical anonymous mode selects a private invoice. The signer-dependent zapout feed is replaced with a retirement notice. Obsolete signing and authority endpoints return HTTP 410 with `Cache-Control: no-store`, so stale clients fail explicitly.
+New checkout defaults to private invoices, with shopper-signed public zaps available as an explicit signed-in choice. Guest checkout always uses private invoices. Historical anonymous orders and receipts remain readable; existing private-invoice recovery remains available. New invoice preparation for a historical anonymous mode selects a private invoice. The signer-dependent zapout feed is replaced with a retirement notice. Obsolete signing and authority endpoints return HTTP 410 with `Cache-Control: no-store`, so stale clients fail explicitly.
 
 The checkout-pricing source moved from `apps/anon-zap-signer` to `apps/checkout-pricing`; its Worker names and pricing implementation are unchanged. Keep both checkout-pricing Workers, the address gateway and its payment paths, and all other unrelated services. PostHog retirement is a separate change.
 

@@ -343,11 +343,9 @@ function getCheckoutPaymentTargetDescription(input: {
   walletTargetStale: boolean
 }): string {
   const invoiceDescription =
-    input.zapMode === "anonymous_public_zap"
-      ? "Conduit will deliver the private order and request an Anon-signed public zap invoice."
-      : input.zapMode === "public_zap_as_shopper"
-        ? "Conduit will deliver the order and request a shopper-signed public zap invoice."
-        : "Conduit will deliver the order and request a private LNURL invoice."
+    input.zapMode === "public_zap_as_shopper"
+      ? "Conduit will deliver the order and request a shopper-signed public zap invoice."
+      : "Conduit will deliver the order and request a private LNURL invoice."
 
   if (input.target.type === "manual") {
     return `${invoiceDescription} The invoice will be shown for manual payment.`
@@ -1365,8 +1363,7 @@ function CheckoutPage() {
   >(async () => undefined)
   const [autoZapAuthorization, setAutoZapAuthorization] =
     useState<HudZapAuthorization | null>(null)
-  const defaultPublicZapMode: CheckoutZapMode = "public_zap_as_shopper"
-  const [zapMode, setZapMode] = useState<CheckoutZapMode>(defaultPublicZapMode)
+  const [zapMode, setZapMode] = useState<CheckoutZapMode>("private_checkout")
   const [zapContent, setZapContent] = useState("")
   const [zapContentEdited, setZapContentEdited] = useState(false)
   const [pricingRefreshPending, setPricingRefreshPending] = useState(false)
@@ -5831,9 +5828,8 @@ function CheckoutPage() {
                                 {zapContent}
                               </p>
                               <p className="text-xs leading-6 text-[var(--text-muted)]">
-                                {selectedZapMode === "anonymous_public_zap"
-                                  ? "Anonymous zaps always use this fixed item-count message."
-                                  : "The merchant requires the generic item-count message for this cart."}
+                                The merchant requires the generic item-count
+                                message for this cart.
                               </p>
                             </>
                           )}
