@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev:local": "bun --env-file=../../.env.local src/dev.ts",
-    "build": "tsc --noEmit",
-    "typecheck": "tsc --noEmit",
+    "build": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
+    "typecheck": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\""
   },
   "dependencies": {
@@ -14,6 +14,6 @@
     "nostr-tools": "2.25.5"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@typescript/native": "npm:typescript@^7.0.2"
   }
 }
