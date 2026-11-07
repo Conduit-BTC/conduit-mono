@@ -159,7 +159,6 @@ import {
   resendOrderProof,
   runOrderPrivateFallback,
   runOrderPayment,
-  runOrderPaymentWithUpdatedAddress,
   runOrderPaymentWithRenewedInvoice,
   submitExternalPaymentProof,
   subscribeOrderPayment,
@@ -207,6 +206,7 @@ import {
   resolveCheckoutPaymentTarget,
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
+import { runOrderRetryPayment } from "../lib/order-payment-retry"
 import {
   canReplayCheckoutSparkOrderRecovery,
   replayCheckoutSparkOrderRecovery,
@@ -1778,28 +1778,14 @@ function OrderDetail({
     update?: OrderPaymentAddressUpdate
   ): Promise<void> {
     assertLegacyOrderPaymentAllowed(row.lifecycle)
-    assertLegacyOrderPaymentAllowed(await getOrderLifecycle(vm.orderId))
-    const run = (context: OrderPaymentContext) =>
+    await runOrderRetryPayment(
+      {
+        ...ctx,
+        shouldContinueBeforePaymentClaim: () =>
+          isGeneralPaymentRetryEligible(currentViewRef.current),
+      },
       update
-        ? runOrderPaymentWithUpdatedAddress(
-            {
-              ...context,
-              shouldContinueBeforePaymentClaim: () =>
-                isGeneralPaymentRetryEligible(currentViewRef.current),
-            },
-            update
-          )
-        : runOrderPayment({
-            ...context,
-            shouldContinueBeforePaymentClaim: () =>
-              isGeneralPaymentRetryEligible(currentViewRef.current),
-          })
-    if (ctx.zapMode === "anonymous_public_zap") {
-      throw new Error(
-        "Anonymous public zaps have been retired. Use the private-invoice recovery option for this order."
-      )
-    }
-    await run(ctx)
+    )
   }
 
   async function finishAcceptedOrderRecovery(

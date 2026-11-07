@@ -23,6 +23,10 @@ The anonymous zap signer provider canary is retired with that service.
 Lightning tips, including fixed recipient, amount, network, expiry and signature
 checks. `retired-anon-zap.test.ts` adds five cases verifying that retired APIs
 return an explicit non-cacheable response without signer bindings.
+`legacy-anonymous-payment-retry.test.ts` adds three cases for accepted-order
+continuation, failed-attempt private recovery, and preventing replacement of an
+invoice already awaiting payment. It uses the real payment service and atomic
+lifecycle updates against in-memory IndexedDB, with provider responses simulated.
 
 The recovery tests use real local signatures/encryption and the real repository
 with in-memory IndexedDB. Provider and relay responses are simulated. Wallet
