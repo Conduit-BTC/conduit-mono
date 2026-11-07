@@ -16,8 +16,17 @@ The suite intentionally covers a small set of payment and recovery risks:
 
 The five `address-gateway*.test.ts` / `address-preview-origin.test.ts` files
 retain 60 deployment-related cases unchanged. The production deployment workflow
-also invokes these files explicitly. Operational smoke scripts and the provider
-canary are separate and remain available; ordinary `bun test` does not run them.
+also invokes these files explicitly. Operational smoke scripts are separate; ordinary `bun test` does not run them.
+The anonymous zap signer provider canary is retired with that service.
+
+`guest-project-tip.test.ts` adds seven payment-boundary cases for ordinary guest
+Lightning tips, including fixed recipient, amount, network, expiry and signature
+checks. `retired-anon-zap.test.ts` adds five cases verifying that retired APIs
+return an explicit non-cacheable response without signer bindings.
+`legacy-anonymous-payment-retry.test.ts` adds three cases for accepted-order
+continuation, failed-attempt private recovery, and preventing replacement of an
+invoice already awaiting payment. It uses the real payment service and atomic
+lifecycle updates against in-memory IndexedDB, with provider responses simulated.
 
 The recovery tests use real local signatures/encryption and the real repository
 with in-memory IndexedDB. Provider and relay responses are simulated. Wallet

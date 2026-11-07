@@ -15,8 +15,6 @@ interface ImportMetaEnv {
   readonly VITE_NIP89_MERCHANT_PUBKEY?: string
   readonly VITE_NIP89_MARKET_D_TAG?: string
   readonly VITE_NIP89_MERCHANT_D_TAG?: string
-  readonly VITE_ANON_ZAP_SIGNER_URL?: string
-  readonly VITE_ANON_ZAP_SIGNER_PUBKEY?: string
   readonly VITE_CHECKOUT_SPARK_RECEIVER_CONTRACTS?: string
   readonly VITE_CHECKOUT_SPARK_PRICING_URL?: string
   readonly VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?: string

@@ -1,10 +1,9 @@
 {
-  "name": "@conduit/anon-zap-signer",
+  "name": "@conduit/checkout-pricing",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:local": "bun --env-file=../../.env.local src/dev.ts",
     "build": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "typecheck": "bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\""

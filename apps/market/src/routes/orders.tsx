@@ -150,10 +150,6 @@ import { assertCreatedEventMarketPickupTerms } from "../lib/order-pickup-retry"
 import { assertCartPickupHandlerReady } from "../lib/pickup-handoff"
 import { getNwcPaymentReadiness } from "../lib/wallet-payment-coordinator"
 import {
-  authorizeCheckoutWithAnonSigner,
-  signAuthorizedAnonZapCheckout,
-} from "../lib/anon-zap-signer"
-import {
   canObserveOrderPublicZapReceipt,
   getOrderPaymentState,
   isOrderPaymentRunning,
@@ -163,7 +159,6 @@ import {
   resendOrderProof,
   runOrderPrivateFallback,
   runOrderPayment,
-  runOrderPaymentWithUpdatedAddress,
   runOrderPaymentWithRenewedInvoice,
   submitExternalPaymentProof,
   subscribeOrderPayment,
@@ -200,10 +195,7 @@ import {
   hasCheckoutPaymentProgress,
   requiresAcceptedOrderPaymentContinuation,
 } from "../lib/checkout-order-attempt"
-import {
-  doesAuthorizedAnonZapPricingMatchOrder,
-  type CheckoutZapMode,
-} from "../lib/checkout-payment"
+import { type CheckoutZapMode } from "../lib/checkout-payment"
 import {
   getDeliveryNotice,
   publishBuyerOrderMessage,
@@ -214,6 +206,7 @@ import {
   resolveCheckoutPaymentTarget,
 } from "../lib/checkout-payment-target"
 import { assertLegacyOrderPaymentAllowed } from "../lib/checkout-spark-order-admission"
+import { runOrderRetryPayment } from "../lib/order-payment-retry"
 import {
   canReplayCheckoutSparkOrderRecovery,
   replayCheckoutSparkOrderRecovery,
@@ -1785,48 +1778,14 @@ function OrderDetail({
     update?: OrderPaymentAddressUpdate
   ): Promise<void> {
     assertLegacyOrderPaymentAllowed(row.lifecycle)
-    assertLegacyOrderPaymentAllowed(await getOrderLifecycle(vm.orderId))
-    const run = (context: OrderPaymentContext) =>
+    await runOrderRetryPayment(
+      {
+        ...ctx,
+        shouldContinueBeforePaymentClaim: () =>
+          isGeneralPaymentRetryEligible(currentViewRef.current),
+      },
       update
-        ? runOrderPaymentWithUpdatedAddress(
-            {
-              ...context,
-              shouldContinueBeforePaymentClaim: () =>
-                isGeneralPaymentRetryEligible(currentViewRef.current),
-            },
-            update
-          )
-        : runOrderPayment({
-            ...context,
-            shouldContinueBeforePaymentClaim: () =>
-              isGeneralPaymentRetryEligible(currentViewRef.current),
-          })
-    if (ctx.zapMode !== "anonymous_public_zap") {
-      await run(ctx)
-      return
-    }
-
-    const authorization = await authorizeCheckoutWithAnonSigner({
-      merchantPubkey: ctx.merchantPubkey,
-      items: ctx.items,
-    })
-    if (
-      !row.lifecycle ||
-      !doesAuthorizedAnonZapPricingMatchOrder(
-        row.lifecycle,
-        authorization.pricing
-      )
-    ) {
-      throw new Error(
-        "Current signed listing pricing or fulfillment terms no longer match this order. No payment was attempted; use a private invoice or contact the merchant."
-      )
-    }
-    const preparedAnonZap = await signAuthorizedAnonZapCheckout(authorization)
-    await run({
-      ...ctx,
-      zapContent: preparedAnonZap.rawEvent.content,
-      preparedAnonZap,
-    })
+    )
   }
 
   async function finishAcceptedOrderRecovery(

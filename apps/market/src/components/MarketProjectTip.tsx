@@ -13,7 +13,7 @@ import {
 } from "@conduit/core"
 import { ProjectTip, type ProjectTipPayResult } from "@conduit/ui"
 import { useWallets } from "../hooks/useWallets"
-import { prepareAnonymousProjectTip } from "../lib/project-tip"
+import { prepareGuestProjectTip } from "../lib/project-tip"
 import {
   getNwcPaymentReadiness,
   marketWalletPaymentCoordinator,
@@ -61,7 +61,7 @@ export function MarketProjectTip({ className }: { className?: string }) {
         signer: auth.signer,
       })
     }
-    return prepareAnonymousProjectTip(amountSats)
+    return prepareGuestProjectTip(amountSats)
   }
 
   async function payInvoice(
