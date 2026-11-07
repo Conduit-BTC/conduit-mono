@@ -1,50 +1,12 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs"
-import { join, relative } from "node:path"
+import { basename, join, relative } from "node:path"
 
-export const allowedTelemetryProperties = new Set([
-  "event_name",
-  "app",
-  "page_url",
-  "page_path",
-  "network",
-  "status",
-  "latency_bucket",
-  "count",
-  "time_bucket",
-  "surface",
-  "action",
-  "step",
-  "mode",
-  "rail",
-  "method",
-  "event_family",
-  "count_bucket",
-  "result_count_bucket",
-  "amount_bucket",
-  "estimated_gmv_sats",
-  "product_type",
-  "declaration_class",
-  "delivery_route",
-  "ack_outcome",
-  "repair_outcome",
-  "block_reason",
-  "handoff_stage",
-  "partner_code",
-  "source_domain",
-  "source_method",
-])
-
-const gmvTelemetryEventName = "commerce_gmv_estimated"
-const gmvTelemetryProperty = "estimated_gmv_sats"
-
-export const allowedProviderTelemetryEventNames = new Set([
-  "$pageleave",
-  "$pageview",
-  "$web_vitals",
-  "pageview",
-])
-
+// Product collection is retired. New analytics require a separately reviewed design.
 export const bannedPrivacyPackages = [
+  "posthog-js",
+  "posthog-node",
+  "@plausible-analytics/tracker",
+  "plausible-tracker",
   "@amplitude/analytics-browser",
   "@amplitude/analytics-node",
   "@fullstory/browser",
@@ -71,95 +33,6 @@ export const bannedPrivacyPackages = [
   "rudder-sdk-js",
   "universal-cookie",
   "vue-cookies",
-]
-
-export const sensitiveTelemetryPropertyNames = new Set([
-  "address",
-  "referrer",
-  "referrer_url",
-  "source_url",
-  "content",
-  "fingerprint",
-  "invoice",
-  "lnurl",
-  "message",
-  "npub",
-  "nwcUri",
-  "nwc_uri",
-  "orderId",
-  "order_id",
-  "paymentHash",
-  "preimage",
-  "productTitle",
-  "pubkey",
-  "secret",
-  "shippingAddress",
-  "signer",
-  "title",
-  "userAgent",
-  "wallet",
-])
-
-export type TelemetryEventMarker = {
-  eventName: string
-  properties: string[]
-}
-
-export type TelemetryPolicyResult = {
-  errors: string[]
-  events: TelemetryEventMarker[]
-}
-
-const eventMarkerPattern =
-  /<!--\s*telemetry-event:\s*([a-z0-9_]+)\s+properties=([a-z0-9_,]+)\s*-->/g
-
-const telemetryCallExpression =
-  "\\b(?:(?:posthog|client)(?:\\.|\\?\\.)capture|(?:window\\.)?plausible(?:\\?\\.)?|trackTelemetry|recordTelemetryEvent|recordBrowserTelemetryEvent)"
-
-const telemetryApiPattern = new RegExp(`${telemetryCallExpression}\\s*\\(`, "g")
-
-const forbiddenTelemetryApiPattern =
-  /\b(?:posthog|client)(?:\.|\?\.)(?:alias|group|identify|register|setPersonProperties|setPersonPropertiesForFlags)\s*\(/g
-
-const unsafeTelemetryConfigPatterns: Array<[RegExp, string]> = [
-  [/\bautocapture\s*:\s*true\b/, "autocapture must stay disabled"],
-  [
-    /\bcapture_pageview\s*:\s*true\b/,
-    "PostHog automatic pageviews must stay disabled",
-  ],
-  [
-    /\bdisable_session_recording\s*:\s*false\b/,
-    "PostHog session recording must stay disabled",
-  ],
-  [/\benable_heatmaps\s*:\s*true\b/, "PostHog heatmaps must stay disabled"],
-  [
-    /\bnetwork_timing\s*:\s*true\b/,
-    "network timing capture must stay disabled",
-  ],
-  [
-    /\bweb_vitals_attribution\s*:\s*true\b/,
-    "Web Vitals attribution must stay disabled",
-  ],
-  [
-    /\bsave_campaign_params\s*:\s*true\b/,
-    "PostHog campaign persistence must stay disabled",
-  ],
-  [
-    /\bsave_referrer\s*:\s*true\b/,
-    "PostHog referrer persistence must stay disabled",
-  ],
-  [
-    /\bpersistence\s*:\s*["'`](?:cookie|localStorage|localStorage\+cookie)["'`]/,
-    "persistent PostHog identity storage is not allowed",
-  ],
-  [
-    /\bperson_profiles\s*:\s*["'`](?!never["'`])/,
-    "PostHog person profiles must stay disabled",
-  ],
-  [
-    /\badvanced_disable_flags\s*:\s*false\b/,
-    "PostHog flags endpoint must stay disabled",
-  ],
 ]
 
 const forbiddenCookieSourcePatterns: Array<[RegExp, string]> = [
@@ -201,260 +74,6 @@ function walkFiles(
   return files
 }
 
-export function parseTelemetryEventMarkers(
-  markdown: string
-): TelemetryEventMarker[] {
-  const events: TelemetryEventMarker[] = []
-  for (const match of markdown.matchAll(eventMarkerPattern)) {
-    events.push({
-      eventName: match[1],
-      properties: match[2].split(",").map((property) => property.trim()),
-    })
-  }
-  return events
-}
-
-export function validateTelemetryEvents(
-  events: TelemetryEventMarker[]
-): string[] {
-  const errors: string[] = []
-
-  if (events.length === 0) {
-    errors.push(
-      "scripts/ci/telemetry-events.md must define telemetry-event markers."
-    )
-  }
-
-  for (const event of events) {
-    if (!/^[a-z0-9_]+$/.test(event.eventName)) {
-      errors.push(`Invalid telemetry event name: ${event.eventName}`)
-    }
-
-    for (const property of event.properties) {
-      if (
-        ["source_domain", "source_method", "partner_code"].includes(property) &&
-        ![
-          "checkout_handoff_result",
-          "checkout_step_result",
-          "checkout_success",
-          "checkout_result",
-        ].includes(event.eventName)
-      ) {
-        errors.push(
-          `Telemetry event ${event.eventName} cannot use checkout attribution property: ${property}`
-        )
-      }
-      if (!allowedTelemetryProperties.has(property)) {
-        errors.push(
-          `Telemetry event ${event.eventName} uses disallowed property: ${property}`
-        )
-      }
-      if (
-        property === gmvTelemetryProperty &&
-        event.eventName !== gmvTelemetryEventName
-      ) {
-        errors.push(
-          `Telemetry event ${event.eventName} cannot use Worker-only property: ${property}`
-        )
-      }
-    }
-
-    if (
-      event.eventName === gmvTelemetryEventName &&
-      (event.properties.length !== 1 ||
-        event.properties[0] !== gmvTelemetryProperty)
-    ) {
-      errors.push(
-        `${gmvTelemetryEventName} must use only ${gmvTelemetryProperty}`
-      )
-    }
-  }
-
-  return errors
-}
-
-export function validateTelemetrySourceUsage(input: {
-  source: string
-  relativePath: string
-  allowedEventNames: Set<string>
-}): string[] {
-  const errors: string[] = []
-  const telemetryCalls = [...input.source.matchAll(telemetryApiPattern)].filter(
-    (match) =>
-      !isTelemetryFunctionDeclaration({
-        source: input.source,
-        index: match.index ?? 0,
-      }) &&
-      !isAllowedTelemetryCoreProviderCall({
-        relativePath: input.relativePath,
-        source: input.source,
-        index: match.index ?? 0,
-      })
-  )
-
-  for (const match of telemetryCalls) {
-    const callWindow = getTelemetryCallWindow(input.source, match.index ?? 0)
-    const eventName = getLiteralTelemetryEventName(callWindow)
-
-    if (!eventName) {
-      errors.push(
-        `${input.relativePath} includes a telemetry call without a literal allowlisted event name`
-      )
-    } else if (allowedProviderTelemetryEventNames.has(eventName)) {
-      errors.push(
-        `${input.relativePath} uses provider telemetry event ${eventName} outside the shared telemetry wrapper`
-      )
-    } else if (!input.allowedEventNames.has(eventName)) {
-      errors.push(
-        `${input.relativePath} uses telemetry event ${eventName} outside scripts/ci/telemetry-events.md`
-      )
-    }
-
-    for (const propertyName of sensitiveTelemetryPropertyNames) {
-      const propertyPattern = new RegExp(`\\b${propertyName}\\b\\s*(?=[:,}])`)
-      if (propertyPattern.test(callWindow)) {
-        errors.push(
-          `${input.relativePath} includes sensitive telemetry property ${propertyName}`
-        )
-      }
-    }
-  }
-
-  for (const match of input.source.matchAll(forbiddenTelemetryApiPattern)) {
-    errors.push(
-      `${input.relativePath} uses forbidden PostHog identity/profile API ${match[0]}`
-    )
-  }
-
-  for (const [pattern, message] of unsafeTelemetryConfigPatterns) {
-    if (pattern.test(input.source)) {
-      errors.push(
-        `${input.relativePath} has unsafe telemetry config: ${message}`
-      )
-    }
-  }
-
-  if (
-    /\bdisable_persistence\s*:\s*false\b/.test(input.source) &&
-    !/\bpersistence\s*:\s*["'`]sessionStorage["'`]/.test(input.source)
-  ) {
-    errors.push(
-      `${input.relativePath} has unsafe telemetry config: PostHog persistence must be sessionStorage-only`
-    )
-  }
-
-  for (const [pattern, message] of forbiddenCookieSourcePatterns) {
-    if (pattern.test(input.source)) {
-      errors.push(
-        `${input.relativePath} violates cookieless policy: ${message}`
-      )
-    }
-  }
-
-  return errors
-}
-
-function getLiteralTelemetryEventName(callWindow: string): string | null {
-  if (/\brecordBrowserTelemetryEvent\s*\(/.test(callWindow)) {
-    return (
-      /\beventName\s*:\s*["'`]([a-z0-9_]+)["'`]/.exec(callWindow)?.[1] ?? null
-    )
-  }
-
-  return /\(\s*["'`]([a-z0-9_$]+)["'`]/.exec(callWindow)?.[1] ?? null
-}
-
-function getTelemetryCallWindow(source: string, index: number): string {
-  const openParenIndex = source.indexOf("(", index)
-  if (openParenIndex === -1) return source.slice(index, index + 240)
-
-  let depth = 0
-  let quote: "'" | '"' | "`" | null = null
-  let escaped = false
-
-  for (let i = openParenIndex; i < source.length; i += 1) {
-    const char = source[i]
-
-    if (quote) {
-      if (escaped) {
-        escaped = false
-        continue
-      }
-      if (char === "\\") {
-        escaped = true
-        continue
-      }
-      if (char === quote) quote = null
-      continue
-    }
-
-    if (char === "'" || char === '"' || char === "`") {
-      quote = char
-      continue
-    }
-
-    if (char === "(") depth += 1
-    if (char === ")") {
-      depth -= 1
-      if (depth === 0) return source.slice(index, i + 1)
-    }
-  }
-
-  return source.slice(index, index + 240)
-}
-
-function isTelemetryFunctionDeclaration(input: {
-  source: string
-  index: number
-}): boolean {
-  const prefix = input.source.slice(Math.max(0, input.index - 32), input.index)
-  return /\bfunction\s*$/.test(prefix)
-}
-
-function isAllowedTelemetryCoreProviderCall(input: {
-  relativePath: string
-  source: string
-  index: number
-}): boolean {
-  if (input.relativePath !== "packages/core/src/telemetry.ts") return false
-
-  const snippet = input.source.slice(input.index, input.index + 80)
-  return (
-    snippet.startsWith("window.plausible?.(") ||
-    snippet.startsWith("client?.capture(")
-  )
-}
-
-export function checkTelemetrySourceUsage(
-  repoRoot: string,
-  events: TelemetryEventMarker[]
-): string[] {
-  const allowedEventNames = new Set(events.map((event) => event.eventName))
-  const sourceRoots = ["apps", "packages"]
-  const sourceFiles = sourceRoots.flatMap((root) =>
-    walkFiles(join(repoRoot, root), (path) => {
-      if (path.includes("/node_modules/") || path.includes("/dist/")) {
-        return false
-      }
-      if (path.endsWith(".test.ts") || path.endsWith(".test.tsx")) {
-        return false
-      }
-      if (path.endsWith("routeTree.gen.ts")) {
-        return false
-      }
-      return /\.(ts|tsx|js|jsx)$/.test(path)
-    })
-  )
-
-  return sourceFiles.flatMap((sourcePath) =>
-    validateTelemetrySourceUsage({
-      source: readFileSync(sourcePath, "utf8"),
-      relativePath: relative(repoRoot, sourcePath),
-      allowedEventNames,
-    })
-  )
-}
-
 export function checkPackageManifests(repoRoot: string): string[] {
   const errors: string[] = []
   const manifests = walkFiles(
@@ -489,29 +108,67 @@ export function checkPackageManifests(repoRoot: string): string[] {
   return errors
 }
 
-export function checkTelemetryPolicy(repoRoot: string): TelemetryPolicyResult {
-  const allowlistPath = join(repoRoot, "scripts/ci/telemetry-events.md")
-  const allowlist = readFileSync(allowlistPath, "utf8")
-  const events = parseTelemetryEventMarkers(allowlist)
-  const errors = [
-    ...validateTelemetryEvents(events),
-    ...checkTelemetrySourceUsage(repoRoot, events),
-    ...checkPackageManifests(repoRoot),
-  ]
+const retiredSourcePatterns: Array<[RegExp, string]> = [
+  [
+    /posthog-js|posthog-node|plausible-tracker|@plausible-analytics\/tracker/,
+    "retired analytics SDK",
+  ],
+  [
+    /\b(?:recordBrowserTelemetryEvent|recordBrowserTelemetryPageView|reportCommerceGmvEstimate|recordTelemetryEvent|trackTelemetry)\s*\(/,
+    "retired telemetry API",
+  ],
+  [
+    /\b(?:posthog|client)(?:\.|\?\.)(?:capture|identify|alias|group|register|setPersonProperties)\s*\(|\b(?:window\.)?plausible(?:\?\.)?\s*\(/,
+    "analytics provider call",
+  ],
+  [
+    /(?:VITE_)?(?:ENABLE_TELEMETRY|TELEMETRY_ALLOWED_HOSTS|POSTHOG_|PLAUSIBLE_)|COMMERCE_GMV_TELEMETRY_HMAC_SECRET/,
+    "retired analytics configuration",
+  ],
+  [
+    /\b(?:https?:\/\/)?(?:e\.conduit\.market|(?:us|eu)\.i\.posthog\.com|plausible\.io\/js)/,
+    "retired analytics endpoint",
+  ],
+]
 
-  return { errors, events }
+const envFileNamePattern = /^\.env(?:\.|$)/
+
+export function checkTelemetryPolicy(repoRoot: string): string[] {
+  const errors = checkPackageManifests(repoRoot)
+  if (existsSync(join(repoRoot, "apps/posthog-proxy/package.json"))) {
+    errors.push("Retired PostHog proxy workspace must not be restored.")
+  }
+  for (const root of ["apps", "packages"]) {
+    for (const path of walkFiles(join(repoRoot, root), (file) =>
+      /\.(?:ts|tsx|js|jsx|html|jsonc)$/.test(file)
+    )) {
+      const source = readFileSync(path, "utf8")
+      for (const [pattern, reason] of [
+        ...retiredSourcePatterns,
+        ...forbiddenCookieSourcePatterns,
+      ]) {
+        if (pattern.test(source))
+          errors.push(`${relative(repoRoot, path)}: ${reason}`)
+      }
+    }
+  }
+  for (const path of walkFiles(repoRoot, (file) =>
+    envFileNamePattern.test(basename(file))
+  )) {
+    const source = readFileSync(path, "utf8")
+    for (const [pattern, reason] of retiredSourcePatterns) {
+      if (pattern.test(source))
+        errors.push(`${relative(repoRoot, path)}: ${reason}`)
+    }
+  }
+  return errors
 }
 
 if (import.meta.main) {
-  const repoRoot = process.cwd()
-  const result = checkTelemetryPolicy(repoRoot)
-
-  if (result.errors.length > 0) {
-    console.error(result.errors.join("\n"))
+  const errors = checkTelemetryPolicy(process.cwd())
+  if (errors.length) {
+    console.error(errors.join("\n"))
     process.exit(1)
   }
-
-  console.log(
-    `Telemetry policy OK: ${result.events.length} event allowlist entries validated.`
-  )
+  console.log("Telemetry retirement and cookieless policy OK.")
 }

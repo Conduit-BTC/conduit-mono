@@ -23,12 +23,10 @@ import {
   getMarketplaceProducts,
   getMerchantStorefront,
   getProfileName,
-  getTelemetryCountBucket,
   isQuantumRouterEnabled,
   normalizePublicMediaUrl,
   normalizePubkey,
   pubkeyToNpub,
-  recordBrowserTelemetryEvent,
   SHIPPING_COUNTRIES,
   useAuth,
   useConduitSession,
@@ -215,22 +213,6 @@ function getCartSummaryPrice(
           : "Estimated total · final amounts at checkout",
       }
     : display
-}
-
-function getCartTelemetryProductType(items: CartItem[]): string {
-  const hasDigital = items.some((item) => item.format === "digital")
-  const hasPhysical = items.some((item) => item.format !== "digital")
-
-  if (hasDigital && hasPhysical) return "mixed"
-  if (hasDigital) return "digital"
-  if (hasPhysical) return "physical"
-  return "unknown"
-}
-
-function getCartTelemetryItemCountBucket(items: CartItem[]): string {
-  return getTelemetryCountBucket(
-    items.reduce((sum, item) => sum + item.quantity, 0)
-  )
 }
 
 async function fetchSuggestedProducts(
@@ -1134,16 +1116,6 @@ function CartPage() {
       return
     }
     if (getMixedFulfillmentBlockingMessage(group.items)) return
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "checkout_initiated",
-      properties: {
-        count_bucket: getCartTelemetryItemCountBucket(group.items),
-        product_type: getCartTelemetryProductType(group.items),
-        status: "success",
-        surface: "cart",
-      },
-    })
 
     continueToCheckout(group)
   }

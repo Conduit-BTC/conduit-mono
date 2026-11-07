@@ -48,7 +48,7 @@ import {
   type SignedPublicNostrEvent,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
-import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
+
 import {
   getCheckoutZapVisibility,
   recoverCheckoutZapTargetAddress,
@@ -679,13 +679,7 @@ function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
     } satisfies OrderPaymentRuntimeState)
   const next: OrderPaymentRuntimeState = { ...prev, ...partial, orderId }
   runtimeStates.set(orderId, next)
-  if (next.lifecycle?.paymentStatus === "paid") {
-    void reportCommerceGmvEstimate({
-      orderId: next.lifecycle.orderId,
-      orderCreatedAt: next.lifecycle.createdAt,
-      invoicedAmountSats: next.lifecycle.totalSats,
-    })
-  }
+
   const set = listeners.get(orderId)
   if (set) for (const fn of set) fn(next)
 }
