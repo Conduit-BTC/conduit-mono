@@ -1,4 +1,4 @@
-import { nip19 } from "@nostr-dev-kit/ndk"
+import * as nip19 from "nostr-tools/nip19"
 import { normalizePublicWebSocketUrl } from "../network-target-safety"
 import {
   productSupplierAllocationSchema,

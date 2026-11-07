@@ -1,5 +1,5 @@
 import { type ClassValue, clsx } from "clsx"
-import { nip19 } from "@nostr-dev-kit/ndk"
+import * as nip19 from "nostr-tools/nip19"
 import { twMerge } from "tailwind-merge"
 import {
   formatFiatPrice,

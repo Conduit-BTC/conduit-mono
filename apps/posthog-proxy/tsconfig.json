@@ -4,6 +4,10 @@
     "composite": false,
     "noEmit": true
   },
-  "include": ["src/**/*", "../../packages/core/src/vite-env.d.ts"],
+  "include": [
+    "src/**/*",
+    "../../packages/core/src/vite-env.d.ts",
+    "../../packages/core/src/types/nostr.d.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }
