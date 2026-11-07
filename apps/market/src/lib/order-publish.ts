@@ -627,7 +627,7 @@ export async function publishBuyerOrderMessage(
         senderPubkey: buyerIdentity.pubkey,
         recipientPubkey: merchantPubkey,
       }),
-      telemetryApp: "market",
+
       ...(buyerIdentity.kind !== "guest_ephemeral"
         ? { onRecipientAccepted: historyCheckpoint.onRecipientAccepted }
         : {}),

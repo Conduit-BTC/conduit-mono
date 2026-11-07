@@ -63,7 +63,7 @@ jobs:
         run: |
           bun test tests/address-gateway.test.ts tests/address-gateway-config.test.ts tests/address-gateway-router-receiver.test.ts tests/address-preview-origin.test.ts tests/address-gateway-release.test.ts
           bun scripts/deploy/check_address_gateway.ts production
-          bunx --no-install tsc -p scripts/deploy/tsconfig.json
+          bun node_modules/@typescript/native/bin/tsc -p scripts/deploy/tsconfig.json
       - name: Compile the gateway without production credentials
         env:
           WRANGLER_SEND_METRICS: "false"

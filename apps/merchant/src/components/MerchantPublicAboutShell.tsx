@@ -1,8 +1,6 @@
 import { TanStackRouterDevtools } from "@tanstack/router-devtools"
 import { useEffect, type ReactNode } from "react"
 
-import { installBrowserClientErrorTelemetry } from "@conduit/core"
-
 import { MerchantBrandLockup } from "./MerchantHeader"
 
 const SHOW_DEVTOOLS =
@@ -17,8 +15,6 @@ export function MerchantPublicAboutShell({
   pageTitle?: string
   fullBleed?: boolean
 }) {
-  useEffect(() => installBrowserClientErrorTelemetry("merchant"), [])
-
   useEffect(() => {
     document.title = `${pageTitle} | Conduit Merchant`
   }, [pageTitle])

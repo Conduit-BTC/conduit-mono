@@ -31,7 +31,7 @@ import {
   useProfile,
   type NwcGetInfoResult,
 } from "@conduit/core"
-import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
+
 import {
   getMerchantNwcAddressStatus,
   getMerchantPaymentVerificationCandidates,
@@ -312,11 +312,6 @@ function useMerchantPaymentAutomationState(): MerchantPaymentAutomationState {
           })
           if (delivery.localHistory === "unavailable")
             localHistoryUnavailable += 1
-          void reportCommerceGmvEstimate({
-            orderId: candidate.orderId,
-            orderCreatedAt: candidate.orderCreatedAt,
-            invoicedAmountSats: candidate.expectedAmountMsats / 1_000,
-          })
         },
       })
       checked = result.checked

@@ -38,13 +38,9 @@ import {
   isQuantumRouterExecutionEnabled,
   fetchLnurlPayMetadata,
   formatNpub,
-  getPriceSats,
   getWalletDisplayLabels,
   getWalletNetworkFromLightningConfig,
   getProfiles,
-  getTelemetryAmountBucket,
-  getTelemetryCountBucket,
-  getTelemetryLatencyBucket,
   hasWebLN,
   isCommerceReadIncomplete,
   getOrderLifecycle,
@@ -59,8 +55,6 @@ import {
   selectCheckoutSparkTreasuryAddress,
   patchOrderLifecycle,
   pubkeyToNpub,
-  recordBrowserTelemetryEvent,
-  checkoutAttributionTelemetryProperties,
   resolveWalletPaymentInstance,
   validateAddressConsistency,
   useAuth,
@@ -302,10 +296,7 @@ import { getSparkConfiguration } from "../lib/spark-sdk"
 import { assessCheckoutSparkCheckoutAdmission } from "../lib/checkout-spark-checkout-admission"
 import { checkoutReferralSessionFence } from "../lib/checkout-referral-session"
 import { useCheckoutIntentImport } from "../hooks/useCheckoutIntentImport"
-import {
-  getCheckoutReferralClaim,
-  recordCheckoutReferralOrderSubmitted,
-} from "../lib/checkout-referral"
+import { getCheckoutReferralClaim } from "../lib/checkout-referral"
 
 import {
   formatBalanceFreshness,
@@ -326,7 +317,7 @@ type CheckoutSearch = {
   intent?: "zap"
 }
 
-type CheckoutTelemetryMode = "checkout" | "order_first" | CheckoutZapMode
+type CheckoutMode = "checkout" | "order_first" | CheckoutZapMode
 
 /** Priced "ok" intent — the only shape we proceed to payment with. */
 const CHECKOUT_PRICE_REFRESH_TIMEOUT_MS = 5_000
@@ -786,39 +777,6 @@ function CheckoutBreadcrumb({
 function getCountryLabel(code: string): string {
   const country = SHIPPING_COUNTRIES.find((option) => option.code === code)
   return country ? `${country.name} (${country.code})` : code
-}
-
-function getCheckoutTelemetryProductType(items: CartItem[]): string {
-  const hasDigital = items.some((item) => item.format === "digital")
-  const hasPhysical = items.some((item) => item.format !== "digital")
-
-  if (hasDigital && hasPhysical) return "mixed"
-  if (hasDigital) return "digital"
-  if (hasPhysical) return "physical"
-  return "unknown"
-}
-
-function getCheckoutTelemetryItemCountBucket(items: CartItem[]): string {
-  return getTelemetryCountBucket(
-    items.reduce((sum, item) => sum + item.quantity, 0)
-  )
-}
-
-function getCheckoutTelemetryBaseProperties(
-  items: CartItem[],
-  mode: CheckoutTelemetryMode,
-  amountSats?: number
-) {
-  return {
-    amount_bucket:
-      amountSats === undefined
-        ? "unknown"
-        : getTelemetryAmountBucket(amountSats),
-    count_bucket: getCheckoutTelemetryItemCountBucket(items),
-    mode,
-    product_type: getCheckoutTelemetryProductType(items),
-    surface: "checkout",
-  }
 }
 
 // ─── Order summary sidebar ────────────────────────────────────────────────────
@@ -2015,21 +1973,6 @@ function CheckoutPage() {
     eventPaymentRequired ||
     eventFeePreview.status === "unavailable"
   const paymentPathEnabled = pricingPreview.status === "ok" && paymentRequired
-  const total = useMemo(() => {
-    if (pricingPreview.status === "ok") return pricingPreview.totalSats
-    const itemSubtotal = checkoutItems.reduce((sum, item) => {
-      const sats = getPriceSats(item, btcUsdRate, {
-        allowZero: item.fulfillment?.type === "event_market_pickup",
-      })
-      return sats ? sum + sats.sats * item.quantity : sum
-    }, 0)
-    return itemSubtotal + checkoutShippingCost.totalSats
-  }, [
-    btcUsdRate,
-    checkoutItems,
-    checkoutShippingCost.totalSats,
-    pricingPreview,
-  ])
   const hasUnpricedCheckoutItems = pricingPreview.status !== "ok"
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: selectedMerchant ?? null,
@@ -2386,100 +2329,6 @@ function CheckoutPage() {
     }
   })()
 
-  function recordCheckoutStepResult(input: {
-    checkoutMode: CheckoutTelemetryMode
-    latencyMs?: number
-    rail?: string
-    status: string
-    stepName: string
-    amountSats?: number
-  }): void {
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "checkout_step_result",
-      properties: {
-        ...getCheckoutTelemetryBaseProperties(
-          checkoutItems,
-          input.checkoutMode,
-          input.amountSats
-        ),
-        ...checkoutAttributionTelemetryProperties(
-          getCheckoutReferralClaim(
-            selectedMerchant,
-            selectedPurchase?.id,
-            checkoutItems,
-            getCheckoutReferralScope()
-          )
-        ),
-        rail: input.rail ?? "none",
-        status: input.status,
-        step: input.stepName,
-        ...(input.latencyMs === undefined
-          ? {}
-          : { latency_bucket: getTelemetryLatencyBucket(input.latencyMs) }),
-      },
-    })
-  }
-
-  function recordCheckoutSuccess(input: {
-    checkoutMode: CheckoutTelemetryMode
-    rail?: string
-    status: string
-    amountSats: number
-  }): void {
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "checkout_success",
-      properties: {
-        ...getCheckoutTelemetryBaseProperties(
-          checkoutItems,
-          input.checkoutMode,
-          input.amountSats
-        ),
-        ...checkoutAttributionTelemetryProperties(
-          getCheckoutReferralClaim(
-            selectedMerchant,
-            selectedPurchase?.id,
-            checkoutItems,
-            getCheckoutReferralScope()
-          )
-        ),
-        rail: input.rail ?? "none",
-        status: input.status,
-      },
-    })
-  }
-
-  function recordCheckoutResult(input: {
-    amountSats?: number
-    checkoutMode: CheckoutTelemetryMode
-    rail?: string
-    status: string
-  }): void {
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "checkout_result",
-      properties: {
-        ...getCheckoutTelemetryBaseProperties(
-          checkoutItems,
-          input.checkoutMode,
-          input.amountSats
-        ),
-        network: "browser",
-        ...checkoutAttributionTelemetryProperties(
-          getCheckoutReferralClaim(
-            selectedMerchant,
-            selectedPurchase?.id,
-            checkoutItems,
-            getCheckoutReferralScope()
-          )
-        ),
-        rail: input.rail ?? "none",
-        status: input.status,
-      },
-    })
-  }
-
   function validateCheckoutDetails(
     nextShipping: ShippingFormState
   ): ShippingValidationError[] {
@@ -2499,17 +2348,12 @@ function CheckoutPage() {
   }
 
   async function assertCheckoutItemsAvailable(
-    checkoutMode: CheckoutTelemetryMode,
+    checkoutMode: CheckoutMode,
     rateInput: PricingRateInput = btcUsdRateQuery.data ?? null,
     rateEvidenceRefresh?: { reviewedRateInput: PricingRateInput }
   ): Promise<Extract<CheckoutAuthorizationResult, { status: "ok" }>> {
     const refreshResult = await checkoutAvailability.refresh()
     if (refreshResult.decision.status === "unverified") {
-      recordCheckoutStepResult({
-        checkoutMode,
-        status: "blocked",
-        stepName: "availability",
-      })
       throw new Error(
         getCartAvailabilityVerificationMessage(
           checkoutItems,
@@ -2528,50 +2372,35 @@ function CheckoutPage() {
     )
 
     if (refreshedAvailabilityMessage) {
-      recordCheckoutStepResult({
-        checkoutMode,
-        status: "blocked",
-        stepName: "availability",
-      })
       throw new Error(refreshedAvailabilityMessage)
     }
-    let authorization: Awaited<ReturnType<typeof authorizeCurrentCheckoutItems>>
-    try {
-      authorization = await authorizeCurrentCheckoutItems({
-        mode: checkoutMode === "order_first" ? "order_first" : "direct_payment",
-        reviewedItems: checkoutItems,
-        rawItems: rawCheckoutItems,
-        refreshedProducts: refreshResult.products,
-        readShippingOptions: (coordinates) =>
-          getShippingOptionsByCoordinates(coordinates, {
-            accountPubkey: draftOwnerIdentity,
-            authenticatedPubkey: signedBuyerPubkey,
-            shouldContinue: shouldContinueBuyerSession,
-          }),
-        rateInput,
-        ...(rateEvidenceRefresh
-          ? {
-              allowPricingRateEvidenceRefresh: true,
-              reviewedRateInput: rateEvidenceRefresh.reviewedRateInput,
-            }
-          : {}),
-        destination: {
-          country: shipping.country,
-          subdivision: shipping.state,
-          postalCode: shipping.postalCode,
-        },
-        accountPubkey: draftOwnerIdentity,
-        authenticatedPubkey: signedBuyerPubkey,
-        shouldContinue: shouldContinueBuyerSession,
-      })
-    } catch (error) {
-      recordCheckoutStepResult({
-        checkoutMode,
-        status: "blocked",
-        stepName: "availability",
-      })
-      throw error
-    }
+    const authorization = await authorizeCurrentCheckoutItems({
+      mode: checkoutMode === "order_first" ? "order_first" : "direct_payment",
+      reviewedItems: checkoutItems,
+      rawItems: rawCheckoutItems,
+      refreshedProducts: refreshResult.products,
+      readShippingOptions: (coordinates) =>
+        getShippingOptionsByCoordinates(coordinates, {
+          accountPubkey: draftOwnerIdentity,
+          authenticatedPubkey: signedBuyerPubkey,
+          shouldContinue: shouldContinueBuyerSession,
+        }),
+      rateInput,
+      ...(rateEvidenceRefresh
+        ? {
+            allowPricingRateEvidenceRefresh: true,
+            reviewedRateInput: rateEvidenceRefresh.reviewedRateInput,
+          }
+        : {}),
+      destination: {
+        country: shipping.country,
+        subdivision: shipping.state,
+        postalCode: shipping.postalCode,
+      },
+      accountPubkey: draftOwnerIdentity,
+      authenticatedPubkey: signedBuyerPubkey,
+      shouldContinue: shouldContinueBuyerSession,
+    })
     if (authorization.status === "changed") {
       if (rateEvidenceRefresh && rateInput && typeof rateInput === "object") {
         // Show the authenticated price that needs review on the next render.
@@ -2581,21 +2410,12 @@ function CheckoutPage() {
       void queryClient.invalidateQueries({
         queryKey: ["canonicalShippingOptions"],
       })
-      recordCheckoutStepResult({
-        checkoutMode,
-        status: "blocked",
-        stepName: "availability",
-      })
+
       throw new Error(
         "Product price or fulfillment details changed. Review the updated listing before ordering."
       )
     }
 
-    recordCheckoutStepResult({
-      checkoutMode,
-      status: "success",
-      stepName: "availability",
-    })
     // Keep the final signed product and shipping-option evidence together
     // with the rebuilt cart. The router must freeze its quote from this same
     // authorization read, not from another potentially changed relay view.
@@ -2658,11 +2478,6 @@ function CheckoutPage() {
       shippingErrors: errors,
     })
     if (blockingMessage) {
-      recordCheckoutStepResult({
-        checkoutMode: "checkout",
-        status: "blocked",
-        stepName: "shipping",
-      })
       setError(blockingMessage)
       const firstField = errors[0]?.field
       if (firstField) {
@@ -2683,11 +2498,7 @@ function CheckoutPage() {
       }
       return false
     }
-    recordCheckoutStepResult({
-      checkoutMode: "checkout",
-      status: "success",
-      stepName: "shipping",
-    })
+
     setError(null)
     return true
   }
@@ -3411,13 +3222,9 @@ function CheckoutPage() {
 
     let publishedOrderId: string | null = null
     let orderDelivered = false
-    let orderTotalSats = total
     let guestOrderIdToClear: string | null = null
     let startOrderPostAcceptanceWork: (() => Promise<unknown>) | null = null
-    let orderSubmitStarted = false
-    let checkoutRevalidationCompleted = false
-    let orderDeliveryStartedAt: number | null = null
-    const checkoutRevalidationStartedAt = performance.now()
+
     let purchaseClaim: CartPurchaseClaim | null = null
     let freePurchaseDelivery: EventMarketFreePurchaseDelivery | null = null
 
@@ -3483,22 +3290,8 @@ function CheckoutPage() {
         paymentInFlightRef.current = false
         return
       }
-      checkoutRevalidationCompleted = true
-      recordCheckoutStepResult({
-        checkoutMode: "order_first",
-        latencyMs: performance.now() - checkoutRevalidationStartedAt,
-        status: "success",
-        stepName: "checkout_revalidation",
-        amountSats: checkoutPricing.totalSats,
-      })
-      orderTotalSats = checkoutPricing.totalSats
-      orderSubmitStarted = true
-      recordCheckoutStepResult({
-        checkoutMode: "order_first",
-        status: "started",
-        stepName: "order_submit",
-        amountSats: orderTotalSats,
-      })
+
+      const orderTotalSats = checkoutPricing.totalSats
 
       const orderId =
         contactFreeActive && currentEventReceipt?.saved
@@ -3657,7 +3450,6 @@ function CheckoutPage() {
       }
 
       setStep("sending")
-      orderDeliveryStartedAt = performance.now()
 
       const delivery = await publishBuyerOrderMessage(
         rumor,
@@ -3686,19 +3478,7 @@ function CheckoutPage() {
           shouldContinue: shouldContinueBuyerSession,
         })
       }
-      recordCheckoutReferralOrderSubmitted(
-        selectedMerchant,
-        selectedPurchase?.id,
-        checkoutItems,
-        getCheckoutReferralScope()
-      )
-      recordCheckoutStepResult({
-        checkoutMode: "order_first",
-        latencyMs: performance.now() - orderDeliveryStartedAt,
-        status: "success",
-        stepName: "order_delivery",
-        amountSats: orderTotalSats,
-      })
+
       if (!shouldContinueBuyerSession()) {
         throw new Error(
           "Order delivery stopped after relay acceptance because the buyer session changed."
@@ -3707,16 +3487,7 @@ function CheckoutPage() {
 
       void startOrderPostAcceptanceWork?.()
       paymentInFlightRef.current = false
-      recordCheckoutSuccess({
-        amountSats: orderTotalSats,
-        checkoutMode: "order_first",
-        status: "order_sent",
-      })
-      recordCheckoutResult({
-        amountSats: orderTotalSats,
-        checkoutMode: "order_first",
-        status: "success",
-      })
+
       void navigate({
         to: "/orders",
         search: { order: orderId, counterparty: selectedMerchant },
@@ -3785,16 +3556,7 @@ function CheckoutPage() {
         if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
         await resolveCheckoutOrderAttempt(publishedOrderId).catch(() => {})
         paymentInFlightRef.current = false
-        recordCheckoutSuccess({
-          amountSats: orderTotalSats,
-          checkoutMode: "order_first",
-          status: "order_sent_local_tracking_failed",
-        })
-        recordCheckoutResult({
-          amountSats: orderTotalSats,
-          checkoutMode: "order_first",
-          status: "success_local_tracking_failed",
-        })
+
         void navigate({
           to: "/orders",
           search: { order: publishedOrderId, counterparty: selectedMerchant },
@@ -3803,37 +3565,6 @@ function CheckoutPage() {
         return
       }
 
-      if (!checkoutRevalidationCompleted) {
-        recordCheckoutStepResult({
-          amountSats: orderTotalSats,
-          checkoutMode: "order_first",
-          latencyMs: performance.now() - checkoutRevalidationStartedAt,
-          status: "failed",
-          stepName: "checkout_revalidation",
-        })
-      } else if (orderDeliveryStartedAt !== null && !orderDelivered) {
-        recordCheckoutStepResult({
-          amountSats: orderTotalSats,
-          checkoutMode: "order_first",
-          latencyMs: performance.now() - orderDeliveryStartedAt,
-          status: "failed",
-          stepName: "order_delivery",
-        })
-      }
-
-      if (orderSubmitStarted) {
-        recordCheckoutStepResult({
-          amountSats: orderTotalSats,
-          checkoutMode: "order_first",
-          status: "failed",
-          stepName: "order_submit",
-        })
-      }
-      recordCheckoutResult({
-        amountSats: orderTotalSats,
-        checkoutMode: "order_first",
-        status: orderSubmitStarted ? "failed" : "blocked",
-      })
       if (
         !orderDelivered &&
         (stagedOrder?.orderRelayDelivery || preserveExactOrderAttempt)
@@ -3996,31 +3727,17 @@ function CheckoutPage() {
     }
     const requestedCheckoutMode = selectedZapMode
     let publishedOrderId: string | null = null
-    let publishedTotalSats: number | null = null
+
     let orderDelivered = false
     let guestOrderIdToClear: string | null = null
     let startOrderPostAcceptanceWork: (() => Promise<unknown>) | null = null
-    let directPaymentStarted = false
-    let checkoutRevalidationCompleted = false
-    let orderDeliveryStartedAt: number | null = null
+
     let purchaseClaim: CartPurchaseClaim | null = null
 
     const webLnAvailableNow = hasWebLN()
     if (webLnAvailableNow !== weblnAvailable)
       setWeblnAvailable(webLnAvailableNow)
     if (merchantTrust.profileEvidenceState !== "available") {
-      recordCheckoutStepResult({
-        checkoutMode: requestedCheckoutMode,
-        rail: "lightning",
-        status: "blocked",
-        stepName: "direct_payment",
-      })
-      recordCheckoutResult({
-        amountSats: total,
-        checkoutMode: requestedCheckoutMode,
-        rail: "lightning",
-        status: "blocked",
-      })
       setError(
         merchantTrust.profileEvidenceState === "loading"
           ? "Wait while Conduit checks the merchant payment profile. You can still send the order first."
@@ -4029,18 +3746,6 @@ function CheckoutPage() {
       return
     }
     if (!merchantLud16) {
-      recordCheckoutStepResult({
-        checkoutMode: requestedCheckoutMode,
-        rail: "lightning",
-        status: "blocked",
-        stepName: "direct_payment",
-      })
-      recordCheckoutResult({
-        amountSats: total,
-        checkoutMode: requestedCheckoutMode,
-        rail: "lightning",
-        status: "blocked",
-      })
       setError("Merchant does not have a Lightning address.")
       return
     }
@@ -4051,7 +3756,6 @@ function CheckoutPage() {
 
     setError(null)
     setStep("sending")
-    const checkoutRevalidationStartedAt = performance.now()
 
     try {
       if (hasUnpricedCheckoutItems) {
@@ -4226,22 +3930,12 @@ function CheckoutPage() {
         selectedWalletRuntime?.status === "ready" &&
         !finalWalletPaymentConstraint
 
-      checkoutRevalidationCompleted = true
-      recordCheckoutStepResult({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode: requestedCheckoutMode,
-        latencyMs: performance.now() - checkoutRevalidationStartedAt,
-        rail: "lightning",
-        status: "success",
-        stepName: "checkout_revalidation",
-      })
-
       const orderId =
         contactFreeActive && currentEventReceipt?.saved
           ? currentEventReceipt.receipt.orderId
           : crypto.randomUUID()
       publishedOrderId = orderId
-      publishedTotalSats = checkoutPricing.totalSats
+
       const guestIdentity = connectedBuyerIdentity
         ? null
         : createSessionGuestOrderSigningIdentity(orderId, selectedMerchant)
@@ -4381,14 +4075,6 @@ function CheckoutPage() {
         shippingZoneEligibility: authoritativeShippingZoneEligibility,
       }
 
-      directPaymentStarted = true
-      recordCheckoutStepResult({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode: requestedCheckoutMode,
-        status: "started",
-        stepName: "direct_payment",
-      })
-      orderDeliveryStartedAt = performance.now()
       const orderDelivery = await publishBuyerOrderMessage(
         orderRumor,
         selectedMerchant,
@@ -4404,39 +4090,14 @@ function CheckoutPage() {
       startOrderPostAcceptanceWork =
         orderDelivery.startPostAcceptanceWork ?? null
       orderDelivered = true
-      recordCheckoutReferralOrderSubmitted(
-        selectedMerchant,
-        selectedPurchase?.id,
-        checkoutItems,
-        getCheckoutReferralScope()
-      )
+
       if (!shouldContinueBuyerSession()) {
         throw new Error(
           "Order delivery stopped after relay acceptance because the buyer session changed."
         )
       }
-      recordCheckoutStepResult({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode: requestedCheckoutMode,
-        latencyMs: performance.now() - orderDeliveryStartedAt,
-        rail: "lightning",
-        status: "success",
-        stepName: "order_delivery",
-      })
-      clearCheckoutShippingSession()
 
-      recordCheckoutSuccess({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode,
-        rail: "lightning",
-        status: "order_sent",
-      })
-      recordCheckoutResult({
-        amountSats: checkoutPricing.totalSats,
-        checkoutMode,
-        rail: "lightning",
-        status: "success",
-      })
+      clearCheckoutShippingSession()
 
       // Payment continues on the focused surface after the durable first ACK.
       // The non-interactive rails can run in the background; Spark's fee
@@ -4530,21 +4191,9 @@ function CheckoutPage() {
       // Once the order is delivered, later failures (like local lifecycle
       // persistence) must not return the buyer to a retry path that republishes.
       if (acceptedOrder && publishedOrderId) {
-        const deliveredAmountSats = publishedTotalSats ?? total
         if (purchaseClaim) await cart.consumePurchase(purchaseClaim)
         paymentInFlightRef.current = false
-        recordCheckoutSuccess({
-          amountSats: deliveredAmountSats,
-          checkoutMode: requestedCheckoutMode,
-          rail: "lightning",
-          status: "order_sent_local_tracking_failed",
-        })
-        recordCheckoutResult({
-          amountSats: deliveredAmountSats,
-          checkoutMode: requestedCheckoutMode,
-          rail: "lightning",
-          status: "success_local_tracking_failed",
-        })
+
         void navigate({
           to: "/orders",
           search: {
@@ -4557,42 +4206,9 @@ function CheckoutPage() {
         return
       }
 
-      if (!checkoutRevalidationCompleted) {
-        recordCheckoutStepResult({
-          amountSats: total,
-          checkoutMode: requestedCheckoutMode,
-          latencyMs: performance.now() - checkoutRevalidationStartedAt,
-          rail: "lightning",
-          status: "failed",
-          stepName: "checkout_revalidation",
-        })
-      } else if (orderDeliveryStartedAt !== null && !orderDelivered) {
-        recordCheckoutStepResult({
-          amountSats: publishedTotalSats ?? total,
-          checkoutMode: requestedCheckoutMode,
-          latencyMs: performance.now() - orderDeliveryStartedAt,
-          rail: "lightning",
-          status: "failed",
-          stepName: "order_delivery",
-        })
-      }
-
       // Failure before the order reached the merchant. No order was published,
       // so a full retry can't create a duplicate.
-      if (directPaymentStarted) {
-        recordCheckoutStepResult({
-          amountSats: total,
-          checkoutMode: requestedCheckoutMode,
-          status: "failed",
-          stepName: "direct_payment",
-        })
-      }
-      recordCheckoutResult({
-        amountSats: total,
-        checkoutMode: requestedCheckoutMode,
-        rail: "lightning",
-        status: directPaymentStarted ? "failed" : "blocked",
-      })
+
       if (
         !stagedOrder &&
         !preserveExactOrderAttempt &&

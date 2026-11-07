@@ -31,14 +31,6 @@ const transports = new Map([
   ["scripts/dev/seed_products.ts", "NDK"],
   ["scripts/publish_nip89_handlers.ts", "NDK"],
 ])
-// These declarations belong to another protocol or an offline, network-blocked census.
-// The exception is tied to the declaration, not every endpoint in the file.
-const endpointDeclarations = new Map([
-  [
-    "scripts/dev/measure_checkout_spark_merchant_lifecycle.ts",
-    new Set(["INBOX"]),
-  ],
-])
 
 export function inspectRelayPolicy(
   sources: readonly RelayPolicySource[]
@@ -128,12 +120,6 @@ export function inspectRelayPolicy(
         const placeholder =
           ts.isJsxAttribute(parent) &&
           parent.name.getText(source) === "placeholder"
-        const declaration =
-          ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
-            ? parent.name.text
-            : undefined
-        const owned =
-          declaration && endpointDeclarations.get(path)?.has(declaration)
         let loopback = false
         try {
           loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
@@ -142,12 +128,7 @@ export function inspectRelayPolicy(
         } catch {
           /* Invalid executable endpoints also fail ownership. */
         }
-        if (
-          !loopback &&
-          !placeholder &&
-          !owned &&
-          path !== "packages/core/src/config.ts"
-        )
+        if (!loopback && !placeholder && path !== "packages/core/src/config.ts")
           add(
             node,
             "endpoint-owner",
