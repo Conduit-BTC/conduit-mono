@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs"
-import { join, relative } from "node:path"
+import { basename, join, relative } from "node:path"
 
 // Product collection is retired. New analytics require a separately reviewed design.
 export const bannedPrivacyPackages = [
@@ -122,7 +122,7 @@ const retiredSourcePatterns: Array<[RegExp, string]> = [
     "analytics provider call",
   ],
   [
-    /VITE_(?:ENABLE_TELEMETRY|TELEMETRY_ALLOWED_HOSTS|POSTHOG_|PLAUSIBLE_)|COMMERCE_GMV_TELEMETRY_HMAC_SECRET/,
+    /(?:VITE_)?(?:ENABLE_TELEMETRY|TELEMETRY_ALLOWED_HOSTS|POSTHOG_|PLAUSIBLE_)|COMMERCE_GMV_TELEMETRY_HMAC_SECRET/,
     "retired analytics configuration",
   ],
   [
@@ -130,6 +130,8 @@ const retiredSourcePatterns: Array<[RegExp, string]> = [
     "retired analytics endpoint",
   ],
 ]
+
+const envFileNamePattern = /^\.env(?:\.|$)/
 
 export function checkTelemetryPolicy(repoRoot: string): string[] {
   const errors = checkPackageManifests(repoRoot)
@@ -148,6 +150,15 @@ export function checkTelemetryPolicy(repoRoot: string): string[] {
         if (pattern.test(source))
           errors.push(`${relative(repoRoot, path)}: ${reason}`)
       }
+    }
+  }
+  for (const path of walkFiles(repoRoot, (file) =>
+    envFileNamePattern.test(basename(file))
+  )) {
+    const source = readFileSync(path, "utf8")
+    for (const [pattern, reason] of retiredSourcePatterns) {
+      if (pattern.test(source))
+        errors.push(`${relative(repoRoot, path)}: ${reason}`)
     }
   }
   return errors
