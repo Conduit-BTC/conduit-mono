@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require_relative "check-action-pins"
+require "tmpdir"
+require "fileutils"
 
 sha = "a" * 40
 digest = "b" * 64
@@ -43,4 +45,25 @@ end
 rejected.each do |source|
   abort "Expected rejection: #{source}" if ActionPins.errors(source).empty?
 end
+
+# Exercise discovery in a real index: newly created files must be checked before
+# staging, while ignored dependency/build directories must stay excluded.
+Dir.mktmpdir("action-pins") do |directory|
+  Dir.chdir(directory) do
+    system("git", "init", "-q", exception: true)
+    FileUtils.mkdir_p([".github/workflows", "local-action", "ignored"])
+    File.write(".gitignore", "ignored/\n")
+    File.write(".github/workflows/ci.yml", accepted.first)
+    system("git", "add", ".github/workflows/ci.yml", exception: true)
+    File.write(".github/workflows/new.yaml", rejected.first)
+    File.write("local-action/action.yml", rejected[9])
+    File.write("ignored/action.yml", rejected[9])
+    files = ActionPins.files
+    expected = [".github/workflows/ci.yml", ".github/workflows/new.yaml", "local-action/action.yml"]
+    abort "Incorrect file discovery: #{files.inspect}" unless files.sort == expected.sort
+    invalid = files.select { |path| !ActionPins.errors(File.read(path)).empty? }
+    abort "Untracked mutable dependencies escaped detection" unless invalid.sort == expected.drop(1).sort
+  end
+end
 puts "Action pin regression checks passed (#{accepted.length} accepted, #{rejected.length} rejected)."
+puts "Tracked, untracked and ignored file discovery checks passed."

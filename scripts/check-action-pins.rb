@@ -62,10 +62,10 @@ module ActionPins
   end
 
   def self.files
-    tracked = IO.popen(["git", "ls-files", "-z"], &:read).split("\0")
+    paths = IO.popen(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], &:read).split("\0")
     raise "git ls-files failed" unless $?.success?
 
-    tracked.select do |path|
+    paths.uniq.select do |path|
       path.match?(%r{\A\.github/workflows/[^/]+\.ya?ml\z}) ||
         path.match?(%r{(?:\A|/)action\.ya?ml\z})
     end
