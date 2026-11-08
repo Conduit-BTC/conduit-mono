@@ -15,7 +15,6 @@ packages/*/package.json @ericfj2140 @JamesTsetsekas
 .env.example @ericfj2140 @JamesTsetsekas
 apps/*/.env.production @ericfj2140 @JamesTsetsekas
 scripts/smoke/** @ericfj2140 @JamesTsetsekas
-tests/agent-credential-boundary.test.ts @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/ProductLegal*.tsx @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/ProductLegalVersion.ts @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/ProductPrivacyPolicy.tsx @ericfj2140 @JamesTsetsekas
@@ -31,4 +30,3 @@ packages/core/src/protocol/session-signer.ts @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/LocalKeyImportForm.tsx @ericfj2140 @JamesTsetsekas
 packages/ui/src/components/SignerSwitch.tsx @ericfj2140 @JamesTsetsekas
 apps/*/src/components/SignerSwitch.tsx @ericfj2140 @JamesTsetsekas
-tests/local-key*.test.ts @ericfj2140 @JamesTsetsekas

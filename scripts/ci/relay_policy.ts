@@ -27,26 +27,9 @@ const transports = new Map([
   ["packages/core/src/protocol/relay-writer.ts", "WebSocket"],
   ["packages/core/src/protocol/relay-executor.ts", "WebSocket"],
   ["packages/core/src/protocol/ndk.ts", "NDK"],
-  ["apps/market/src/hooks/useLivePresenceCount.ts", "WebSocket"],
   ["scripts/smoke/nip42_protected_read.ts", "WebSocket"],
   ["scripts/dev/seed_products.ts", "NDK"],
   ["scripts/publish_nip89_handlers.ts", "NDK"],
-])
-// These declarations belong to another protocol or an offline, network-blocked census.
-// The exception is tied to the declaration, not every endpoint in the file.
-const endpointDeclarations = new Map([
-  [
-    "apps/market/src/lib/live-presence.ts",
-    new Set([
-      "PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL",
-      "PREVIOUS_PREVIEW_LIVE_PRESENCE_WEBSOCKET_URL",
-      "PRODUCTION_LIVE_PRESENCE_WEBSOCKET_URL",
-    ]),
-  ],
-  [
-    "scripts/dev/measure_checkout_spark_merchant_lifecycle.ts",
-    new Set(["INBOX"]),
-  ],
 ])
 
 export function inspectRelayPolicy(
@@ -137,12 +120,6 @@ export function inspectRelayPolicy(
         const placeholder =
           ts.isJsxAttribute(parent) &&
           parent.name.getText(source) === "placeholder"
-        const declaration =
-          ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)
-            ? parent.name.text
-            : undefined
-        const owned =
-          declaration && endpointDeclarations.get(path)?.has(declaration)
         let loopback = false
         try {
           loopback = ["localhost", "127.0.0.1", "[::1]"].includes(
@@ -151,12 +128,7 @@ export function inspectRelayPolicy(
         } catch {
           /* Invalid executable endpoints also fail ownership. */
         }
-        if (
-          !loopback &&
-          !placeholder &&
-          !owned &&
-          path !== "packages/core/src/config.ts"
-        )
+        if (!loopback && !placeholder && path !== "packages/core/src/config.ts")
           add(
             node,
             "endpoint-owner",

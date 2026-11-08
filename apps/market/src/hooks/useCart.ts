@@ -1,11 +1,7 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react"
-import {
-  getTelemetryCountBucket,
-  recordBrowserTelemetryEvent,
-} from "@conduit/core"
+
 import {
   getCartTotals,
-  selectCartItem,
   type CartItem,
   type CartItemIdentity,
   type CartItemInput,
@@ -34,40 +30,6 @@ export type { CartItem, CartItemIdentity, CartItemInput, CartPurchaseClaim }
 /** @deprecated Read only as the one-time version-2 migration source. */
 export const CART_STORAGE_KEY = LEGACY_CART_STORAGE_KEY
 
-type CartClearOptions = {
-  emitTelemetry?: boolean
-}
-
-function getCartTelemetryCount(items: CartItem[]): number {
-  return items.reduce((total, item) => total + item.quantity, 0)
-}
-
-function getCartTelemetryProductType(items: CartItem[]): string {
-  const formats = new Set(items.map((item) => item.format ?? "physical"))
-
-  if (formats.size === 0) return "unknown"
-  if (formats.size > 1) return "mixed"
-  return formats.values().next().value ?? "unknown"
-}
-
-function getRemovedCartItems(
-  before: readonly CartItem[],
-  after: readonly CartItem[]
-): CartItem[] {
-  const afterQuantities = new Map(
-    after.map((item) => [
-      item.cartLineId ?? JSON.stringify([item.merchantPubkey, item.productId]),
-      item.quantity,
-    ])
-  )
-  return before.flatMap((item) => {
-    const key =
-      item.cartLineId ?? JSON.stringify([item.merchantPubkey, item.productId])
-    const removed = item.quantity - (afterQuantities.get(key) ?? 0)
-    return removed > 0 ? [{ ...item, quantity: removed }] : []
-  })
-}
-
 export function useCart() {
   const snap = useSyncExternalStore(
     subscribeToCartRepository,
@@ -79,17 +41,7 @@ export function useCart() {
     if (item.stock === 0) return false
     const result = await addCartRepositoryItem(item, quantity)
     if (!result.changed) return false
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "cart_add",
-      properties: {
-        action: "add",
-        count_bucket: getTelemetryCountBucket(quantity),
-        product_type: item.format ?? "physical",
-        status: "success",
-        surface: "cart",
-      },
-    })
+
     return true
   }, [])
 
@@ -106,18 +58,6 @@ export function useCart() {
         currentStockEvidence
       )
       if (!result.changed) return
-      const item = selectCartItem(result.after, identity)
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "cart_add",
-        properties: {
-          action: "add",
-          count_bucket: getTelemetryCountBucket(requested),
-          product_type: item?.format ?? "physical",
-          status: "success",
-          surface: "cart",
-        },
-      })
     },
     []
   )
@@ -131,18 +71,7 @@ export function useCart() {
         requested
       )
       if (!result.changed) return false
-      const refreshed = selectCartItem(result.after, identity)
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "cart_add",
-        properties: {
-          action: "add",
-          count_bucket: getTelemetryCountBucket(requested),
-          product_type: refreshed?.format ?? "physical",
-          status: "success",
-          surface: "cart",
-        },
-      })
+
       return true
     },
     []
@@ -153,64 +82,16 @@ export function useCart() {
   }, [])
 
   const removeItem = useCallback(async (identity: CartItemIdentity) => {
-    const result = await removeCartRepositoryItem(identity)
-    const removedItems = getRemovedCartItems(result.before, result.after)
-    if (!result.changed || removedItems.length === 0) return
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "cart_remove",
-      properties: {
-        action: "remove",
-        count_bucket: getTelemetryCountBucket(
-          getCartTelemetryCount(removedItems)
-        ),
-        product_type: getCartTelemetryProductType(removedItems),
-        status: "success",
-        surface: "cart",
-      },
-    })
+    await removeCartRepositoryItem(identity)
   }, [])
 
   const clear = useCallback(async () => {
-    const result = await clearCartRepository()
-    if (!result.changed) return
-    const removedItems = getRemovedCartItems(result.before, result.after)
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "cart_clear",
-      properties: {
-        action: "clear_all",
-        count_bucket: getTelemetryCountBucket(
-          getCartTelemetryCount(removedItems)
-        ),
-        product_type: getCartTelemetryProductType(removedItems),
-        status: "success",
-        surface: "cart",
-      },
-    })
+    await clearCartRepository()
   }, [])
 
-  const clearPurchase = useCallback(
-    async (purchaseId: string, options: CartClearOptions = {}) => {
-      const result = await clearCartRepositoryPurchase(purchaseId)
-      if (!result.changed || options.emitTelemetry === false) return
-      const removedItems = getRemovedCartItems(result.before, result.after)
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "cart_clear",
-        properties: {
-          action: "clear_purchase",
-          count_bucket: getTelemetryCountBucket(
-            getCartTelemetryCount(removedItems)
-          ),
-          product_type: getCartTelemetryProductType(removedItems),
-          status: "success",
-          surface: "cart",
-        },
-      })
-    },
-    []
-  )
+  const clearPurchase = useCallback(async (purchaseId: string) => {
+    await clearCartRepositoryPurchase(purchaseId)
+  }, [])
 
   const totals = useMemo(() => getCartTotals(snap.items), [snap.items])
 

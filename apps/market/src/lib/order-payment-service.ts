@@ -16,7 +16,6 @@ import {
   fenceClaimedOrderLifecyclePaymentAuthority,
   generateId,
   hasEffectiveMerchantInvoiceReopenEvidence,
-  getAnonZapDraftTag,
   getOrderPublicZapSigner,
   getAccountSigner,
   type AccountSigner,
@@ -38,7 +37,6 @@ import {
   recordOrderPaymentPreparationFailure,
   renewOrderLifecyclePaymentClaim,
   renewOrderPaymentProofDeliveryClaim,
-  validateAnonZapRequestDraft,
   validateLightningInvoiceForPayment,
   waitForZapReceipt,
   type OrderLifecycle,
@@ -48,18 +46,16 @@ import {
   type SignedPublicNostrEvent,
   type WalletPaymentFeeApproval,
 } from "@conduit/core"
-import { reportCommerceGmvEstimate } from "@conduit/core/commerce-gmv"
+
 import {
   getCheckoutZapVisibility,
   recoverCheckoutZapTargetAddress,
   requestCheckoutLnurlInvoice,
-  type CheckoutPricingIntent,
   type CheckoutPaymentStage,
   type CheckoutZapMode,
   type CheckoutZapRequestDraft,
   type SignedCheckoutZapRequest,
 } from "./checkout-payment"
-import { prepareAnonZapCheckout } from "./anon-zap-signer"
 import {
   buildPaymentProofRumor,
   getDeliveryNotice,
@@ -154,8 +150,6 @@ const PROOF_DELIVERY_HEARTBEAT_MS = Math.floor(
 const ZAP_RECEIPT_RESCAN_DELAY_MS = 10_000
 const ZAP_RECEIPT_EXPIRY_GRACE_SECONDS = 10 * 60
 const DEFAULT_INVOICE_EXPIRY_SECONDS = 60 * 60
-const OPTIONAL_ANON_ZAP_AUTHORIZATION_TIMEOUT_MS = 4_000
-const OPTIONAL_ANON_ZAP_SIGNING_TIMEOUT_MS = 2_000
 
 /**
  * Build a payment-proof content payload directly (matches the permissive
@@ -294,11 +288,8 @@ export interface OrderPaymentContext {
   totalSats: number
   totalMsats: number
   items: Array<{ productAddress: string; quantity: number }>
+  /** Legacy caller data is ignored; anonymous retries only request private invoices. */
   preparedAnonZap?: SignedCheckoutZapRequest
-  anonZapPreparation?: {
-    localPricing: Extract<CheckoutPricingIntent, { status: "ok" }>
-    destination: { country: string; postalCode: string }
-  }
   paymentTarget: CheckoutPaymentTarget
   approveFee?: WalletPaymentFeeApproval
   formatSatsAmount?: (sats: number) => string
@@ -322,11 +313,9 @@ export interface OrderPaymentDependencies {
   checkOrderPaymentAddressForRenewal: typeof checkOrderPaymentAddressForRenewal
   claimOrderLifecycleUpdatedAddressPayment: typeof claimOrderLifecycleUpdatedAddressPayment
   claimExpiredOrderInvoiceForRetry: typeof claimExpiredOrderInvoiceForRetry
-  anonZapSignerPubkey: string | null
   fetchLnurlPayMetadata: typeof fetchLnurlPayMetadata
   requestCheckoutLnurlInvoice: typeof requestCheckoutLnurlInvoice
   payCheckoutInvoice: typeof payCheckoutInvoice
-  prepareAnonZapCheckout: typeof prepareAnonZapCheckout
   claimOrderLifecyclePayment: typeof claimOrderLifecyclePayment
   claimOrderLifecyclePrivateFallbackPayment: typeof claimOrderLifecyclePrivateFallbackPayment
   claimOrderPaymentProofDelivery: typeof claimOrderPaymentProofDelivery
@@ -359,11 +348,9 @@ const defaultOrderPaymentDependencies: OrderPaymentDependencies = {
   checkOrderPaymentAddressForRenewal,
   claimOrderLifecycleUpdatedAddressPayment,
   claimExpiredOrderInvoiceForRetry,
-  anonZapSignerPubkey: normalizePubkey(config.anonZapSignerPubkey),
   fetchLnurlPayMetadata,
   requestCheckoutLnurlInvoice,
   payCheckoutInvoice,
-  prepareAnonZapCheckout,
   claimOrderLifecyclePayment,
   claimOrderLifecyclePrivateFallbackPayment,
   claimOrderPaymentProofDelivery,
@@ -413,60 +400,6 @@ const defaultOrderReceiptObservationDependencies: OrderReceiptObservationDepende
     savePaymentAttempt,
     deliverReceiptLinkedProof,
   }
-
-function requirePreparedAnonZap(
-  ctx: Pick<
-    OrderPaymentContext,
-    "merchantPubkey" | "totalMsats" | "zapContent" | "preparedAnonZap"
-  >,
-  expectedSignerPubkey: string | null,
-  expectedLnurl: string
-): SignedCheckoutZapRequest {
-  const prepared = ctx.preparedAnonZap
-  if (!prepared || !prepared.rawEvent) {
-    throw new Error(
-      "Anonymous zap was not prepared for this order. No public invoice was requested."
-    )
-  }
-
-  const rawEvent = prepared.rawEvent as SignedPublicNostrEvent
-  if (!isValidSignedPublicNostrEvent(rawEvent)) {
-    throw new Error(
-      "Prepared anonymous zap does not match this order. No payment was attempted."
-    )
-  }
-  const draft: CheckoutZapRequestDraft = {
-    kind: rawEvent.kind,
-    createdAt: rawEvent.created_at,
-    content: rawEvent.content,
-    tags: rawEvent.tags.map((tag) => [...tag]),
-  }
-  const draftValidation = validateAnonZapRequestDraft(draft)
-  const merchantPubkey = normalizePubkey(ctx.merchantPubkey)
-  const eventMerchantPubkey = normalizePubkey(
-    getAnonZapDraftTag(draft, "p")?.[1]
-  )
-  const amountMsats = Number(getAnonZapDraftTag(draft, "amount")?.[1])
-  const lnurl = getAnonZapDraftTag(draft, "lnurl")?.[1]
-
-  if (
-    prepared.id !== rawEvent.id ||
-    !draftValidation.ok ||
-    !expectedSignerPubkey ||
-    rawEvent.pubkey !== expectedSignerPubkey ||
-    !merchantPubkey ||
-    eventMerchantPubkey !== merchantPubkey ||
-    amountMsats !== ctx.totalMsats ||
-    lnurl !== expectedLnurl ||
-    rawEvent.content !== ctx.zapContent
-  ) {
-    throw new Error(
-      "Prepared anonymous zap does not match this order. No payment was attempted."
-    )
-  }
-
-  return prepared
-}
 
 type Listener = (state: OrderPaymentRuntimeState) => void
 
@@ -679,13 +612,7 @@ function emit(orderId: string, partial: Partial<OrderPaymentRuntimeState>) {
     } satisfies OrderPaymentRuntimeState)
   const next: OrderPaymentRuntimeState = { ...prev, ...partial, orderId }
   runtimeStates.set(orderId, next)
-  if (next.lifecycle?.paymentStatus === "paid") {
-    void reportCommerceGmvEstimate({
-      orderId: next.lifecycle.orderId,
-      orderCreatedAt: next.lifecycle.createdAt,
-      invoicedAmountSats: next.lifecycle.totalSats,
-    })
-  }
+
   const set = listeners.get(orderId)
   if (set) for (const fn of set) fn(next)
 }
@@ -1747,60 +1674,6 @@ async function runOrderPaymentInternal(
       }
       const providerReceiptPubkey = normalizePubkey(lnurlMeta.nostrPubkey)
 
-      if (
-        publicZapSigner === "anon" &&
-        !ctx.preparedAnonZap &&
-        ctx.anonZapPreparation
-      ) {
-        await assertPaymentAuthority()
-        let preparation: Awaited<
-          ReturnType<typeof dependencies.prepareAnonZapCheckout>
-        > | null = null
-        try {
-          preparation = await dependencies.prepareAnonZapCheckout({
-            context: {
-              merchantPubkey: ctx.merchantPubkey,
-              items: ctx.items,
-            },
-            localPricing: ctx.anonZapPreparation.localPricing,
-            lnurlMetadata: lnurlMeta,
-            destination: ctx.anonZapPreparation.destination,
-            options: {
-              fetchImpl: async (...args) => {
-                await assertPaymentAuthority()
-                return fetch(...args)
-              },
-              authorizationTimeoutMs:
-                OPTIONAL_ANON_ZAP_AUTHORIZATION_TIMEOUT_MS,
-              signingTimeoutMs: OPTIONAL_ANON_ZAP_SIGNING_TIMEOUT_MS,
-            },
-          })
-        } catch {
-          // Preparation is receipt-only. Continuing without a prepared event
-          // intentionally selects the validated private-invoice fallback below.
-        }
-        await assertPaymentAuthority()
-        if (preparation?.status === "review_required") {
-          const previousAmount = ctx.formatSatsAmount
-            ? ctx.formatSatsAmount(ctx.totalSats)
-            : ctx.totalSats.toLocaleString()
-          const updatedAmount = ctx.formatSatsAmount
-            ? ctx.formatSatsAmount(preparation.checkoutPricing.totalSats)
-            : preparation.checkoutPricing.totalSats.toLocaleString()
-          const fallbackUnit = ctx.formatSatsAmount ? "" : " sats"
-          throw new Error(
-            `Current signed listing pricing changed from ${previousAmount} to ${updatedAmount}${fallbackUnit}. No invoice was requested; review the updated order total before paying.`
-          )
-        }
-        if (preparation?.status === "prepared") {
-          ctx = {
-            ...ctx,
-            zapContent: preparation.prepared.rawEvent.content,
-            preparedAnonZap: preparation.prepared,
-          }
-        }
-      }
-
       const requestInvoice = async (requestedVisibility: typeof visibility) => {
         await patchClaim({}, { stage: "requesting_invoice" })
         await assertPaymentAuthority()
@@ -1841,13 +1714,6 @@ async function runOrderPaymentInternal(
               draft: CheckoutZapRequestDraft
             ): Promise<SignedCheckoutZapRequest> => {
               await assertPaymentAuthority()
-              if (publicZapSigner === "anon") {
-                return requirePreparedAnonZap(
-                  ctx,
-                  dependencies.anonZapSignerPubkey,
-                  lnurlMeta.lnurl
-                )
-              }
               if (publicZapSigner !== "shopper") {
                 throw new Error("Public zap signer was not selected.")
               }
@@ -1876,12 +1742,10 @@ async function runOrderPaymentInternal(
         return { request, validation }
       }
 
+      // Persisted anonymous attempts can only create a private invoice now.
+      // Existing signed receipts remain readable by the historical proof path.
       let publicZapFallback =
-        visibility === "public_zap" &&
-        publicZapSigner === "anon" &&
-        (!lnurlMeta.allowsNostr ||
-          !providerReceiptPubkey ||
-          !ctx.preparedAnonZap)
+        visibility === "public_zap" && publicZapSigner === "anon"
       let validatedInvoice: Awaited<
         ReturnType<typeof requestValidatedInvoice>
       > | null = null

@@ -1,6 +1,15 @@
-import { recordBrowserTelemetryEvent } from "../telemetry"
-import { checkoutSparkOperationSteps } from "../telemetry-contract"
-import { getTelemetryLatencyBucket } from "../telemetry-event-properties"
+/** Fixed operational labels; no order, destination or provider identity. */
+export const checkoutSparkOperationSteps = [
+  "router_preparation",
+  "router_funding_preparation",
+  "router_recipient_profiles",
+  "router_recipient_metadata",
+  "router_funding_observation",
+  "router_commerce_verification",
+  "router_outgoing_observation",
+  "router_native_commitment",
+  "router_merchant_recovery",
+] as const
 
 export type CheckoutSparkOperationStep =
   (typeof checkoutSparkOperationSteps)[number]
@@ -9,7 +18,7 @@ export interface CheckoutSparkPerformanceObservation {
   step: CheckoutSparkOperationStep
   /** Operation return/rejection, never a payment settlement assertion. */
   status: "success" | "failure"
-  /** Transient, bounded diagnostic duration; telemetry receives a bucket only. */
+  /** Transient, bounded diagnostic duration; local observer only. */
   durationMs: number | null
   count: 1
 }
@@ -57,16 +66,6 @@ export async function observeCheckoutSparkOperation<T>(input: {
       } catch {
         // An optional diagnostic consumer cannot affect financial execution.
       }
-      recordBrowserTelemetryEvent({
-        app: input.app,
-        eventName: "checkout_router_operation_result",
-        properties: {
-          step: input.step,
-          status,
-          latency_bucket: getTelemetryLatencyBucket(durationMs),
-          count_bucket: "1",
-        },
-      })
     }
   }
 }

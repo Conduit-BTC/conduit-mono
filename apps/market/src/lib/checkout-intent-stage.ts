@@ -1,8 +1,5 @@
 import {
   parseCheckoutIntentFragment,
-  recordBrowserTelemetryEvent,
-  resolveCheckoutAttribution,
-  checkoutAttributionTelemetryProperties,
   type CheckoutIntentParseResult,
 } from "@conduit/core"
 
@@ -15,7 +12,6 @@ export type StagedCheckoutIntent = {
   id: string
   createdAt: number
   result: CheckoutIntentParseResult
-  reportedStages?: string[]
 }
 
 // Failed writes/removals must never revive an older persisted purchase.
@@ -70,50 +66,7 @@ export function getStagedCheckoutIntent(): StagedCheckoutIntent | null {
   return candidate
 }
 
-export type CheckoutHandoffStage =
-  | "arrival"
-  | "products_resolved"
-  | "checkout_ready"
-  | "cart_conflict"
-  | "retryable_lookup_failure"
-  | "rejected_link"
-  | "order_submitted"
-
-export function recordCheckoutHandoffStage(
-  stage: StagedCheckoutIntent,
-  handoffStage: CheckoutHandoffStage
-): void {
-  const current = getStagedCheckoutIntent()
-  if (
-    !current ||
-    current.id !== stage.id ||
-    current.reportedStages?.includes(handoffStage)
-  )
-    return
-  save({
-    ...current,
-    reportedStages: [...(current.reportedStages ?? []), handoffStage],
-  })
-  const attribution =
-    current.result.status === "valid"
-      ? resolveCheckoutAttribution(current.result.intent)
-      : undefined
-  recordBrowserTelemetryEvent({
-    app: "market",
-    eventName: "checkout_handoff_result",
-    properties: {
-      surface: "checkout",
-      handoff_stage: handoffStage,
-      mode:
-        current.result.status === "valid"
-          ? current.result.intent.mode
-          : "unknown",
-      ...checkoutAttributionTelemetryProperties(attribution),
-    },
-  })
-}
-
-/** Called before the Market provider tree or browser telemetry can observe the URL. */
+/** Called before the Market provider tree can observe the URL. */
 export function captureCheckoutIntentFragment(): void {
   if (window.location.pathname !== "/checkout" || !window.location.hash) return
   clearCheckoutReferral()
@@ -131,9 +84,5 @@ export function captureCheckoutIntentFragment(): void {
     window.history.state,
     "",
     window.location.pathname
-  )
-  recordCheckoutHandoffStage(
-    stage,
-    result.status === "valid" ? "arrival" : "rejected_link"
   )
 }

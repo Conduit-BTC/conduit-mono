@@ -1,4 +1,1 @@
-export {
-  onRequest,
-  onRequestGet,
-} from "../../apps/market/functions/api/anon-zap-config"
+export { onRequest } from "../../apps/market/functions/api/anon-zap-config"

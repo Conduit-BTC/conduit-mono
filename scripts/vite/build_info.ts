@@ -139,9 +139,6 @@ export function createConduitBuildContract(appDir: string): {
     "import.meta.env.VITE_BREEZ_LIGHTNING_ADDRESS_ENABLED": JSON.stringify(
       profile.publicFeatures.breezLightningAddressEnabled ? "true" : "false"
     ),
-    "import.meta.env.VITE_LIVE_PRESENCE_ENABLED": JSON.stringify(
-      profile.publicFeatures.livePresenceEnabled ? "true" : "false"
-    ),
     "import.meta.env.VITE_QUANTUM_ROUTER_ENABLED": JSON.stringify(
       profile.publicFeatures.quantumRouterEnabled ? "true" : "false"
     ),

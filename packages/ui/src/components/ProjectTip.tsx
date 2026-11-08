@@ -100,11 +100,12 @@ export function ProjectTip({
   const receiptConfirmed =
     open &&
     tip !== null &&
+    tip.zapRequestId !== null &&
     (phase === "manual" || phase === "ambiguous") &&
     confirmedZapRequestId === tip.zapRequestId
   const celebrationId =
     open && tip && (phase === "thanks" || receiptConfirmed)
-      ? tip.zapRequestId
+      ? (tip.zapRequestId ?? tip.invoice)
       : null
   const lightningPlaying =
     celebrationId !== null && celebrationId !== completedCelebrationId
@@ -142,7 +143,8 @@ export function ProjectTip({
       if (operationRef.current !== operation) return
       setTip(prepared)
       if (!payInvoice) {
-        if (openRef.current) onReceiptWatchChange?.(prepared)
+        if (openRef.current && prepared.zapRequestId)
+          onReceiptWatchChange?.(prepared)
         setPhase("manual")
         return
       }
@@ -162,11 +164,13 @@ export function ProjectTip({
         onReceiptWatchChange?.(null)
         setPhase("thanks")
       } else if (result.status === "ambiguous") {
-        if (openRef.current) onReceiptWatchChange?.(prepared)
+        if (openRef.current && prepared.zapRequestId)
+          onReceiptWatchChange?.(prepared)
         setError(result.reason)
         setPhase("ambiguous")
       } else {
-        if (openRef.current) onReceiptWatchChange?.(prepared)
+        if (openRef.current && prepared.zapRequestId)
+          onReceiptWatchChange?.(prepared)
         setError(result.reason ?? null)
         setPhase("manual")
       }
@@ -231,7 +235,10 @@ export function ProjectTip({
           openRef.current = true
           setOpen(true)
           onOpenChange?.(true)
-          if (tip && (phase === "manual" || phase === "ambiguous")) {
+          if (
+            tip?.zapRequestId &&
+            (phase === "manual" || phase === "ambiguous")
+          ) {
             onReceiptWatchChange?.(tip)
           }
         }}
@@ -413,7 +420,7 @@ export function ProjectTip({
                   className="text-sm text-[var(--text-secondary)]"
                 >
                   {phase === "preparing"
-                    ? "Preparing your zap invoice…"
+                    ? "Preparing your Lightning invoice…"
                     : "Sending payment through your connected wallet…"}
                 </p>
               )}
@@ -424,15 +431,17 @@ export function ProjectTip({
               )}
               {phase === "ambiguous" && (
                 <p className="text-sm text-[var(--text-secondary)]">
-                  Check your wallet before trying another payment path. We’ll
-                  keep looking for the matching zap receipt.
+                  {tip?.zapRequestId
+                    ? "Check your wallet before trying another payment path. We’ll keep looking for the matching zap receipt."
+                    : "Check your wallet for payment confirmation before trying again."}
                 </p>
               )}
               {phase === "manual" && tip && bolt11 && (
                 <div className="space-y-3">
                   <p className="text-sm text-[var(--text-secondary)]">
-                    Invoice ready. Payment is not yet confirmed. We’ll show a
-                    thank-you when its matching zap receipt appears.
+                    {tip.zapRequestId
+                      ? "Invoice ready. Payment is not yet confirmed. We’ll show a thank-you when its matching zap receipt appears."
+                      : "Invoice ready. Pay with your Lightning wallet and check that wallet for confirmation. No public zap message will be posted."}
                   </p>
                   {invoiceValid ? (
                     <>
@@ -551,20 +560,21 @@ export function ProjectTip({
               )}
               <div className="space-y-1 text-xs text-[var(--text-secondary)]">
                 <p>
-                  A public zap to Conduit · Signed{" "}
-                  {anonymous
-                    ? "as Anon Conduit Shopper"
-                    : "with your Nostr account"}
+                  {(tip ? tip.zapRequestId === null : anonymous)
+                    ? "A Lightning tip to Conduit. No public zap message is posted."
+                    : "A public zap to Conduit · Signed with your Nostr account"}
                 </p>
-                <details>
-                  <summary className="w-fit cursor-pointer py-1 text-primary-400 underline-offset-4 hover:underline">
-                    What gets posted?
-                  </summary>
-                  <p className="text-pretty">
-                    Your public note: “{PROJECT_TIP_MESSAGE}” Tips are separate
-                    from orders.
-                  </p>
-                </details>
+                {!(tip ? tip.zapRequestId === null : anonymous) && (
+                  <details>
+                    <summary className="w-fit cursor-pointer py-1 text-primary-400 underline-offset-4 hover:underline">
+                      What gets posted?
+                    </summary>
+                    <p className="text-pretty">
+                      Your public note: “{PROJECT_TIP_MESSAGE}” Tips are
+                      separate from orders.
+                    </p>
+                  </details>
+                )}
               </div>
             </div>
           )}

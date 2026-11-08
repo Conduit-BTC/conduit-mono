@@ -36,11 +36,9 @@ import {
   formatNpub,
   getCommerceReadRelayUrls,
   getProfileName,
-  getTelemetryCountBucket,
   isCommerceReadIncomplete,
   publishContactListUpdate,
   pubkeyToNpub,
-  recordBrowserTelemetryEvent,
   useAuth,
 } from "@conduit/core"
 import { SignerSwitch } from "../components/SignerSwitch"
@@ -61,7 +59,6 @@ import {
 } from "../components/ProductGridCard"
 import { ResolvedProductGridCard } from "../components/ResolvedProductGridCard"
 import { CopyButton } from "../components/CopyButton"
-import { LivePresenceIndicator } from "../components/LivePresenceIndicator"
 import {
   MerchantAvatarFallback,
   Nip05TrustIndicator,
@@ -72,7 +69,6 @@ import { ProfileBanner } from "../components/ProfileBanner"
 import { StorefrontFollowButton } from "../components/StorefrontFollowButton"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import { useMerchantTrustContext } from "../hooks/useMerchantTrustContext"
-import { useLivePresenceCount } from "../hooks/useLivePresenceCount"
 import { useProgressiveProducts } from "../hooks/useProgressiveProducts"
 import { filterProductsByFacets, getCategoryFacetOptions } from "../lib/facets"
 import {
@@ -209,10 +205,6 @@ function PublicIdentityPage() {
   )
   const storeProducts = productsQuery.products
   const productCount = storeProducts.length
-  const storePresenceCount = useLivePresenceCount({
-    canonicalId: productCount > 0 ? pubkey : null,
-    pageType: "store",
-  })
   const merchantTrust = useMerchantTrustContext({
     merchantPubkey: pubkey || null,
     listingCount: productCount > 0 ? productCount : undefined,
@@ -273,28 +265,6 @@ function PublicIdentityPage() {
       })
     },
     [navigate]
-  )
-
-  const recordStorefrontSearch = useCallback(
-    (query: string, tags: string[] = selectedTags) => {
-      const nextQuery = query || undefined
-      const resultCount = filterProductsByFacets(storeProducts, {
-        q: nextQuery,
-        tags,
-      }).length
-
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "market_browse_action",
-        properties: {
-          action: nextQuery ? "storefront_search" : "storefront_search_clear",
-          result_count_bucket: getTelemetryCountBucket(resultCount),
-          status: "success",
-          surface: "storefront",
-        },
-      })
-    },
-    [selectedTags, storeProducts]
   )
 
   const followControl = deriveStorefrontFollowControl({
@@ -392,26 +362,15 @@ function PublicIdentityPage() {
     if (normalizedSearch.length > 0 && normalizedSearch.length < 3) return
 
     const timeoutId = window.setTimeout(() => {
-      if ((normalizedSearch || undefined) !== search.q) {
-        recordStorefrontSearch(normalizedSearch)
-      }
       updateSearch({ q: normalizedSearch || undefined })
     }, 260)
 
     return () => window.clearTimeout(timeoutId)
-  }, [
-    normalizedSearch,
-    recordStorefrontSearch,
-    search.q,
-    searchDirty,
-    updateSearch,
-  ])
+  }, [normalizedSearch, search.q, searchDirty, updateSearch])
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
-    if ((normalizedSearch || undefined) !== search.q) {
-      recordStorefrontSearch(normalizedSearch)
-    }
+
     updateSearch({ q: normalizedSearch || undefined })
     setSearchDirty(false)
   }
@@ -635,13 +594,6 @@ function PublicIdentityPage() {
                       </span>
                     </span>
                   </div>
-                  {productCount > 0 && (
-                    <LivePresenceIndicator
-                      className="mt-3"
-                      count={storePresenceCount}
-                      pageType="store"
-                    />
-                  )}
                 </div>
               </div>
 
@@ -996,7 +948,6 @@ function PublicIdentityPage() {
                     <Button
                       variant="outline"
                       onClick={() => {
-                        recordStorefrontSearch("", [])
                         setLocalSearch("")
                         setSearchDirty(false)
                         updateSearch({

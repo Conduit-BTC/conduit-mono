@@ -6,13 +6,13 @@
   "scripts": {
     "dev": "vite",
     "routes:gen": "bun scripts/generate-routes.ts",
-    "build": "bun run routes:gen && tsc && vite build",
+    "build": "bun run routes:gen && bun ../../node_modules/@typescript/native/bin/tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "bun run routes:gen && tsc --noEmit",
+    "typecheck": "bun run routes:gen && bun ../../node_modules/@typescript/native/bin/tsc --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\""
   },
   "dependencies": {
-    "@buildonspark/spark-sdk": "0.13.0",
+    "@buildonspark/spark-sdk": "0.14.0",
     "@conduit/core": "workspace:*",
     "@conduit/ui": "workspace:*",
     "@nostr-dev-kit/ndk": "^3.0.3",
@@ -20,8 +20,8 @@
     "@tanstack/react-query": "^5.105.3",
     "@tanstack/react-router": "^1.170.46",
     "lucide-react": "^1.67.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@tanstack/react-query-devtools": "^5.105.3",
@@ -30,12 +30,12 @@
     "@tanstack/router-generator": "^1.167.46",
     "@tanstack/router-plugin": "^1.168.48",
     "@tailwindcss/postcss": "^4.3.4",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react-swc": "^4.3.3",
     "postcss": "^8.5.32",
     "tailwindcss": "^4.3.4",
-    "typescript": "^6.0.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "vite": "^8.3.5"
   }
 }
