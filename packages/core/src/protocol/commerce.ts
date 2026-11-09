@@ -7928,11 +7928,15 @@ export async function getProfiles(
       ...query,
       pubkeys: missing,
     })
-    // Product delivery sources can help display-profile discovery, but are
-    // not evidence of where the merchant publishes their payment profile.
-    // Under a bounded payment read they must not crowd out author write relays.
+    // Ordinary display reads use current caller hints, not the accumulated
+    // delivery sources of unrelated cached products. Strict profile discovery
+    // remains unchanged; product provenance never authorizes payment profiles.
+    const ordinaryDisplayRead =
+      !query.requireCompleteEvidence &&
+      query.evidenceScope !== "payment" &&
+      query.evidenceScope !== "profile_edit"
     const sourceRelayHints =
-      query.evidenceScope === "payment"
+      query.evidenceScope === "payment" || ordinaryDisplayRead
         ? profileQueryRelayHints
         : mergeContextualRelayHints(
             profileQueryRelayHints,
