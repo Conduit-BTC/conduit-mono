@@ -26,6 +26,7 @@ import {
   subscribeLocalProductRevisionChanges,
 } from "../src/protocol/commerce"
 import {
+  __setProductCacheTestOverrides,
   getCachedProductRecords,
   getCachedExactProductRecords,
   retainObservedProductDeletions,
@@ -136,6 +137,13 @@ describe("commerce product cache owner", () => {
       (await getCachedProductRecords(author, { includeStale: true }))[0]
         ?.eventId
     ).toBe(event.id)
+    // Direct owner fixtures follow the same incremental override convention.
+    __setProductCacheTestOverrides({
+      getCachedProducts: async () => [stale],
+      now: clock,
+    })
+    __setProductCacheTestOverrides({ now: () => 24 * 60 * 60_000 })
+    expect(await getCachedProductRecords(author)).toEqual([])
   })
 
   it("retains the stronger stored revision while merging delivery provenance", async () => {

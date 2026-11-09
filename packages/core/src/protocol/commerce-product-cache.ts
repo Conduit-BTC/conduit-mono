@@ -66,7 +66,7 @@ const volatileProductTombstones = new Map<string, CachedProductTombstone>()
 export function __setProductCacheTestOverrides(
   overrides: ProductCacheTestOverrides
 ): void {
-  productCacheTestOverrides = overrides
+  productCacheTestOverrides = { ...productCacheTestOverrides, ...overrides }
 }
 
 export function __resetProductCacheTestOverrides(): void {
