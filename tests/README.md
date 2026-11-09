@@ -24,6 +24,11 @@ visibility, exact pickup exceptions, shared family context, revision/deletion
 reconciliation and deterministic source merging. These use projected records;
 they do not establish signature admission, relay delivery or checkout authority.
 
+`commerce-product-cache.test.ts` adds six local cache cases using ordinary signed
+listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
+revision/provenance retention, failed-save observers, deletion retry/concurrency
+and exact-family reads—not public relay delivery or browser cross-tab behavior.
+
 `guest-project-tip.test.ts` adds seven payment-boundary cases for ordinary guest
 Lightning tips, including fixed recipient, amount, network, expiry and signature
 checks. `retired-anon-zap.test.ts` adds five cases verifying that retired APIs
