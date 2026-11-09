@@ -410,7 +410,10 @@ export async function prepareMerchantCheckoutSparkSettledPayout(
         receive,
         transfer,
       })
-      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+      await assertCheckoutSparkMerchantPricingAuthority({
+        plan,
+        fundingProof: proof,
+      })
       assertEligible()
       current = await load()
       const workflowStore = {

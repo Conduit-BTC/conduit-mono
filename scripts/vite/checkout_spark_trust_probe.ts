@@ -1,4 +1,5 @@
 import { config } from "../../packages/core/src/config"
+import type { CheckoutSparkPricingPolicy } from "../../packages/core/src/checkout-spark-deployment-trust"
 import {
   getCheckoutSparkPricingAuthorityTrust,
   getCheckoutSparkPricingConfiguration,
@@ -9,11 +10,13 @@ export function readCompiledCheckoutSparkPublicTrust(): {
   receiverContracts: string
   pricingUrl: string
   pricingPublicKeys: string
+  pricingPolicy: CheckoutSparkPricingPolicy
 } {
   const keys = getCheckoutSparkPricingAuthorityTrust()
   return {
     receiverContracts: config.checkoutSparkReceiverContracts ?? "",
     pricingUrl: getCheckoutSparkPricingConfiguration()?.url ?? "",
+    pricingPolicy: config.checkoutSparkPricingPolicy,
     pricingPublicKeys: keys
       ? [...keys]
           .sort(([a], [b]) => a.localeCompare(b))

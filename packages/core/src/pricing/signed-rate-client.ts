@@ -24,7 +24,7 @@ const REFRESH_AFTER_MS = 4 * 60_000
 const MAX_CACHE_ENTRIES = 8
 
 export interface CheckoutSparkAuthorizedPricing {
-  readonly pricing: CheckoutSparkCommercePricing
+  readonly pricing: Extract<CheckoutSparkCommercePricing, { version: 1 }>
   readonly pricingAuthority: CheckoutSparkPricingRateAttestation
 }
 
@@ -142,8 +142,11 @@ async function readSnapshot(
       !("pricingAuthority" in result)
     )
       throw new CheckoutSparkAuthorizedPricingUnavailable("unavailable")
+    const pricing = freezeCheckoutSparkCommercePricing(result.pricing)
+    if (pricing.version !== 1)
+      throw new CheckoutSparkAuthorizedPricingUnavailable("unavailable")
     const snapshot = Object.freeze({
-      pricing: freezeCheckoutSparkCommercePricing(result.pricing),
+      pricing,
       pricingAuthority: freezeCheckoutSparkPricingRateAttestation(
         result.pricingAuthority
       ),

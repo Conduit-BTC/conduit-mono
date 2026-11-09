@@ -1,18 +1,35 @@
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
 
+export type CheckoutSparkPricingPolicy =
+  "signed-v1" | "invoice-historical-1pct-v1"
+
+/** Historical pricing requires an explicit rollout choice, never a missing URL. */
+export function resolveCheckoutSparkPricingPolicy(
+  value: unknown
+): CheckoutSparkPricingPolicy {
+  return value === "invoice-historical-1pct-v1" ? value : "signed-v1"
+}
+
 export interface CheckoutSparkPublicTrustConfiguration {
   readonly receiverContracts: string
   readonly pricingUrl: string
   /** Includes retained historical verification keys, not only a live key. */
   readonly pricingPublicKeys: string
+  readonly pricingPolicy?: string
 }
 
-const EMPTY_TRUST: CheckoutSparkPublicTrustConfiguration = Object.freeze({
-  receiverContracts: "",
-  pricingUrl: "",
-  pricingPublicKeys: "",
-})
+export interface ResolvedCheckoutSparkPublicTrustConfiguration extends CheckoutSparkPublicTrustConfiguration {
+  readonly pricingPolicy: CheckoutSparkPricingPolicy
+}
+
+const EMPTY_TRUST: ResolvedCheckoutSparkPublicTrustConfiguration =
+  Object.freeze({
+    receiverContracts: "",
+    pricingUrl: "",
+    pricingPublicKeys: "",
+    pricingPolicy: "signed-v1",
+  })
 
 export function checkoutSparkPublicTrustDigest(
   trust: CheckoutSparkPublicTrustConfiguration
@@ -25,6 +42,11 @@ export function checkoutSparkPublicTrustDigest(
           trust.receiverContracts.trim(),
           trust.pricingUrl.trim(),
           trust.pricingPublicKeys.trim(),
+          // Keep historical signed-v1 digests byte-identical.
+          ...(resolveCheckoutSparkPricingPolicy(trust.pricingPolicy) ===
+          "signed-v1"
+            ? []
+            : [["pricing_policy", "invoice-historical-1pct-v1"]]),
         ])
       )
     )
@@ -41,11 +63,14 @@ export function resolveCheckoutSparkPublicTrust(input: {
   deploymentProfile: string
   compiledDigest: string
   configuration: CheckoutSparkPublicTrustConfiguration
-}): CheckoutSparkPublicTrustConfiguration {
+}): ResolvedCheckoutSparkPublicTrustConfiguration {
   const configuration = Object.freeze({
     receiverContracts: input.configuration.receiverContracts.trim(),
     pricingUrl: input.configuration.pricingUrl.trim(),
     pricingPublicKeys: input.configuration.pricingPublicKeys.trim(),
+    pricingPolicy: resolveCheckoutSparkPricingPolicy(
+      input.configuration.pricingPolicy
+    ),
   })
   if (!input.deploymentProfile || input.deploymentProfile === "local")
     return configuration

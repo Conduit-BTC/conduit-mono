@@ -372,6 +372,9 @@ function normalizeCommerceQuote(
   if (input.pricingAuthority !== undefined && input.pricing === undefined) {
     throw new Error("Checkout Spark pricing authority requires its exact rate.")
   }
+  if (input.pricing?.version === 2 && input.pricingAuthority !== undefined) {
+    throw new Error("Historical pricing cannot carry legacy rate authority.")
+  }
   const commerceTotalSats = normalizeSats(
     input.commerceTotalSats,
     "Commerce quote total",

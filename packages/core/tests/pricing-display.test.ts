@@ -8,6 +8,7 @@ import {
   BTC_USD_RATE_QUERY_KEY,
   fetchBtcUsdRate,
   fetchDisplayBtcUsdRate,
+  getBtcUsdRateQueryKey,
   useBtcUsdRate,
   useDisplayBtcUsdRate,
 } from "../src/pricing/rates"
@@ -23,11 +24,13 @@ import type { BtcUsdRateQuote } from "../src/pricing"
 const WORKER = "https://pricing.example.test/api/checkout-spark-pricing"
 const ECONOMIC_STORAGE = "conduit:btc-usd-rate"
 const DISPLAY_STORAGE = "conduit:btc-usd-display-rate"
+const HISTORICAL_STORAGE = "conduit:btc-usd-rate:invoice-historical-1pct-v1"
 const originalFetch = globalThis.fetch
 const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
 const originalConfig = {
   url: config.checkoutSparkPricingUrl,
   keys: config.checkoutSparkPricingPublicKeys,
+  policy: config.checkoutSparkPricingPolicy,
 }
 const originalEnv = [
   process.env.VITE_BTC_USD_RATE,
@@ -42,6 +45,7 @@ const clients: QueryClient[] = []
 beforeEach(() => {
   config.checkoutSparkPricingUrl = WORKER
   config.checkoutSparkPricingPublicKeys = `display-test:${publicKey}`
+  config.checkoutSparkPricingPolicy = "signed-v1"
   delete process.env.VITE_BTC_USD_RATE
   delete process.env.VITE_FIAT_USD_RATES
   Object.defineProperty(globalThis, "window", {
@@ -59,6 +63,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch
   config.checkoutSparkPricingUrl = originalConfig.url
   config.checkoutSparkPricingPublicKeys = originalConfig.keys
+  config.checkoutSparkPricingPolicy = originalConfig.policy
   for (const [index, name] of [
     "VITE_BTC_USD_RATE",
     "VITE_FIAT_USD_RATES",
@@ -231,5 +236,51 @@ describe("display-only currency estimates", () => {
       original.pricingAuthority.rate.fetchedAt
     )
     expect(calls).toEqual([WORKER])
+  })
+
+  it("uses current public observations for historical pricing while display overrides remain display-only", async () => {
+    config.checkoutSparkPricingPolicy = "invoice-historical-1pct-v1"
+    process.env.VITE_BTC_USD_RATE = "100000"
+    publicPrices()
+    const observed = await fetchBtcUsdRate()
+    expect(observed.rate).toBe(80_000)
+    expect(observed.source).toBe("mempool")
+    expect(calls).not.toContain(WORKER)
+    expect((await fetchDisplayBtcUsdRate()).source).toBe("env")
+  })
+
+  it("refreshes historical pricing in its own policy cache and storage", async () => {
+    const signed = quote(70_000)
+    const display = quote(75_000)
+    const historical = quote(79_000)
+    stored.set(ECONOMIC_STORAGE, JSON.stringify(signed))
+    stored.set(DISPLAY_STORAGE, JSON.stringify(display))
+    stored.set(HISTORICAL_STORAGE, JSON.stringify(historical))
+    const queries = client()
+    queries.setQueryData(BTC_USD_RATE_QUERY_KEY, signed)
+    queries.setQueryData(BTC_USD_DISPLAY_RATE_QUERY_KEY, display)
+    config.checkoutSparkPricingPolicy = "invoice-historical-1pct-v1"
+    const historicalKey = getBtcUsdRateQueryKey()
+    expect(historicalKey).toEqual([
+      "btc-usd-rate",
+      "invoice-historical-1pct-v1",
+    ])
+    publicPrices()
+    expect(renderRate(queries, useBtcUsdRate).data).toEqual(historical)
+    queries.setQueryData(historicalKey, historical)
+    await queries.refetchQueries({ queryKey: historicalKey, exact: true })
+    expect(queries.getQueryData<BtcUsdRateQuote>(historicalKey)?.rate).toBe(
+      80_000
+    )
+    expect(JSON.parse(stored.get(HISTORICAL_STORAGE)!).rate).toBe(80_000)
+    expect(queries.getQueryData(BTC_USD_RATE_QUERY_KEY)).toEqual(signed)
+    expect(queries.getQueryData(BTC_USD_DISPLAY_RATE_QUERY_KEY)).toEqual(
+      display
+    )
+    expect(JSON.parse(stored.get(ECONOMIC_STORAGE)!)).toEqual(signed)
+    expect(JSON.parse(stored.get(DISPLAY_STORAGE)!)).toEqual(display)
+    config.checkoutSparkPricingPolicy = "signed-v1"
+    expect(getBtcUsdRateQueryKey()).toBe(BTC_USD_RATE_QUERY_KEY)
+    expect(renderRate(queries, useBtcUsdRate).data).toEqual(signed)
   })
 })

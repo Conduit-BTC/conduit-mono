@@ -788,7 +788,11 @@ export async function proveMerchantCheckoutSparkNativeCommerce(input: {
     proof.creditedSats !== state.credit.creditedSats
   )
     throw new Error("Checkout Spark attributed credit changed.")
-  assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+  await assertCheckoutSparkMerchantPricingAuthority({
+    plan,
+    fundingProof: proof,
+  })
+  assertCurrent()
   await repository.recordMerchantCredit(plan, proof, now(), assertCurrent)
   assertCurrent()
   observe("funding_proof", "verified")
@@ -1272,7 +1276,11 @@ export async function reconcileMerchantCheckoutSparkSettledCredit(
         receive,
         transfer,
       })
-      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+      await assertCheckoutSparkMerchantPricingAuthority({
+        plan,
+        fundingProof: proof,
+      })
+      assertEligible()
       const current = await repository.load(plan.checkoutId, plan.planDigest)
       assertEligible()
       if (

@@ -33,6 +33,7 @@ export function parseCheckoutSparkPricingConfiguration(input: {
   }
 }
 
+/** Legacy signed client settings; absence does not select historical pricing. */
 export function getCheckoutSparkPricingConfiguration(): CheckoutSparkPricingConfiguration | null {
   return parseCheckoutSparkPricingConfiguration({
     url: config.checkoutSparkPricingUrl ?? undefined,

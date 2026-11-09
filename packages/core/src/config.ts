@@ -1,4 +1,7 @@
-import { resolveCheckoutSparkPublicTrust } from "./checkout-spark-deployment-trust"
+import {
+  resolveCheckoutSparkPublicTrust,
+  type CheckoutSparkPricingPolicy,
+} from "./checkout-spark-deployment-trust"
 
 export type RelayBucketId =
   | "app_backplane"
@@ -240,6 +243,7 @@ export interface ConduitConfig {
   checkoutSparkReceiverContracts: string | null
   checkoutSparkPricingUrl: string | null
   checkoutSparkPricingPublicKeys: string | null
+  checkoutSparkPricingPolicy: CheckoutSparkPricingPolicy
 }
 
 // Vite only statically replaces direct property access (import.meta.env.VITE_FOO).
@@ -272,6 +276,7 @@ function getViteEnv(): {
   checkoutSparkReceiverContracts: string
   checkoutSparkPricingUrl: string
   checkoutSparkPricingPublicKeys: string
+  checkoutSparkPricingPolicy: string
   checkoutSparkPublicTrustDigest: string
 } {
   if (typeof import.meta !== "undefined" && import.meta.env) {
@@ -310,6 +315,8 @@ function getViteEnv(): {
         import.meta.env.VITE_CHECKOUT_SPARK_PRICING_URL ?? "",
       checkoutSparkPricingPublicKeys:
         import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS ?? "",
+      checkoutSparkPricingPolicy:
+        import.meta.env.VITE_CHECKOUT_SPARK_PRICING_POLICY ?? "",
       checkoutSparkPublicTrustDigest:
         import.meta.env.VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST ?? "",
     }
@@ -341,6 +348,7 @@ function getViteEnv(): {
     checkoutSparkReceiverContracts: "",
     checkoutSparkPricingUrl: "",
     checkoutSparkPricingPublicKeys: "",
+    checkoutSparkPricingPolicy: "",
     checkoutSparkPublicTrustDigest: "",
   }
 }
@@ -719,6 +727,7 @@ const checkoutSparkPublicTrust = resolveCheckoutSparkPublicTrust({
     receiverContracts: env.checkoutSparkReceiverContracts,
     pricingUrl: env.checkoutSparkPricingUrl,
     pricingPublicKeys: env.checkoutSparkPricingPublicKeys,
+    pricingPolicy: env.checkoutSparkPricingPolicy,
   },
 })
 const e2eRelayUrls = resolveE2eRelayIsolation(env.mode, env.e2eRelayUrl)
@@ -877,6 +886,7 @@ const configuredRelayConfig: ConduitConfig = {
   checkoutSparkPricingUrl: checkoutSparkPublicTrust.pricingUrl || null,
   checkoutSparkPricingPublicKeys:
     checkoutSparkPublicTrust.pricingPublicKeys || null,
+  checkoutSparkPricingPolicy: checkoutSparkPublicTrust.pricingPolicy,
 }
 
 export const config = applyE2eRelayIsolation(

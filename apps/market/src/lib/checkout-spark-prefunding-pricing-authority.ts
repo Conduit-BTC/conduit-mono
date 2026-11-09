@@ -1,6 +1,6 @@
 import type { CheckoutSparkCommerceQuote } from "@conduit/core/protocol/checkout-spark-reconciliation"
 import {
-  assessCheckoutSparkCommercePricingAuthority,
+  verifyCheckoutSparkCommercePricingAuthority,
   getCheckoutSparkRequiredFiatCurrencies,
 } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { getCheckoutSparkPricingAuthorityTrust } from "@conduit/core/protocol/checkout-spark-pricing-config"
@@ -12,12 +12,12 @@ import type { SparkCheckoutReceiveRequest } from "./spark-wallet"
  * RAM-only provider precision is not restored from saved checkout state. Once
  * accepted, historical recovery verifies its original time, not the current rate.
  */
-export function assertCheckoutSparkPrefundingPricingAuthority(input: {
+export async function assertCheckoutSparkPrefundingPricingAuthority(input: {
   quote: CheckoutSparkCommerceQuote
   receive: SparkCheckoutReceiveRequest
   nowMs?: number
   trustedPublicKeys?: ReadonlyMap<string, string> | null
-}): void {
+}): Promise<void> {
   if (!getCheckoutSparkRequiredFiatCurrencies(input.quote).length) return
   const receive = input.receive
   const createdAtMs = receive.providerCreatedAtMs
@@ -45,12 +45,12 @@ export function assertCheckoutSparkPrefundingPricingAuthority(input: {
       ? getCheckoutSparkPricingAuthorityTrust()
       : input.trustedPublicKeys
   if (
-    assessCheckoutSparkCommercePricingAuthority({
+    (await verifyCheckoutSparkCommercePricingAuthority({
       quote: input.quote,
       acceptedAtMs: createdAtMs,
       nowMs: input.nowMs ?? Date.now(),
       trustedPublicKeys,
-    }) !== "verified"
+    })) !== "verified"
   )
     throw new Error(
       "Current currency pricing could not be confirmed. Try again before paying."

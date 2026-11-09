@@ -9,10 +9,16 @@ import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
 import { fetchCommonPricingRateQuote } from "./common-rate-provider"
 import { getCheckoutSparkPricingConfiguration } from "../protocol/checkout-spark-pricing-config"
 import { fetchCheckoutSparkPricingRate } from "./signed-rate-client"
+import { config } from "../config"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
 const DISPLAY_STORAGE_KEY = "conduit:btc-usd-display-rate"
+const HISTORICAL_STORAGE_KEY = "conduit:btc-usd-rate:invoice-historical-1pct-v1"
 export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
+const HISTORICAL_RATE_QUERY_KEY = [
+  ...BTC_USD_RATE_QUERY_KEY,
+  "invoice-historical-1pct-v1",
+] as const
 export const BTC_USD_DISPLAY_RATE_QUERY_KEY = ["btc-usd-display-rate"] as const
 export const BTC_USD_RATE_STALE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
@@ -56,7 +62,20 @@ function parseEnvRate(): BtcUsdRateQuote | null {
   }
 }
 
+/** Current public observations are claims; historical verification is separate. */
+function fetchCurrentPublicRate(): Promise<BtcUsdRateQuote> {
+  return fetchCommonPricingRateQuote({ includeFiatRates: true })
+}
+
+export function getBtcUsdRateQueryKey() {
+  return config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1"
+    ? HISTORICAL_RATE_QUERY_KEY
+    : BTC_USD_RATE_QUERY_KEY
+}
+
 export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
+  if (config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1")
+    return fetchCurrentPublicRate()
   const configuration = getCheckoutSparkPricingConfiguration()
   if (configuration)
     return (await fetchCheckoutSparkPricingRate({ configuration })).pricing.rate
@@ -67,9 +86,7 @@ export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
 
 /** Estimates only: this feed never supplies checkout pricing authority. */
 export async function fetchDisplayBtcUsdRate(): Promise<BtcUsdRateQuote> {
-  return (
-    parseEnvRate() ?? fetchCommonPricingRateQuote({ includeFiatRates: true })
-  )
+  return parseEnvRate() ?? fetchCurrentPublicRate()
 }
 
 function writeStoredRate(next: BtcUsdRateQuote, storageKey: string): void {
@@ -82,7 +99,10 @@ function writeStoredRate(next: BtcUsdRateQuote, storageKey: string): void {
   }
 }
 
-function readStoredRate(storageKey: string): BtcUsdRateQuote | null {
+function readStoredRate(
+  storageKey: string,
+  allowEnv = true
+): BtcUsdRateQuote | null {
   if (typeof window === "undefined") return null
 
   try {
@@ -95,7 +115,7 @@ function readStoredRate(storageKey: string): BtcUsdRateQuote | null {
       !Number.isFinite(parsed.rate) ||
       parsed.rate <= 0 ||
       typeof parsed.fetchedAt !== "number" ||
-      (parsed.source !== "env" &&
+      ((parsed.source !== "env" || !allowEnv) &&
         parsed.source !== "mempool" &&
         parsed.source !== "coinbase" &&
         parsed.source !== "kraken")
@@ -145,16 +165,26 @@ export function isBtcUsdRateQuoteFresh(
 }
 
 function useRateQuery(displayOnly: boolean) {
-  const signedFeed = !displayOnly && getCheckoutSparkPricingConfiguration()
-  const env = signedFeed ? null : parseEnvRate()
-  const storageKey = displayOnly ? DISPLAY_STORAGE_KEY : STORAGE_KEY
+  const historical =
+    !displayOnly &&
+    config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1"
+  const signedFeed =
+    !displayOnly && !historical && getCheckoutSparkPricingConfiguration()
+  const env = signedFeed || historical ? null : parseEnvRate()
+  const storageKey = displayOnly
+    ? DISPLAY_STORAGE_KEY
+    : historical
+      ? HISTORICAL_STORAGE_KEY
+      : STORAGE_KEY
   // Legacy storage is display-only and must not suppress the authenticated feed.
-  const stored = signedFeed ? null : (env ?? readStoredRate(storageKey))
+  const stored = signedFeed
+    ? null
+    : (env ?? readStoredRate(storageKey, !historical))
 
   return useQuery({
     queryKey: displayOnly
       ? BTC_USD_DISPLAY_RATE_QUERY_KEY
-      : BTC_USD_RATE_QUERY_KEY,
+      : getBtcUsdRateQueryKey(),
     queryFn: async () => {
       try {
         const next = await (displayOnly
@@ -178,7 +208,7 @@ function useRateQuery(displayOnly: boolean) {
   })
 }
 
-/** Retained economic feed; configured checkout still requires signed pricing. */
+/** Current economic feed selected by the explicit new-order pricing policy. */
 export function useBtcUsdRate() {
   return useRateQuery(false)
 }

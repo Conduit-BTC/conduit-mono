@@ -225,7 +225,13 @@ export async function observeMerchantCheckoutSparkOrder(
         receive,
         transfer,
       })
-      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+      await bounded(() =>
+        assertCheckoutSparkMerchantPricingAuthority({
+          plan,
+          fundingProof: proof,
+        })
+      )
+      assertCurrent()
       // Reuse admission/allocation checks without changing the saved state.
       const attributed = recordCheckoutSparkSettledCredit(saved.state, {
         requestId: proof.requestId,

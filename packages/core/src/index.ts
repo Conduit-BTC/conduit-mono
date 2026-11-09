@@ -84,6 +84,7 @@ export {
 } from "./pricing"
 export {
   BTC_USD_RATE_QUERY_KEY,
+  getBtcUsdRateQueryKey,
   BTC_USD_RATE_REFRESH_INTERVAL_MS,
   BTC_USD_RATE_STALE_MS,
   fetchBtcUsdRate,

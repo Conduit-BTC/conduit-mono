@@ -953,11 +953,12 @@ export async function prepareCheckoutSparkSettledFunding(
       },
       recipients,
     }
-    assertCheckoutSparkPrefundingPricingAuthority({
+    await assertCheckoutSparkPrefundingPricingAuthority({
       quote: commerceQuote,
       receive,
       nowMs: now(),
     })
+    assertCurrent()
     preparationStep = "fee_request"
     const nativeTreasury = treasuryDestination
       ? await (

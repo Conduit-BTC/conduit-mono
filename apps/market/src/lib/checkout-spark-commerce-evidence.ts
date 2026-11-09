@@ -114,10 +114,13 @@ export function buildCheckoutSparkCommerceEvidence(
       : {}),
     ...(authority.pricing.quote
       ? {
-          pricing: {
-            version: 1,
-            rate: structuredClone(authority.pricing.quote),
-          },
+          pricing: authority.pricingPolicy
+            ? {
+                version: 2,
+                policy: authority.pricingPolicy,
+                rate: structuredClone(authority.pricing.quote),
+              }
+            : { version: 1, rate: structuredClone(authority.pricing.quote) },
         }
       : {}),
   }

@@ -19,6 +19,7 @@ import { freezeCheckoutSparkEventMarketBinding } from "@conduit/core/protocol/ch
 import { assertCheckoutSparkSignedEventMarketSources } from "@conduit/core/protocol/checkout-spark-event-market-sources"
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
 import { freezeCheckoutSparkPricingRateAttestation } from "@conduit/core/protocol/checkout-spark-pricing-authority"
+import { CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
 import { getCartCommerceFingerprint, type CartItem } from "./cart-model"
 import { prepareCartFulfillment } from "./cart-shipping-options"
 import type { CheckoutAuthorizationResult } from "./checkout-authorization"
@@ -52,6 +53,7 @@ export interface CheckoutSparkQuoteAuthority {
   pricing: PricedIntent
   /** Independently signed rate snapshot retained with the final fiat conversion. */
   pricingAuthority?: CheckoutSparkPricingRateAttestation
+  pricingPolicy?: typeof CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY
   products: readonly Product[]
   lines: readonly CheckoutSparkQuoteLineEvidence[]
   /** Exact selected 30406 revisions, retained from the same authorized read. */
@@ -163,10 +165,12 @@ export function buildCheckoutSparkQuoteAuthority(input: {
   authorization: AuthorizedItems
   rateInput: PricingRateInput
   pricingAuthority?: CheckoutSparkPricingRateAttestation
+  pricingPolicy?: typeof CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY
   nowMs?: number
 }): CheckoutSparkQuoteAuthority {
   const { authorization } = input
   if (
+    (input.pricingPolicy && input.pricingAuthority) ||
     authorization.items.length === 0 ||
     authorization.shippingOptionEvidence.status === "unavailable_order_first"
   ) {
@@ -317,6 +321,7 @@ export function buildCheckoutSparkQuoteAuthority(input: {
 
   const authority: CheckoutSparkQuoteAuthority = {
     pricing: structuredClone(pricing),
+    ...(input.pricingPolicy ? { pricingPolicy: input.pricingPolicy } : {}),
     ...(input.pricingAuthority
       ? {
           pricingAuthority: freezeCheckoutSparkPricingRateAttestation(

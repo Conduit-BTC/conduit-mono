@@ -472,7 +472,10 @@ export async function continueMerchantCheckoutSparkSettledPayout(
         receive,
         transfer,
       })
-      assertCheckoutSparkMerchantPricingAuthority({ plan, fundingProof: proof })
+      await assertCheckoutSparkMerchantPricingAuthority({
+        plan,
+        fundingProof: proof,
+      })
       assertEligible()
       const store = {
         ...(repository.outgoingAdmissionScope &&

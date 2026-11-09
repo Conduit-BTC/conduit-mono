@@ -17,36 +17,48 @@ import {
   type CheckoutSparkPricingRateAttestation,
 } from "./checkout-spark-pricing-authority"
 
-/**
- * Retained conversion evidence, not a merchant-signed exchange-rate oracle.
- * Wire reads preserve historical currencies; new admission uses pricing policy.
- */
-export const checkoutSparkCommercePricingSchema = z
+export const CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY =
+  "invoice-historical-1pct-v1"
+
+const checkoutSparkCommerceRateSchema = z
   .object({
-    version: z.literal(1),
-    rate: z
-      .object({
-        rate: z.number().finite().positive(),
-        fetchedAt: z.number().int().safe().nonnegative(),
-        source: z.enum(PRICING_BTC_SOURCES),
-        fiatUsdRates: z
-          .record(
-            z
-              .string()
-              .refine(
-                (key) => /^[A-Z]{3}$/.test(key) && isFiatCurrencyCode(key)
-              ),
-            z.number().finite().positive()
-          )
-          .optional(),
-        fiatSource: z.enum(PRICING_FIAT_SOURCES).optional(),
-        fiatSources: z
-          .record(z.string().regex(/^[A-Z]{3}$/), z.enum(PRICING_FIAT_SOURCES))
-          .optional(),
-      })
-      .strict(),
+    rate: z.number().finite().positive(),
+    fetchedAt: z.number().int().safe().nonnegative(),
+    source: z.enum(PRICING_BTC_SOURCES),
+    fiatUsdRates: z
+      .record(
+        z
+          .string()
+          .refine((key) => /^[A-Z]{3}$/.test(key) && isFiatCurrencyCode(key)),
+        z.number().finite().positive()
+      )
+      .optional(),
+    fiatSource: z.enum(PRICING_FIAT_SOURCES).optional(),
+    fiatSources: z
+      .record(z.string().regex(/^[A-Z]{3}$/), z.enum(PRICING_FIAT_SOURCES))
+      .optional(),
   })
   .strict()
+
+/**
+ * Retained conversion evidence, not a merchant-signed exchange-rate oracle.
+ * V1 keeps original signed-rate recovery; v2 selects invoice-time verification.
+ */
+export const checkoutSparkCommercePricingSchema = z.discriminatedUnion(
+  "version",
+  [
+    z
+      .object({ version: z.literal(1), rate: checkoutSparkCommerceRateSchema })
+      .strict(),
+    z
+      .object({
+        version: z.literal(2),
+        policy: z.literal(CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY),
+        rate: checkoutSparkCommerceRateSchema,
+      })
+      .strict(),
+  ]
+)
 
 export type CheckoutSparkCommercePricing = z.infer<
   typeof checkoutSparkCommercePricingSchema
@@ -216,6 +228,9 @@ export function checkoutSparkCommerceQuoteDigestValue(quote: {
                     ),
                   ],
                 ]
+              : []),
+            ...(quote.pricing.version === 2
+              ? [["policy", quote.pricing.policy]]
               : []),
           ],
         ]

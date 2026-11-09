@@ -6,6 +6,7 @@
   },
   "quantumRouterTrust": {
     "preview": {
+      "pricingPolicy": "invoice-historical-1pct-v1",
       "receiverContracts": [
         {
           "schemaVersion": 1,
@@ -39,6 +40,7 @@
       ]
     },
     "production": {
+      "pricingPolicy": "signed-v1",
       "receiverContracts": [
         {
           "schemaVersion": 1,

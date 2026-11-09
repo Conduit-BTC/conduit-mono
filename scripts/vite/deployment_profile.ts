@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import {
   checkoutSparkPublicTrustDigest,
+  resolveCheckoutSparkPricingPolicy,
+  type CheckoutSparkPricingPolicy,
   type CheckoutSparkPublicTrustConfiguration,
 } from "../../packages/core/src/checkout-spark-deployment-trust"
 import {
@@ -38,6 +40,7 @@ interface ManagedRouterTrustPolicy {
   receiverContracts: CheckoutSparkReceiverContract[]
   pricingUrl: string | null
   pricingPublicKeys: Array<{ keyId: string; publicKey: string }>
+  pricingPolicy?: CheckoutSparkPricingPolicy
 }
 
 interface PagesProfilesFile {
@@ -187,7 +190,19 @@ function assertRouterTrustConfiguration(
   }
   if (
     !isRecord(value) ||
-    Object.keys(value).length !== 3 ||
+    (Object.keys(value).length !== 3 && Object.keys(value).length !== 4) ||
+    Object.keys(value).some(
+      (key) =>
+        ![
+          "receiverContracts",
+          "pricingUrl",
+          "pricingPublicKeys",
+          "pricingPolicy",
+        ].includes(key)
+    ) ||
+    (value.pricingPolicy !== undefined &&
+      value.pricingPolicy !== "signed-v1" &&
+      value.pricingPolicy !== "invoice-historical-1pct-v1") ||
     !Array.isArray(value.receiverContracts) ||
     (value.pricingUrl !== null && typeof value.pricingUrl !== "string") ||
     !Array.isArray(value.pricingPublicKeys) ||
@@ -388,6 +403,9 @@ export function resolveDeploymentProfile(
         pricingUrl: env.VITE_CHECKOUT_SPARK_PRICING_URL?.trim() || "",
         pricingPublicKeys:
           env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS?.trim() || "",
+        pricingPolicy: resolveCheckoutSparkPricingPolicy(
+          env.VITE_CHECKOUT_SPARK_PRICING_POLICY
+        ),
       },
     }
     local.publicFeatures.quantumRouterEnabled &&=
@@ -449,6 +467,9 @@ export function resolveDeploymentProfile(
         : "",
       pricingUrl,
       pricingPublicKeys,
+      pricingPolicy: resolveCheckoutSparkPricingPolicy(
+        routerTrust?.pricingPolicy
+      ),
     },
   }
   return {

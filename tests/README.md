@@ -33,6 +33,11 @@ direct display lookup/failover, isolated query/storage caches, saved-estimate
 fallback and unchanged signed economic pricing/recovery. It uses simulated
 provider responses and React server rendering, not browser or funded checks.
 
+The other `packages/core/tests/*pricing*.test.ts` cases cover versioned pricing
+digests, fixed historical observations, the effective 1% conversion bound,
+ordinary signed shipping, old signed recovery and managed rollout selection.
+Provider fixtures and local arithmetic do not prove funded/offline settlement.
+
 The recovery tests use real local signatures/encryption and the real repository
 with in-memory IndexedDB. Provider and relay responses are simulated. Wallet
 migration uses an in-memory transactional store. This is not evidence of real
