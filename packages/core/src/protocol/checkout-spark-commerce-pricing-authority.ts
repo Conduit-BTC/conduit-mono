@@ -171,12 +171,23 @@ function matchesHistoricalShipping(
 ): boolean {
   const policy = parsePrivateOrderShippingPolicyTags(shipping.policyEvent.tags)
   if (!policy) return false
+  const table =
+    shipping.destination.country === policy.originCountry
+      ? policy.domestic
+      : policy.international
+  const needsSubtotal =
+    policy.version === 1 || table?.freeShippingThresholdMinor !== undefined
   for (const item of shipping.items) {
-    if (!withinOnePercent(item.currency, shipping.currency, claimed, benchmark))
+    if (
+      needsSubtotal &&
+      item.subtotalMinor !== 0 &&
+      !withinOnePercent(item.currency, shipping.currency, claimed, benchmark)
+    )
       return false
     if (
       "shippingHandling" in item &&
       item.shippingHandling &&
+      item.shippingHandling.amount !== 0 &&
       !withinOnePercent(
         item.shippingHandling.currency,
         shipping.currency,
@@ -205,10 +216,18 @@ function matchesHistoricalShipping(
     "SATS",
     benchmark
   )
-  if (!Number.isSafeInteger(shipping.amountSats)) return false
+  const actualSats =
+    shipping.amountSats ??
+    convertShippingMinor(
+      shipping.amountMinor,
+      shipping.currency,
+      "SATS",
+      claimed
+    )
+  if (!Number.isSafeInteger(actualSats)) return false
   // Cross-currency handling is rounded in policy minor units first. Bound the
   // final debit too, so that intermediate rounding cannot widen the allowance.
-  const actual = BigInt(shipping.amountSats!) * 100n
+  const actual = BigInt(actualSats) * 100n
   const expected = BigInt(expectedSats)
   return actual >= expected * 99n - 100n && actual <= expected * 101n + 100n
 }

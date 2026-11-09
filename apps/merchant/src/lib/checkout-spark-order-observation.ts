@@ -225,12 +225,12 @@ export async function observeMerchantCheckoutSparkOrder(
         receive,
         transfer,
       })
-      await bounded(() =>
-        assertCheckoutSparkMerchantPricingAuthority({
-          plan,
-          fundingProof: proof,
-        })
-      )
+      // Historical HTTP reads own a six-second deadline, distinct from the
+      // five-second native-wallet read budget. Recheck authority before writes.
+      await assertCheckoutSparkMerchantPricingAuthority({
+        plan,
+        fundingProof: proof,
+      })
       assertCurrent()
       // Reuse admission/allocation checks without changing the saved state.
       const attributed = recordCheckoutSparkSettledCredit(saved.state, {
