@@ -15,6 +15,21 @@ and merchant recovery paths. Keep direct-pay order recovery and the active
 negotiated/free-order paths. No stored record is migrated or deleted by this
 cleanup. The shared preparation lock name also remains stable across tabs.
 
+## Pricing feeds
+
+Wallet fiat estimates and the Merchant revenue dashboard use
+`useDisplayBtcUsdRate`, which reads public providers directly. Its query and
+browser-storage keys are separate from the economic `useBtcUsdRate` feed.
+Display estimates are not checkout pricing authority.
+
+Checkout, Merchant invoice creation and historical recovery retain the existing
+economic feed and signed-pricing verification. A recovered fiat order keeps its
+original quote, anchored to the provider-confirmed funding invoice creation
+time, not the recovery clock or recipient claim time. Both pricing Workers and
+their deployment configuration remain required until that authority has an
+explicit replacement. Other application hooks can still request the economic
+feed; this display split does not make an entire page Worker-independent.
+
 The old receive-reconciliation adapter remains as a read-only historical
 provider-evidence boundary. Removing a send executor does not remove historical
 plan restoration or provider-history interpretation.

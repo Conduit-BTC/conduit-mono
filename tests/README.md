@@ -28,6 +28,11 @@ continuation, failed-attempt private recovery, and preventing replacement of an
 invoice already awaiting payment. It uses the real payment service and atomic
 lifecycle updates against in-memory IndexedDB, with provider responses simulated.
 
+`packages/core/tests/pricing-display.test.ts` adds five feed-boundary cases:
+direct display lookup/failover, isolated query/storage caches, saved-estimate
+fallback and unchanged signed economic pricing/recovery. It uses simulated
+provider responses and React server rendering, not browser or funded checks.
+
 The recovery tests use real local signatures/encryption and the real repository
 with in-memory IndexedDB. Provider and relay responses are simulated. Wallet
 migration uses an in-memory transactional store. This is not evidence of real

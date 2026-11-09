@@ -6,11 +6,14 @@ import {
   type BtcUsdRateQuote,
 } from "./index"
 import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
+import { fetchCommonPricingRateQuote } from "./common-rate-provider"
 import { getCheckoutSparkPricingConfiguration } from "../protocol/checkout-spark-pricing-config"
 import { fetchCheckoutSparkPricingRate } from "./signed-rate-client"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
+const DISPLAY_STORAGE_KEY = "conduit:btc-usd-display-rate"
 export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
+export const BTC_USD_DISPLAY_RATE_QUERY_KEY = ["btc-usd-display-rate"] as const
 export const BTC_USD_RATE_STALE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
 
@@ -62,21 +65,28 @@ export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
   return fetchTrustedPricingRateQuote({ includeFiatRates: true })
 }
 
-function writeStoredRate(next: BtcUsdRateQuote): void {
+/** Estimates only: this feed never supplies checkout pricing authority. */
+export async function fetchDisplayBtcUsdRate(): Promise<BtcUsdRateQuote> {
+  return (
+    parseEnvRate() ?? fetchCommonPricingRateQuote({ includeFiatRates: true })
+  )
+}
+
+function writeStoredRate(next: BtcUsdRateQuote, storageKey: string): void {
   if (typeof window === "undefined") return
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.localStorage.setItem(storageKey, JSON.stringify(next))
   } catch {
     // Keep price display non-blocking when storage is unavailable.
   }
 }
 
-function readStoredRate(): BtcUsdRateQuote | null {
+function readStoredRate(storageKey: string): BtcUsdRateQuote | null {
   if (typeof window === "undefined") return null
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return null
 
     const parsed = JSON.parse(raw) as Partial<BtcUsdRateQuote>
@@ -134,18 +144,23 @@ export function isBtcUsdRateQuoteFresh(
   return isPricingRateQuoteFresh(quote, nowMs, maxAgeMs)
 }
 
-export function useBtcUsdRate() {
-  const signedFeed = getCheckoutSparkPricingConfiguration()
+function useRateQuery(displayOnly: boolean) {
+  const signedFeed = !displayOnly && getCheckoutSparkPricingConfiguration()
   const env = signedFeed ? null : parseEnvRate()
+  const storageKey = displayOnly ? DISPLAY_STORAGE_KEY : STORAGE_KEY
   // Legacy storage is display-only and must not suppress the authenticated feed.
-  const stored = signedFeed ? null : (env ?? readStoredRate())
+  const stored = signedFeed ? null : (env ?? readStoredRate(storageKey))
 
   return useQuery({
-    queryKey: BTC_USD_RATE_QUERY_KEY,
+    queryKey: displayOnly
+      ? BTC_USD_DISPLAY_RATE_QUERY_KEY
+      : BTC_USD_RATE_QUERY_KEY,
     queryFn: async () => {
       try {
-        const next = await fetchBtcUsdRate()
-        writeStoredRate(next)
+        const next = await (displayOnly
+          ? fetchDisplayBtcUsdRate()
+          : fetchBtcUsdRate())
+        writeStoredRate(next, storageKey)
         return next
       } catch (error) {
         if (stored) return stored
@@ -161,4 +176,14 @@ export function useBtcUsdRate() {
     refetchOnReconnect: true,
     refetchInterval: env ? false : BTC_USD_RATE_REFRESH_INTERVAL_MS,
   })
+}
+
+/** Retained economic feed; configured checkout still requires signed pricing. */
+export function useBtcUsdRate() {
+  return useRateQuery(false)
+}
+
+/** Approximate wallet/dashboard values, isolated from the economic query cache. */
+export function useDisplayBtcUsdRate() {
+  return useRateQuery(true)
 }

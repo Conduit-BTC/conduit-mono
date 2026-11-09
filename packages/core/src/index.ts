@@ -91,6 +91,7 @@ export {
   getConfiguredPricingRateQuote,
   isBtcUsdRateQuoteFresh,
   useBtcUsdRate,
+  useDisplayBtcUsdRate,
 } from "./pricing/rates"
 export { fetchTrustedPricingRateQuote } from "./pricing/trusted-rate-provider"
 export type { TrustedPricingRateOptions } from "./pricing/trusted-rate-provider"

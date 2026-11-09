@@ -47,7 +47,7 @@ import {
   type DashboardRangePreset,
 } from "../lib/dashboard-charts"
 import { parseMerchantAuthHandoffSearch } from "../lib/market-links"
-import { useBtcUsdRate } from "../hooks/useBtcUsdRate"
+import { useDisplayBtcUsdRate } from "@conduit/core"
 import { useCheckoutSparkOrderSettlements } from "../hooks/useCheckoutSparkOrderSettlements"
 import { useMerchantReadinessState } from "../hooks/useMerchantReadinessContext"
 import {
@@ -367,7 +367,7 @@ function DashboardPage() {
     clearProtectedReadAuthenticationSuppression(pubkey)
     void conversationsQuery.refetch()
   }
-  const btcRateQuery = useBtcUsdRate()
+  const btcRateQuery = useDisplayBtcUsdRate()
   const stats = signerConnected
     ? (statsQuery.data ?? cachedStatsQuery.data)
     : undefined

@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { createFileRoute } from "@tanstack/react-router"
-import { useAuth, useBtcUsdRate } from "@conduit/core"
+import { useAuth, useDisplayBtcUsdRate } from "@conduit/core"
 import {
   useWallets,
   useWalletBalanceUpdates,
@@ -13,7 +13,7 @@ import { Wallets } from "@conduit/ui"
 export const Route = createFileRoute("/wallet")({ component: WalletsPage })
 function WalletsPage() {
   const auth = useAuth()
-  const rateQuery = useBtcUsdRate()
+  const rateQuery = useDisplayBtcUsdRate()
   const wallets = useWallets()
   useWalletBalanceUpdates(wallets)
   const [suggestion, setSuggestion] = useState<WalletAddressSuggestion | null>(
