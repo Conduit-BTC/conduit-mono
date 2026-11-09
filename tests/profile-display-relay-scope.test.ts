@@ -137,18 +137,22 @@ afterEach(() => {
   expect(blockedNetworkAttempts).toBe(0)
 })
 
-test("ordinary display uses current hints and author/configured relays, not historical product sources", async () => {
-  const result = await getProfiles({
-    pubkeys: [merchant],
-    relayHintsByPubkey: { [merchant]: [explicit, historical[0]!] },
-    onProgress: () => {},
-  })
-  expect(attempted).toEqual(new Set([app, author, explicit, historical[0]!]))
-  expect(result.profileContexts[merchant]?.readComplete).toBe(false)
-})
+test.each([undefined, "full_profile"] as const)(
+  "ordinary display (%s) keeps current hints without historical product sources",
+  async (evidenceScope) => {
+    const result = await getProfiles({
+      pubkeys: [merchant],
+      evidenceScope,
+      relayHintsByPubkey: { [merchant]: [explicit, historical[0]!] },
+      onProgress: () => {},
+    })
+    expect(attempted).toEqual(new Set([app, author, explicit, historical[0]!]))
+    expect(result.profileContexts[merchant]?.readComplete).toBe(false)
+  }
+)
 
 test.each(["full_profile", "profile_edit", "payment"] as const)(
-  "strict %s discovery keeps its existing relay sources",
+  "complete-evidence %s discovery keeps its existing relay sources",
   async (evidenceScope) => {
     await getProfiles({
       pubkeys: [merchant],

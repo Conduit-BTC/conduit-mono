@@ -477,7 +477,7 @@ export interface ProfileBatchQuery {
   skipCache?: boolean
   /** Require relay-coverage diagnostics before absence is treated as current. */
   requireCompleteEvidence?: boolean
-  /** Limit cache comparison to fields authoritative for the current action. */
+  /** Field-comparison scope; full_profile alone does not require complete reads. */
   evidenceScope?: "full_profile" | "payment" | "profile_edit"
   /** Opt into author-relay coverage for the settled-router payment preflight. */
   authorRelayPaymentPolicy?: boolean
