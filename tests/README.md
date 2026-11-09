@@ -19,6 +19,11 @@ retain 60 deployment-related cases unchanged. The production deployment workflow
 also invokes these files explicitly. Operational smoke scripts are separate; ordinary `bun test` does not run them.
 The anonymous zap signer provider canary is retired with that service.
 
+`commerce-product-selection.test.ts` adds five local selection cases for browse
+visibility, exact pickup exceptions, shared family context, revision/deletion
+reconciliation and deterministic source merging. These use projected records;
+they do not establish signature admission, relay delivery or checkout authority.
+
 `guest-project-tip.test.ts` adds seven payment-boundary cases for ordinary guest
 Lightning tips, including fixed recipient, amount, network, expiry and signature
 checks. `retired-anon-zap.test.ts` adds five cases verifying that retired APIs
