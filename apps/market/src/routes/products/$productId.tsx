@@ -4,7 +4,6 @@ import { useQuery } from "@tanstack/react-query"
 import {
   buildMarketProductShareUrl,
   encodeEventMarketNaddr,
-  buildProductDetailActionTelemetryProperties,
   createEventMarketPickupSnapshot,
   formatNpub,
   getListingAvailabilityDisplay,
@@ -14,11 +13,9 @@ import {
   readEventMarketProduct,
   readEventMarketRoster,
   pubkeyToNpub,
-  recordBrowserTelemetryEvent,
   useAuth,
   useConduitSession,
   useProfile,
-  type ProductDetailTelemetryAction,
 } from "@conduit/core"
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import {
@@ -494,21 +491,6 @@ function ProductPage() {
       : descriptionMetrics.collapsedHeight
     : undefined
 
-  function recordProductDetailAction(
-    action: ProductDetailTelemetryAction
-  ): void {
-    if (!selectedProduct) return
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "product_detail_action",
-      properties: buildProductDetailActionTelemetryProperties({
-        action,
-        productType:
-          selectedProduct.format === "digital" ? "digital" : "physical",
-      }),
-    })
-  }
-
   async function addProductToCart(): Promise<void> {
     if (
       cartActionLock.current ||
@@ -597,7 +579,6 @@ function ProductPage() {
         throw new Error(
           "Selected quantity exceeds current availability. Review the item and try again."
         )
-      recordProductDetailAction("add_to_cart")
     } catch (cause) {
       if (shouldContinue()) {
         setCartActionError(
@@ -1171,7 +1152,6 @@ function ProductPage() {
                   <Link
                     to="/cart"
                     search={{ merchant: pubkeyToNpub(product.pubkey) }}
-                    onClick={() => recordProductDetailAction("view_cart")}
                   >
                     <ShoppingCart className="h-4 w-4" />
                     View cart

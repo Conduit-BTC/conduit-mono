@@ -1,3 +1,4 @@
+import type { Nip17CompatibilityOutcome } from "./nip17-compatibility-observation"
 import { relayTargetsFromUrls, type RelayTarget } from "./relay-authority"
 import type {
   OrderDeliveryRoute,
@@ -6,14 +7,7 @@ import type {
   OrderRelayDeliveryStatus,
   OrderRelayRoutingAuthority,
 } from "../db"
-import {
-  recordBrowserTelemetryEvent,
-  type ConduitTelemetryApp,
-} from "../telemetry"
-import {
-  buildNip17CompatibilityResultTelemetryProperties,
-  type Nip17CompatibilityResultTelemetryInput,
-} from "../telemetry-event-properties"
+
 import {
   filterEligibleAccountRelayTargets,
   normalizeAccountNetworkPubkey,
@@ -706,12 +700,8 @@ export interface PublishPrivateMessageInput {
   resolveCompatibilityRecipientReadRelays?: (
     pubkey: string
   ) => Promise<readonly string[]>
-  /** Browser app emitting the fixed-label compatibility rollout counter. */
-  telemetryApp?: ConduitTelemetryApp
   /** Content-free test/adapter seam; exceptions are ignored. */
-  onNip17CompatibilityOutcome?: (
-    outcome: Nip17CompatibilityResultTelemetryInput
-  ) => void
+  onNip17CompatibilityOutcome?: (outcome: Nip17CompatibilityOutcome) => void
 }
 
 function assertPrivateMessageSignerSessionCurrent(
@@ -961,31 +951,24 @@ function recordValidatedOrderCompatibilityOutcome(
   input: PublishPrivateMessageInput,
   validatedOrder: boolean,
   outcome: Pick<
-    Nip17CompatibilityResultTelemetryInput,
+    Nip17CompatibilityOutcome,
     "declarationClass" | "deliveryRoute" | "ackOutcome"
   > & {
-    blockReason?: Nip17CompatibilityResultTelemetryInput["blockReason"]
+    blockReason?: Nip17CompatibilityOutcome["blockReason"]
   }
 ): void {
   if (!validatedOrder || input.shouldContinue?.() === false) return
-  const telemetryOutcome: Nip17CompatibilityResultTelemetryInput = {
+  const observation: Nip17CompatibilityOutcome = {
     ...outcome,
     action: "order_delivery",
     repairOutcome: "not_applicable",
     blockReason: outcome.blockReason ?? "not_applicable",
   }
   try {
-    input.onNip17CompatibilityOutcome?.(telemetryOutcome)
+    input.onNip17CompatibilityOutcome?.(observation)
   } catch {
     // Diagnostics are best-effort and must never affect message delivery.
   }
-  if (!input.telemetryApp) return
-  recordBrowserTelemetryEvent({
-    app: input.telemetryApp,
-    eventName: "nip17_compatibility_result",
-    properties:
-      buildNip17CompatibilityResultTelemetryProperties(telemetryOutcome),
-  })
 }
 
 function buildRecoverableRecipientRoutingAuthority(input: {

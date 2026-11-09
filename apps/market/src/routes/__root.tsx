@@ -10,12 +10,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import {
   buildBugReportUrl,
   getClientErrorMessage,
-  installBrowserClientErrorTelemetry,
   normalizePubkey,
   pubkeyToNpub,
-  recordBrowserClientError,
-  recordBrowserTelemetryEvent,
-  recordBrowserTelemetryPageView,
   useAuth,
 } from "@conduit/core"
 import {
@@ -248,56 +244,7 @@ function RootLayout() {
 }
 
 function MarketProductRoot({ pathname }: { pathname: string }) {
-  const { authUrl, dismissAuthUrl, method, status } = useAuth()
-  const appLoadTelemetrySentRef = useRef(false)
-  const previousAuthStatusRef = useRef(status)
-  const previousAuthMethodRef = useRef(method)
-
-  useEffect(() => installBrowserClientErrorTelemetry("market"), [])
-
-  useEffect(() => {
-    if (appLoadTelemetrySentRef.current) return
-    appLoadTelemetrySentRef.current = true
-    recordBrowserTelemetryEvent({
-      app: "market",
-      eventName: "app_load_result",
-      properties: {
-        network: "browser",
-        status: "success",
-      },
-    })
-  }, [])
-
-  useEffect(() => {
-    if (
-      status === "connected" &&
-      previousAuthStatusRef.current !== "connected"
-    ) {
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "signer_connected",
-        properties: {
-          method: method ?? "nip07",
-          status: "success",
-        },
-      })
-    }
-    if (
-      status === "disconnected" &&
-      previousAuthStatusRef.current === "connected"
-    ) {
-      recordBrowserTelemetryEvent({
-        app: "market",
-        eventName: "signer_disconnected",
-        properties: {
-          method: previousAuthMethodRef.current ?? "nip07",
-          status: "success",
-        },
-      })
-    }
-    previousAuthStatusRef.current = status
-    if (method) previousAuthMethodRef.current = method
-  }, [method, status])
+  const { authUrl, dismissAuthUrl } = useAuth()
 
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" })
@@ -326,13 +273,6 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
     }
   }, [pathname])
 
-  useEffect(() => {
-    if (pathname.startsWith("/u/") || pathname.startsWith("/store/")) return
-    recordBrowserTelemetryPageView({ app: "market", pathname })
-  }, [pathname])
-
-  throwSyntheticClientErrorForTelemetryTest()
-
   return (
     <EventActorIdentityProvider>
       <RootShell cartHud={<MarketCartHud pathname={pathname} />}>
@@ -343,41 +283,6 @@ function MarketProductRoot({ pathname }: { pathname: string }) {
       </RootShell>
     </EventActorIdentityProvider>
   )
-}
-
-function throwSyntheticClientErrorForTelemetryTest(): void {
-  const enabled =
-    import.meta.env.MODE === "mock" &&
-    import.meta.env.VITE_ENABLE_TELEMETRY_TEST_HOOKS === "true" &&
-    typeof window !== "undefined"
-  if (!enabled) return
-
-  const testCase = new URLSearchParams(window.location.search).get(
-    "__conduit_telemetry_test"
-  )
-  if (testCase === "react_error_boundary") {
-    throw new TypeError("Synthetic client error telemetry test")
-  }
-  if (testCase === "react_error_boundary_proxy_prototype") {
-    throw new Proxy(
-      {},
-      {
-        getPrototypeOf() {
-          throw new Error("Private proxy prototype detail")
-        },
-      }
-    )
-  }
-  if (testCase === "react_error_boundary_proxy_message") {
-    throw new Proxy(new Error("Private proxy message detail"), {
-      get(target, property, receiver) {
-        if (property === "name" || property === "message") {
-          throw new Error("Private proxy property detail")
-        }
-        return Reflect.get(target, property, receiver)
-      },
-    })
-  }
 }
 
 function getPageTitle(pathname: string): string {
@@ -467,14 +372,6 @@ function RootErrorComponent({ error }: ErrorComponentProps) {
 }
 
 function MarketProductRootError({ error }: { error: unknown }) {
-  useEffect(() => {
-    recordBrowserClientError({
-      app: "market",
-      error,
-      source: "react_error_boundary",
-    })
-  }, [error])
-
   return (
     <RootShell>
       <ErrorPage

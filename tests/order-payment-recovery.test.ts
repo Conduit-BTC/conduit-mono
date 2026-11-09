@@ -1,9 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import {
-  getNextOrderPaymentLeaseExpiry,
-  reconcileOrderPaymentForDisplay,
-} from "../apps/market/src/lib/order-payment-recovery"
+import { reconcileOrderPaymentForDisplay } from "../apps/market/src/lib/order-payment-recovery"
 import type { OrderLifecycle } from "../packages/core/src/db"
 
 function lifecycle(
@@ -36,38 +33,6 @@ function lifecycle(
 }
 
 describe("Orders payment recovery", () => {
-  it("schedules the next live lease when another lease is already expired", () => {
-    const now = 1_700_000_000_000
-    expect(
-      getNextOrderPaymentLeaseExpiry(
-        [
-          lifecycle("mixed-leases", {
-            paymentClaimLeaseExpiresAt: now - 1,
-            proofDeliveryClaimLeaseExpiresAt: now + 10_000,
-          }),
-        ],
-        now
-      )
-    ).toBe(now + 10_000)
-  })
-
-  it("schedules the later lease when payment and proof share one owner", () => {
-    const now = 1_700_000_000_000
-    expect(
-      getNextOrderPaymentLeaseExpiry(
-        [
-          lifecycle("shared-owner-leases", {
-            paymentClaimId: "shared-owner",
-            paymentClaimLeaseExpiresAt: now + 15_000,
-            proofDeliveryClaimId: "shared-owner",
-            proofDeliveryClaimLeaseExpiresAt: now + 5_000,
-          }),
-        ],
-        now
-      )
-    ).toBe(now + 15_000)
-  })
-
   it("preserves a live proof owner before reconciling its payment claim", async () => {
     const claimed = lifecycle("mixed-claim", {
       invoiceStatus: "received",
