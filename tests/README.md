@@ -27,7 +27,7 @@ they do not establish signature admission, relay delivery or checkout authority.
 `commerce-product-cache.test.ts` adds six local cache cases using ordinary signed
 listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
-and exact-family reads—not public relay delivery or browser cross-tab behavior.
+and exact-family readsâ€”not public relay delivery or browser cross-tab behavior.
 
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
@@ -76,6 +76,22 @@ propagation. Repeated observations of the same signed variation must not make
 its family conflict with itself; distinct conflicting variations remain refused.
 These display reads and offline tests do not establish checkout availability,
 public relay delivery, browser persistence or funded settlement.
+
+`packages/core/tests/commerce-conversation-projections.test.ts` characterizes
+conversation reads through the retained commerce facade. Its 38 offline cases
+cover participant and role isolation, summary previews and status, deterministic
+ordering, direct-message transport separation, unread counts, complete content,
+and inbox freshness/degradation metadata. Fixtures and a fake inbox owner avoid
+network access; these cases do not establish live delivery or payment settlement.
+
+Ten further `commerce-product-selection.test.ts` cases cover pure live-family
+coverage: parent identity, simple products, degraded reads, exact selected
+revisions, missing members, newer cached revisions, unrelated families and
+source-provenance union. Three facade detail cases characterize absent or older
+live parent/child evidence and pass before and after consolidation. These tests preserve
+conservative local selection; they do not establish relay completeness or
+checkout action authority. An additional exact-batch case checks complete
+versus missing-live-sibling coverage through `getProductsByIds`.
 
 `packages/core/tests/merchant-recovery-evidence.test.ts` adds 19 offline
 admission/discovery cases through the real Merchant recovery facade with signed,

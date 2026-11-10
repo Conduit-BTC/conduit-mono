@@ -223,15 +223,9 @@ export function filterExactProductRecordsForRead(
     options,
     now
   )
-  const familyAddress = (record: CommerceProductRecord) =>
-    record.product.type === "variable"
-      ? record.addressId
-      : record.product.type === "variation"
-        ? record.product.parentProductId
-        : undefined
   const contexts = new Map<string, RetainedProductFamilyContext>()
   for (const record of selected) {
-    const parentAddress = familyAddress(record)
+    const parentAddress = getVariationParentAddress(record)
     if (parentAddress && !contexts.has(parentAddress)) {
       contexts.set(parentAddress, {
         records: [],
@@ -241,7 +235,7 @@ export function filterExactProductRecordsForRead(
   }
   if (contexts.size === 0) return selected
   for (const record of records) {
-    const parentAddress = familyAddress(record)
+    const parentAddress = getVariationParentAddress(record)
     const context = parentAddress ? contexts.get(parentAddress) : undefined
     if (!context) continue
     // Keep evidence separate from nested result projections.
@@ -261,7 +255,7 @@ export function filterExactProductRecordsForRead(
       .filter((address) => hiddenAddresses.has(address))
   }
   return selected.map((record) => {
-    const parentAddress = familyAddress(record)
+    const parentAddress = getVariationParentAddress(record)
     return parentAddress
       ? { ...record, exactReadContext: contexts.get(parentAddress) }
       : record
@@ -731,4 +725,76 @@ function uniqueStrings(
   return Array.from(
     new Set(values.map((value) => value?.trim()).filter(Boolean) as string[])
   )
+}
+
+export function getVariationParentAddress(
+  target: CommerceProductRecord
+): string | undefined {
+  if (target.product.type === "simple") return undefined
+  return target.product.type === "variable"
+    ? target.addressId
+    : target.product.parentProductId
+}
+
+function isProductRecordInFamily(
+  record: CommerceProductRecord,
+  parentAddress: string
+): boolean {
+  return (
+    record.addressId === parentAddress ||
+    record.product.parentProductId === parentAddress
+  )
+}
+
+export function selectLatestProductRecordsByAddress(
+  records: readonly CommerceProductRecord[]
+): Map<string, CommerceProductRecord> {
+  const selected = new Map<string, CommerceProductRecord>()
+  for (const record of records) {
+    const existing = selected.get(record.addressId)
+    selected.set(
+      record.addressId,
+      existing ? mergeProductRecordSources(existing, record) : record
+    )
+  }
+  return selected
+}
+
+export function hasCompleteLiveVariationGroupCoverage(input: {
+  target: CommerceProductRecord
+  groupRead: {
+    records: CommerceProductRecord[]
+    degraded: boolean
+  }
+  knownRecords: CommerceProductRecord[]
+  directRecords: CommerceProductRecord[]
+}): boolean {
+  if (input.target.product.type === "simple") return true
+  if (input.groupRead.degraded) return false
+
+  const parentAddress = getVariationParentAddress(input.target)
+  if (!parentAddress) return false
+
+  const liveByAddress = selectLatestProductRecordsByAddress([
+    ...input.directRecords,
+    ...input.groupRead.records,
+  ])
+  const selectedByAddress = selectLatestProductRecordsByAddress([
+    ...input.knownRecords,
+    ...input.directRecords,
+    ...input.groupRead.records,
+  ])
+  const knownFamilyAddressIds = new Set(
+    Array.from(selectedByAddress.values())
+      .filter((record) => isProductRecordInFamily(record, parentAddress))
+      .map((record) => record.addressId)
+  )
+  knownFamilyAddressIds.add(input.target.addressId)
+  knownFamilyAddressIds.add(parentAddress)
+
+  return Array.from(knownFamilyAddressIds).every((addressId) => {
+    const selected = selectedByAddress.get(addressId)
+    const live = liveByAddress.get(addressId)
+    return !!selected && !!live && selected.eventId === live.eventId
+  })
 }
