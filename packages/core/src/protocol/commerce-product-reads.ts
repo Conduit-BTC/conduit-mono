@@ -8,6 +8,7 @@ import {
   withProductFamilyReadEvidence,
   withProductFamilyRecordReadEvidence,
   getProductLookupIds,
+  mergeProductRecordSources,
   type CommerceProductRecord,
 } from "./commerce-product-selection"
 import {
@@ -659,7 +660,18 @@ export async function getProductDetail(
             query.shouldContinue
           )
         : { records: [], degraded: false, capped: false }
-      const fetched = [...records, ...groupRead.records]
+      // The direct event is also a member of the family read. Merge repeated
+      // observations before tuple validation so one signed child cannot
+      // conflict with itself; distinct signed events remain independent.
+      const fetchedByEventId = new Map<string, CommerceProductRecord>()
+      for (const candidate of [...records, ...groupRead.records]) {
+        const existing = fetchedByEventId.get(candidate.eventId)
+        fetchedByEventId.set(
+          candidate.eventId,
+          existing ? mergeProductRecordSources(existing, candidate) : candidate
+        )
+      }
+      const fetched = [...fetchedByEventId.values()]
       const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
         undefined,
         uniqueStrings(fetched.map((record) => record.product.pubkey))
