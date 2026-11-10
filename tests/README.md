@@ -52,6 +52,13 @@ or production health.
 unchanged strict/payment sources and retained profile frontiers with simulated relays.
 It does not measure live relay traffic, availability or latency.
 
+`packages/core/tests/commerce-product-reads.test.ts` adds eight storefront read
+cases for cached filtering and family management, partial live coverage, signed
+deletions during relay and cache-write awaits, failure fallback and authority
+cancellation. These exercise the retained commerce facade with signed fixtures,
+in-memory IndexedDB and network guards; they do not establish public relay or
+browser persistence behavior.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at

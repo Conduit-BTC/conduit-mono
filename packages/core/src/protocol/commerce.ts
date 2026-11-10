@@ -1,3 +1,12 @@
+import {
+  createProductQueryMatcher,
+  sortProducts,
+  applyProductLimit,
+  getProductRawEventLimit,
+  getMerchantStorefront as readMerchantStorefront,
+  getCachedMerchantStorefront as readCachedMerchantStorefront,
+  type StorefrontReadDependencies,
+} from "./commerce-product-reads"
 import { groupOrderConversationMessages } from "./order-conversation"
 import {
   cachedDirectMessageRow,
@@ -22,8 +31,7 @@ import {
   relayTargetsFromUrls,
   type RelayTarget,
 } from "./relay-authority"
-import { compareCommercePrices } from "../pricing"
-import type { Product, Profile } from "../types"
+import type { Profile } from "../types"
 import {
   filterProductRecordsForRead as selectProductRecordsForRead,
   filterExactProductRecordsForRead as selectExactProductRecordsForRead,
@@ -141,7 +149,6 @@ import {
   type LegacyDmDecryptFailure,
   type ParsedDirectMessage,
 } from "./messaging"
-import { canonicalizeProductTags } from "./products"
 import { MAX_PRODUCT_RELAY_HINTS } from "./product-reference"
 import {
   projectProfileContent,
@@ -213,10 +220,7 @@ const PRODUCT_AUTHOR_CHUNK_SIZE = 64
 // Same-author items share one plan, while every requested author is eventually
 // scheduled so a healthy multi-merchant catalog is not silently truncated.
 const PRODUCT_AUTHOR_CHUNK_CONCURRENCY = 2
-const PRODUCT_RAW_EVENT_LIMIT_DEFAULT = 600
-const PRODUCT_RAW_EVENT_LIMIT_FLOOR = 100
-const PRODUCT_RAW_EVENT_LIMIT_MAX = 1_200
-const PRODUCT_RAW_EVENT_OVERFETCH_FACTOR = 6
+
 const PRODUCT_VARIATION_EVENT_LIMIT = 200
 const PROFILE_CACHE_TTL_MS = 5 * 60_000
 const CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT = 50
@@ -1487,10 +1491,6 @@ function getTagValue(
   return null
 }
 
-function normalizeText(value: string | undefined): string {
-  return (value ?? "").trim().toLowerCase()
-}
-
 function uniqueStrings(
   values: readonly (string | undefined | null)[]
 ): string[] {
@@ -1824,78 +1824,6 @@ async function streamProductRecordChunks(input: {
   // deletion frontier must still follow every scheduled progressive batch.
   await Promise.all(progressAdmissions)
   await pendingProgress
-}
-
-function createProductQueryMatcher(
-  query: MarketplaceProductsQuery
-): (record: CommerceProductRecord) => boolean {
-  const textQuery = normalizeText(query.textQuery)
-  const authors = query.authorPubkeys?.length
-    ? new Set(query.authorPubkeys)
-    : null
-  const tags = query.tags?.length
-    ? new Set(canonicalizeProductTags(query.tags))
-    : null
-  return ({ product }) => {
-    if (authors && !authors.has(product.pubkey)) return false
-    if (query.merchantPubkey && product.pubkey !== query.merchantPubkey)
-      return false
-    if (textQuery) {
-      const haystack =
-        `${product.title}\n${product.summary ?? ""}`.toLowerCase()
-      if (!haystack.includes(textQuery)) return false
-    }
-    if (
-      tags &&
-      !canonicalizeProductTags(product.tags).some((tag) => tags.has(tag))
-    )
-      return false
-    return true
-  }
-}
-
-function sortProducts(
-  records: CommerceProductRecord[],
-  sort: CommerceSortMode | undefined
-): CommerceProductRecord[] {
-  const items = [...records]
-  const familySummaryPrice = (record: CommerceProductRecord): Product =>
-    record.family?.priceSummary.minimum?.product ?? record.product
-  switch (sort) {
-    case "price_asc":
-      return items.sort(
-        (a, b) =>
-          compareCommercePrices(
-            familySummaryPrice(a),
-            familySummaryPrice(b),
-            null,
-            "asc"
-          ) || b.product.updatedAt - a.product.updatedAt
-      )
-    case "price_desc":
-      return items.sort(
-        (a, b) =>
-          compareCommercePrices(
-            familySummaryPrice(a),
-            familySummaryPrice(b),
-            null,
-            "desc"
-          ) || b.product.updatedAt - a.product.updatedAt
-      )
-    case "updated_at_desc":
-      return items.sort(
-        (a, b) =>
-          b.product.updatedAt - a.product.updatedAt ||
-          b.eventCreatedAt - a.eventCreatedAt
-      )
-    case "newest":
-    default:
-      return items.sort(
-        (a, b) =>
-          b.eventCreatedAt - a.eventCreatedAt ||
-          b.product.updatedAt - a.product.updatedAt
-      )
-  }
 }
 
 function filterProductRecordsForRead(
@@ -2788,31 +2716,6 @@ async function fetchPublicProductRecordsProgressive(
   return resolved
 }
 
-function applyProductLimit(
-  records: CommerceProductRecord[],
-  limit: number | undefined
-): CommerceProductRecord[] {
-  return limit === undefined ? records : records.slice(0, limit)
-}
-
-function getProductRawEventLimit(displayLimit: number | undefined): number {
-  if (
-    displayLimit === undefined ||
-    !Number.isFinite(displayLimit) ||
-    displayLimit <= 0
-  ) {
-    return PRODUCT_RAW_EVENT_LIMIT_DEFAULT
-  }
-
-  return Math.min(
-    PRODUCT_RAW_EVENT_LIMIT_MAX,
-    Math.max(
-      PRODUCT_RAW_EVENT_LIMIT_FLOOR,
-      Math.ceil(displayLimit) * PRODUCT_RAW_EVENT_OVERFETCH_FACTOR
-    )
-  )
-}
-
 export async function getFollowPubkeys(
   query: FollowListQuery
 ): Promise<FollowListResult> {
@@ -3463,185 +3366,31 @@ export async function getCachedMarketplaceProducts(
   return { data: withProductFamilyReadEvidence(cached, meta), meta }
 }
 
+function storefrontReadDependencies(): StorefrontReadDependencies {
+  return {
+    fetchPublicProductRecords,
+    mergeCachedAndLiveProductRecords,
+    createMeta: (source, options) =>
+      createMeta("merchant_storefront", source, PRODUCT_CAPABILITIES, options),
+    now,
+  }
+}
+
 export async function getMerchantStorefront(
   query: MerchantStorefrontQuery
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const cached = await getCachedProductRecords(query.merchantPubkey, {
-    includeStale: true,
-    includeMarketHidden: true,
-  })
-
-  try {
-    let transportDegraded = false
-    let readCapped = false
-    let productReadCoverage: "complete" | "partial" | "unavailable" =
-      "unavailable"
-    const rawEventLimit = getProductRawEventLimit(query.limit)
-    const liveRecords = await fetchPublicProductRecords({
-      retainRevisions: true,
-      authors: [query.merchantPubkey],
-      authenticatedPubkey: query.authenticatedPubkey,
-      accountPubkey: query.accountPubkey,
-      shouldContinue: query.shouldContinue,
-      limit: rawEventLimit,
-      readPolicy: query.readPolicy,
-      deletionCandidates: cached,
-      deletionReadPolicy: query.deletionReadPolicy,
-      // Merchant reads preserve the pre-existing broad kind-5 fallback unless
-      // a latency-sensitive caller (such as Market storefront hydration)
-      // explicitly opts out.
-      deletionFallbackWhenEmpty: query.deletionFallbackWhenEmpty !== false,
-      onReadCoverage: (coverage) => {
-        productReadCoverage = coverage
-      },
-      onTransportStatus: (degraded, capped) => {
-        transportDegraded ||= degraded
-        readCapped ||= capped
-      },
-    })
-    const deletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey
-    )
-    const mergedRecords = mergeCachedAndLiveProductRecords({
-      cached,
-      live: liveRecords,
-      deletionTimestamps,
-    })
-
-    await cacheProductRecords(mergedRecords)
-    const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey
-    )
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    const currentRecords = mergeCachedAndLiveProductRecords({
-      cached,
-      live: liveRecords,
-      deletionTimestamps: currentDeletionTimestamps,
-    })
-    const sorted = sortProducts(
-      filterProductRecordsForRead(currentRecords, {
-        includeMarketHidden: query.includeMarketHidden,
-        groupVariations: query.includeMarketHidden ? false : true,
-      }).filter(
-        createProductQueryMatcher({
-          merchantPubkey: query.merchantPubkey,
-          textQuery: query.textQuery,
-          tags: query.tag ? [query.tag] : undefined,
-          sort: query.sort,
-          limit: query.limit,
-        })
-      ),
-      query.sort
-    )
-    const filtered = applyProductLimit(sorted, query.limit)
-
-    const meta =
-      liveRecords.length === 0 && filtered.length > 0
-        ? createMeta(
-            "merchant_storefront",
-            "local_cache",
-            PRODUCT_CAPABILITIES,
-            { stale: true, degraded: true }
-          )
-        : createMeta("merchant_storefront", "commerce", PRODUCT_CAPABILITIES, {
-            capped: readCapped || liveRecords.length >= rawEventLimit,
-            degraded:
-              transportDegraded ||
-              readCapped ||
-              liveRecords.length >= rawEventLimit,
-          })
-    return {
-      data: withProductFamilyReadEvidence(filtered, meta),
-      meta: { ...meta, productReadCoverage },
-    }
-  } catch (error) {
-    if (query.shouldContinue?.() === false) throw error
-    const deletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey
-    )
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    const currentCache = mergeCachedAndLiveProductRecords({
-      cached,
-      live: [],
-      deletionTimestamps,
-    })
-    const filteredCache = sortProducts(
-      filterProductRecordsForRead(currentCache, {
-        includeMarketHidden: query.includeMarketHidden,
-        groupVariations: query.includeMarketHidden ? false : true,
-      }).filter(
-        createProductQueryMatcher({
-          merchantPubkey: query.merchantPubkey,
-          textQuery: query.textQuery,
-          tags: query.tag ? [query.tag] : undefined,
-        })
-      ),
-      query.sort
-    )
-
-    // An empty resolved fallback is meaningful when signed evidence removed
-    // the captured products. Rejecting would leave callers' old paint intact.
-    if (filteredCache.length > 0 || currentCache.length < cached.length) {
-      const meta = createMeta(
-        "merchant_storefront",
-        "local_cache",
-        PRODUCT_CAPABILITIES,
-        { stale: true, degraded: true }
-      )
-      return {
-        data: withProductFamilyReadEvidence(
-          applyProductLimit(filteredCache, query.limit),
-          meta
-        ),
-        meta,
-      }
-    }
-
-    throw error
-  }
+  return readMerchantStorefront(query, storefrontReadDependencies())
 }
 
 export async function getCachedMerchantStorefront(
   query: MerchantStorefrontQuery,
   options: CachedProductReadOptions = { includeStale: true }
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const readOptions = {
-    ...options,
-    includeMarketHidden: true,
-  }
-  const cached = applyProductLimit(
-    sortProducts(
-      filterProductRecordsForRead(
-        await getCachedProductRecords(query.merchantPubkey, readOptions),
-        {
-          includeMarketHidden: query.includeMarketHidden,
-          groupVariations: query.includeMarketHidden ? false : true,
-        }
-      ).filter(
-        createProductQueryMatcher({
-          merchantPubkey: query.merchantPubkey,
-          textQuery: query.textQuery,
-          tags: query.tag ? [query.tag] : undefined,
-          sort: query.sort,
-        })
-      ),
-      query.sort
-    ),
-    query.limit
+  return readCachedMerchantStorefront(
+    query,
+    options,
+    storefrontReadDependencies()
   )
-
-  const meta = createMeta(
-    "merchant_storefront",
-    "local_cache",
-    PRODUCT_CAPABILITIES,
-    {
-      stale: true,
-      degraded: cached.length > 0,
-    }
-  )
-  return { data: withProductFamilyReadEvidence(cached, meta), meta }
 }
 
 function findProductDetailRecord(
