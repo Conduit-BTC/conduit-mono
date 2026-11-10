@@ -19,6 +19,10 @@ retain 60 deployment-related cases unchanged. The production deployment workflow
 also invokes these files explicitly. Operational smoke scripts are separate; ordinary `bun test` does not run them.
 The anonymous zap signer provider canary is retired with that service.
 
+`packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
+real public codec loader, exact native debit, offline-receiver commitment and
+unsupported-version refusal. Wallet responses are simulated, not settlement.
+
 `guest-project-tip.test.ts` adds seven payment-boundary cases for ordinary guest
 Lightning tips, including fixed recipient, amount, network, expiry and signature
 checks. `retired-anon-zap.test.ts` adds five cases verifying that retired APIs
