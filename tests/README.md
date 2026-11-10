@@ -67,6 +67,16 @@ profiles, provisional progress, strict and payment relay completion, exact
 signed payment evidence and authority cancellation. These offline cases do not
 establish live relay delivery, browser persistence or funded settlement.
 
+`packages/core/tests/commerce-product-detail-reads.test.ts` exercises live and
+cached detail lookups through the commerce facade with signed listings and
+deletions, in-memory IndexedDB and network guards. It covers references,
+variation-family selection, visibility, cached batches, revision/deletion
+selection, fallback evidence, transport degradation and revoked-authority error
+propagation. Repeated observations of the same signed variation must not make
+its family conflict with itself; distinct conflicting variations remain refused.
+These display reads and offline tests do not establish checkout availability,
+public relay delivery, browser persistence or funded settlement.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at
