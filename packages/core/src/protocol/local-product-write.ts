@@ -16,7 +16,7 @@ import { EVENT_KINDS } from "./kinds"
 import {
   projectSignedProductDeletionForLocalCommit,
   projectSignedProductListingForLocalCommit,
-} from "./commerce"
+} from "./commerce-product-cache"
 import {
   withLocalProductCoordinateLocks,
   readCurrentProductWriteRevision,
