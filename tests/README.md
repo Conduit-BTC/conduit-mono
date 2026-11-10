@@ -59,6 +59,14 @@ cancellation. These exercise the retained commerce facade with signed fixtures,
 in-memory IndexedDB and network guards; they do not establish public relay or
 browser persistence behavior.
 
+`packages/core/tests/commerce-profile-reads.test.ts` exercises profile reads
+through the commerce facade using signed kind-0 fixtures, in-memory IndexedDB
+and network guards. It covers display-cache expiry and owner refresh, retained
+frontiers during refresh and concurrent writes, address removal and malformed
+profiles, provisional progress, strict and payment relay completion, exact
+signed payment evidence and authority cancellation. These offline cases do not
+establish live relay delivery, browser persistence or funded settlement.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at
