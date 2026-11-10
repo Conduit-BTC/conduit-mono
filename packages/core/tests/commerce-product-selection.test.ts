@@ -348,6 +348,33 @@ describe("live product family coverage selection", () => {
     }
   })
 
+  it("refuses a parent absent from every input even when the child names it", () => {
+    const { red } = family()
+    expect(
+      hasCompleteLiveVariationGroupCoverage({
+        target: red,
+        knownRecords: [red],
+        directRecords: [red],
+        groupRead: { records: [red], degraded: false },
+      })
+    ).toBe(false)
+  })
+
+  it("accepts a newer live revision than the retained cached family member", () => {
+    const { parent, red, blue } = family()
+    for (const member of [parent, blue]) {
+      const newer = { ...member, eventId: "f".repeat(64), eventCreatedAt: 20 }
+      expect(
+        hasCompleteLiveVariationGroupCoverage({
+          target: red,
+          knownRecords: [parent, red, blue],
+          directRecords: [red],
+          groupRead: { records: [parent, blue, newer], degraded: false },
+        })
+      ).toBe(true)
+    }
+  })
+
   it("refuses an older live revision when a newer parent or child is known", () => {
     const { parent, red, blue } = family()
     for (const selected of [parent, blue]) {

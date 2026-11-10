@@ -22,6 +22,7 @@ import {
   getCachedProductsByIds,
   getMerchantStorefront,
   getProductDetail,
+  getProductsByIds,
 } from "../src/protocol/commerce"
 
 const testDb = new ConduitDB(`product-detail-reads-${crypto.randomUUID()}`, {
@@ -741,6 +742,37 @@ describe("commerce product-detail reads", () => {
       })
     })
   }
+
+  it("keeps exact batch availability partial when a cached family sibling is missing live", async () => {
+    const parent = listing("batch-parent", 10, 10, [
+      ["type", "variable", "digital"],
+    ])
+    const child = listing("batch-child", 8, 11, [
+      ["type", "variation", "digital"],
+      ["a", coordinate("batch-parent")],
+      ["spec", "Color", "Red"],
+    ])
+    const sibling = listing("batch-sibling", 12, 12, [
+      ["type", "variation", "digital"],
+      ["a", coordinate("batch-parent")],
+      ["spec", "Color", "Blue"],
+    ])
+    for (const event of [parent, child, sibling])
+      await cacheSignedProductListingEvent(event)
+    for (const live of [
+      [parent, child, sibling],
+      [parent, child],
+    ]) {
+      __setCommerceTestOverrides({ fetchPublicEvents: fixtureFetch(live) })
+      const result = await getProductsByIds([coordinate("batch-child")])
+      const complete = live.includes(sibling)
+      expect(result.diagnostics[0]?.coverage?.listing).toBe(
+        complete ? "complete" : "partial"
+      )
+      expect(result.meta.stale).toBe(!complete)
+      expect(result.data.map((record) => record.eventId)).toEqual([child.id])
+    }
+  })
 
   it("propagates transport cancellation after account authority is revoked instead of returning cache", async () => {
     const event = listing("authority")
