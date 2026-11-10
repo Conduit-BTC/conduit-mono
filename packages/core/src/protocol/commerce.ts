@@ -454,7 +454,7 @@ export interface ProfileBatchQuery {
   skipCache?: boolean
   /** Require relay-coverage diagnostics before absence is treated as current. */
   requireCompleteEvidence?: boolean
-  /** Limit cache comparison to fields authoritative for the current action. */
+  /** Field-comparison scope; full_profile alone does not require complete reads. */
   evidenceScope?: "full_profile" | "payment" | "profile_edit"
   /** Opt into author-relay coverage for the settled-router payment preflight. */
   authorRelayPaymentPolicy?: boolean
@@ -5590,36 +5590,6 @@ function resolveProductAvailabilityIssue(input: {
   return "product_missing"
 }
 
-/**
- * Resolve one exact atomic kind-30402 listing.
- *
- * Unlike getProductDetail, variation coordinates are not projected to their
- * variable parent. Mutation workflows use this interface so stock and other
- * child-specific fields are always verified and republished on the selected
- * leaf.
- */
-export async function getAtomicProductDetail(
-  query: ProductDetailQuery
-): Promise<CommerceResult<CommerceProductRecord | null>> {
-  const { addressId } = getProductLookupIds(query.productId)
-  if (!addressId) {
-    return {
-      data: null,
-      meta: createMeta("product_detail", "public", PRODUCT_CAPABILITIES),
-    }
-  }
-
-  const result = await getProductsByIds([addressId], {
-    includeMarketHidden: query.includeMarketHidden,
-    authenticatedPubkey: query.authenticatedPubkey,
-    shouldContinue: query.shouldContinue,
-  })
-  return {
-    data: result.data.find((record) => record.addressId === addressId) ?? null,
-    meta: result.meta,
-  }
-}
-
 export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }
@@ -5822,11 +5792,15 @@ export async function getProfiles(
       ...query,
       pubkeys: missing,
     })
-    // Product delivery sources can help display-profile discovery, but are
-    // not evidence of where the merchant publishes their payment profile.
-    // Under a bounded payment read they must not crowd out author write relays.
+    // Ordinary display reads use current caller hints, not the accumulated
+    // delivery sources of unrelated cached products. Strict profile discovery
+    // remains unchanged; product provenance never authorizes payment profiles.
+    const ordinaryDisplayRead =
+      !query.requireCompleteEvidence &&
+      query.evidenceScope !== "payment" &&
+      query.evidenceScope !== "profile_edit"
     const sourceRelayHints =
-      query.evidenceScope === "payment"
+      query.evidenceScope === "payment" || ordinaryDisplayRead
         ? profileQueryRelayHints
         : mergeContextualRelayHints(
             profileQueryRelayHints,

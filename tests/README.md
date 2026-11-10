@@ -29,6 +29,10 @@ listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
 and exact-family reads—not public relay delivery or browser cross-tab behavior.
 
+`packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
+real public codec loader, exact native debit, offline-receiver commitment and
+unsupported-version refusal. Wallet responses are simulated, not settlement.
+
 `guest-project-tip.test.ts` adds seven payment-boundary cases for ordinary guest
 Lightning tips, including fixed recipient, amount, network, expiry and signature
 checks. `retired-anon-zap.test.ts` adds five cases verifying that retired APIs
@@ -43,6 +47,10 @@ with in-memory IndexedDB. Provider and relay responses are simulated. Wallet
 migration uses an in-memory transactional store. This is not evidence of real
 provider settlement, public relay delivery, browser persistence, device recovery,
 or production health.
+
+`profile-display-relay-scope.test.ts` checks ordinary display relay selection,
+unchanged strict/payment sources and retained profile frontiers with simulated relays.
+It does not measure live relay traffic, availability or latency.
 
 ## Scope and rebuilding
 
