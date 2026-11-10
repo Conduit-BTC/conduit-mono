@@ -21,6 +21,8 @@ import {
   getCachedMarketplaceProducts,
   getMarketplaceProducts,
   getMarketplaceProductsProgressive,
+  getProductsByIds,
+  hasExactLiveProductAvailabilityEvidence,
   type CommerceProductRecord,
   type MarketplaceProductsQuery,
 } from "../src/protocol/commerce"
@@ -1217,5 +1219,47 @@ describe("progressive marketplace reads", () => {
     release.resolve()
     await expect(read).rejects.toMatchObject({ code: "authority_changed" })
     expect(snapshots).toEqual([])
+  })
+})
+
+describe("signed exact-cache revision frontiers", () => {
+  it("keeps newer cached terms over an older exact relay revision without live authority", async () => {
+    const old = listing("exact-frontier", 10, 10)
+    const current = listing("exact-frontier", 4, 12)
+    await cacheSignedProductListingEvent(current)
+    __setCommerceTestOverrides({ fetchPublicEvents: relayFixture([old]) })
+    const result = await getProductsByIds([coordinate("exact-frontier")])
+    expect(result.data.map((record) => record.eventId)).toEqual([current.id])
+    expect(result.data[0]?.product.price).toBe(4)
+    expect(result.meta).toMatchObject({ source: "local_cache", stale: true })
+    expect(
+      hasExactLiveProductAvailabilityEvidence(
+        result.diagnostics[0],
+        coordinate("exact-frontier")
+      )
+    ).toBe(false)
+  })
+
+  it("keeps newer cached terms in every ranked snapshot when the index and refresh lag", async () => {
+    const old = listing("ranked-frontier", 10, 10)
+    const current = listing("ranked-frontier", 4, 12)
+    await cacheSignedProductListingEvent(current)
+    __setCommerceTestOverrides({
+      fetchPublicEvents: relayFixture([old], { ranked: [old] }),
+    })
+    const progress = recorder()
+    const result = await getMarketplaceProducts(
+      rankedQuery({ onProgress: progress.onProgress })
+    )
+    expect(result.data.map((record) => record.eventId)).toEqual([current.id])
+    expect(result.data[0]?.product.price).toBe(4)
+    expect(result.meta.stale).toBe(true)
+    expect(progress.snapshots.length).toBeGreaterThan(0)
+    for (const snapshot of progress.snapshots) {
+      expect(snapshot.data.map((record) => record.eventId)).toEqual([
+        current.id,
+      ])
+      expect(snapshot.meta.stale).toBe(true)
+    }
   })
 })

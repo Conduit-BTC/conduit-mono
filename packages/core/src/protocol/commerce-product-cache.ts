@@ -1261,7 +1261,9 @@ export async function getCachedProductRecords(
     )
 }
 
-/** Read only exact targets and same-author family context before normalization. */
+/** Read and readmit exact targets and same-author family context before projection.
+ * Persisted verification provenance must be restored from signed bytes before
+ * family discovery or comparison with an already admitted live revision. */
 export async function getCachedExactProductRecords(
   productIds: readonly string[],
   knownRecords: readonly CommerceProductRecord[] = []
@@ -1287,24 +1289,30 @@ export async function getCachedExactProductRecords(
         (!!row.parentProductId && parents.has(row.parentProductId)))
     if (productCacheTestOverrides.getCachedProducts) {
       // Existing fixtures may ignore the optional native-query selection.
-      return (
-        await productCacheTestOverrides.getCachedProducts(
-          undefined,
-          selectedAuthors,
-          selection
-        )
-      ).filter(matches)
-    }
-    if (selection.ids) {
-      return (await db.products.bulkGet([...ids])).filter(
-        (row): row is CachedProduct => row !== undefined && matches(row)
+      return readmitProductRows(
+        (
+          await productCacheTestOverrides.getCachedProducts(
+            undefined,
+            selectedAuthors,
+            selection
+          )
+        ).filter(matches)
       )
     }
-    return db.products
-      .where("pubkey")
-      .anyOf([...selectedAuthors])
-      .filter(matches)
-      .toArray()
+    if (selection.ids) {
+      return readmitProductRows(
+        (await db.products.bulkGet([...ids])).filter(
+          (row): row is CachedProduct => row !== undefined && matches(row)
+        )
+      )
+    }
+    return readmitProductRows(
+      await db.products
+        .where("pubkey")
+        .anyOf([...selectedAuthors])
+        .filter(matches)
+        .toArray()
+    )
   }
   // Keep reading prior context IDs even after a sibling changes parent/type;
   // its newer signed row must supersede the retained family membership.

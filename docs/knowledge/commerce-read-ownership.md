@@ -19,6 +19,17 @@ Browse/cache paint is display evidence. Exact checkout availability still uses
 positive selected live evidence and its typed coverage/diagnostics; moving a
 read does not upgrade cached or partial evidence into action authority.
 
+Exact cached rows pass the shared signed-byte admission boundary before family
+discovery or revision comparison. Stored projection fields are display data;
+invalid signed identities are discarded, and admitted bytes rebuild the terms.
+A newer cached revision remains stale until that selected revision is observed
+live; an older relay response cannot authorize it.
+
+Catalog and progressive reads retain their existing per-call cache snapshot.
+This extraction introduces no continuously live cache-revision stream. Local
+deletion frontiers are reapplied after awaited work, while exact action authority
+remains a separate read.
+
 The product reader receives the existing clock and transport callbacks. Ranked
 search keeps one relevance response and passes its verified records into the
 exact refresh even if the initial cache write fails. Progressive persistence
