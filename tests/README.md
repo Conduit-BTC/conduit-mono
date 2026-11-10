@@ -42,10 +42,11 @@ continuation, failed-attempt private recovery, and preventing replacement of an
 invoice already awaiting payment. It uses the real payment service and atomic
 lifecycle updates against in-memory IndexedDB, with provider responses simulated.
 
-`packages/core/tests/pricing-display.test.ts` adds five feed-boundary cases:
+`packages/core/tests/pricing-display.test.ts` adds seven feed-boundary cases:
 direct display lookup/failover, isolated query/storage caches, saved-estimate
-fallback and unchanged signed economic pricing/recovery. It uses simulated
-provider responses and React server rendering, not browser or funded checks.
+fallback, unchanged signed economic pricing/recovery and separate historical
+policy caches. It uses simulated provider responses and React server rendering,
+not browser or funded checks.
 
 The other `packages/core/tests/*pricing*.test.ts` cases cover versioned pricing
 digests, fixed historical observations, the effective 1% conversion bound,
