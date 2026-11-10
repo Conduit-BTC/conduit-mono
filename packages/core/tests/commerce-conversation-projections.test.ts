@@ -315,26 +315,31 @@ describe("committed order conversation projections through the commerce facade",
   })
 
   it("uses ID ordering for equal order-message timestamps and sorts lists newest first", () => {
-    const messages = [
-      reply("z", merchant, buyer, 10),
-      reply("a", buyer, merchant, 10),
-      order(),
-      order("older", buyer, other),
-    ]
-    const rows = projectCommerceInbox(
-      snapshot({ orderMessages: messages }),
-      buyer
-    ).buyer.data
-    expect(rows.map((row) => row.latestAt)).toEqual([10, 1])
-    expect(rows[0]!.messages?.map((message) => message.id)).toEqual([
-      "order",
-      "a",
-      "z",
-    ])
-    expect(rows[0]).toMatchObject({
-      preview: "Synthetic reply",
-      messageCount: 3,
-    })
+    for (const principal of [buyer, merchant]) {
+      const messages = [
+        reply("z", merchant, buyer, 10),
+        reply("a", buyer, merchant, 10),
+        order(),
+        principal === buyer
+          ? order("older", buyer, other)
+          : order("older", other, merchant),
+      ]
+      const views = projectCommerceInbox(
+        snapshot({ orderMessages: messages }),
+        principal
+      )
+      const rows = principal === buyer ? views.buyer.data : views.merchant.data
+      expect(rows.map((row) => row.latestAt)).toEqual([10, 1])
+      expect(rows[0]!.messages?.map((message) => message.id)).toEqual([
+        "order",
+        "a",
+        "z",
+      ])
+      expect(rows[0]).toMatchObject({
+        preview: "Synthetic reply",
+        messageCount: 3,
+      })
+    }
   })
 
   const previews: Array<[string, ParsedOrderMessage, string]> = [
@@ -436,6 +441,7 @@ describe("committed order conversation projections through the commerce facade",
       "Receipt note",
     ],
     ["plain reply", reply("latest"), "Synthetic reply"],
+    ["empty plain reply", { ...reply("latest"), payload: { note: "" } }, ""],
     [
       "proof",
       {
