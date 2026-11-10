@@ -19,6 +19,16 @@ retain 60 deployment-related cases unchanged. The production deployment workflow
 also invokes these files explicitly. Operational smoke scripts are separate; ordinary `bun test` does not run them.
 The anonymous zap signer provider canary is retired with that service.
 
+`commerce-product-selection.test.ts` adds five local selection cases for browse
+visibility, exact pickup exceptions, shared family context, revision/deletion
+reconciliation and deterministic source merging. These use projected records;
+they do not establish signature admission, relay delivery or checkout authority.
+
+`commerce-product-cache.test.ts` adds six local cache cases using ordinary signed
+listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
+revision/provenance retention, failed-save observers, deletion retry/concurrency
+and exact-family reads—not public relay delivery or browser cross-tab behavior.
+
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
 unsupported-version refusal. Wallet responses are simulated, not settlement.
@@ -47,6 +57,17 @@ with in-memory IndexedDB. Provider and relay responses are simulated. Wallet
 migration uses an in-memory transactional store. This is not evidence of real
 provider settlement, public relay delivery, browser persistence, device recovery,
 or production health.
+
+`profile-display-relay-scope.test.ts` checks ordinary display relay selection,
+unchanged strict/payment sources and retained profile frontiers with simulated relays.
+It does not measure live relay traffic, availability or latency.
+
+`packages/core/tests/commerce-product-reads.test.ts` adds eight storefront read
+cases for cached filtering and family management, partial live coverage, signed
+deletions during relay and cache-write awaits, failure fallback and authority
+cancellation. These exercise the retained commerce facade with signed fixtures,
+in-memory IndexedDB and network guards; they do not establish public relay or
+browser persistence behavior.
 
 ## Scope and rebuilding
 
