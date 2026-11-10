@@ -223,15 +223,9 @@ export function filterExactProductRecordsForRead(
     options,
     now
   )
-  const familyAddress = (record: CommerceProductRecord) =>
-    record.product.type === "variable"
-      ? record.addressId
-      : record.product.type === "variation"
-        ? record.product.parentProductId
-        : undefined
   const contexts = new Map<string, RetainedProductFamilyContext>()
   for (const record of selected) {
-    const parentAddress = familyAddress(record)
+    const parentAddress = getVariationParentAddress(record)
     if (parentAddress && !contexts.has(parentAddress)) {
       contexts.set(parentAddress, {
         records: [],
@@ -241,7 +235,7 @@ export function filterExactProductRecordsForRead(
   }
   if (contexts.size === 0) return selected
   for (const record of records) {
-    const parentAddress = familyAddress(record)
+    const parentAddress = getVariationParentAddress(record)
     const context = parentAddress ? contexts.get(parentAddress) : undefined
     if (!context) continue
     // Keep evidence separate from nested result projections.
@@ -261,7 +255,7 @@ export function filterExactProductRecordsForRead(
       .filter((address) => hiddenAddresses.has(address))
   }
   return selected.map((record) => {
-    const parentAddress = familyAddress(record)
+    const parentAddress = getVariationParentAddress(record)
     return parentAddress
       ? { ...record, exactReadContext: contexts.get(parentAddress) }
       : record

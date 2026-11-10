@@ -105,6 +105,6 @@ Eight further `commerce-product-selection.test.ts` cases cover pure live-family
 coverage: parent identity, simple products, degraded reads, exact selected
 revisions, missing members, newer cached revisions, unrelated families and
 source-provenance union. Three facade detail cases characterize absent or older
-live parent/child evidence before the helper consolidation. These tests preserve
+live parent/child evidence and pass before and after consolidation. These tests preserve
 conservative local selection; they do not establish relay completeness or
 checkout action authority.
