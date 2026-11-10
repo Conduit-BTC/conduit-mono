@@ -38,6 +38,10 @@ migration uses an in-memory transactional store. This is not evidence of real
 provider settlement, public relay delivery, browser persistence, device recovery,
 or production health.
 
+`profile-display-relay-scope.test.ts` checks ordinary display relay selection,
+unchanged strict/payment sources and retained profile frontiers with simulated relays.
+It does not measure live relay traffic, availability or latency.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at
