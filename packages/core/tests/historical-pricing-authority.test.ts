@@ -57,7 +57,10 @@ function history(
   }
 }
 
-async function signedShippingQuote(threshold: number) {
+async function signedShippingQuote(options: {
+  domesticThreshold?: number
+  internationalThreshold?: number
+}) {
   const secret = new Uint8Array(32)
   secret[31] = 1
   const pubkey = getPublicKey(secret)
@@ -72,9 +75,22 @@ async function signedShippingQuote(threshold: number) {
       rules: [
         { country: "US", bands: [{ maxWeightGrams: 1_000, priceMinor: 500 }] },
       ],
-      freeShippingThresholdMinor: threshold,
+      ...(options.domesticThreshold !== undefined
+        ? { freeShippingThresholdMinor: options.domesticThreshold }
+        : {}),
     },
-    international: null,
+    international:
+      options.internationalThreshold !== undefined
+        ? {
+            rules: [
+              {
+                country: "CA",
+                bands: [{ maxWeightGrams: 1_000, priceMinor: 500 }],
+              },
+            ],
+            freeShippingThresholdMinor: options.internationalThreshold,
+          }
+        : null,
   }
   const product = productSchema.parse({
     id: `30402:${pubkey}:shipping-test`,
@@ -294,7 +310,9 @@ describe("invoice-time historical pricing authority", () => {
   ] as const)(
     "keeps the signed shipping threshold %i and its free-shipping decision",
     async (threshold, free) => {
-      const { quote, shipping } = await signedShippingQuote(threshold)
+      const { quote, shipping } = await signedShippingQuote({
+        domesticThreshold: threshold,
+      })
       expect(shipping.freeShippingApplied).toBe(free)
       expect(shipping.pricingRate).toEqual(quote.pricing!.rate)
       expect(
@@ -307,4 +325,38 @@ describe("invoice-time historical pricing authority", () => {
       ).toBe("verified")
     }
   )
+
+  it("ignores another destination table's unused subtotal conversion after country normalization", async () => {
+    const { quote } = await signedShippingQuote({
+      internationalThreshold: 1_200,
+    })
+    for (const country of ["US", "us", " us "]) {
+      const persisted = structuredClone(quote)
+      persisted.lines[0]!.shippingPolicy!.quote.destination.country = country
+      expect(
+        await verifyCheckoutSparkCommercePricingAuthority({
+          quote: persisted,
+          acceptedAtMs,
+          trustedPublicKeys: null,
+          fetchHistoricalRate: async () => history(rate(101_000, 1.122)),
+        })
+      ).toBe("verified")
+    }
+  })
+
+  it("retains the active domestic subtotal conversion bound after country normalization", async () => {
+    const { quote } = await signedShippingQuote({ domesticThreshold: 1_200 })
+    for (const country of ["US", "us", " us "]) {
+      const persisted = structuredClone(quote)
+      persisted.lines[0]!.shippingPolicy!.quote.destination.country = country
+      expect(
+        await verifyCheckoutSparkCommercePricingAuthority({
+          quote: persisted,
+          acceptedAtMs,
+          trustedPublicKeys: null,
+          fetchHistoricalRate: async () => history(rate(101_000, 1.122)),
+        })
+      ).toBe("invalid")
+    }
+  })
 })

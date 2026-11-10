@@ -172,7 +172,7 @@ function matchesHistoricalShipping(
   const policy = parsePrivateOrderShippingPolicyTags(shipping.policyEvent.tags)
   if (!policy) return false
   const table =
-    shipping.destination.country === policy.originCountry
+    shipping.destination.country.trim().toUpperCase() === policy.originCountry
       ? policy.domestic
       : policy.international
   const needsSubtotal =
