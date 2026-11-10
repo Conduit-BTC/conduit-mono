@@ -71,6 +71,7 @@ import {
   type MerchantCheckoutSparkRecoveryHandoffResult,
   type MerchantCheckoutSparkRecoveryPrivateAdapter,
 } from "../src/protocol/commerce"
+import { unwrapPrivateMessageEnvelope } from "../src/protocol/messaging"
 import { CommerceInbox } from "../src/protocol/commerce-inbox"
 import { CommerceInboxStore } from "../src/protocol/commerce-inbox-store"
 import type { SignedNostrEvent } from "../src/protocol/nostr-event-signer"
@@ -867,24 +868,34 @@ describe("unwrap failure", () => {
     })
   })
 
-  // Real timers: the production 4 s unwrap deadline is unchanged, so this
-  // case waits for it twice (discovery pass, then the exact-wrap open).
-  it("an unwrap that never answers hits the unmodified 4 s deadline and refuses", async () => {
+  // Let discovery decrypt normally so only the exact-open phase can supply
+  // this deadline signal. A premature exact-open timeout must fail this case.
+  it("an exact unwrap that never answers waits for its unmodified 4 s deadline", async () => {
     await withHarness(async (h) => {
       const { candidate } = await seedControl(h)
-      __setCommerceTestOverrides({ giftUnwrap: () => new Promise(() => {}) })
-      const started = Date.now()
+      let exactStarted: number | undefined
+      let exactOpenAttempts = 0
+      __setCommerceTestOverrides({
+        giftUnwrap: (event, signer) => {
+          if (h.relays.exactReads === 0)
+            return unwrapPrivateMessageEnvelope(event, signer)
+          exactOpenAttempts += 1
+          exactStarted = performance.now()
+          return new Promise(() => {})
+        },
+      })
       const result = await h.check(candidate)
-      const elapsed = Date.now() - started
       expect(summary(result)).toEqual({
         status: "incomplete",
         coverage: "partial",
         candidate: false,
       })
-      expect(elapsed).toBeGreaterThanOrEqual(3_900)
+      expect(exactOpenAttempts).toBe(1)
+      expect(exactStarted).toBeDefined()
+      expect(performance.now() - exactStarted!).toBeGreaterThanOrEqual(3_900)
       expect(h.consumed.count).toBe(0)
     })
-  }, 30_000)
+  }, 15_000)
 })
 
 describe("partial discovery coverage does not itself veto an intact wrap", () => {
