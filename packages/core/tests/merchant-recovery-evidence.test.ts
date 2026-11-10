@@ -516,12 +516,7 @@ const realWebSocket = globalThis.WebSocket
 let networkAttempts = 0
 let wrapA: SignedNostrEvent
 
-beforeAll(async () => {
-  wrapA = await buildHandoffWrap("recovery-evidence-checkout")
-})
-
-beforeEach(() => {
-  networkAttempts = 0
+function forbidExternalNetwork() {
   globalThis.fetch = (async () => {
     networkAttempts += 1
     throw new Error("external fetch blocked")
@@ -532,6 +527,22 @@ beforeEach(() => {
       throw new Error("external websocket blocked")
     }
   } as unknown as typeof WebSocket
+}
+
+beforeAll(async () => {
+  forbidExternalNetwork()
+  try {
+    wrapA = await buildHandoffWrap("recovery-evidence-checkout")
+    expect(networkAttempts).toBe(0)
+  } finally {
+    globalThis.fetch = realFetch
+    globalThis.WebSocket = realWebSocket
+  }
+})
+
+beforeEach(() => {
+  networkAttempts = 0
+  forbidExternalNetwork()
 })
 
 afterEach(() => {
