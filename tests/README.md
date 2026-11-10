@@ -19,6 +19,11 @@ retain 60 deployment-related cases unchanged. The production deployment workflow
 also invokes these files explicitly. Operational smoke scripts are separate; ordinary `bun test` does not run them.
 The anonymous zap signer provider canary is retired with that service.
 
+`commerce-product-selection.test.ts` adds five local selection cases for browse
+visibility, exact pickup exceptions, shared family context, revision/deletion
+reconciliation and deterministic source merging. These use projected records;
+they do not establish signature admission, relay delivery or checkout authority.
+
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
 unsupported-version refusal. Wallet responses are simulated, not settlement.
