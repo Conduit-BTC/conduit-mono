@@ -100,3 +100,11 @@ cover participant and role isolation, summary previews and status, deterministic
 ordering, direct-message transport separation, unread counts, complete content,
 and inbox freshness/degradation metadata. Fixtures and fake inbox owners avoid
 network access; these cases do not establish live delivery or payment settlement.
+
+Eight further `commerce-product-selection.test.ts` cases cover pure live-family
+coverage: parent identity, simple products, degraded reads, exact selected
+revisions, missing members, newer cached revisions, unrelated families and
+source-provenance union. Three facade detail cases characterize absent or older
+live parent/child evidence before the helper consolidation. These tests preserve
+conservative local selection; they do not establish relay completeness or
+checkout action authority.
