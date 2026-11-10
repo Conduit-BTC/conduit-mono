@@ -696,6 +696,52 @@ describe("commerce product-detail reads", () => {
     })
   })
 
+  for (const scenario of [
+    "missing-parent",
+    "older-parent",
+    "older-child",
+  ] as const) {
+    it(`keeps family evidence stale when live coverage has ${scenario}`, async () => {
+      const parentTags = [["type", "variable", "digital"]]
+      const childTags = [
+        ["type", "variation", "digital"],
+        ["a", coordinate("coverage-parent")],
+        ["spec", "Color", "Red"],
+      ]
+      const liveParent = listing("coverage-parent", 10, 10, parentTags)
+      const liveChild = listing("coverage-child", 8, 11, childTags)
+      const selectedParent =
+        scenario === "older-parent"
+          ? listing("coverage-parent", 10, 20, parentTags)
+          : liveParent
+      const selectedChild =
+        scenario === "older-child"
+          ? listing("coverage-child", 8, 21, childTags)
+          : liveChild
+      for (const event of [selectedParent, selectedChild])
+        await cacheSignedProductListingEvent(event)
+      __setCommerceTestOverrides({
+        fetchPublicEvents: fixtureFetch(
+          scenario === "missing-parent" ? [liveChild] : [liveParent, liveChild]
+        ),
+      })
+      const result = await getProductDetail({
+        productId: coordinate(
+          scenario === "older-child" ? "coverage-parent" : "coverage-child"
+        ),
+      })
+      expect(result.data?.eventId).toBe(selectedParent.id)
+      expect(
+        result.data?.family?.children.map((child) => child.eventId)
+      ).toEqual([selectedChild.id])
+      expect(result.meta).toMatchObject({ stale: true, degraded: true })
+      expect(result.data?.family?.readEvidence).toMatchObject({
+        stale: true,
+        degraded: true,
+      })
+    })
+  }
+
   it("propagates transport cancellation after account authority is revoked instead of returning cache", async () => {
     const event = listing("authority")
     await cacheSignedProductListingEvent(event)
