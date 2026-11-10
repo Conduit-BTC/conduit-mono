@@ -93,3 +93,10 @@ structure or meet a coverage percentage. Browser validation belongs on Linux.
 Changes affecting signing, payments, recovery, or stored data require a
 maintainer-owned validation plan identifying manual/provider/device checks the
 suite cannot establish. A passing build or these tests is not release approval.
+
+`packages/core/tests/commerce-conversation-projections.test.ts` characterizes
+conversation reads through the retained commerce facade. Its 37 offline cases
+cover participant and role isolation, summary previews and status, deterministic
+ordering, direct-message transport separation, unread counts, complete content,
+and inbox freshness/degradation metadata. Fixtures and fake inbox owners avoid
+network access; these cases do not establish live delivery or payment settlement.
