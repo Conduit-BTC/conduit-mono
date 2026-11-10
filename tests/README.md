@@ -93,6 +93,14 @@ conservative local selection; they do not establish relay completeness or
 checkout action authority. An additional exact-batch case checks complete
 versus missing-live-sibling coverage through `getProductsByIds`.
 
+`packages/core/tests/commerce-marketplace-reads.test.ts` adds 27 offline cases
+through the retained Marketplace facade. Signed fixtures cover empty scopes,
+ranked relevance/family projection, cache-seed failure, partial/capped metadata,
+authority cancellation, signed deletion/revision observations and serialized
+progressive persistence. A final deletion-frontier callback precedes propagation
+of a final write failure. These cases preserve display-read behavior; they do
+not establish exact checkout action authority, live relay delivery or settlement.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at

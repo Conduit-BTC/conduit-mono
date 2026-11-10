@@ -5,6 +5,9 @@ import { NostrSignerError } from "./nostr-event-signer"
 import { canonicalizeProductTags } from "./products"
 import {
   filterProductRecordsForRead,
+  filterExactProductRecordsForRead,
+  selectLatestProductRecordsByAddress,
+  getVariationParentAddress,
   withProductFamilyReadEvidence,
   withProductFamilyRecordReadEvidence,
   getProductLookupIds,
@@ -16,6 +19,7 @@ import {
   filterDeletedProductRecords,
   mergeDeletionTimestamps,
   getCachedProductRecords,
+  getCachedExactProductRecords,
   getLocalProductDeletionTimestamps,
   type CachedProductReadOptions,
   type DeletionTimestamps,
@@ -30,6 +34,8 @@ import type {
   MarketplaceProductsQuery,
   MerchantStorefrontQuery,
   ProductDetailQuery,
+  ProductsByIdsOptions,
+  ProductsByIdsResult,
 } from "./commerce"
 
 /** Existing transport and facade metadata remain composed by commerce.ts. */
@@ -839,4 +845,638 @@ export async function getCachedProductsByIds(
     ),
     meta,
   }
+}
+
+interface MarketplacePublicReadQuery {
+  retainRevisions?: boolean
+  authors?: string[]
+  deletionCandidates?: CommerceProductRecord[]
+  authenticatedPubkey?: string | null
+  accountPubkey?: string | null
+  signal?: AbortSignal
+  shouldContinue?: () => boolean
+  searchText?: string
+  limit?: number
+  readPolicy?: CommerceReadPolicy
+  onTransportStatus?: (degraded: boolean, capped: boolean) => void
+  onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
+  localDeletionEvidenceOnly?: boolean
+}
+/** Transport and exact-read authority remain composed by the commerce facade. */
+export interface MarketplaceReadDependencies {
+  readonly fetchPublicProductRecords: (
+    query: MarketplacePublicReadQuery
+  ) => Promise<CommerceProductRecord[]>
+  readonly fetchPublicProductRecordsProgressive: (
+    query: MarketplacePublicReadQuery,
+    onRecords: (
+      records: CommerceProductRecord[],
+      relayUrl: string
+    ) => void | Promise<void>
+  ) => Promise<CommerceProductRecord[]>
+  readonly mergeCachedAndLiveProductRecords: StorefrontReadDependencies["mergeCachedAndLiveProductRecords"]
+  readonly readProductsByIds: (
+    ids: string[],
+    options: ProductsByIdsOptions,
+    verifiedRecords?: readonly CommerceProductRecord[]
+  ) => Promise<ProductsByIdsResult>
+  readonly createMeta: (
+    source: CommerceReadSource,
+    options?: Partial<CommerceFreshnessMeta>,
+    sortModes?: CommerceSortMode[]
+  ) => CommerceQueryMeta
+  readonly getSearchRelayUrls: () => string[]
+  readonly rethrowProductReadAuthorityChange: (
+    error: unknown,
+    shouldContinue?: () => boolean
+  ) => void
+  readonly now: () => number
+}
+
+/** Ranked discovery is independent of a broad catalog sweep. Only the returned
+ * coordinates and their family context can survive into this response. */
+function projectRankedProductSearch(
+  now: () => number,
+  hits: CommerceProductRecord[],
+  records: CommerceProductRecord[],
+  query: MarketplaceProductsQuery
+): CommerceProductRecord[] {
+  records = [...selectLatestProductRecordsByAddress(records).values()]
+  const wanted = new Set(hits.map((record) => record.addressId))
+  const byAddress = new Map(records.map((record) => [record.addressId, record]))
+  const eligible = new Set(
+    filterExactProductRecordsForRead(records, wanted, {}, now).map(
+      (record) => record.addressId
+    )
+  )
+  const ranks = new Map<string, number>()
+  const matchesQuery = createProductQueryMatcher({
+    ...query,
+    textQuery: undefined,
+  })
+  hits.forEach((hit, index) => {
+    const current = byAddress.get(hit.addressId)
+    if (!current || !eligible.has(current.addressId)) return
+    const address = getVariationParentAddress(current) ?? current.addressId
+    if (!ranks.has(address)) ranks.set(address, index)
+  })
+  return applyProductLimit(
+    filterProductRecordsForRead(records, {}, now)
+      .filter((record) => ranks.has(record.addressId) && matchesQuery(record))
+      .sort(
+        (left, right) =>
+          ranks.get(left.addressId)! - ranks.get(right.addressId)!
+      ),
+    query.limit
+  )
+}
+
+async function getRankedMarketplaceProducts(
+  query: MarketplaceProductsQuery,
+  dependencies: MarketplaceReadDependencies
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const {
+    fetchPublicProductRecords,
+    mergeCachedAndLiveProductRecords,
+    readProductsByIds,
+    createMeta,
+    getSearchRelayUrls,
+    now,
+  } = dependencies
+
+  const assertCurrent = () => {
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+  }
+  assertCurrent()
+  const authors = query.merchantPubkey
+    ? [query.merchantPubkey]
+    : query.authorPubkeys
+  const allowedAuthors = authors ? new Set(authors) : null
+  const transport: { coverage: "complete" | "partial" | "unavailable" } = {
+    coverage: "unavailable",
+  }
+  let capped = false
+  // Keep relay capabilities minimal. Perspective/merchant/category eligibility
+  // is a client filter of this one ranked response, never independently ranked chunks.
+  const hits = (
+    await fetchPublicProductRecords({
+      searchText: query.textQuery!.trim(),
+      accountPubkey: query.accountPubkey,
+      authenticatedPubkey: query.authenticatedPubkey,
+      signal: query.signal,
+      shouldContinue: query.shouldContinue,
+      limit: 100,
+      localDeletionEvidenceOnly: true,
+      readPolicy: {
+        maxRelays: 1,
+        connectTimeoutMs: 2_000,
+        fetchTimeoutMs: 3_000,
+      },
+      onTransportStatus: (_, value) => {
+        capped = value
+      },
+      onReadCoverage: (value) => {
+        transport.coverage = value
+      },
+    })
+  ).filter(
+    (record) =>
+      record.dTag !== null &&
+      (!allowedAuthors || allowedAuthors.has(record.product.pubkey))
+  )
+  assertCurrent()
+  if (transport.coverage === "unavailable")
+    throw new Error("Product search is unavailable")
+  const wanted = hits.map((record) => record.addressId)
+  const cached = await getCachedExactProductRecords(wanted, hits).catch(
+    () => []
+  )
+  assertCurrent()
+  const deletions = await getLocalProductDeletionTimestamps(
+    undefined,
+    uniqueStrings(hits.map((record) => record.product.pubkey))
+  )
+  const initialRecords = mergeCachedAndLiveProductRecords({
+    cached,
+    live: hits,
+    deletionTimestamps: deletions,
+  })
+  const resultFor = (
+    records: CommerceProductRecord[],
+    refreshing: boolean,
+    refreshMeta?: CommerceQueryMeta
+  ): CommerceResult<CommerceProductRecord[]> => {
+    const partial =
+      capped ||
+      !!allowedAuthors ||
+      !!query.tags?.length ||
+      transport.coverage !== "complete"
+    const meta = createMeta(
+      "public",
+      {
+        stale: refreshing || !!refreshMeta?.stale,
+        degraded: partial || refreshing || !!refreshMeta?.degraded,
+        capped: capped || !!refreshMeta?.capped,
+      },
+      []
+    )
+    meta.productSearch = {
+      coverage: partial ? "partial" : transport.coverage,
+      tagScopeVerified: !query.tags?.length,
+      relayUrls: getSearchRelayUrls(),
+    }
+    return {
+      data: withProductFamilyReadEvidence(
+        projectRankedProductSearch(now, hits, records, query),
+        meta
+      ),
+      meta,
+    }
+  }
+  assertCurrent()
+  const initial = resultFor(initialRecords, wanted.length > 0)
+  query.onProgress?.(initial)
+  assertCurrent()
+  if (wanted.length === 0) return initial
+  // Seed the existing exact-product reader with verified discovery evidence.
+  // Cards have already painted; revisions/deletions/family context arrive lazily.
+  try {
+    await cacheProductRecords(initialRecords)
+  } catch {
+    // A failed seed write must not prevent live revision/deletion reads.
+  }
+  assertCurrent()
+  const project = (snapshot: ProductsByIdsResult) =>
+    resultFor(
+      snapshot.data.flatMap(
+        (record) =>
+          record.exactReadContext?.records ?? [
+            record,
+            ...(record.family
+              ? [record.family.parent, ...record.family.children]
+              : []),
+          ]
+      ),
+      !!snapshot.meta.stale,
+      snapshot.meta
+    )
+  try {
+    const refreshed = await readProductsByIds(
+      wanted,
+      {
+        accountPubkey: query.accountPubkey,
+        authenticatedPubkey: query.authenticatedPubkey,
+        signal: query.signal,
+        shouldContinue: () =>
+          !query.signal?.aborted && query.shouldContinue?.() !== false,
+        relayHintsByAddressId: Object.fromEntries(
+          hits.map((record) => [record.addressId, record.sourceRelayUrls])
+        ),
+        onProgress: query.onProgress
+          ? (snapshot) => {
+              assertCurrent()
+              query.onProgress?.(project(snapshot))
+            }
+          : undefined,
+      },
+      initialRecords
+    )
+    assertCurrent()
+    return project(refreshed)
+  } catch {
+    assertCurrent()
+    return initial
+  }
+}
+
+export async function getMarketplaceProducts(
+  query: MarketplaceProductsQuery = {},
+  dependencies: MarketplaceReadDependencies
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const {
+    fetchPublicProductRecords,
+    mergeCachedAndLiveProductRecords,
+    createMeta,
+    now,
+  } = dependencies
+
+  if (
+    !query.merchantPubkey &&
+    query.authorPubkeys &&
+    query.authorPubkeys.length === 0
+  ) {
+    return {
+      data: [],
+      meta: {
+        ...createMeta("public"),
+        ...(query.searchIndex && query.textQuery?.trim()
+          ? {
+              productSearch: {
+                coverage: "complete" as const,
+                relayUrls: [],
+                tagScopeVerified: true,
+              },
+            }
+          : {}),
+      },
+    }
+  }
+
+  if (query.searchIndex && query.textQuery?.trim()) {
+    return getRankedMarketplaceProducts(query, dependencies)
+  }
+
+  try {
+    query.signal?.throwIfAborted()
+    const authorPubkeys = query.merchantPubkey
+      ? [query.merchantPubkey]
+      : query.authorPubkeys
+    const cached = await getCachedProductRecords(
+      query.merchantPubkey,
+      { includeStale: true, includeMarketHidden: true },
+      query.authorPubkeys
+    )
+    const rawEventLimit = getProductRawEventLimit(query.limit)
+    let transportDegraded = false
+    let readCapped = false
+    const fetchedRecords = await fetchPublicProductRecords({
+      retainRevisions: true,
+      authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
+      authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
+      signal: query.signal,
+      shouldContinue: query.shouldContinue,
+      deletionCandidates: cached,
+      limit: rawEventLimit,
+      readPolicy: query.readPolicy,
+      onTransportStatus: (degraded, capped) => {
+        transportDegraded ||= degraded
+        readCapped ||= capped
+      },
+    })
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const deletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const records = mergeCachedAndLiveProductRecords({
+      cached,
+      live: fetchedRecords,
+      deletionTimestamps,
+    })
+    await cacheProductRecords(records)
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+
+    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentRecords = mergeCachedAndLiveProductRecords({
+      cached,
+      live: fetchedRecords,
+      deletionTimestamps: finalDeletionTimestamps,
+    })
+    const filtered = applyProductLimit(
+      sortProducts(
+        filterProductRecordsForRead(currentRecords, {}, now).filter(
+          createProductQueryMatcher(query)
+        ),
+        query.sort
+      ),
+      query.limit
+    )
+
+    const meta = createMeta("public", {
+      capped: readCapped || fetchedRecords.length >= rawEventLimit,
+      degraded:
+        transportDegraded ||
+        readCapped ||
+        fetchedRecords.length >= rawEventLimit,
+    })
+    return { data: withProductFamilyReadEvidence(filtered, meta), meta }
+  } catch (error) {
+    if (query.signal?.aborted || query.shouldContinue?.() === false) throw error
+    const cached = applyProductLimit(
+      sortProducts(
+        filterProductRecordsForRead(
+          await getCachedProductRecords(
+            query.merchantPubkey,
+            { includeStale: true, includeMarketHidden: true },
+            query.authorPubkeys
+          ),
+          {},
+          now
+        ).filter(createProductQueryMatcher(query)),
+        query.sort
+      ),
+      query.limit
+    )
+
+    if (cached.length > 0) {
+      const meta = createMeta("local_cache", { stale: true, degraded: true })
+      return { data: withProductFamilyReadEvidence(cached, meta), meta }
+    }
+
+    throw error
+  }
+}
+
+export async function getMarketplaceProductsProgressive(
+  query: MarketplaceProductsQuery = {},
+  onProgress: (
+    result: CommerceResult<CommerceProductRecord[]>,
+    relayUrl: string
+  ) => void,
+  dependencies: MarketplaceReadDependencies
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const {
+    fetchPublicProductRecordsProgressive,
+    mergeCachedAndLiveProductRecords,
+    rethrowProductReadAuthorityChange,
+    createMeta,
+    now,
+  } = dependencies
+
+  query.signal?.throwIfAborted()
+  if (
+    !query.merchantPubkey &&
+    query.authorPubkeys &&
+    query.authorPubkeys.length === 0
+  ) {
+    const empty = {
+      data: [],
+      meta: createMeta("public"),
+    }
+    onProgress(empty, "none")
+    return empty
+  }
+
+  const authorPubkeys = query.merchantPubkey
+    ? [query.merchantPubkey]
+    : query.authorPubkeys
+  const limit = query.limit
+  const cached = await getCachedProductRecords(
+    query.merchantPubkey,
+    { includeStale: true, includeMarketHidden: true },
+    query.authorPubkeys
+  )
+  const rawEventLimit = getProductRawEventLimit(limit)
+  let transportDegraded = false
+  let readCapped = false
+  const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
+  )
+  const matchesQuery = createProductQueryMatcher(query)
+  const toResult = (
+    records: CommerceProductRecord[],
+    options: { degraded?: boolean; capped?: boolean } = {},
+    deletionTimestamps: DeletionTimestamps = localDeletionTimestamps
+  ) => {
+    const filteredRecords = mergeCachedAndLiveProductRecords({
+      cached,
+      live: records,
+      deletionTimestamps,
+    })
+    const data = applyProductLimit(
+      sortProducts(
+        filterProductRecordsForRead(filteredRecords, {}, now).filter(
+          matchesQuery
+        ),
+        query.sort
+      ),
+      limit
+    )
+    const meta = createMeta("public", {
+      capped: (options.capped ?? readCapped) || records.length >= rawEventLimit,
+      degraded:
+        (options.degraded ?? readCapped) || records.length >= rawEventLimit,
+    })
+    return { data: withProductFamilyReadEvidence(data, meta), meta }
+  }
+
+  // Persist validated public revisions as they arrive. Leaving the page must
+  // not discard every batch just because another relay or deletion read waits.
+  // Writes remain serialized and use the existing monotonic cache/tombstones.
+  const persistedSignatures = new Map<string, string>()
+  let progressiveCacheWrite = Promise.resolve()
+  let progressiveCacheFailed = false
+  const persistProgress = (records: CommerceProductRecord[]) => {
+    progressiveCacheWrite = progressiveCacheWrite.then(async () => {
+      query.signal?.throwIfAborted()
+      if (query.shouldContinue?.() === false)
+        throw new NostrSignerError("authority_changed")
+      const changed = records.filter((record) => {
+        const signature = JSON.stringify([
+          record.eventId,
+          record.sourceRelayUrls ?? [],
+        ])
+        return persistedSignatures.get(record.eventId) !== signature
+      })
+      try {
+        await cacheProductRecords(changed)
+        for (const record of changed) {
+          persistedSignatures.set(
+            record.eventId,
+            JSON.stringify([record.eventId, record.sourceRelayUrls ?? []])
+          )
+        }
+      } catch (error) {
+        rethrowProductReadAuthorityChange(error, query.shouldContinue)
+        // Final persistence retries the full frontier. Interim write failure
+        // marks coverage degraded rather than stopping deletion reconciliation.
+        progressiveCacheFailed = true
+      }
+    })
+    return progressiveCacheWrite
+  }
+
+  const liveRecords = new Map<string, CommerceProductRecord>()
+  const publishProgress = async (
+    records: CommerceProductRecord[],
+    relayUrl: string
+  ): Promise<void> => {
+    for (const record of records) {
+      liveRecords.set(record.eventId, record)
+    }
+    await persistProgress(records)
+    query.signal?.throwIfAborted()
+    if (query.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    const currentDeletions = await getLocalProductDeletionTimestamps(
+      query.merchantPubkey,
+      query.authorPubkeys
+    )
+    query.signal?.throwIfAborted()
+    // Until every planned relay settles, this snapshot remains incomplete.
+    onProgress(
+      toResult(
+        Array.from(liveRecords.values()),
+        { degraded: true, capped: readCapped },
+        currentDeletions
+      ),
+      relayUrl
+    )
+  }
+
+  const fetchedRecords = await fetchPublicProductRecordsProgressive(
+    {
+      retainRevisions: true,
+      authors:
+        authorPubkeys && authorPubkeys.length > 0
+          ? uniqueStrings(authorPubkeys)
+          : undefined,
+      authenticatedPubkey: query.authenticatedPubkey,
+      accountPubkey: query.accountPubkey,
+      shouldContinue: query.shouldContinue,
+      signal: query.signal,
+      deletionCandidates: cached,
+      limit: rawEventLimit,
+      readPolicy: query.readPolicy,
+      onTransportStatus: (degraded, capped) => {
+        transportDegraded ||= degraded
+        readCapped ||= capped
+      },
+    },
+    publishProgress
+  )
+
+  query.signal?.throwIfAborted()
+  const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
+  )
+  const records = mergeCachedAndLiveProductRecords({
+    cached,
+    live: fetchedRecords,
+    deletionTimestamps: currentDeletionTimestamps,
+  })
+  // Final resolution must follow writes that can yield to a new deletion. A
+  // failed cache write still needs to retract the previous progressive paint;
+  // preserve its rejection after delivering the resolved snapshot.
+  let cacheFailure: { reason: unknown } | undefined
+  try {
+    await cacheProductRecords(records)
+    progressiveCacheFailed = false
+  } catch (reason) {
+    cacheFailure = { reason }
+  }
+  query.signal?.throwIfAborted()
+  const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
+    query.merchantPubkey,
+    query.authorPubkeys
+  )
+  const result = toResult(
+    fetchedRecords,
+    {
+      degraded:
+        transportDegraded ||
+        progressiveCacheFailed ||
+        readCapped ||
+        fetchedRecords.length >= rawEventLimit,
+      capped: readCapped || fetchedRecords.length >= rawEventLimit,
+    },
+    finalDeletionTimestamps
+  )
+  query.signal?.throwIfAborted()
+  if (query.shouldContinue?.() === false)
+    throw new NostrSignerError("authority_changed")
+  onProgress(result, "deletion-frontier")
+  if (cacheFailure) throw cacheFailure.reason
+  return result
+}
+
+export async function getCachedMarketplaceProducts(
+  query: MarketplaceProductsQuery = {},
+  options: CachedProductReadOptions = { includeStale: true },
+  dependencies: MarketplaceReadDependencies
+): Promise<CommerceResult<CommerceProductRecord[]>> {
+  const { createMeta, now } = dependencies
+
+  if (
+    !query.merchantPubkey &&
+    query.authorPubkeys &&
+    query.authorPubkeys.length === 0
+  ) {
+    return {
+      data: [],
+      meta: createMeta("local_cache", {
+        stale: true,
+      }),
+    }
+  }
+
+  const cached = applyProductLimit(
+    sortProducts(
+      filterProductRecordsForRead(
+        await getCachedProductRecords(
+          query.merchantPubkey,
+          { ...options, includeMarketHidden: true },
+          query.authorPubkeys
+        ),
+        {},
+        now
+      ).filter(createProductQueryMatcher(query)),
+      query.sort
+    ),
+    query.limit
+  )
+
+  const meta = createMeta("local_cache", {
+    stale: true,
+    degraded: cached.length > 0,
+  })
+  return { data: withProductFamilyReadEvidence(cached, meta), meta }
 }
