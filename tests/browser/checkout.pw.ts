@@ -51,6 +51,26 @@ test("late Pay after takeover leaves no stale submitted snapshot for the Merchan
   )
 })
 
+// Working-checkout proof (passes today): prompt Pay before takeover completes.
+test("prompt Pay before takeover completes with one send and Merchant confirmation", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await page.getByRole("button", { name: "Prompt Pay completes" }).click()
+  await expect(page.locator("#result")).toHaveText(
+    JSON.stringify({
+      outcome: "paid",
+      sends: 1,
+      durable: "paid",
+      acked: ["prepared", "submitted", "paid"],
+      merchantRestores: "paid",
+      merchantStep: "already_paid",
+      merchantSends: 0,
+      merchantStatus: "paid",
+    })
+  )
+})
+
 test("account change during a pending read revokes the real buyer runner", async ({
   page,
 }) => {

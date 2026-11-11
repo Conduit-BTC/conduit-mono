@@ -46,6 +46,27 @@ document.querySelector("#late-pay")!.addEventListener("click", async () => {
   })
 })
 
+// Mocked working-checkout proof: prompt Pay before takeover completes. The Buyer
+// sends once; the Merchant restores the last ACKed snapshot and confirms paid
+// without any send of its own.
+document.querySelector("#prompt-pay")!.addEventListener("click", async () => {
+  const buyer = harness()
+  const outcome = await buyer.step("shopper", 1_800_000_000_003)
+  const merchantView = harness(buyer.acked.at(-1)!)
+  merchantView.lookup = "paid"
+  const confirmed = await merchantView.step("merchant", 1_800_000_060_001)
+  result.textContent = JSON.stringify({
+    outcome: outcome.outcome,
+    sends: buyer.sends.length,
+    durable: buyer.state.legs[0]!.status,
+    acked: buyer.handoffs,
+    merchantRestores: buyer.acked.at(-1)!.legs[0]!.status,
+    merchantStep: confirmed.outcome,
+    merchantSends: merchantView.sends.length,
+    merchantStatus: merchantView.state.legs[0]!.status,
+  })
+})
+
 const accountButton = document.createElement("button")
 accountButton.textContent = "Test account-change fence"
 document.body.append(accountButton)
