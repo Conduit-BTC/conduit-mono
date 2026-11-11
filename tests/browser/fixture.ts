@@ -62,6 +62,7 @@ export function harness(
   const preflights: CheckoutSparkSettledOutgoingTarget[] = []
   const sends: CheckoutSparkSettledOutgoingTarget[] = []
   const statusAtSend: string[] = []
+  const acked: CheckoutSparkSettledReconciliation[] = []
   const store: CheckoutSparkSettledOutgoingStateStore = {
     outgoingAdmissionScope: Object.freeze({}),
     async saveOutgoingPreProviderRetry(next, expectedRevision, cancellation) {
@@ -122,6 +123,7 @@ export function harness(
       provider,
       acknowledgeRecoverySnapshot: async (snapshot) => {
         handoffs.push(snapshot.legs[0]!.status)
+        acked.push(structuredClone(snapshot))
         if (handoffs.length === failHandoffAt) {
           throw new Error("recovery relay unavailable")
         }
@@ -137,6 +139,7 @@ export function harness(
     preflights,
     statusAtSend,
     handoffs,
+    acked,
     get state() {
       return state
     },

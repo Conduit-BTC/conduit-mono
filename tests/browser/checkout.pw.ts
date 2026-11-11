@@ -32,6 +32,25 @@ test("submitted payout stays uncertain after absent provider history without a s
   )
 })
 
+// REGRESSION (fails until the pre-admission fix lands): the final durable state
+// and the Merchant-restorable (last ACKed) snapshot must agree and not be a
+// stale `submitted` for a transfer that was never created.
+test("late Pay after takeover leaves no stale submitted snapshot for the Merchant", async ({
+  page,
+}) => {
+  await page.goto("/")
+  await page.getByRole("button", { name: "Late Pay after takeover" }).click()
+  await expect(page.locator("#result")).toHaveText(
+    JSON.stringify({
+      outcome: "wait",
+      sends: 0,
+      sendAttempted: false,
+      durable: "terminal_failure",
+      merchantRestores: "terminal_failure",
+    })
+  )
+})
+
 test("account change during a pending read revokes the real buyer runner", async ({
   page,
 }) => {

@@ -25,6 +25,27 @@ document.querySelector("#run")!.addEventListener("click", async () => {
   })
 })
 
+// Mocked: the Buyer's takeover time passes after the `submitted` recovery
+// snapshot was ACKed but before provider.send. The Merchant restores whatever
+// snapshot was ACKed last, so it must not be a stale `submitted`.
+document.querySelector("#late-pay")!.addEventListener("click", async () => {
+  let clock = 1_800_000_000_003
+  const late = harness(undefined, {
+    afterAcknowledgement: async (status) => {
+      if (status === "submitted") clock = 1_800_000_060_000
+    },
+  })
+  const outcome = await late.step("shopper", () => clock)
+  const durable = late.state.legs[0]!.status
+  result.textContent = JSON.stringify({
+    outcome: outcome.outcome,
+    sends: late.sends.length,
+    sendAttempted: outcome.sendAttempted,
+    durable,
+    merchantRestores: late.acked.at(-1)!.legs[0]!.status,
+  })
+})
+
 const accountButton = document.createElement("button")
 accountButton.textContent = "Test account-change fence"
 document.body.append(accountButton)
