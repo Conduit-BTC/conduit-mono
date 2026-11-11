@@ -108,7 +108,7 @@ test("external HTTP and WebSocket access are denied", async ({ page }) => {
   expect(denied).toEqual({ http: true, websocket: true })
 })
 
-test("actual serial-worker ownership differs from a selected card and pause prevents the next order", async ({
+test("actual serial-worker ownership differs from a synthetic selection marker and pause prevents the next order", async ({
   page,
 }) => {
   await page.goto("/")
@@ -116,6 +116,10 @@ test("actual serial-worker ownership differs from a selected card and pause prev
     .getByRole("button", { name: "Inspect serial worker ownership" })
     .click()
   await expect(page.locator("#result")).toHaveText(
-    JSON.stringify({ selectedCard: "second", actualWorker: "first", starts: 1 })
+    JSON.stringify({
+      selectionMarker: "second",
+      actualWorker: "first",
+      starts: 1,
+    })
   )
 })

@@ -45,8 +45,8 @@ Coverage:
   the DOM/runner seam, not OS window minimization or the production route's event
   wiring.
 - A concurrent activation cannot acquire an already-running Buyer runner.
-- The serial Merchant worker owns the first candidate even when another card is
-  selected, and pause prevents another candidate from starting.
+- The serial Merchant worker owns the first candidate independently of a synthetic selection
+  marker, and pause prevents another candidate from starting.
 - Synthetic NIP-07 events verify, and external HTTP/WebSocket attempts are denied.
 
 This is a local integration test app, not the complete Shop/Merchant route UI.

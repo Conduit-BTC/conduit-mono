@@ -1,6 +1,11 @@
 import { startMerchantCheckoutSparkReconciliation } from "../../packages/core/src/protocol/checkout-spark-merchant-reconciliation-worker"
 import type { MerchantCheckoutSparkRecoveryCandidate } from "../../packages/core/src/protocol/commerce"
-import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools"
+import {
+  finalizeEvent,
+  getEventHash,
+  getPublicKey,
+  verifyEvent,
+} from "nostr-tools"
 import {
   createCheckoutSparkSettledShopperRunner,
   type CheckoutSparkSettledShopperRunInput,
@@ -128,15 +133,23 @@ const sign = document.createElement("button")
 sign.textContent = "Verify synthetic extension signer"
 document.body.append(sign)
 sign.addEventListener("click", async () => {
-  const event = await signer.signEvent({
+  const extension = window.nostr
+  if (!extension) throw new Error("Synthetic extension is unavailable")
+  const unsigned = {
+    pubkey: await extension.getPublicKey(),
     kind: 1,
     created_at: 1_800_000_000,
     tags: [],
     content: "Synthetic browser test",
-  })
+  }
+  const event = {
+    ...unsigned,
+    id: getEventHash(unsigned),
+    ...(await extension.signEvent(unsigned)),
+  }
   write({
     valid: verifyEvent(event),
-    identityMatches: event.pubkey === (await signer.getPublicKey()),
+    identityMatches: event.pubkey === (await extension.getPublicKey()),
   })
 })
 
@@ -152,14 +165,14 @@ workerButton.addEventListener("click", async () => {
   })
   const worker = startMerchantCheckoutSparkReconciliation({
     active: true,
-    now: () => 1_800_000_000_000,
     onUpdate: () => {},
     reconcile: async (candidate, assertActive) => {
       started.push(candidate.checkoutId)
       entered()
-      await new Promise<void>((resolve) => {
-        releaseWork = resolve
-      })
+      if (started.length === 1)
+        await new Promise<void>((resolve) => {
+          releaseWork = resolve
+        })
       assertActive()
       return "pending"
     },
@@ -180,10 +193,12 @@ workerButton.addEventListener("click", async () => {
   await entry
   worker.setActive(false)
   releaseWork()
-  await worker.stopAndDrain()
+  // Observe beyond the real worker minimum step gap before teardown.
+  await new Promise((resolve) => setTimeout(resolve, 1100))
   write({
-    selectedCard: "second",
+    selectionMarker: "second",
     actualWorker: started[0],
     starts: started.length,
   })
+  await worker.stopAndDrain()
 })
