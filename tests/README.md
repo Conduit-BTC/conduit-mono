@@ -118,6 +118,14 @@ constructor/identity/cleanup boundary without network or initialization, plus
 unsupported-version and closed-session refusal. It does not establish provider
 responses or settlement.
 
+## Isolated browser checks
+
+`tests/browser/README.md` documents the shared headless/headed Playwright suite.
+It runs the real checkout outgoing engine, Buyer cancellation fences and Merchant
+serial worker in an isolated local test app with synthetic signer/provider seams.
+External page HTTP/WebSockets are denied; no normal Chrome profile or funded
+wallet is used. It does not establish production incident cause or settlement.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at

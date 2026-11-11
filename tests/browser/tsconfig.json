@@ -1,0 +1,13 @@
+{
+  "extends": "../../apps/market/tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "noEmit": true,
+    "types": ["vite/client", "node"]
+  },
+  "include": [
+    "./*.ts",
+    "../../apps/market/src/vite-env.d.ts",
+    "../../playwright.config.ts"
+  ]
+}
