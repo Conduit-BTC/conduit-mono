@@ -104,6 +104,15 @@ Cache admission controls reject forged signatures/identity and rebuild projected
 terms from admitted signed bytes. These cases preserve display-read behavior; they do
 not establish exact checkout action authority, live relay delivery or settlement.
 
+`packages/core/tests/merchant-recovery-evidence.test.ts` adds 19 offline
+admission/discovery cases through the real Merchant recovery facade with signed,
+encrypted handoffs, in-memory IndexedDB and scripted protected-relay reads.
+It covers exact-wrap result integrity, positive/empty/partial coverage,
+conflicting handoffs and unwrap failures, including the unchanged real deadline.
+Fixture creation and each case block external fetch and WebSocket access.
+These cases characterize refusal mechanisms; they do not reproduce a particular
+production incident or establish provider settlement or worker scheduling.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at
