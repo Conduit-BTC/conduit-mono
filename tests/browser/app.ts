@@ -191,14 +191,16 @@ workerButton.addEventListener("click", async () => {
   )
   worker.replaceCandidates(candidates)
   await entry
-  worker.setActive(false)
+  if (new URL(location.href).searchParams.get("workerControl") !== "continue")
+    worker.setActive(false)
   releaseWork()
   // Observe beyond the real worker minimum step gap before teardown.
   await new Promise((resolve) => setTimeout(resolve, 1100))
-  write({
+  const observation = {
     selectionMarker: "second",
     actualWorker: started[0],
     starts: started.length,
-  })
+  }
   await worker.stopAndDrain()
+  write(observation)
 })

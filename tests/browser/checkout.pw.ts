@@ -1,12 +1,22 @@
-import { test, expect } from "@playwright/test"
+import { test, expect, type BrowserContext } from "@playwright/test"
+const denials = new WeakMap<
+  BrowserContext,
+  { http: number; websocket: number }
+>()
 test.beforeEach(async ({ context }) => {
+  const counts = { http: 0, websocket: 0 }
+  denials.set(context, counts)
   await context.route("**/*", (route) => {
     const u = new URL(route.request().url())
+    if (u.origin !== "http://127.0.0.1:4318") counts.http++
     return u.origin === "http://127.0.0.1:4318"
       ? route.continue()
       : route.abort("blockedbyclient")
   })
-  await context.routeWebSocket(/.*/, (socket) => socket.close())
+  await context.routeWebSocket(/.*/, (socket) => {
+    if (new URL(socket.url()).hostname !== "127.0.0.1") counts.websocket++
+    socket.close()
+  })
 })
 test("submitted payout stays uncertain after absent provider history without a second send", async ({
   page,
@@ -87,7 +97,10 @@ test("isolated synthetic NIP-07 signer produces a verifiable event", async ({
     JSON.stringify({ valid: true, identityMatches: true })
   )
 })
-test("external HTTP and WebSocket access are denied", async ({ page }) => {
+test("external HTTP and WebSocket access are denied", async ({
+  page,
+  context,
+}) => {
   await page.goto("/")
   const denied = await page.evaluate(async () => {
     const http = await fetch("https://shop.conduit.market/").then(
@@ -106,6 +119,7 @@ test("external HTTP and WebSocket access are denied", async ({ page }) => {
     return { http, websocket }
   })
   expect(denied).toEqual({ http: true, websocket: true })
+  expect(denials.get(context)).toEqual({ http: 1, websocket: 1 })
 })
 
 test("actual serial-worker ownership differs from a synthetic selection marker and pause prevents the next order", async ({
@@ -120,6 +134,22 @@ test("actual serial-worker ownership differs from a synthetic selection marker a
       selectionMarker: "second",
       actualWorker: "first",
       starts: 1,
+    })
+  )
+})
+
+test("serial worker positive control reaches the second candidate without pause", async ({
+  page,
+}) => {
+  await page.goto("/?workerControl=continue")
+  await page
+    .getByRole("button", { name: "Inspect serial worker ownership" })
+    .click()
+  await expect(page.locator("#result")).toHaveText(
+    JSON.stringify({
+      selectionMarker: "second",
+      actualWorker: "first",
+      starts: 2,
     })
   )
 })
