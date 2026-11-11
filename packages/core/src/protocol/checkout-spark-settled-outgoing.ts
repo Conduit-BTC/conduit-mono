@@ -886,16 +886,27 @@ export async function runCheckoutSparkSettledOutgoingStep(
     return result(state, "paid", undefined, true)
   }
   if (sent.status === "terminal_failure" || sent.status === "not_sent") {
+    // A provider not_sent is SDK-verified as never sent, so, like a
+    // pre-admission cancellation, it must not depend on dispatch authority
+    // that may have ended during the send await.
+    const notSent = sent.status === "not_sent"
     await persist(
       recordCheckoutSparkSettledLegStatus(
         state,
         evidence(target, "terminal_failure", observedAt(state, input.now()))
-      )
+      ),
+      undefined,
+      notSent ? cancellationStore : input.store
     )
     // The Merchant holds the ACKed `submitted` intent and exact history may
     // never show a transfer for it. Hand off the durable terminal state too.
     try {
-      await input.acknowledgeRecoverySnapshot(state)
+      await (
+        notSent
+          ? (input.acknowledgePreProviderCancellation ??
+              input.acknowledgeRecoverySnapshot)
+          : input.acknowledgeRecoverySnapshot
+      )(state)
     } catch {
       return result(state, "wait", "recovery_handoff_unavailable", true)
     }

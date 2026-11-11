@@ -849,6 +849,40 @@ describe("settled Spark outgoing pre-admission cancellation store", () => {
     expect(run.state.legs[0]!.status).toBe("terminal_failure")
     expect(run.acked.at(-1)).toEqual(run.state)
   })
+
+  it("records and ACKs a provider not_sent through the session-only view when authority ends during the send", async () => {
+    let dispatchEnded = false
+    const run = harness(preparedState())
+    run.send = "not_sent"
+    const raw = {
+      load: run.store.load.bind(run.store),
+      save: run.store.save.bind(run.store),
+    }
+    const fenced =
+      <A extends unknown[], R>(operation: (...args: A) => R) =>
+      (...args: A): R => {
+        if (dispatchEnded) throw new Error("dispatch authority ended")
+        return operation(...args)
+      }
+    const send = run.provider.send.bind(run.provider)
+    Object.assign(run.provider, {
+      send: async (target: Parameters<typeof send>[0]) => {
+        const sent = await send(target)
+        dispatchEnded = true
+        return sent
+      },
+    })
+    Object.assign(run.store, {
+      load: fenced(raw.load),
+      save: fenced(raw.save),
+      preProviderCancellation: raw,
+    })
+    const outcome = await run.step("shopper")
+    expect(run.sends).toHaveLength(1)
+    expect(outcome.reason).toBe("terminal_failure")
+    expect(run.state.legs[0]!.status).toBe("terminal_failure")
+    expect(run.acked.at(-1)).toEqual(run.state)
+  })
 })
 
 /** SAFETY CONTROLS: must pass both before and after the fix. */
