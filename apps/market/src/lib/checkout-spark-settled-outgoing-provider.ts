@@ -1,5 +1,6 @@
 import {
   CheckoutSparkInvoiceOriginUnavailableError,
+  CheckoutSparkOutgoingNotAdmittedError,
   checkoutSparkSettledOutgoingStatusObservation,
   classifyCheckoutSparkSettledExactOutgoingHistory,
   requireCheckoutSparkSettledExactOutgoingRequest,
@@ -122,11 +123,15 @@ export function createCheckoutSparkSettledOutgoingProvider(input: {
           },
         })
       } catch (error) {
-        // The pinned adapter invokes the guard before Spark's send call.
-        // Only this exact pre-send rejection is known not to have moved funds.
+        // The pinned adapter invokes the guard before Spark's send call and
+        // marks that rejection as not admitted; other throws stay possible-send.
+        const guard =
+          error instanceof CheckoutSparkOutgoingNotAdmittedError
+            ? error.cause
+            : error
         if (
-          error instanceof CheckoutSparkReserveUnavailableError ||
-          error instanceof CheckoutSparkInvoiceOriginUnavailableError
+          guard instanceof CheckoutSparkReserveUnavailableError ||
+          guard instanceof CheckoutSparkInvoiceOriginUnavailableError
         ) {
           return { status: "not_sent" }
         }

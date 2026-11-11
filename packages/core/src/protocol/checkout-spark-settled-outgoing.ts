@@ -15,6 +15,15 @@ import {
 } from "./checkout-spark-settled-returned"
 import type { CheckoutSparkSettledRepositorySnapshot } from "./checkout-spark-settled-router-repository"
 import { createCheckoutSparkPreProviderCancellationRegistry } from "./checkout-spark-pre-provider-cancellation"
+import {
+  CheckoutSparkOutgoingNotAdmittedError,
+  CheckoutSparkOutgoingPreAdmissionCancellationError,
+} from "./checkout-spark-outgoing-admission"
+
+export {
+  CheckoutSparkOutgoingNotAdmittedError,
+  CheckoutSparkOutgoingPreAdmissionCancellationError,
+}
 
 type Leg = CheckoutSparkSettledReconciliation["legs"][number]
 type Intent = NonNullable<Leg["intent"]>
@@ -265,6 +274,14 @@ export interface CheckoutSparkSettledOutgoingStateStore {
     expectedRevision: number,
     cancellation: CheckoutSparkOutgoingPreProviderCancellation
   ): Promise<CheckoutSparkSettledRepositorySnapshot>
+  /**
+   * Store view for recording a pre-admission cancellation. It may be fenced by
+   * session, but not by dispatch authority that may have ended in the window.
+   */
+  readonly preProviderCancellation?: Pick<
+    CheckoutSparkSettledOutgoingStateStore,
+    "load" | "save"
+  >
   load(
     checkoutId: string,
     planDigest: string
@@ -287,6 +304,13 @@ export interface CheckoutSparkSettledOutgoingStepInput {
   provider: CheckoutSparkSettledOutgoingProvider
   /** Resolves only after the exact encrypted Merchant recovery snapshot is ACKed. */
   acknowledgeRecoverySnapshot(
+    state: CheckoutSparkSettledReconciliation
+  ): Promise<void>
+  /**
+   * ACKs a durable pre-admission cancellation. Defaults to
+   * acknowledgeRecoverySnapshot; must not require dispatch authority.
+   */
+  acknowledgePreProviderCancellation?(
     state: CheckoutSparkSettledReconciliation
   ): Promise<void>
   /** Fresh native parent closure; signed journal metadata never satisfies this. */
@@ -432,9 +456,11 @@ export async function runCheckoutSparkSettledOutgoingStep(
   if (position < 0 || !recipient || recipient.legId !== input.legId) {
     throw new Error("Checkout Spark settled leg is not in the plan.")
   }
+  const cancellationStore = input.store.preProviderCancellation ?? input.store
   async function persist(
     next: CheckoutSparkSettledReconciliation,
-    cancellation?: CheckoutSparkOutgoingPreProviderCancellation
+    cancellation?: CheckoutSparkOutgoingPreProviderCancellation,
+    via: Pick<CheckoutSparkSettledOutgoingStateStore, "save"> = input.store
   ) {
     const saved = cancellation
       ? await input.store.saveOutgoingPreProviderRetry!(
@@ -442,7 +468,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
           revision,
           cancellation
         )
-      : await input.store.save(next, revision)
+      : await via.save(next, revision)
     if (
       saved.status !== "active" ||
       saved.revision !== revision + 1 ||
@@ -453,23 +479,39 @@ export async function runCheckoutSparkSettledOutgoingStep(
     revision = saved.revision
     state = restoreCheckoutSparkSettledReconciliation(saved.state)
   }
-  async function cancelPreProviderAdmission(): Promise<void> {
-    // Core has not invoked provider.send. A send result/throw never reaches here.
+  async function cancelPreProviderAdmission(
+    reason: NonNullable<CheckoutSparkSettledOutgoingStepResult["reason"]>
+  ): Promise<CheckoutSparkSettledOutgoingStepResult> {
+    // The SDK send was never invoked: either Core never called provider.send,
+    // or an app guard threw CheckoutSparkOutgoingNotAdmittedError before it.
     if (state.legs[position]?.status !== "submitted")
       throw new Error("Checkout Spark outgoing cancellation is invalid.")
-    await persist(
-      recordCheckoutSparkSettledLegStatus(
-        state,
-        evidence(target, "terminal_failure", observedAt(state, input.now()))
+    try {
+      await persist(
+        recordCheckoutSparkSettledLegStatus(
+          state,
+          evidence(target, "terminal_failure", observedAt(state, input.now()))
+        ),
+        undefined,
+        cancellationStore
       )
-    )
-    const durable = await input.store.load(input.checkoutId, input.planDigest)
-    if (
-      durable.status !== "active" ||
-      durable.revision !== revision ||
-      JSON.stringify(durable.state) !== JSON.stringify(state)
-    )
-      throw new Error("Checkout Spark outgoing cancellation readback changed.")
+      const durable = await cancellationStore.load(
+        input.checkoutId,
+        input.planDigest
+      )
+      if (
+        durable.status !== "active" ||
+        durable.revision !== revision ||
+        JSON.stringify(durable.state) !== JSON.stringify(state)
+      )
+        throw new Error(
+          "Checkout Spark outgoing cancellation readback changed."
+        )
+    } catch (error) {
+      // Durable state may still be the ACKed possible-send marker. Never let
+      // that surface as an untyped (and therefore possibly-sent) failure.
+      throw new CheckoutSparkOutgoingPreAdmissionCancellationError(error)
+    }
     if (
       input.store.outgoingAdmissionScope &&
       input.store.saveOutgoingPreProviderRetry
@@ -480,6 +522,20 @@ export async function runCheckoutSparkSettledOutgoingStep(
         revision,
         cancellationKey(state, target.legId)
       )
+    // The Merchant already holds the `submitted` snapshot. Replace it with the
+    // durable cancellation so it does not restore a never-created transfer.
+    // Merchant import is progression-checked, so this cannot roll back newer
+    // Merchant evidence, and terminal_failure still never permits a resend
+    // without a live local token or a provider-proven return.
+    try {
+      await (
+        input.acknowledgePreProviderCancellation ??
+        input.acknowledgeRecoverySnapshot
+      )(state)
+    } catch {
+      return result(state, "wait", "recovery_handoff_unavailable")
+    }
+    return result(state, "wait", reason)
   }
   if (!state.credit) return result(state, "funding_wait")
   let leg = state.legs[position]!
@@ -749,21 +805,30 @@ export async function runCheckoutSparkSettledOutgoingStep(
   try {
     await input.acknowledgeRecoverySnapshot(state)
   } catch {
-    await cancelPreProviderAdmission()
-    return result(state, "wait", "recovery_handoff_unavailable")
+    return cancelPreProviderAdmission("recovery_handoff_unavailable")
   }
   // A tab dying at this point leaves a conservative possible-send marker.
   // Private ACK and provider preparation may outlive proof TTL; re-prove now.
   try {
     await proveParentReturn()
   } catch {
-    await cancelPreProviderAdmission()
-    return result(state, "wait", "renewal_return_unavailable")
+    return cancelPreProviderAdmission("renewal_return_unavailable")
   }
-  const durableBeforeSend = await input.store.load(
-    input.checkoutId,
-    input.planDigest
-  )
+  let durableBeforeSend: CheckoutSparkSettledRepositorySnapshot
+  try {
+    durableBeforeSend = await input.store.load(
+      input.checkoutId,
+      input.planDigest
+    )
+  } catch {
+    // An authority-fenced read can reject once takeover passes. No send has
+    // been invoked, so do not strand the ACKed possible-send marker.
+    return cancelPreProviderAdmission(
+      hasAuthority(state.plan, input.actor, input.now())
+        ? "provider_evidence_unavailable"
+        : "authority_transferred"
+    )
+  }
   if (
     durableBeforeSend.status !== "active" ||
     durableBeforeSend.revision !== revision ||
@@ -772,8 +837,7 @@ export async function runCheckoutSparkSettledOutgoingStep(
     throw new Error("Checkout Spark payout state changed before send.")
   const afterWriteAt = input.now()
   if (!hasAuthority(state.plan, input.actor, afterWriteAt)) {
-    await cancelPreProviderAdmission()
-    return result(state, "wait", "authority_transferred")
+    return cancelPreProviderAdmission("authority_transferred")
   }
   if (
     !hasCheckoutSparkProviderSendWindow({
@@ -781,21 +845,22 @@ export async function runCheckoutSparkSettledOutgoingStep(
       nowMs: afterWriteAt,
     })
   ) {
-    await cancelPreProviderAdmission()
-    return result(state, "wait", "invoice_window_insufficient")
+    return cancelPreProviderAdmission("invoice_window_insufficient")
   }
   // The final durable read is another await; never carry an expired return
   // proof across it. This synchronous check adds no new provider operation.
   try {
     assertParentReturn()
   } catch {
-    await cancelPreProviderAdmission()
-    return result(state, "wait", "renewal_return_unavailable")
+    return cancelPreProviderAdmission("renewal_return_unavailable")
   }
   let sent: CheckoutSparkSettledOutgoingSendResult
   try {
     sent = await input.provider.send(target)
-  } catch {
+  } catch (error) {
+    // Only the exact typed app-guard signal proves the SDK was never entered.
+    if (error instanceof CheckoutSparkOutgoingNotAdmittedError)
+      return cancelPreProviderAdmission("authority_transferred")
     return result(state, "send_ambiguous", undefined, true)
   }
   if (sent.status !== "not_sent") assertObservation(sent, target)
@@ -827,6 +892,13 @@ export async function runCheckoutSparkSettledOutgoingStep(
         evidence(target, "terminal_failure", observedAt(state, input.now()))
       )
     )
+    // The Merchant holds the ACKed `submitted` intent and exact history may
+    // never show a transfer for it. Hand off the durable terminal state too.
+    try {
+      await input.acknowledgeRecoverySnapshot(state)
+    } catch {
+      return result(state, "wait", "recovery_handoff_unavailable", true)
+    }
     return result(state, "wait", "terminal_failure", true)
   }
   return result(state, "send_ambiguous", undefined, true)

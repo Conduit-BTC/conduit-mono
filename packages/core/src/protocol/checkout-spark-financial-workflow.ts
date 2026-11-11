@@ -88,6 +88,8 @@ export interface CheckoutSparkFinancialWorkflowPorts {
   acknowledgeRecoverySnapshot(
     state: CheckoutSparkSettledReconciliation
   ): Promise<void>
+  /** Session-fenced only: dispatch authority may end before a no-send cancel. */
+  acknowledgePreProviderCancellation?: CheckoutSparkSettledOutgoingStepInput["acknowledgePreProviderCancellation"]
   proveRenewalReturn?: CheckoutSparkSettledOutgoingStepInput["proveRenewalReturn"]
   /** Kept for isolated provider-contract tests; production uses the Core engine. */
   outgoingStep?: typeof runCheckoutSparkSettledOutgoingStep
@@ -183,6 +185,11 @@ export async function runCheckoutSparkFinancialWorkflow(
   }
   const store: CheckoutSparkSettledOutgoingStateStore = {
     outgoingAdmissionScope: ports.store.outgoingAdmissionScope,
+    // The adapter fences this view by session only; it records a cancellation
+    // after dispatch authority may have ended, never a send admission.
+    ...(ports.store.preProviderCancellation
+      ? { preProviderCancellation: ports.store.preProviderCancellation }
+      : {}),
     ...(ports.store.saveOutgoingPreProviderRetry
       ? {
           saveOutgoingPreProviderRetry: (state, revision, cancellation) =>
@@ -592,6 +599,12 @@ export async function runCheckoutSparkFinancialWorkflow(
     store,
     provider,
     acknowledgeRecoverySnapshot: ack,
+    ...(ports.acknowledgePreProviderCancellation
+      ? {
+          acknowledgePreProviderCancellation:
+            ports.acknowledgePreProviderCancellation,
+        }
+      : {}),
     ...(ports.proveRenewalReturn
       ? {
           proveRenewalReturn: (state, legId) =>

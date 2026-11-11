@@ -1,6 +1,7 @@
 import {
   DexieCheckoutSparkSettledRepository,
   CheckoutSparkBuyerPreparationAuthorityEndedError,
+  CheckoutSparkOutgoingNotAdmittedError,
   getOrderLifecycle,
   runCheckoutSparkSettledOutgoingStep,
   runCheckoutSparkNativeTreasuryStep,
@@ -384,7 +385,12 @@ export async function advanceCheckoutSparkSettledShopper(
       return provider.preflight(target)
     },
     send: async (target) => {
-      await assertDispatchAuthority()
+      try {
+        await assertDispatchAuthority()
+      } catch (error) {
+        // Rejected before provider.send (and so before the SDK) is invoked.
+        throw new CheckoutSparkOutgoingNotAdmittedError(error)
+      }
       try {
         return await provider.send(target)
       } finally {
@@ -479,7 +485,12 @@ export async function advanceCheckoutSparkSettledShopper(
       : {}),
     load: repository.load.bind(repository),
     save: (state: CheckoutSparkSettledReconciliation, revision: number) =>
-      repository.save(state, revision, assertSession),
+      repository.save(state, revision, assertSession), // Records only a no-send cancellation; takeover may already have passed.
+    preProviderCancellation: {
+      load: repository.load.bind(repository),
+      save: (state: CheckoutSparkSettledReconciliation, revision: number) =>
+        repository.save(state, revision, assertSession),
+    },
   }
   const result = await runCheckoutSparkFinancialWorkflow(
     {
@@ -494,6 +505,11 @@ export async function advanceCheckoutSparkSettledShopper(
       store: outgoingStore,
       observePerformance: dependencies.observePerformance,
       assertCurrent: assertAuthority,
+      acknowledgePreProviderCancellation: async (state) => {
+        assertSession()
+        await input.acknowledgeRecoverySnapshot(state)
+        assertSession()
+      },
       now,
       outgoing: guardedProvider,
       recordPaid,

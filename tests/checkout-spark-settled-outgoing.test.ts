@@ -6,6 +6,7 @@ import { DexieCheckoutSparkSettledRepository } from "../packages/core/src/protoc
 import { CONDUIT_CHECKOUT_FEE_RECIPIENT } from "../packages/core/src/protocol/checkout-spark-router-obligations"
 import {
   assertCheckoutSparkOutgoingPreProviderRetry,
+  CheckoutSparkOutgoingNotAdmittedError,
   hasCheckoutSparkOutgoingPreProviderCancellation,
   runCheckoutSparkSettledOutgoingStep,
   type CheckoutSparkSettledOutgoingObservation,
@@ -158,17 +159,13 @@ function observation(
 }
 
 /**
- * ASSUMED CONTRACT (implementer: match or edit this one helper): an app-owned
- * guard rejection raised before the SDK is entered is distinguishable from an
- * ambiguous provider failure by `error.preAdmission === true`. If the fix uses
- * an exported error class instead, construct that class here.
+ * Contract: an app-owned guard rejection raised before the SDK is entered is
+ * the exported typed signal. A look-alike `{ preAdmission: true }` error is
+ * deliberately not accepted as proof (see the safety control below).
  */
 function preAdmissionGuardError(): Error {
-  return Object.assign(
-    new Error("assertBeforeSend rejected before SDK entry"),
-    {
-      preAdmission: true as const,
-    }
+  return new CheckoutSparkOutgoingNotAdmittedError(
+    new Error("assertBeforeSend rejected before SDK entry")
   )
 }
 
@@ -730,8 +727,55 @@ describe("settled Spark outgoing pre-admission cancellation", () => {
   })
 })
 
+describe("settled Spark outgoing pre-admission cancellation store", () => {
+  it("D1: records and ACKs the cancellation through the session-only view when the authority-fenced store rejects after takeover", async () => {
+    let clock = CREATED_AT + 3
+    let dispatchEnded = false
+    const run = harness(preparedState(), {
+      afterAcknowledgement: async (status) => {
+        if (status === "submitted") {
+          clock = CREATED_AT + 60_000
+          dispatchEnded = true
+        }
+      },
+    })
+    const raw = {
+      load: run.store.load.bind(run.store),
+      save: run.store.save.bind(run.store),
+    }
+    const fenced =
+      <A extends unknown[], R>(operation: (...args: A) => R) =>
+      (...args: A): R => {
+        if (dispatchEnded) throw new Error("dispatch authority ended")
+        return operation(...args)
+      }
+    Object.assign(run.store, {
+      load: fenced(raw.load),
+      save: fenced(raw.save),
+      preProviderCancellation: raw,
+    })
+    const outcome = await run.step("shopper", () => clock)
+    expect(run.sends).toHaveLength(0)
+    expect(outcome.sendAttempted).toBe(false)
+    expect(outcome.reason).toBe("authority_transferred")
+    expect(run.state.legs[0]!.status).toBe("terminal_failure")
+    expect(run.acked.at(-1)).toEqual(run.state)
+  })
+})
+
 /** SAFETY CONTROLS: must pass both before and after the fix. */
 describe("settled Spark outgoing possible-send safety controls", () => {
+  it("control (d): a look-alike preAdmission error that is not the typed signal stays send_ambiguous", async () => {
+    const run = harness()
+    run.provider.send = async () => {
+      throw Object.assign(new Error("untyped guard"), { preAdmission: true })
+    }
+    const outcome = await run.step()
+    expect(outcome.outcome).toBe("send_ambiguous")
+    expect(outcome.sendAttempted).toBe(true)
+    expect(run.state.legs[0]!.status).toBe("submitted")
+  })
+
   it("control (a): a provider failure AFTER SDK entry stays send_ambiguous, sendAttempted and submitted", async () => {
     const run = harness()
     run.throwOnSend = true

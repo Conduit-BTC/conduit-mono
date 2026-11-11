@@ -17,6 +17,7 @@ import {
 } from "../protocol/lightning"
 import { ensureSparkPrivateModeReady } from "../protocol/spark-private-mode-readiness"
 import { hasCheckoutSparkProviderSendWindow } from "../protocol/checkout-spark-invoice-expiry"
+import { CheckoutSparkOutgoingNotAdmittedError } from "../protocol/checkout-spark-outgoing-admission"
 import {
   inspectSparkCheckoutLightningReturnedAttempt,
   inspectSparkCheckoutLightningClosedReturnedAttempt,
@@ -1586,7 +1587,14 @@ export function adaptFirstPartySparkWallet(input: {
       // History and fee reads can outlive the shopper's signer, order, or
       // takeover authority. Recheck after both awaits, at the last app-owned
       // boundary before the SDK may move funds.
-      await request.assertBeforeSend?.()
+      try {
+        await request.assertBeforeSend?.()
+      } catch (error) {
+        // App-owned guard rejected strictly before payLightningInvoice below.
+        throw error instanceof CheckoutSparkOutgoingNotAdmittedError
+          ? error
+          : new CheckoutSparkOutgoingNotAdmittedError(error)
+      }
       // The adapter's own history, fee and authority awaits may outlive the
       // runner's earlier expiry check. This rejection is before SDK admission;
       // an expiry error after admission must still remain possibly sent.
