@@ -24,10 +24,10 @@ visibility, exact pickup exceptions, shared family context, revision/deletion
 reconciliation and deterministic source merging. These use projected records;
 they do not establish signature admission, relay delivery or checkout authority.
 
-`commerce-product-cache.test.ts` adds six local cache cases using ordinary signed
+`commerce-product-cache.test.ts` adds eight local cache cases using ordinary signed
 listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
-and exact-family readsâ€”not public relay delivery or browser cross-tab behavior.
+and exact-family reads—not public relay delivery or browser cross-tab behavior.
 
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
@@ -92,6 +92,17 @@ live parent/child evidence and pass before and after consolidation. These tests 
 conservative local selection; they do not establish relay completeness or
 checkout action authority. An additional exact-batch case checks complete
 versus missing-live-sibling coverage through `getProductsByIds`.
+
+`packages/core/tests/commerce-marketplace-reads.test.ts` adds 29 offline cases
+through the retained Marketplace facade. Signed fixtures cover empty scopes,
+ranked relevance/family projection, cache-seed failure, partial/capped metadata,
+authority cancellation, signed deletion/revision observations and serialized
+progressive persistence. A final deletion-frontier callback precedes propagation
+of a final write failure. Two exact/ranked frontier cases preserve newer signed
+cached terms against lagging live revisions without granting fresh action evidence.
+Cache admission controls reject forged signatures/identity and rebuild projected
+terms from admitted signed bytes. These cases preserve display-read behavior; they do
+not establish exact checkout action authority, live relay delivery or settlement.
 
 `packages/core/tests/merchant-recovery-evidence.test.ts` adds 19 offline
 admission/discovery cases through the real Merchant recovery facade with signed,

@@ -41,6 +41,9 @@ const originalTombstones = db.productTombstones
 let restoreTransaction: () => void
 const fixtureKey = new Uint8Array(32).fill(1)
 const author = getPublicKey(fixtureKey)
+const originalFetch = globalThis.fetch
+const originalWebSocket = globalThis.WebSocket
+let networkAttempts = 0
 const clock = () => 123_456
 const coordinate = (name: string) => `30402:${author}:${name}`
 
@@ -89,6 +92,16 @@ function deferred<T>() {
 }
 
 beforeAll(async () => {
+  globalThis.fetch = (async () => {
+    networkAttempts++
+    throw new Error("External fetch forbidden in product-cache tests")
+  }) as typeof fetch
+  globalThis.WebSocket = class {
+    constructor() {
+      networkAttempts++
+      throw new Error("External WebSocket forbidden in product-cache tests")
+    }
+  } as unknown as typeof WebSocket
   await testDb.open()
   db.products = testDb.products
   db.productTombstones = testDb.productTombstones
@@ -104,9 +117,12 @@ beforeEach(async () => {
   __setCommerceTestOverrides({ now: clock })
 })
 afterEach(() => {
+  expect(networkAttempts).toBe(0)
   __resetCommerceTestOverrides()
 })
 afterAll(async () => {
+  globalThis.fetch = originalFetch
+  globalThis.WebSocket = originalWebSocket
   restoreTransaction()
   db.products = originalProducts
   db.productTombstones = originalTombstones
@@ -278,8 +294,52 @@ describe("commerce product cache owner", () => {
       expect(records.map((record) => record.addressId).sort()).toEqual(
         [coordinate("parent"), coordinate("child")].sort()
       )
+      expect(
+        records.every(
+          (record) => record.product.signedProductEvent?.id === record.eventId
+        )
+      ).toBe(true)
     } finally {
       scan.mockRestore()
+    }
+  })
+})
+
+describe("exact cached signed admission", () => {
+  it("rebuilds projected terms and frontiers from the selected signed bytes", async () => {
+    const event = listing("signed-frontier", 12)
+    await cacheSignedProductListingEvent(event)
+    await db.products.update(coordinate("signed-frontier"), {
+      title: "Untrusted projection",
+      price: 999,
+      eventId: "f".repeat(64),
+      eventCreatedAt: 999,
+    })
+    const [record] = await getCachedExactProductRecords([
+      coordinate("signed-frontier"),
+    ])
+    expect(record?.eventId).toBe(event.id)
+    expect(record?.eventCreatedAt).toBe(12)
+    expect(record?.product.title).toBe("signed-frontier")
+    expect(record?.product.price).toBe(10)
+    expect(record?.product.signedProductEvent?.id).toBe(event.id)
+  })
+
+  it("rejects invalid signatures and signed bytes belonging to another coordinate", async () => {
+    const event = listing("bound-row")
+    const wrongCoordinate = listing("different-row")
+    for (const replacement of [
+      { ...event, sig: "0".repeat(128) },
+      wrongCoordinate,
+    ]) {
+      await cacheSignedProductListingEvent(event)
+      await db.products.update(coordinate("bound-row"), {
+        signedProductEvent: replacement,
+      })
+      expect(
+        await getCachedExactProductRecords([coordinate("bound-row")])
+      ).toEqual([])
+      await db.products.clear()
     }
   })
 })
