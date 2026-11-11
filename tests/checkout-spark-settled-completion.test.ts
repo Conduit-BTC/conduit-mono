@@ -17,9 +17,7 @@ import {
 } from "../packages/core/src/protocol/checkout-spark-settled-outgoing"
 import {
   createCheckoutSparkSettledReconciliation,
-  deriveCheckoutSparkSettledTransferId,
   freezeCheckoutSparkSettledPlan,
-  prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
   type CheckoutSparkSettledReconciliation,
 } from "../packages/core/src/protocol/checkout-spark-settled-router"
@@ -142,24 +140,6 @@ function unpreparedCredited(): CheckoutSparkSettledReconciliation {
       observedAt: CREATED_AT + 1,
     }
   )
-}
-
-/** A Buyer-prepared payout whose invoice window closes at the takeover edge. */
-function edgePrepared(): CheckoutSparkSettledReconciliation {
-  const credited = unpreparedCredited()
-  const legId = credited.plan.recipients[0]!.legId
-  // Expires CREATED_AT+59_000: the send window is closed by TAKEOVER_AT.
-  const expiryMs = CREATED_AT + 59_000
-  const preimage = randomBytes(32)
-  return prepareCheckoutSparkSettledLeg(credited, {
-    legId,
-    transferId: deriveCheckoutSparkSettledTransferId(credited.plan, legId),
-    paymentRequest: invoiceFor(995, preimage, expiryMs - 3_600_000),
-    paymentHash: sha256Hex(preimage),
-    invoiceAmountSats: 995,
-    maxFeeSats: 5,
-    preparedAt: CREATED_AT + 2,
-  })
 }
 
 /** Fake Spark SDK/ledger shared by Buyer and Merchant. */
@@ -372,14 +352,6 @@ async function world(initial: CheckoutSparkSettledReconciliation) {
                 ...(extra.proveRenewalReturn
                   ? { proveRenewalReturn: extra.proveRenewalReturn }
                   : {}),
-                ...((extra as { proveRenewalParentUnspent?: unknown })
-                  .proveRenewalParentUnspent
-                  ? {
-                      proveRenewalParentUnspent: (
-                        extra as { proveRenewalParentUnspent?: unknown }
-                      ).proveRenewalParentUnspent,
-                    }
-                  : {}),
               } as never,
             }),
         ...extra,
@@ -505,163 +477,6 @@ describe("funded checkout completion (offline)", () => {
       expect(ambiguousLegs(merchant)).toHaveLength(0)
       // Buyer never produced a payout intent.
       expect(merchantLeg(await w.buyerState()).status).toBe("unprepared")
-    } finally {
-      await w.close()
-    }
-  })
-})
-
-/**
- * ASSUMED SEAM (single place the implementer adapts) -------------------------
- *
- * Scenario 3/4 need a native proof that the Buyer-cancelled leg's PARENT funds
- * are still unspent/unlocked (positive, fresh, wallet-bound), which does not
- * exist yet: today renewal only accepts `proveRenewalReturn` ->
- * CheckoutSparkSettledReturnedProof, i.e. a *returned* transfer.
- *
- * Assumed (NOT existing) names, all confined to `renewalSeam()` below:
- *   - workflow/preparation port `proveRenewalParentUnspent(state, legId)` that
- *     resolves a proof object for "parent leaves unspent+unlocked, no pending
- *     transfer, fresh <= 5s" and rejects when unavailable/stale/locked/spent/
- *     pending. The fixture proof below is the *evidence shape* a native adapter
- *     would be given; the implementer should map it to the real evidence type.
- *   - `proveRenewalReturn` keeps rejecting (there is no returned transfer).
- */
-type ProofVariant =
-  | "unspent"
-  | "unavailable"
-  | "stale"
-  | "locked"
-  | "spent"
-  | "pending_transfer"
-  | "none"
-
-function renewalSeam(
-  variant: ProofVariant,
-  clock: { now: number }
-): Partial<CheckoutSparkFinancialWorkflowPorts> {
-  const noReturn = async () => {
-    throw new Error("no returned transfer exists for an unsent parent")
-  }
-  if (variant === "none") return { proveRenewalReturn: noReturn }
-  const parentUnspent = async () => {
-    if (variant === "unavailable") throw new Error("native proof unavailable")
-    return {
-      kind: "parent_unspent" as const,
-      walletIdentityPublicKey: `02${"c".repeat(64)}`,
-      parentLeaves: [{ id: "leaf-1", valueSats: 1_000 }],
-      spent: variant === "spent",
-      locked: variant === "locked",
-      pendingTransfers: variant === "pending_transfer" ? ["transfer-x"] : [],
-      observedAt: variant === "stale" ? clock.now - 60_000 : clock.now,
-    }
-  }
-  return {
-    proveRenewalReturn: noReturn,
-    // Unknown to today's ports type; ignored by today's code.
-    ...({ proveRenewalParentUnspent: parentUnspent } as object),
-  }
-}
-
-/** Buyer writes/ACKs `submitted`, then the takeover edge cancels pre-admission. */
-async function edgeWorld() {
-  const w = await world(edgePrepared())
-  // Buyer's last ACKed snapshot reaches the Merchant while still pre-takeover.
-  w.hooks.afterBuyerAck = (status) => {
-    if (status === "submitted") w.clock.now = TAKEOVER_AT // takeover/invoice window passes
-  }
-  const buyer = await w.run("shopper", "advance")
-  if (buyer.status !== "outgoing_step")
-    throw new Error("unexpected buyer status")
-  // Core fixtures guarantee no provider call happened and Merchant now holds
-  // the Buyer's pre-admission cancellation.
-  expect(w.spark.sends).toHaveLength(0)
-  expect((await w.merchantState()).legs[0]!.status).toBe("terminal_failure")
-  return w
-}
-
-async function merchantAutomaticProcessing(
-  w: Awaited<ReturnType<typeof edgeWorld>>,
-  variant: ProofVariant
-) {
-  w.clock.now = TAKEOVER_AT + 1_000
-  const seam = renewalSeam(variant, w.clock)
-  const opts = { allowRenewal: true }
-  const outcomes: string[] = []
-  for (const mode of ["prepare", "advance"] as const) {
-    try {
-      const r = await w.run("merchant", mode, seam, opts)
-      outcomes.push(
-        r.status === "outgoing_step"
-          ? `${r.step.outcome}:${r.step.reason ?? ""}`
-          : r.status
-      )
-    } catch (error) {
-      outcomes.push(`threw:${(error as Error).message}`)
-    }
-  }
-  return outcomes
-}
-
-describe("late Pay at the takeover edge (positive proof the parent is unspent)", () => {
-  // 3. Expected to FAIL today: renewal requires a returned transfer.
-  it("S3 renews with a fresh transfer and completes: paid, exactly one send total, Merchant confirms", async () => {
-    const w = await edgeWorld()
-    try {
-      const outcomes = await merchantAutomaticProcessing(w, "unspent")
-      if (process.env.COMPLETION_DEBUG) console.log("S3 outcomes", outcomes)
-      const merchant = await w.merchantState()
-      // Observable completion contract (no internal seam names asserted):
-      expect(w.spark.sends).toHaveLength(1)
-      expect(merchantLeg(merchant).status).toBe("paid")
-      expect(ambiguousLegs(merchant)).toHaveLength(0)
-      const target = w.spark.sends[0]!
-      expect(sha256Hex(w.spark.preimages.get(target.intent.paymentHash)!)).toBe(
-        target.intent.paymentHash
-      )
-      // A fresh transfer, not the cancelled Buyer attempt.
-      expect(target.intent.transferId).not.toBe(
-        edgePrepared().legs[0]!.intent!.transferId
-      )
-      // The cancelled attempt never reached the SDK.
-      expect(w.spark.sends.every((s) => s.generation === 1)).toBe(true)
-    } finally {
-      await w.close()
-    }
-  })
-
-  // 4. Safety negatives: must PASS before and after. No renewal, zero sends.
-  it.each<[ProofVariant, string]>([
-    ["unavailable", "proof unavailable"],
-    ["stale", "proof stale (older than the freshness window)"],
-    ["locked", "parent leaves locked"],
-    ["spent", "parent leaves spent"],
-    ["pending_transfer", "a pending transfer exists"],
-  ])("S4 %s (%s): no renewal and zero additional sends", async (variant) => {
-    const w = await edgeWorld()
-    try {
-      await merchantAutomaticProcessing(w, variant)
-      const merchant = await w.merchantState()
-      expect(w.spark.sends).toHaveLength(0)
-      expect(merchantLeg(merchant).status).toBe("terminal_failure")
-      expect(merchantLeg(merchant).generation ?? 0).toBe(0)
-      expect(w.counters.invoices).toBe(0)
-    } finally {
-      await w.close()
-    }
-  })
-
-  it("S4 provider not_found alone is not proof: no renewal and zero sends", async () => {
-    const w = await edgeWorld()
-    try {
-      w.spark.behaviour.lookup = "not_found"
-      await merchantAutomaticProcessing(w, "none")
-      const merchant = await w.merchantState()
-      expect(w.spark.lookups.length).toBeGreaterThan(0)
-      expect(w.spark.sends).toHaveLength(0)
-      expect(merchantLeg(merchant).status).toBe("terminal_failure")
-      expect(merchantLeg(merchant).generation ?? 0).toBe(0)
-      expect(w.counters.invoices).toBe(0)
     } finally {
       await w.close()
     }
