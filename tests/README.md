@@ -27,7 +27,7 @@ they do not establish signature admission, relay delivery or checkout authority.
 `commerce-product-cache.test.ts` adds six local cache cases using ordinary signed
 listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
-and exact-family reads—not public relay delivery or browser cross-tab behavior.
+and exact-family readsâ€”not public relay delivery or browser cross-tab behavior.
 
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
@@ -92,6 +92,15 @@ live parent/child evidence and pass before and after consolidation. These tests 
 conservative local selection; they do not establish relay completeness or
 checkout action authority. An additional exact-batch case checks complete
 versus missing-live-sibling coverage through `getProductsByIds`.
+
+`packages/core/tests/merchant-recovery-evidence.test.ts` adds 19 offline
+admission/discovery cases through the real Merchant recovery facade with signed,
+encrypted handoffs, in-memory IndexedDB and scripted protected-relay reads.
+It covers exact-wrap result integrity, positive/empty/partial coverage,
+conflicting handoffs and unwrap failures, including the unchanged real deadline.
+Fixture creation and each case block external fetch and WebSocket access.
+These cases characterize refusal mechanisms; they do not reproduce a particular
+production incident or establish provider settlement or worker scheduling.
 
 ## Scope and rebuilding
 
