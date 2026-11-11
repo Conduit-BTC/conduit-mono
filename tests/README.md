@@ -126,6 +126,11 @@ serial worker in an isolated local test app with synthetic signer/provider seams
 External page HTTP/WebSockets are denied; no normal Chrome profile or funded
 wallet is used. It does not establish production incident cause or settlement.
 
+Checkout preparation recovery tests also cover a slightly future provider invoice
+clock. Preparation waits for actual local time with a five-second monotonic budget;
+large/frozen clock differences, session revocation and takeover still refuse before
+saving or publishing recovery. These offline cases do not prove funded settlement.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at
