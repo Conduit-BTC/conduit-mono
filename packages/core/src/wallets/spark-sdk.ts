@@ -1618,7 +1618,8 @@ export function adaptFirstPartySparkWallet(input: {
           transferId,
         })
       } catch (error) {
-        // In pinned Spark SDK 0.11.0, this exact validation happens before
+        // In pinned Spark SDK 0.14.0 (no quote, preferSpark false), this exact
+        // validation follows only a read-only fee estimate and precedes
         // selectLeavesAndExecute. All other SDK errors may follow a send.
         if (input.module.isPreSendFeeCapError(error)) {
           return { status: "not_sent", reason: "fee_over_cap" }

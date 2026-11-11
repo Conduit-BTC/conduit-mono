@@ -29,6 +29,7 @@ import {
   type CheckoutSparkSettledRepositorySnapshot,
 } from "./checkout-spark-settled-router-repository"
 import type { SparkCheckoutReceiveCreditProof } from "./checkout-spark-receive-credit"
+import { sendAfterPreAdmissionGuard } from "./checkout-spark-outgoing-admission"
 import {
   observeCheckoutSparkOperation,
   type CheckoutSparkOperationStep,
@@ -259,7 +260,12 @@ export async function runCheckoutSparkFinancialWorkflow(
     },
     preflight: (target) => checked(() => ports.outgoing!.preflight(target)),
     send: async (target) => {
-      const observation = await checked(() => ports.outgoing!.send(target))
+      // The pre-send currency check can reject once authority ends during its
+      // own awaits; the step must see that as not admitted, not possibly sent.
+      const observation = await sendAfterPreAdmissionGuard(
+        () => ports.assertCurrent(),
+        () => ports.outgoing!.send(target)
+      )
       if (observation.status !== "not_sent")
         assertExactObservation(target, observation)
       if (observation.status === "paid" && ports.recordPaid) {
