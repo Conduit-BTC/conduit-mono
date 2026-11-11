@@ -19,6 +19,7 @@ import {
   freezeCheckoutSparkSettledPlan,
   prepareCheckoutSparkSettledLeg,
   recordCheckoutSparkSettledCredit,
+  recordCheckoutSparkSettledLegStatus,
   type CheckoutSparkSettledReconciliation,
 } from "../packages/core/src/protocol/checkout-spark-settled-router"
 import {
@@ -156,6 +157,21 @@ function observation(
     : { ...identity, status }
 }
 
+/**
+ * ASSUMED CONTRACT (implementer: match or edit this one helper): an app-owned
+ * guard rejection raised before the SDK is entered is distinguishable from an
+ * ambiguous provider failure by `error.preAdmission === true`. If the fix uses
+ * an exported error class instead, construct that class here.
+ */
+function preAdmissionGuardError(): Error {
+  return Object.assign(
+    new Error("assertBeforeSend rejected before SDK entry"),
+    {
+      preAdmission: true as const,
+    }
+  )
+}
+
 function harness(
   initial = preparedState(),
   hooks: {
@@ -173,12 +189,17 @@ function harness(
   let preflight:
     "ready" | "fee_over_cap" | "insufficient_funds" | "unavailable" = "ready"
   let throwOnSend = false
+  let preAdmissionGuardFailure = false
   let failHandoffAt: number | null = null
   const handoffs: string[] = []
   const lookups: CheckoutSparkSettledOutgoingTarget[] = []
   const preflights: CheckoutSparkSettledOutgoingTarget[] = []
   const sends: CheckoutSparkSettledOutgoingTarget[] = []
   const statusAtSend: string[] = []
+  // Every snapshot the Merchant has ACKed, in order (full states, not labels).
+  const acked: CheckoutSparkSettledReconciliation[] = []
+  // Times the fake Spark SDK was actually entered (after app-owned guards).
+  let sdkEntries = 0
   const store: CheckoutSparkSettledOutgoingStateStore = {
     outgoingAdmissionScope: Object.freeze({}),
     async saveOutgoingPreProviderRetry(next, expectedRevision, cancellation) {
@@ -216,6 +237,10 @@ function harness(
     async send(target) {
       sends.push(target)
       statusAtSend.push(state.legs[0]!.status)
+      // App-owned guards (assertBeforeSend, reserve, dispatch authority) run
+      // before the SDK; a throw here has not admitted any provider transfer.
+      if (preAdmissionGuardFailure) throw preAdmissionGuardError()
+      sdkEntries += 1
       if (throwOnSend) throw new Error("provider response lost")
       return send === "not_sent"
         ? { status: "not_sent" }
@@ -239,6 +264,7 @@ function harness(
       provider,
       acknowledgeRecoverySnapshot: async (snapshot) => {
         handoffs.push(snapshot.legs[0]!.status)
+        acked.push(structuredClone(snapshot))
         if (handoffs.length === failHandoffAt) {
           throw new Error("recovery relay unavailable")
         }
@@ -254,6 +280,10 @@ function harness(
     preflights,
     statusAtSend,
     handoffs,
+    acked,
+    get sdkEntries() {
+      return sdkEntries
+    },
     get state() {
       return state
     },
@@ -271,6 +301,9 @@ function harness(
     },
     set throwOnSend(value: boolean) {
       throwOnSend = value
+    },
+    set preAdmissionGuardFailure(value: boolean) {
+      preAdmissionGuardFailure = value
     },
     set failHandoffAt(value: number | null) {
       failHandoffAt = value
@@ -560,4 +593,204 @@ describe("settled Spark outgoing step", () => {
       expect(sends).toBe(0)
     }
   )
+})
+
+function legEvidence(
+  state: CheckoutSparkSettledReconciliation,
+  status: "submitted" | "terminal_failure",
+  observedAt: number
+) {
+  const leg = state.legs[0]!
+  return {
+    legId: leg.legId,
+    transferId: leg.intent!.transferId,
+    paymentHash: leg.intent!.paymentHash,
+    status,
+    observedAt,
+  }
+}
+
+/**
+ * Pre-admission contract (funded-checkout bug).
+ *
+ * The Merchant restores whatever recovery snapshot the Buyer last ACKed, and a
+ * provider `not_found` never clears `submitted`. Therefore, once core knows no
+ * provider call can have happened, the cancellation must reach the Merchant
+ * (the LAST ACKed snapshot must equal the durable state), or the order is
+ * stuck at `prior_possible_send` for a transfer that was never created.
+ */
+describe("settled Spark outgoing pre-admission cancellation", () => {
+  const SHORT_INVOICE_EXPIRY = CREATED_AT + 59_000
+  const shortInvoice = invoice(995, 4, SHORT_INVOICE_EXPIRY / 1_000 - 3_600)
+
+  // D1: the clock crosses the authority/invoice boundary between the
+  // `submitted` ACK and provider.send.
+  it.each([
+    {
+      name: "Buyer takeover time passes",
+      initial: () => preparedState(),
+      lateAt: CREATED_AT + 60_000,
+    },
+    {
+      name: "invoice send window closes",
+      initial: () => preparedState(shortInvoice),
+      lateAt: SHORT_INVOICE_EXPIRY,
+    },
+  ])(
+    "D1: when the $name after the submitted ACK, the Merchant is not left holding a stale submitted snapshot",
+    async ({ initial, lateAt }) => {
+      let clock = CREATED_AT + 3
+      const run = harness(initial(), {
+        afterAcknowledgement: async (status) => {
+          if (status === "submitted") clock = lateAt
+        },
+      })
+      const outcome = await run.step("shopper", () => clock)
+
+      // Scenario really reached the post-ACK window.
+      expect(run.handoffs[0]).toBe("prepared")
+      expect(run.handoffs[1]).toBe("submitted")
+      // No provider call was ever made.
+      expect(run.sends).toHaveLength(0)
+      expect(run.sdkEntries).toBe(0)
+      expect(outcome.sendAttempted).toBe(false)
+      expect(outcome.outcome).toBe("wait")
+
+      const durable = run.state.legs[0]!.status
+      expect(durable).not.toBe("submitted")
+      const lastAck = run.acked.at(-1)!
+      // The Merchant must not restore `submitted` for a never-created transfer.
+      expect(lastAck.legs[0]!.status).toBe(durable)
+      expect(lastAck).toEqual(run.state)
+    }
+  )
+
+  // D2: app-owned guard throws before the SDK is entered.
+  it("D2: an app guard rejection before SDK entry is not classified send_ambiguous / sendAttempted", async () => {
+    const run = harness()
+    run.preAdmissionGuardFailure = true
+    const outcome = await run.step()
+
+    expect(run.sdkEntries).toBe(0)
+    expect(outcome.outcome).not.toBe("send_ambiguous")
+    expect(outcome.sendAttempted).toBe(false)
+
+    const durable = run.state.legs[0]!.status
+    expect(durable).not.toBe("submitted")
+    // Merchant must not be left restoring `submitted` either.
+    expect(run.acked.at(-1)!.legs[0]!.status).toBe(durable)
+    expect(run.acked.at(-1)).toEqual(run.state)
+  })
+
+  // D3: the cancellation write itself fails (e.g. automatic session revoked
+  // after `submitted` was saved).
+  //
+  // CORRECT CONTRACT (documented): if core knows no send happened but cannot
+  // persist the cancellation, it can never silently leave an ACKed `submitted`
+  // behind a generic error. It must either (a) end non-submitted, or (b)
+  // surface a typed, non-ambiguous pre-admission failure: a returned result
+  // with sendAttempted === false and outcome !== "send_ambiguous", or a thrown
+  // error with `preAdmission === true` (see preAdmissionGuardError()). A raw
+  // `Error("durable save failed")` is unacceptable because callers treat
+  // untyped throws as unknown.
+  it("D3: a failing cancellation write never leaves an ACKed submitted behind an untyped error with zero sends", async () => {
+    let clock = CREATED_AT + 3
+    const run = harness(preparedState(), {
+      afterAcknowledgement: async (status) => {
+        if (status === "submitted") {
+          clock = CREATED_AT + 60_000 // takeover passes
+          run.failNextSave = true // session revoked: cancellation save throws
+        }
+      },
+    })
+    let thrown: unknown
+    let outcome: Awaited<ReturnType<typeof run.step>> | undefined
+    try {
+      outcome = await run.step("shopper", () => clock)
+    } catch (error) {
+      thrown = error
+    }
+    expect(run.sends).toHaveLength(0)
+    expect(run.sdkEntries).toBe(0)
+    expect(run.handoffs).toContain("submitted")
+
+    const durable = run.state.legs[0]!.status
+    if (durable === "submitted") {
+      // Branch (b): an unavoidable leftover must be typed and non-ambiguous.
+      if (outcome) {
+        expect(outcome.outcome).not.toBe("send_ambiguous")
+        expect(outcome.sendAttempted).toBe(false)
+      } else {
+        expect((thrown as { preAdmission?: boolean }).preAdmission).toBe(true)
+      }
+    } else {
+      // Branch (a): durable state moved off `submitted` and the Merchant knows.
+      expect(run.acked.at(-1)!.legs[0]!.status).toBe(durable)
+    }
+  })
+})
+
+/** SAFETY CONTROLS: must pass both before and after the fix. */
+describe("settled Spark outgoing possible-send safety controls", () => {
+  it("control (a): a provider failure AFTER SDK entry stays send_ambiguous, sendAttempted and submitted", async () => {
+    const run = harness()
+    run.throwOnSend = true
+    const outcome = await run.step()
+    expect(run.sdkEntries).toBe(1)
+    expect(outcome.outcome).toBe("send_ambiguous")
+    expect(outcome.sendAttempted).toBe(true)
+    expect(run.state.legs[0]!.status).toBe("submitted")
+    // The ACKed snapshot is the same possible-send marker.
+    expect(run.acked.at(-1)!.legs[0]!.status).toBe("submitted")
+    run.throwOnSend = false
+    expect((await run.step()).reason).toBe("prior_possible_send")
+    expect(run.sends).toHaveLength(1)
+  })
+
+  it.each([
+    ["shopper", CREATED_AT + 3],
+    ["merchant", CREATED_AT + 60_001],
+  ] as const)(
+    "control (b): submitted + provider not_found is still prior_possible_send with zero resend (%s)",
+    async (actor, now) => {
+      const prepared = preparedState()
+      const submitted = recordCheckoutSparkSettledLegStatus(
+        prepared,
+        legEvidence(prepared, "submitted", CREATED_AT + 10)
+      )
+      const run = harness(submitted)
+      run.lookup = "not_found"
+      const outcome = await run.step(actor, now)
+      expect(outcome.reason).toBe("prior_possible_send")
+      expect(outcome.sendAttempted).toBe(false)
+      expect(run.lookups).toHaveLength(1)
+      expect(run.preflights).toHaveLength(0)
+      expect(run.sends).toHaveLength(0)
+      expect(run.state.legs[0]!.status).toBe("submitted")
+    }
+  )
+
+  it("control (c): a pre-admission cancelled leg is not re-sent without a live cancellation token", async () => {
+    const first = harness()
+    first.failHandoffAt = 2 // pre-admission cancellation (ACK of submitted fails)
+    expect((await first.step()).reason).toBe("recovery_handoff_unavailable")
+    expect(first.state.legs[0]!.status).toBe("terminal_failure")
+    expect(first.sends).toHaveLength(0)
+
+    // Simulated process restart / other origin: same durable state, but a
+    // brand-new admission scope, so no cancellation capability exists.
+    const restarted = harness(first.state)
+    restarted.lookup = "not_found"
+    for (const [actor, now] of [
+      ["shopper", CREATED_AT + 4],
+      ["merchant", CREATED_AT + 60_001],
+    ] as const) {
+      const outcome = await restarted.step(actor, now)
+      expect(outcome.reason).toBe("prior_possible_send")
+      expect(outcome.sendAttempted).toBe(false)
+    }
+    expect(restarted.preflights).toHaveLength(0)
+    expect(restarted.sends).toHaveLength(0)
+    expect(restarted.state.legs[0]!.status).toBe("terminal_failure")
+  })
 })
