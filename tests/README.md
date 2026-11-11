@@ -113,6 +113,11 @@ Fixture creation and each case block external fetch and WebSocket access.
 These cases characterize refusal mechanisms; they do not reproduce a particular
 production incident or establish provider settlement or worker scheduling.
 
+`checkout-spark-observation-compatibility.test.ts` checks the exact audited SDK
+constructor/identity/cleanup boundary without network or initialization, plus
+unsupported-version and closed-session refusal. It does not establish provider
+responses or settlement.
+
 ## Scope and rebuilding
 
 The larger suite is available in Git at
