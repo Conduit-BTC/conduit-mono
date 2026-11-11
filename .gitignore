@@ -40,3 +40,7 @@ coverage/
 
 # TanStack Router temp
 .tanstack/
+
+# Disposable synthetic browser test artifacts
+/test-results/
+/playwright-report/

@@ -376,6 +376,29 @@ export function assertCheckoutSparkSettledRecoveryProgression(
   }
 }
 
+/**
+ * Only the takeover actor can write a possible send at or after takeoverAt,
+ * and the Buyer may only write `submitted` before it. An imported terminal
+ * label is not evidence about that later send, so the import is held.
+ * Misattributing a Buyer marker here only keeps the conservative state.
+ */
+function overwritesTakeoverPossibleSend(
+  current: CheckoutSparkSettledReconciliation,
+  next: CheckoutSparkSettledReconciliation
+): boolean {
+  return current.legs.some((leg, position) => {
+    const incoming = next.legs[position]
+    return (
+      incoming?.status === "terminal_failure" &&
+      (leg.status === "submitted" || UNCERTAIN_LEG_STATUSES.has(leg.status)) &&
+      leg.observedAt !== null &&
+      leg.observedAt >= current.plan.takeoverAt &&
+      getCheckoutSparkSettledLegGeneration(leg) ===
+        getCheckoutSparkSettledLegGeneration(incoming)
+    )
+  })
+}
+
 /** Versioned CAS store using the existing checkout binding and state rows. */
 export class DexieCheckoutSparkSettledRepository {
   /** This opaque process lifetime is deliberately never persisted or imported. */
@@ -1388,6 +1411,9 @@ export class DexieCheckoutSparkSettledRepository {
             // below. Truly conflicting state still fails closed.
           }
         }
+        // A peer's terminal label must not clear a possible send recorded
+        // under takeover authority; this repository keeps its own marker.
+        if (overwritesTakeoverPossibleSend(current.state, next)) return current
         assertCheckoutSparkSettledRecoveryProgression(current.state, next)
         if (!Number.isSafeInteger(current.revision + 1)) {
           throw new CheckoutSparkSettledRepositoryConflictError()
