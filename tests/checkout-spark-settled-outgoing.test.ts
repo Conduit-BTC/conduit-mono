@@ -727,6 +727,94 @@ describe("settled Spark outgoing pre-admission cancellation", () => {
   })
 })
 
+describe("Merchant import of a Buyer pre-admission cancellation", () => {
+  async function merchantRepository(local: CheckoutSparkSettledReconciliation) {
+    const database = new ConduitDB(
+      `merchant-cancel-import-${crypto.randomUUID()}`,
+      { indexedDB, IDBKeyRange }
+    )
+    await database.checkoutSparkPlanBindings.add({
+      checkoutId: local.plan.checkoutId,
+      planDigest: local.plan.planDigest,
+    })
+    await database.checkoutSparkReconciliations.add({
+      checkoutId: local.plan.checkoutId,
+      revision: 1,
+      state: local,
+    })
+    return {
+      database,
+      repository: new DexieCheckoutSparkSettledRepository(database),
+    }
+  }
+  const prepared = preparedState()
+  const takeoverAt = prepared.plan.takeoverAt
+  // Buyer persisted submitted before takeover, never sent, then cancelled.
+  const buyerSubmitted = recordCheckoutSparkSettledLegStatus(
+    prepared,
+    legEvidence(prepared, "submitted", CREATED_AT + 10)
+  )
+  const buyerCancelled = recordCheckoutSparkSettledLegStatus(
+    buyerSubmitted,
+    legEvidence(buyerSubmitted, "terminal_failure", takeoverAt + 500)
+  )
+
+  it("keeps the Merchant's own takeover possible-send and never resends", async () => {
+    const merchantSubmitted = recordCheckoutSparkSettledLegStatus(
+      prepared,
+      legEvidence(prepared, "submitted", takeoverAt + 1)
+    )
+    const { database, repository } = await merchantRepository(merchantSubmitted)
+    try {
+      await repository.importRecoveryState(buyerCancelled, () => {})
+      const held = await repository.load(
+        prepared.plan.checkoutId,
+        prepared.plan.planDigest
+      )
+      if (held.status !== "active") throw new Error("Fixture is not active")
+      expect(held.state.legs[0]!.status).toBe("submitted")
+      expect(held.state).toEqual(merchantSubmitted)
+
+      const run = harness(held.state)
+      run.lookup = "not_found"
+      const outcome = await runCheckoutSparkSettledOutgoingStep({
+        checkoutId: prepared.plan.checkoutId,
+        planDigest: prepared.plan.planDigest,
+        legId: prepared.legs[0]!.legId,
+        actor: "merchant",
+        now: () => takeoverAt + 1_000,
+        store: repository,
+        provider: run.provider,
+        acknowledgeRecoverySnapshot: async () => {},
+      })
+      expect(outcome.reason).toBe("prior_possible_send")
+      expect(outcome.sendAttempted).toBe(false)
+      expect(run.preflights).toHaveLength(0)
+      expect(run.sends).toHaveLength(0)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+
+  it("accepts the cancellation over a Buyer-imported submitted the Merchant never sent", async () => {
+    const { database, repository } = await merchantRepository(buyerSubmitted)
+    try {
+      await repository.importRecoveryState(buyerCancelled, () => {})
+      const imported = await repository.load(
+        prepared.plan.checkoutId,
+        prepared.plan.planDigest
+      )
+      if (imported.status !== "active") throw new Error("Fixture is not active")
+      expect(imported.state.legs[0]!.status).toBe("terminal_failure")
+      expect(imported.state).toEqual(buyerCancelled)
+    } finally {
+      database.close()
+      await database.delete()
+    }
+  })
+})
+
 describe("settled Spark outgoing pre-admission cancellation store", () => {
   it("D1: records and ACKs the cancellation through the session-only view when the authority-fenced store rejects after takeover", async () => {
     let clock = CREATED_AT + 3
