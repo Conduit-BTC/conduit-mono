@@ -1,3 +1,4 @@
+import { planLegacyDirectMessageRead } from "./commerce-read-relay-plan"
 import type { RelayTarget } from "./relay-authority"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { bytesToHex } from "@noble/hashes/utils.js"
@@ -145,12 +146,9 @@ async function transportReadPlans(
     },
   ]
   if (includeLegacy) {
-    // Resolve lazily: the commerce gateway also consumes this inbox owner.
     const legacy =
       legacyRelayPlan ??
-      (await (
-        await import("./commerce")
-      ).planLegacyDirectMessageRead(principal, () => {
+      (await planLegacyDirectMessageRead(principal, () => {
         assertCurrent()
         return true
       }))
