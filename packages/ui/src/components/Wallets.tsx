@@ -39,29 +39,28 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  Button,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
+} from "./Dialog"
+import { Button } from "./Button"
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuLabel,
   DropdownMenuTrigger,
-  Input,
-  Label,
-  StatusPill,
-  Switch,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-  Textarea,
-} from "../index"
+} from "./DropdownMenu"
+import { Input } from "./Input"
+import { Label } from "./Label"
+import { StatusPill } from "./StatusPill"
+import { Switch } from "./Switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./Tabs"
+import { Textarea } from "./Textarea"
 
 import type {
   WalletAddressController,

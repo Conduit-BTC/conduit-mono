@@ -1,4 +1,5 @@
 import { isValidSignedPublicNostrEvent } from "./signed-event"
+import type { PublicReadScope } from "./public-feed-read-scope"
 import {
   observeEventMarketWriteScope,
   type EventMarketWriteObservation,
@@ -85,6 +86,8 @@ export type EventMarketRosterReadCoverage =
   "complete" | "partial" | "stale" | "unavailable"
 
 export interface EventMarketRosterReadResult {
+  /** Public feed observations are display evidence, never action authority. */
+  readScope?: PublicReadScope
   coordinate: string
   resolution: EventMarketRosterResolution
   coverage: EventMarketRosterReadCoverage
@@ -102,6 +105,7 @@ export interface EventMarketRosterReadResult {
 }
 
 export interface EventMarketProductReadResult {
+  readScope?: PublicReadScope
   productCoordinate: string
   resolution: EventMarketProductResolution | { state: "market_unavailable" }
   coverage: EventMarketRosterReadCoverage
@@ -193,6 +197,9 @@ export function createEventMarketPickupSnapshot(input: {
       : input.marketRead.calendar
   const authorization = input.productRead.authorization?.resolution
   if (
+    input.marketRead.readScope === "public_feed" ||
+    input.productRead.readScope === "public_feed" ||
+    input.productRead.authorization?.readScope === "public_feed" ||
     market.state !== "current" ||
     market.market.state !== "open" ||
     !calendar ||
@@ -425,6 +432,7 @@ const defaultDependencies: RosterReadDependencies & {
 function fanoutOptions(
   plan: EventMarketReadPlan,
   input: {
+    readScope?: PublicReadScope
     accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
@@ -432,6 +440,7 @@ function fanoutOptions(
   }
 ): PublicRelayReadOptions {
   return {
+    requireAllRequestedRelays: input.readScope === "public_feed",
     relayUrls: plan.candidateRelayUrls,
     relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,
@@ -531,7 +540,16 @@ function scopedProductEvidence(
 
 /** Read exact organizer authority before any merchant candidate search. */
 export async function readEventMarketRoster(
+  input: Parameters<typeof readEventMarketRosterImpl>[0],
+  dependencies: RosterReadDependencies = defaultDependencies
+): Promise<EventMarketRosterReadResult> {
+  const result = await readEventMarketRosterImpl(input, dependencies)
+  return input.readScope ? { ...result, readScope: input.readScope } : result
+}
+
+async function readEventMarketRosterImpl(
   input: {
+    readScope?: PublicReadScope
     reference: string
     accountPubkey?: string | null
     authenticatedPubkey?: string | null
@@ -579,6 +597,7 @@ export async function readEventMarketRoster(
   let plan: EventMarketReadPlan
   try {
     plan = await dependencies.plan({
+      readScope: input.readScope,
       organizerPubkey: decoded.authorPubkey,
       relayHints: decoded.relayHints,
       accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
@@ -1173,6 +1192,7 @@ export async function readEventMarketRoster(
 /** The strongest observed signed assignment is authoritative for this tuple. */
 export async function readEventMarketAssignment(
   input: {
+    readScope?: PublicReadScope
     marketCoordinate: string
     occurrenceCoordinate: string
     productCoordinate: string
@@ -1243,6 +1263,7 @@ export async function readEventMarketAssignment(
   let truncated = false
   try {
     const plan = await dependencies.plan({
+      readScope: input.readScope,
       organizerPubkey: product.authorPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       shouldContinue: input.shouldContinue,
@@ -1481,7 +1502,28 @@ export async function readEventMarketAssignment(
 
 /** Exact product authority for selected purchase actions and direct product links. */
 export async function readEventMarketProduct(
+  input: Parameters<typeof readEventMarketProductImpl>[0],
+  dependencies: RosterReadDependencies = defaultDependencies
+): Promise<EventMarketProductReadResult> {
+  // Display observations cannot silently become authority or expand routing.
+  if (!input.readScope && input.marketRead.readScope === "public_feed")
+    return {
+      readScope: "public_feed",
+      productCoordinate: input.productCoordinate,
+      resolution: { state: "market_unavailable" },
+      coverage: input.marketRead.coverage,
+      retained: input.marketRead.retained,
+      actionable: false,
+    }
+  const result = await readEventMarketProductImpl(input, dependencies)
+  return input.readScope
+    ? { ...result, readScope: input.readScope, actionable: false }
+    : result
+}
+
+async function readEventMarketProductImpl(
   input: {
+    readScope?: PublicReadScope
     marketRead: EventMarketRosterReadResult
     productCoordinate: string
     selectedOccurrenceCoordinate?: string
@@ -1526,6 +1568,7 @@ export async function readEventMarketProduct(
         retain: dependencies.retain,
       }))
   const authorization = await readAuthorization({
+    readScope: input.readScope,
     marketCoordinate: market.market.coordinate,
     merchantPubkey: product.authorPubkey,
     accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
@@ -1565,6 +1608,7 @@ export async function readEventMarketProduct(
   const assignmentRead = occurrenceUsable
     ? await readEventMarketAssignment(
         {
+          readScope: input.readScope,
           marketCoordinate: market.market.coordinate,
           occurrenceCoordinate: selectedOccurrence!,
           productCoordinate: product.coordinate,
@@ -1604,6 +1648,7 @@ export async function readEventMarketProduct(
   let plan: EventMarketReadPlan
   try {
     plan = await dependencies.plan({
+      readScope: input.readScope,
       organizerPubkey: product.authorPubkey,
       accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
@@ -2115,7 +2160,7 @@ function catalogCandidates(input: {
 
 /** One roster-scoped query supplies display candidates; purchase authority is checked separately. */
 export async function readEventMarketCatalog(
-  input: {
+  request: {
     reference: string
     selectedOccurrenceCoordinate?: string
     limit?: number
@@ -2128,6 +2173,7 @@ export async function readEventMarketCatalog(
   },
   dependencies: RosterReadDependencies = defaultDependencies
 ): Promise<EventMarketCatalogReadResult> {
+  const input = { ...request, readScope: "public_feed" as const }
   const limit = Math.max(
     1,
     Math.min(256, Math.floor(Number.isFinite(input.limit) ? input.limit! : 48))
@@ -2165,7 +2211,10 @@ export async function readEventMarketCatalog(
     retained = false
   }
   assertCurrent()
-  const cachedMarket = cachedCatalogMarket(decoded.coordinate, cached, retained)
+  const cachedMarket = {
+    ...cachedCatalogMarket(decoded.coordinate, cached, retained),
+    readScope: "public_feed" as const,
+  }
   if (cachedMarket.resolution.state === "current")
     input.onProgress?.(
       catalogCandidates({
@@ -2199,6 +2248,7 @@ export async function readEventMarketCatalog(
     if (authors.length === 0) return { events: [], relays: [] }
     try {
       discoveryPlan = await plan({
+        readScope: input.readScope,
         organizerPubkey: decoded.authorPubkey,
         relayHints: decoded.relayHints,
         accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
@@ -2367,24 +2417,75 @@ export interface FutureEventMarketDiscoveryResult {
   continuation?: EventMarketDiscoveryContinuation
 }
 
-/** Discover signed candidates in author batches, then hydrate only known coordinates. */
+interface EventMarketDiscoveryInput {
+  readScope?: PublicReadScope
+  /** Undefined browses public relays; an empty list discovers no organizers. */
+  organizerPubkeys?: readonly string[]
+  accountPubkey?: string | null
+  authenticatedPubkey?: string | null
+  continuation?: EventMarketDiscoveryContinuation
+  shouldContinue?: () => boolean
+  signal?: AbortSignal
+  onProgress?: (result: FutureEventMarketDiscoveryResult) => void
+}
+
+type EventMarketDiscoveryDependencies = RosterReadDependencies & {
+  planDiscovery?: typeof getEventMarketDiscoveryReadPlan
+  loadDiscovered?: (
+    authors: readonly string[] | undefined
+  ) => Promise<SignedPublicNostrEvent[]>
+}
+
+/** Public discovery always stays on configured feed sources. */
 export async function discoverFutureEventMarkets(
-  input: {
-    /** Undefined browses public relays; an empty list discovers no organizers. */
-    organizerPubkeys?: readonly string[]
-    accountPubkey?: string | null
-    authenticatedPubkey?: string | null
-    continuation?: EventMarketDiscoveryContinuation
-    shouldContinue?: () => boolean
-    signal?: AbortSignal
-    onProgress?: (result: FutureEventMarketDiscoveryResult) => void
+  input: Omit<EventMarketDiscoveryInput, "readScope">,
+  dependencies: EventMarketDiscoveryDependencies = defaultDependencies
+): Promise<FutureEventMarketDiscoveryResult> {
+  return discoverEventMarkets(
+    { ...input, readScope: "public_feed" },
+    dependencies
+  )
+}
+
+/** Own inventory is the organizer's management entry point, not public discovery. */
+export async function discoverOwnedEventMarkets(
+  input: Omit<EventMarketDiscoveryInput, "readScope" | "organizerPubkeys"> & {
+    organizerPubkey: string
   },
-  dependencies: RosterReadDependencies & {
-    planDiscovery?: typeof getEventMarketDiscoveryReadPlan
-    loadDiscovered?: (
-      authors: readonly string[] | undefined
-    ) => Promise<SignedPublicNostrEvent[]>
-  } = defaultDependencies
+  dependencies: EventMarketDiscoveryDependencies = defaultDependencies
+): Promise<FutureEventMarketDiscoveryResult> {
+  const owner = input.organizerPubkey.trim().toLowerCase()
+  if (
+    !/^[0-9a-f]{64}$/.test(owner) ||
+    input.authenticatedPubkey?.trim().toLowerCase() !== owner ||
+    (input.accountPubkey !== undefined &&
+      input.accountPubkey?.trim().toLowerCase() !== owner)
+  )
+    throw new Error("Authenticated Event Market owner is required.")
+  const ownedInput = {
+    ...input,
+    readScope: undefined,
+    organizerPubkeys: [owner],
+    accountPubkey: owner,
+    authenticatedPubkey: owner,
+  }
+  return discoverEventMarkets(ownedInput, {
+    ...dependencies,
+    planDiscovery: async () => {
+      const plan = await dependencies.plan({
+        ...ownedInput,
+        organizerPubkey: owner,
+      })
+      // The exact planner's relayUrls is a priority prefix, not a destination cap.
+      return { ...plan, relayUrls: plan.candidateRelayUrls }
+    },
+  })
+}
+
+/** One candidate/hydration pipeline with purpose selected by its public owner. */
+async function discoverEventMarkets(
+  input: EventMarketDiscoveryInput,
+  dependencies: EventMarketDiscoveryDependencies
 ): Promise<FutureEventMarketDiscoveryResult> {
   const authors =
     input.organizerPubkeys === undefined
@@ -2486,6 +2587,7 @@ export async function discoverFutureEventMarkets(
         const result = await readEventMarketRoster(
           {
             reference: coordinate,
+            readScope: input.readScope,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             shouldContinue: input.shouldContinue,
@@ -2553,6 +2655,7 @@ export async function discoverFutureEventMarkets(
         const preview = await readEventMarketRoster(
           {
             reference: coordinate,
+            readScope: input.readScope,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
             authenticatedPubkey: input.authenticatedPubkey,
             shouldContinue: input.shouldContinue,
@@ -2591,6 +2694,7 @@ export async function discoverFutureEventMarkets(
     )(input)
     assertCurrent()
     const scope = getEventMarketDiscoveryScope({
+      readScope: input.readScope,
       accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,
       authors,
@@ -2602,6 +2706,7 @@ export async function discoverFutureEventMarkets(
         void scheduleExact(pending.coordinate)
       }
     const scan = await scanEventMarketCandidates({
+      readScope: input.readScope,
       authors,
       accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,

@@ -1,3 +1,12 @@
+import {
+  attachEventSourceRelayUrl,
+  getEventSourceRelayUrls,
+} from "./relay-read-provenance"
+export {
+  attachEventSourceRelayUrl,
+  getEventSourceRelayUrls,
+  mergeEventSourceRelayUrls,
+} from "./relay-read-provenance"
 /** Public reads own isolated sockets, bounded verification and source coverage. */
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { matchFilter, validateEvent, type Filter } from "nostr-tools"
@@ -118,6 +127,10 @@ export interface PublicRelayReadSocketScope {
 const WEBSOCKET_OPEN = 1
 
 export interface PublicRelayReadOptions {
+  /** Include explicitly requested but policy/health-suppressed sources in coverage.
+   * This does not admit, contact, or retry them. Other reads retain existing scope.
+   */
+  requireAllRequestedRelays?: boolean
   /** Separate public-only pool for injected transports; never an authenticated socket. */
   socketScope?: PublicRelayReadSocketScope
   onConnection?: (relayUrl: string) => void
@@ -195,6 +208,8 @@ export type PublicRelayReadOutcome =
   | "verification_failed"
   | "unavailable"
 export interface PublicRelayReadSourceStatus {
+  /** False for a required source omitted before I/O; attempt sets stay factual. */
+  attempted?: false
   relayUrl: string
   status: "success" | "partial" | "failed"
   /** Distinct verified event ids selected from this source; copies are counted separately. */
@@ -244,37 +259,6 @@ export interface PublicRelayReadDiagnosticsResult extends Partial<PublicRelayRea
   failedRelayUrls: string[]
   /** Relays whose response reached the filter limit and may be truncated. */
   cappedRelayUrls?: string[]
-}
-
-// Provenance is local evidence, never a field supplied on the wire. Object
-// identity also prevents proof-cache hits from borrowing previous-read sources.
-const eventSourceRelayUrls = new WeakMap<object, string[]>()
-
-function uniqueRelayUrls(urls: readonly string[]): string[] {
-  return Array.from(new Set(urls.map((url) => url.trim()).filter(Boolean)))
-}
-
-export function attachEventSourceRelayUrl(
-  event: object,
-  relayUrl: string
-): void {
-  eventSourceRelayUrls.set(
-    event,
-    uniqueRelayUrls([...(eventSourceRelayUrls.get(event) ?? []), relayUrl])
-  )
-}
-
-export function getEventSourceRelayUrls(event: object): string[] {
-  return [...(eventSourceRelayUrls.get(event) ?? [])]
-}
-
-export function mergeEventSourceRelayUrls(
-  target: object,
-  source: object
-): void {
-  for (const relayUrl of getEventSourceRelayUrls(source)) {
-    attachEventSourceRelayUrl(target, relayUrl)
-  }
 }
 
 const MAX_CONCURRENT_RELAY_READS = 8
@@ -1432,7 +1416,7 @@ export async function fetchSignedEventsFanoutDetailed(
     cancelled = false
   ): SignedEventRelayReadResult => {
     const events = Array.from(merged.values())
-    const relays = results.map((result) => ({
+    const relays: PublicRelayReadSourceStatus[] = results.map((result) => ({
       relayUrl: result.relayUrl,
       status: result.status,
       eventCount: result.events.length,
@@ -1459,6 +1443,21 @@ export async function fetchSignedEventsFanoutDetailed(
             outcome: "cancelled",
           })
       }
+    if (phase === "terminal" && options.requireAllRequestedRelays) {
+      for (const requested of new Set(options.relayUrls ?? relayUrls)) {
+        const normalized = tryNormalizeRelayUrl(requested)
+        const relayUrl = normalized.ok ? normalized.url : requested
+        if (!relays.some((relay) => relay.relayUrl === relayUrl))
+          relays.push({
+            relayUrl,
+            status: "failed",
+            attempted: false,
+            eventCount: 0,
+            eoseReceived: false,
+            outcome: "unavailable",
+          })
+      }
+    }
     const coverage = cancelled
       ? "cancelled"
       : phase === "terminal" &&

@@ -58,6 +58,7 @@ export function EventActorIdentityProvider({
     }
   }, [])
   const { data: profiles } = useProfiles(pubkeys, {
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey: accountPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,

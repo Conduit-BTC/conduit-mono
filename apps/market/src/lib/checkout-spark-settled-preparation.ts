@@ -995,6 +995,37 @@ export async function prepareCheckoutSparkSettledFunding(
               nativeTreasury,
             })
           : freezeCheckoutSparkSettledPlan(planInput)
+    // Provider invoice time can be slightly ahead of this device. Wait for
+    // actual local time instead of inventing a future recovery timestamp or
+    // relaxing the recovery/takeover guards. No state or handoff is saved yet.
+    const clockWaitStarted = performance.now()
+    const maxClockWaitMs = 5_000
+    while (now() < plan.createdAt) {
+      assertCurrent()
+      const localTime = now()
+      const remainingBudget =
+        maxClockWaitMs - (performance.now() - clockWaitStarted)
+      if (
+        !Number.isSafeInteger(localTime) ||
+        plan.createdAt - localTime > maxClockWaitMs ||
+        remainingBudget <= 0 ||
+        localTime >= plan.takeoverAt
+      ) {
+        throw new Error(
+          "Checkout device clock cannot admit this invoice safely."
+        )
+      }
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(100, remainingBudget))
+      )
+    }
+    assertCurrent()
+    if (performance.now() - clockWaitStarted > maxClockWaitMs) {
+      throw new Error("Checkout device clock cannot admit this invoice safely.")
+    }
+    if (now() >= plan.takeoverAt) {
+      throw new Error("Checkout preparation exceeded the Buyer routing window.")
+    }
     preparedPlan = plan
     const canonicalSources = canonicalizeCheckoutSparkPlanSourceEvents(
       plan,

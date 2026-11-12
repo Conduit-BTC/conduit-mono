@@ -1,4 +1,4 @@
-import type { WalletDescriptor, WalletNetwork } from "@conduit/core"
+import { type WalletDescriptor, type WalletNetwork } from "./index"
 
 const PROVIDER_NAMES: Record<string, string> = {
   spark: "Spark",

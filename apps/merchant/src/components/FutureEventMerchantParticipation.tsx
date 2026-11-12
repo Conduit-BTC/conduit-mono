@@ -42,6 +42,7 @@ export function FutureEventMerchantParticipation({
 }) {
   const { accountPubkey, authGeneration, isAuthGenerationCurrent } = useAuth()
   const profiles = useProfiles([market.organizerPubkey], {
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey,
     priority: "visible",

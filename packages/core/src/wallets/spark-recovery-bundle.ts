@@ -1,4 +1,4 @@
-import type { WalletNetwork } from "@conduit/core"
+import { type WalletNetwork } from "./index"
 
 export interface SparkRecoveryBundle {
   mnemonic: string

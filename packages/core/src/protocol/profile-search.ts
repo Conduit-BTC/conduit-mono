@@ -1,3 +1,7 @@
+import {
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import type { Filter } from "nostr-tools"
 import { config } from "../config"
@@ -28,7 +32,7 @@ import {
   projectCachedProfile,
   type ProfileFrontier,
 } from "./profile-cache"
-import { parseProfileEvent } from "./profiles"
+import { parseProfileEvent } from "./profile-cache"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 
 export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 1
@@ -179,6 +183,7 @@ export interface ProfileSearchResult {
 }
 
 export interface ProfileSearchQuery {
+  readScope?: PublicReadScope
   query: string
   limit?: number
   signal?: AbortSignal
@@ -219,6 +224,7 @@ export interface ProfileSearchDependencies {
     filter: Filter,
     options: {
       relayUrls: string[]
+      requireAllRequestedRelays?: boolean
       relayTargets: RelayTarget[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
@@ -466,6 +472,7 @@ const defaultDependencies: ProfileSearchDependencies = {
   planSearchRelayTargets: defaultPlanSearchRelayTargets,
   fetchEvents: async (filter, options) => {
     return await fetchSignedEventsFanoutDetailed(filter, {
+      requireAllRequestedRelays: options.requireAllRequestedRelays,
       relayUrls: options.relayUrls,
       relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
@@ -790,9 +797,10 @@ export async function searchNetworkProfiles(
   if (authorPubkeys?.length === 0) return emptyResult(query)
   const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
-  const relayTargets = await deps.planSearchRelayTargets(
-    input.authenticatedPubkey ?? null
-  )
+  const relayTargets =
+    input.readScope === "public_feed"
+      ? getPublicFeedReadPlan().relayTargets
+      : await deps.planSearchRelayTargets(input.authenticatedPubkey ?? null)
   const relayUrls = relayTargets.map((target) => target.url)
   let summary: ProfileSearchRelaySummary = {
     relaysPlanned: relayUrls.length,
@@ -833,6 +841,7 @@ export async function searchNetworkProfiles(
               },
               {
                 relayUrls,
+                requireAllRequestedRelays: input.readScope === "public_feed",
                 relayTargets,
                 accountPubkey: input.authenticatedPubkey ?? null,
                 authenticatedPubkey: input.authenticatedPubkey ?? null,

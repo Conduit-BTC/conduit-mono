@@ -64,6 +64,8 @@ export function useMerchantCheckoutCapability(input: {
   readiness: MerchantCartReadiness | undefined
   merchantLud16: string | null | undefined
   enabled?: boolean
+  shouldContinue?: () => boolean
+  lifecycleKey?: string
   wallets?: UseWalletsReturn
 }): MerchantCheckoutCapabilityView {
   const { accountPubkey, restorePendingPubkey, signerReadiness } = useAuth()
@@ -84,6 +86,8 @@ export function useMerchantCheckoutCapability(input: {
 
   const lnurlPreflight = useMerchantLnurlPreflight(input.merchantLud16, {
     enabled,
+    shouldContinue: input.shouldContinue,
+    lifecycleKey: input.lifecycleKey,
   })
   const items = useMemo(() => Array.from(input.items), [input.items])
   const summary =

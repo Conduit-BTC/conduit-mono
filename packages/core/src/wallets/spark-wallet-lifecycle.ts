@@ -1,4 +1,4 @@
-import type { WalletDescriptor } from "@conduit/core"
+import { type WalletDescriptor } from "./index"
 
 import {
   assertSparkWalletRegistrationSessionAvailable,

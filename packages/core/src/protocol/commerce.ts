@@ -1,11 +1,34 @@
 import {
-  createProductQueryMatcher,
-  sortProducts,
-  applyProductLimit,
-  getProductRawEventLimit,
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
+import {
+  BROAD_AUTHOR_HINT_LIMIT,
+  planCommerceReadRelayPlan,
+  __setCommerceRelayPlanningTestOverrides,
+  __resetCommerceRelayPlanningTestOverrides,
+  type CommerceReadRelayPlan,
+} from "./commerce-read-relay-plan"
+export { planLegacyDirectMessageRead } from "./commerce-read-relay-plan"
+import {
+  buildBuyerConversationSummaries,
+  buildMerchantConversationSummaries,
+  buildDirectConversationSummaries,
+  counterpartyOf,
+} from "./commerce-conversation-projections"
+import { getProfiles as readProfiles } from "./commerce-profile-reads"
+import {
   getMerchantStorefront as readMerchantStorefront,
+  getProductDetail as readProductDetail,
+  getCachedProductDetail as readCachedProductDetail,
+  getCachedProductsByIds as readCachedProductsByIds,
+  type ProductDetailReadDependencies,
   getCachedMerchantStorefront as readCachedMerchantStorefront,
   type StorefrontReadDependencies,
+  getMarketplaceProducts as readMarketplaceProducts,
+  getMarketplaceProductsProgressive as readMarketplaceProductsProgressive,
+  getCachedMarketplaceProducts as readCachedMarketplaceProducts,
+  type MarketplaceReadDependencies,
 } from "./commerce-product-reads"
 import { groupOrderConversationMessages } from "./order-conversation"
 import {
@@ -33,13 +56,14 @@ import {
 } from "./relay-authority"
 import type { Profile } from "../types"
 import {
-  filterProductRecordsForRead as selectProductRecordsForRead,
   filterExactProductRecordsForRead as selectExactProductRecordsForRead,
   reconcileProductRecordsWithRevisions as reconcileSelectedProductRevisions,
   reconcileProductRecordsWithDeletions as reconcileSelectedProductDeletions,
   withProductFamilyReadEvidence,
-  withProductFamilyRecordReadEvidence,
   mergeProductRecordSources,
+  getVariationParentAddress,
+  selectLatestProductRecordsByAddress,
+  hasCompleteLiveVariationGroupCoverage,
   parseAddress,
   getProductLookupIds,
   type CommerceProductRecord,
@@ -48,8 +72,6 @@ export { hasMarketProductImage } from "./commerce-product-selection"
 import {
   __setProductCacheTestOverrides,
   __resetProductCacheTestOverrides,
-  loadCachedProducts,
-  getCachedProductRecords,
   getCachedExactProductRecords,
   getLocalProductDeletionTimestamps,
   getLocalProductDeletionSnapshot,
@@ -125,7 +147,6 @@ import {
   getEventSourceRelayUrls,
   mergeEventSourceRelayUrls,
 } from "./relay-reader"
-import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 import type { OwnerRelayListEvidenceRepository } from "./owner-relay-list-evidence"
 import {
   planInboxReadRelays,
@@ -135,8 +156,6 @@ import {
   type InboxReadCoverage,
   type InboxReadSource,
 } from "./private-message-routing"
-import { extractOrderSummary } from "./order-summary"
-import { getEffectiveMerchantOrderStatus } from "./order-status"
 import {
   parseOrderMessageRumorEvent,
   type ParsedEventMarketPrivateMessage,
@@ -151,24 +170,12 @@ import {
 } from "./messaging"
 import { MAX_PRODUCT_RELAY_HINTS } from "./product-reference"
 import {
-  projectProfileContent,
-  areProfileProjectionsEqual,
-  mergeRicherProfile,
-  projectCachedProfile,
-  reduceCachedProfileRows,
+  parseProfileEvent,
   __setProfileCacheTestOverrides,
   __resetProfileCacheTestOverrides,
-  createSelectedProfileContext,
-  loadProfileCacheSnapshot,
-  retainSelectedProfileRows as storeCachedProfiles,
-  hasKnownProfileFrontier,
-  hasValidProfileEventContent,
-  projectProfilePaymentAuthority,
-  retainedProfileFrontierState,
   type ProfileFrontierState,
   type SelectedProfileContext,
 } from "./profile-cache"
-import { parseProfileEvent } from "./profiles"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,
@@ -176,9 +183,6 @@ import {
 import { type VerifiedNostrEvent } from "./verified-public-event"
 import type { ProductDeletionEvidence } from "./product-deletion"
 import {
-  getCommerceReadRelayUrls,
-  getGeneralReadRelayUrls,
-  loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizePublicRelayHints,
@@ -188,13 +192,8 @@ import {
   getRelayLists,
   getRelayListsDetailed,
   type RelayList,
-  type RelayListResolutionState,
 } from "./relay-list"
-import {
-  DEFAULT_READ_FANOUT,
-  planRelayReads,
-  type RelayReadIntent,
-} from "./relay-planner"
+import { DEFAULT_READ_FANOUT } from "./relay-planner"
 import {
   readProtectedInbox,
   type ProtectedInboxAuthSummary,
@@ -211,7 +210,6 @@ import {
   type ProtectedReadAuthorization,
 } from "./protected-read-authorization"
 
-const BROAD_AUTHOR_HINT_LIMIT = 16
 // Keep author-scoped product filters small enough for public relays that
 // reject or truncate very large authors arrays. This is a transport batch
 // size, not a product truth cap.
@@ -222,7 +220,6 @@ const PRODUCT_AUTHOR_CHUNK_SIZE = 64
 const PRODUCT_AUTHOR_CHUNK_CONCURRENCY = 2
 
 const PRODUCT_VARIATION_EVENT_LIMIT = 200
-const PROFILE_CACHE_TTL_MS = 5 * 60_000
 const CHECKOUT_SPARK_RECOVERY_INSPECTION_LIMIT = 50
 const CHECKOUT_SPARK_RECOVERY_INSPECTION_BUDGET_MS = 15_000
 const CHECKOUT_SPARK_RECOVERY_UNWRAP_TIMEOUT_MS = 4_000
@@ -352,6 +349,7 @@ export interface FollowListResult extends CommerceResult<string[]> {
 export type { CommerceProductRecord } from "./commerce-product-selection"
 
 export interface MarketplaceProductsQuery {
+  readScope?: PublicReadScope
   merchantPubkey?: string
   authorPubkeys?: string[]
   authenticatedPubkey?: string | null
@@ -373,6 +371,7 @@ export interface MarketplaceProductsQuery {
 }
 
 export interface MerchantStorefrontQuery {
+  readScope?: PublicReadScope
   merchantPubkey: string
   authenticatedPubkey?: string | null
   /** Final-I/O account exclusions without changing merchant-hint authority. */
@@ -391,6 +390,7 @@ export interface MerchantStorefrontQuery {
 }
 
 export interface ProductDetailQuery {
+  readScope?: PublicReadScope
   productId: string
   revalidateCanonical?: boolean
   includeMarketHidden?: boolean
@@ -401,6 +401,7 @@ export interface ProductDetailQuery {
 }
 
 export interface ProductsByIdsOptions {
+  readScope?: PublicReadScope
   /**
    * One initial locally reconciled snapshot, including an empty cache, before
    * relay discovery. Success-only: an initial cache failure or cancellation
@@ -447,6 +448,7 @@ export interface ProductsByIdsOptions {
 }
 
 export interface ProfileBatchQuery {
+  readScope?: PublicReadScope
   pubkeys: string[]
   authenticatedPubkey?: string | null
   /** Final-I/O account exclusions without changing profile hint authority. */
@@ -469,6 +471,7 @@ export interface ProfileBatchQuery {
 }
 
 export interface FollowListQuery {
+  readScope?: PublicReadScope
   pubkey: string
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
@@ -711,448 +714,6 @@ function resolveInboxSyncAuthorization(
 
 function now(): number {
   return testOverrides.now?.() ?? Date.now()
-}
-
-function publicReadRelayUrls(): string[] {
-  return getGeneralReadRelayUrls({
-    fallbackRelayUrls:
-      config.corePublicFallbackRelayUrls.length > 0
-        ? config.corePublicFallbackRelayUrls
-        : undefined,
-  })
-}
-
-function commerceFallbackRelayUrls(): string[] {
-  return uniqueStrings([
-    ...config.appBackplaneRelayUrls,
-    ...config.commerceDiscoveryRelayUrls,
-    ...config.corePublicFallbackRelayUrls,
-  ])
-}
-
-function commerceReadRelayUrls(): string[] {
-  return getCommerceReadRelayUrls({
-    fallbackRelayUrls: commerceFallbackRelayUrls(),
-  })
-}
-
-function hasCommerceFetchTestOverride(): boolean {
-  return !!(
-    testOverrides.fetchPublicEvents ||
-    testOverrides.fetchPublicEventsWithDiagnostics ||
-    testOverrides.fetchSignedEventsFanoutDetailed ||
-    testOverrides.fetchPublicEventsProgressive
-  )
-}
-
-/**
- * Resolve a planner-driven relay URL list for a commerce read intent.
- * Pulls cached NIP-65 relay lists for any author/recipient hints so
- * fanout includes the author's write/read relays alongside user settings.
- * Public commerce discovery keeps its bounded app fallback; authoritative
- * signed account state leaves generic reads empty when no relay is enabled.
- */
-type CommerceReadRelayPlan = {
-  relayUrls: string[]
-  relayTargets: RelayTarget[]
-  /** Ordered candidates retained until the final live-policy admission gate. */
-  candidateRelayUrls: string[]
-  /** Maximum candidates that may reach relay I/O after policy filtering. */
-  maxRelayAttempts?: number
-  parkedRelayUrls: string[]
-  /** Complete NIP-65 hint set before the executable fanout cap. */
-  hintRelayUrls: string[]
-  /** Exact planned subset backed by this authenticated owner's settings. */
-  ownerSelectedRelayUrls: string[]
-  /** Exact executable subset contributed by Conduit's app-owned layer. */
-  appRelayUrls: string[]
-  /** Exact executable subset contributed by the owner's NIP-65 layer. */
-  personalRelayUrls: string[]
-  /** Exact candidates with signed remote or retained source authority. */
-  independentRelayUrls: string[]
-  /** Resolved once so per-family plans do not repeat the NIP-65 lookup. */
-  relayLists: ReadonlyMap<string, RelayList>
-  /** Payment reads must distinguish a missing list from failed discovery. */
-  relayListResolutionStates: ReadonlyMap<string, RelayListResolutionState>
-  relayListLookupIncomplete: boolean
-}
-
-/** Existing bounded legacy-DM policy, independent of kind-10050 inbox declarations. */
-export async function planLegacyDirectMessageRead(
-  principalPubkey: string,
-  shouldContinue: () => boolean
-): Promise<CommerceReadRelayPlan> {
-  return await planCommerceReadRelayPlan({
-    intent: "legacy_dm",
-    authors: [principalPubkey],
-    recipients: [principalPubkey],
-    authenticatedPubkey: principalPubkey,
-    maxRelays: 24,
-    shouldContinue,
-  })
-}
-
-async function planCommerceReadRelayPlan(input: {
-  intent: RelayReadIntent
-  authors?: readonly string[]
-  recipients?: readonly string[]
-  authenticatedPubkey?: string | null
-  /** Account policy for final hint discovery without changing read authority. */
-  accountPubkey?: string | null
-  maxRelays?: number
-  relayHintMode?: "auto" | "skip" | "force"
-  /** Untrusted hints that must independently resolve to public WSS targets. */
-  extraRelayUrls?: readonly string[]
-  /** Hints belonging to the exact authenticated author. */
-  authenticatedAuthorRelayUrls?: readonly string[]
-  /** Batched NIP-65 result reused by narrower author plans. */
-  relayLists?: ReadonlyMap<string, RelayList>
-  paymentProfileEvidence?: boolean
-  shouldContinue?: () => boolean
-  signal?: AbortSignal
-}): Promise<CommerceReadRelayPlan> {
-  const accountPubkey = input.accountPubkey ?? input.authenticatedPubkey
-  const settingsSnapshot = input.authenticatedPubkey
-    ? await readDurableAccountRelaySettingsPlanningSnapshot(
-        input.authenticatedPubkey,
-        {
-          evidenceRepository: testOverrides.ownerRelayListEvidenceRepository,
-        }
-      )
-    : loadRelaySettingsPlanningSnapshot()
-  const hintPubkeys = Array.from(
-    new Set(
-      [...(input.authors ?? []), ...(input.recipients ?? [])]
-        .map((p) => p.trim())
-        .filter(Boolean)
-    )
-  )
-
-  const normalizedAuthenticatedPubkey = input.authenticatedPubkey
-    ?.trim()
-    .toLowerCase()
-  const normalizedPolicyAccount = accountPubkey?.trim().toLowerCase()
-  const configuredOwnerRelayListLookupUrls =
-    normalizedAuthenticatedPubkey &&
-    normalizedAuthenticatedPubkey === normalizedPolicyAccount
-      ? normalizeOwnerSelectedRelayUrls(
-          settingsSnapshot.settings.entries.flatMap((entry) =>
-            entry.readEnabled ? [entry.url] : []
-          )
-        )
-      : []
-  const relayListLookupPlan = planRelayReads({
-    intent: "relay_lists",
-    authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: configuredOwnerRelayListLookupUrls,
-    settings: settingsSnapshot.settings,
-    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
-  })
-  // A durable signed-empty owner projection is already authoritative. Do not
-  // activate ambient app discovery merely to refresh that owner's own NIP-65
-  // hints before the account relay-settings scope is available. This boundary
-  // is author-specific: unrelated authors still need bounded App discovery so
-  // their advertised write relays can participate in the requested read.
-  const suppressAmbientOwnerRelayListLookup =
-    !!normalizedAuthenticatedPubkey &&
-    normalizedAuthenticatedPubkey === normalizedPolicyAccount &&
-    settingsSnapshot.signedRelayListAuthoritative &&
-    configuredOwnerRelayListLookupUrls.length === 0
-  const relayListLookupPubkeys = suppressAmbientOwnerRelayListLookup
-    ? hintPubkeys.filter(
-        (pubkey) =>
-          pubkey.trim().toLowerCase() !== normalizedAuthenticatedPubkey
-      )
-    : hintPubkeys
-  const shouldFetchRelayHints =
-    relayListLookupPubkeys.length > 0 &&
-    (input.relayHintMode === "force" ||
-      (input.relayHintMode !== "skip" &&
-        relayListLookupPubkeys.length <= BROAD_AUTHOR_HINT_LIMIT))
-  const relayListLookupRelayUrls =
-    relayListLookupPubkeys.length === 0
-      ? []
-      : relayListLookupPlan.candidateRelayUrls
-  const relayListLookupRelayUrlSet = new Set(relayListLookupRelayUrls)
-  const ownerSelectedRelayListLookupUrls = (
-    relayListLookupPlan.ownerSelectedRelayUrls ?? []
-  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
-  const appRelayListLookupUrls = (
-    relayListLookupPlan.appRelayUrls ?? []
-  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
-  const personalRelayListLookupUrls = (
-    relayListLookupPlan.personalRelayUrls ?? []
-  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
-  const independentRelayListLookupUrls = (
-    relayListLookupPlan.independentRelayUrls ?? []
-  ).filter((relayUrl) => relayListLookupRelayUrlSet.has(relayUrl))
-  const relayListLookupOptions = {
-    ...(hasCommerceFetchTestOverride() && !input.paymentProfileEvidence
-      ? { cacheOnly: true }
-      : { relayUrls: relayListLookupRelayUrls }),
-    ...(input.paymentProfileEvidence
-      ? { skipCache: true, requireAllRequestedRelays: true }
-      : {}),
-    relayTargets: relayListLookupPlan.relayTargets,
-    allowInsecureRelayUrlsForPubkey: input.authenticatedPubkey,
-    accountPubkey,
-    authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: ownerSelectedRelayListLookupUrls,
-    appRelayUrls: appRelayListLookupUrls,
-    personalRelayUrls: personalRelayListLookupUrls,
-    independentRelayUrls: independentRelayListLookupUrls,
-    maxRelayAttempts: relayListLookupPlan.maxRelayAttempts,
-    accountNetworkLocalStateRepository:
-      testOverrides.accountNetworkLocalStateRepository,
-    shouldContinue: input.shouldContinue,
-    signal: input.signal,
-  }
-  const relayListResult = input.relayLists
-    ? {
-        relayLists: input.relayLists,
-        resolutionStates: new Map<string, RelayListResolutionState>(),
-      }
-    : shouldFetchRelayHints
-      ? input.paymentProfileEvidence
-        ? await (testOverrides.getRelayListsDetailed ?? getRelayListsDetailed)(
-            relayListLookupPubkeys,
-            relayListLookupOptions
-          )
-        : {
-            relayLists: await (testOverrides.getRelayLists ?? getRelayLists)(
-              relayListLookupPubkeys,
-              relayListLookupOptions
-            ),
-            resolutionStates: new Map<string, RelayListResolutionState>(),
-          }
-      : {
-          relayLists: new Map<string, RelayList>(),
-          resolutionStates: new Map<string, RelayListResolutionState>(),
-        }
-  const relayLists = relayListResult.relayLists
-  const relayListLookupIncomplete =
-    !!input.paymentProfileEvidence &&
-    relayListLookupPlan.parkedRelayUrls.length > 0
-
-  const plan = planRelayReads({
-    intent: input.intent,
-    authors: input.authors,
-    recipients: input.recipients,
-    relayLists,
-    authenticatedPubkey: input.authenticatedPubkey,
-    ownerSelectedRelayUrls: normalizeOwnerSelectedRelayUrls(
-      settingsSnapshot.settings.entries.flatMap((entry) =>
-        entry.readEnabled ||
-        (hintPubkeys.some(
-          (pubkey) =>
-            pubkey.trim().toLowerCase() === normalizedAuthenticatedPubkey
-        ) &&
-          entry.writeEnabled)
-          ? [entry.url]
-          : []
-      )
-    ),
-    maxRelays: input.maxRelays,
-    settings: settingsSnapshot.settings,
-    signedRelayListAuthoritative: settingsSnapshot.signedRelayListAuthoritative,
-  })
-
-  const preservesPublicCommerceDiscovery =
-    input.intent === "commerce_products" || input.intent === "author_products"
-  const protectedInboxIntent =
-    input.intent === "legacy_dm" || input.intent === "dm_inbox"
-  const fallbackRelayUrls = (() => {
-    if (preservesPublicCommerceDiscovery) return commerceFallbackRelayUrls()
-    // Protected inbox reads have their own bounded compatibility and signed
-    // owner sources. Generic public fallback relays cannot authorize them.
-    if (protectedInboxIntent) return []
-    if (settingsSnapshot.signedRelayListAuthoritative) return []
-    return config.corePublicFallbackRelayUrls.length > 0
-      ? config.corePublicFallbackRelayUrls
-      : config.defaultRelays
-  })()
-  const preferFallbackFirst =
-    input.relayHintMode !== "force" &&
-    (input.intent === "commerce_products" ||
-      (input.intent === "author_products" && (input.authors?.length ?? 0) > 1))
-  const publicExternalRelayHints = normalizePublicRelayHints(
-    input.extraRelayUrls ?? []
-  )
-  const authenticatedAuthorRelayHints = normalizeUntrustedRelayHintsForContext({
-    relayUrls: input.authenticatedAuthorRelayUrls ?? [],
-    approvedRelayUrls: plan.candidateRelayUrls,
-    allowApprovedPrivate: !!input.authenticatedPubkey,
-  })
-  const externalRelayHints = uniqueStrings([
-    ...publicExternalRelayHints,
-    ...authenticatedAuthorRelayHints,
-  ])
-  const plannedRelayUrls = preferFallbackFirst
-    ? uniqueStrings([
-        ...fallbackRelayUrls,
-        ...externalRelayHints,
-        ...plan.candidateRelayUrls,
-      ])
-    : uniqueStrings([
-        ...externalRelayHints,
-        ...plan.candidateRelayUrls,
-        ...fallbackRelayUrls,
-      ])
-  const effectiveMaxRelays = input.maxRelays ?? DEFAULT_READ_FANOUT
-  const candidateRelayUrls = config.e2eRelayIsolationEnabled
-    ? normalizePublicOrIsolatedE2eRelayHints(plannedRelayUrls)
-    : plannedRelayUrls
-  const executableRelayUrls = candidateRelayUrls
-  const candidateRelayUrlSet = new Set(candidateRelayUrls)
-  const candidateRelayTargets = mergeRelayTargets(
-    plan.relayTargets,
-    configuredRelayTargets(
-      {
-        kind: "public_fallback",
-        operation: "read",
-        bucket: "commerce_discovery",
-      },
-      fallbackRelayUrls
-    ),
-    configuredRelayTargets(
-      { kind: "public_fallback", operation: "read", bucket: "core_public" },
-      fallbackRelayUrls
-    ),
-    configuredRelayTargets(
-      { kind: "public_fallback", operation: "read", bucket: "default" },
-      fallbackRelayUrls
-    ),
-    relayTargetsFromUrls(publicExternalRelayHints, {
-      kind: "public_hint",
-      operation: "read",
-    })
-  ).filter((target) => candidateRelayUrlSet.has(target.url))
-  const authenticatedOwner = input.authenticatedPubkey?.trim().toLowerCase()
-  const policyAccount = accountPubkey?.trim().toLowerCase()
-  const includesAuthenticatedOwner = Boolean(
-    authenticatedOwner &&
-    [...(input.authors ?? []), ...(input.recipients ?? [])].some(
-      (pubkey) => pubkey.trim().toLowerCase() === authenticatedOwner
-    )
-  )
-  const ownerSelectedRelayUrls =
-    authenticatedOwner && authenticatedOwner === policyAccount
-      ? normalizeOwnerSelectedRelayUrls(
-          settingsSnapshot.settings.entries.flatMap((entry) =>
-            entry.readEnabled ||
-            (includesAuthenticatedOwner && entry.writeEnabled)
-              ? [entry.url]
-              : []
-          )
-        ).filter((relayUrl) => candidateRelayUrlSet.has(relayUrl))
-      : []
-  const appRelayUrlSet = new Set([
-    ...(plan.appRelayUrls ?? []),
-    ...fallbackRelayUrls,
-  ])
-  const independentRelayUrlSet = new Set([
-    ...(plan.independentRelayUrls ?? []),
-    ...publicExternalRelayHints,
-  ])
-
-  if (
-    config.e2eRelayIsolationEnabled ||
-    protectedInboxIntent ||
-    executableRelayUrls.length > 0 ||
-    (settingsSnapshot.signedRelayListAuthoritative &&
-      !preservesPublicCommerceDiscovery)
-  ) {
-    return {
-      relayUrls: executableRelayUrls,
-      relayTargets: candidateRelayTargets,
-      candidateRelayUrls,
-      ...(effectiveMaxRelays > 0
-        ? { maxRelayAttempts: effectiveMaxRelays }
-        : {}),
-      parkedRelayUrls: plan.parkedRelayUrls.filter(
-        (relayUrl) => !candidateRelayUrlSet.has(relayUrl)
-      ),
-      hintRelayUrls: plan.hintRelayUrls,
-      ownerSelectedRelayUrls,
-      appRelayUrls: candidateRelayUrls.filter((relayUrl) =>
-        appRelayUrlSet.has(relayUrl)
-      ),
-      personalRelayUrls: ownerSelectedRelayUrls,
-      independentRelayUrls: candidateRelayUrls.filter((relayUrl) =>
-        independentRelayUrlSet.has(relayUrl)
-      ),
-      relayLists,
-      relayListResolutionStates: relayListResult.resolutionStates,
-      relayListLookupIncomplete,
-    }
-  }
-
-  // Defensive fallback: legacy resolution paths.
-  switch (input.intent) {
-    case "commerce_products":
-    case "author_products": {
-      const relayUrls = commerceReadRelayUrls()
-      const relayUrlSet = new Set(relayUrls)
-      const candidateRelayUrls = commerceReadRelayUrls()
-      return {
-        relayUrls,
-        relayTargets: configuredRelayTargets(
-          {
-            kind: "public_fallback",
-            operation: "read",
-            bucket: "commerce_discovery",
-          },
-          candidateRelayUrls
-        ),
-        candidateRelayUrls,
-        ...(effectiveMaxRelays > 0
-          ? { maxRelayAttempts: effectiveMaxRelays }
-          : {}),
-        parkedRelayUrls: plan.parkedRelayUrls.filter(
-          (relayUrl) => !relayUrlSet.has(relayUrl)
-        ),
-        hintRelayUrls: plan.hintRelayUrls,
-        ownerSelectedRelayUrls: [],
-        appRelayUrls: candidateRelayUrls,
-        personalRelayUrls: [],
-        independentRelayUrls: [],
-        relayLists,
-        relayListResolutionStates: relayListResult.resolutionStates,
-        relayListLookupIncomplete,
-      }
-    }
-    default: {
-      const relayUrls = publicReadRelayUrls()
-      const relayUrlSet = new Set(relayUrls)
-      const candidateRelayUrls = publicReadRelayUrls()
-      return {
-        relayUrls,
-        relayTargets: configuredRelayTargets(
-          {
-            kind: "public_fallback",
-            operation: "read",
-            bucket: "default",
-          },
-          candidateRelayUrls
-        ),
-        candidateRelayUrls,
-        ...(effectiveMaxRelays > 0
-          ? { maxRelayAttempts: effectiveMaxRelays }
-          : {}),
-        parkedRelayUrls: plan.parkedRelayUrls.filter(
-          (relayUrl) => !relayUrlSet.has(relayUrl)
-        ),
-        hintRelayUrls: plan.hintRelayUrls,
-        ownerSelectedRelayUrls: [],
-        appRelayUrls: candidateRelayUrls,
-        personalRelayUrls: [],
-        independentRelayUrls: [],
-        relayLists,
-        relayListResolutionStates: relayListResult.resolutionStates,
-        relayListLookupIncomplete,
-      }
-    }
-  }
 }
 
 async function admitObservedPublicEvents(
@@ -1414,6 +975,20 @@ export function __setCommerceTestOverrides(
   overrides: Partial<CommerceTestOverrides>
 ): void {
   testOverrides = { ...testOverrides, ...overrides }
+  __setCommerceRelayPlanningTestOverrides({
+    getRelayLists: testOverrides.getRelayLists,
+    getRelayListsDetailed: testOverrides.getRelayListsDetailed,
+    ownerRelayListEvidenceRepository:
+      testOverrides.ownerRelayListEvidenceRepository,
+    accountNetworkLocalStateRepository:
+      testOverrides.accountNetworkLocalStateRepository,
+    hasFetchOverride: !!(
+      testOverrides.fetchPublicEvents ||
+      testOverrides.fetchPublicEventsWithDiagnostics ||
+      testOverrides.fetchSignedEventsFanoutDetailed ||
+      testOverrides.fetchPublicEventsProgressive
+    ),
+  })
   __setProfileCacheTestOverrides({
     getCachedProfiles: testOverrides.getCachedProfiles,
     putCachedProfiles: testOverrides.putCachedProfiles,
@@ -1429,6 +1004,7 @@ export function __setCommerceTestOverrides(
 
 export function __resetCommerceTestOverrides(): void {
   testOverrides = {}
+  __resetCommerceRelayPlanningTestOverrides()
   __resetProfileCacheTestOverrides()
   __resetProductCacheTestOverrides()
   __resetInboxRelayCache()
@@ -1562,6 +1138,7 @@ async function preloadExactProductRelayLists(
   ): Promise<RelayListChunkResult[]> => {
     try {
       const relayPlan = await planCommerceReadRelayPlan({
+        readScope: options.readScope,
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
@@ -1631,6 +1208,7 @@ function putMergedEvent(
 }
 
 async function streamProductRecordChunks(input: {
+  readScope?: PublicReadScope
   baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
@@ -1662,8 +1240,29 @@ async function streamProductRecordChunks(input: {
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
     input.authorChunks.length
   )
+  const fetchFeedProgressive: typeof fetchPublicEventsProgressive = async (
+    filter,
+    options,
+    onProgress
+  ) => {
+    const result = await runFetchEventsFanoutDetailed(filter, {
+      ...options,
+      onRelayProgress: onProgress,
+    })
+    // Progress callbacks cover attempted sources only. A health/policy
+    // omission must not turn a fixed-feed partial read into completion.
+    input.onTransportStatus?.(
+      result.degraded ||
+        input.relayUrls.some((url) => !result.completedRelayUrls.includes(url)),
+      result.capped
+    )
+    return result.events
+  }
   const fetchProgressive =
-    testOverrides.fetchPublicEventsProgressive ?? fetchPublicEventsProgressive
+    testOverrides.fetchPublicEventsProgressive ??
+    (input.readScope === "public_feed"
+      ? fetchFeedProgressive
+      : fetchPublicEventsProgressive)
   const yieldCatalogTask = async (): Promise<void> => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     input.signal?.throwIfAborted()
@@ -1777,6 +1376,7 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            requireAllRequestedRelays: input.readScope === "public_feed",
             relayTargets: input.relayTargets,
             maxRelayAttempts: input.maxRelayAttempts,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
@@ -1826,16 +1426,6 @@ async function streamProductRecordChunks(input: {
   await pendingProgress
 }
 
-function filterProductRecordsForRead(
-  records: CommerceProductRecord[],
-  options: {
-    includeMarketHidden?: boolean
-    groupVariations?: boolean
-  } = {}
-): CommerceProductRecord[] {
-  return selectProductRecordsForRead(records, options, now)
-}
-
 function filterExactProductRecordsForRead(
   records: CommerceProductRecord[],
   wanted: ReadonlySet<string>,
@@ -1875,56 +1465,6 @@ function contextualRelayHints(
   }
 }
 
-function mergeContextualRelayHints(
-  ...hints: readonly ContextualRelayHints[]
-): ContextualRelayHints {
-  return {
-    publicRelayUrls: uniqueStrings(
-      hints.flatMap((hint) => hint.publicRelayUrls)
-    ),
-    authenticatedAuthorRelayUrls: uniqueStrings(
-      hints.flatMap((hint) => hint.authenticatedAuthorRelayUrls)
-    ),
-  }
-}
-
-async function loadProductSourceRelayHints(
-  pubkeys: readonly string[],
-  authenticatedPubkey?: string | null
-): Promise<ContextualRelayHints> {
-  const uniquePubkeys = uniqueStrings(pubkeys)
-  if (uniquePubkeys.length === 0) {
-    return { publicRelayUrls: [], authenticatedAuthorRelayUrls: [] }
-  }
-
-  const rowsByPubkey = await Promise.all(
-    uniquePubkeys.map(async (pubkey) => ({
-      pubkey,
-      rows: await loadCachedProducts(pubkey),
-    }))
-  )
-
-  return contextualRelayHints(
-    rowsByPubkey.map(({ pubkey, rows }) => ({
-      pubkey,
-      relayUrls: rows.flatMap((row) => row.sourceRelayUrls ?? []),
-    })),
-    authenticatedPubkey
-  )
-}
-
-function getProfileQueryRelayHints(
-  query: ProfileBatchQuery
-): ContextualRelayHints {
-  return contextualRelayHints(
-    query.pubkeys.map((pubkey) => ({
-      pubkey,
-      relayUrls: query.relayHintsByPubkey?.[pubkey] ?? [],
-    })),
-    query.authenticatedPubkey
-  )
-}
-
 /** Re-project only existing targets after merging stronger local dependencies. */
 export function reconcileProductRecordsWithRevisions(
   records: CommerceProductRecord[],
@@ -1939,193 +1479,6 @@ export function reconcileProductRecordsWithDeletions(
   evidence: readonly ProductDeletionEvidence[]
 ): CommerceProductRecord[] {
   return reconcileSelectedProductDeletions(records, evidence, now)
-}
-
-function hasProfileContent(
-  profile: Pick<
-    CachedProfile,
-    | "name"
-    | "displayName"
-    | "about"
-    | "picture"
-    | "banner"
-    | "nip05"
-    | "lud16"
-    | "website"
-  >
-): boolean {
-  return [
-    profile.name,
-    profile.displayName,
-    profile.about,
-    profile.picture,
-    profile.banner,
-    profile.nip05,
-    profile.lud16,
-    profile.website,
-  ].some((value) => typeof value === "string" && value.trim().length > 0)
-}
-
-function compareReplaceableProfileEvents(
-  a: SignedPublicNostrEvent,
-  b: SignedPublicNostrEvent
-): number {
-  const createdAt = (b.created_at ?? 0) - (a.created_at ?? 0)
-  if (createdAt !== 0) return createdAt
-  return (a.id || "\uffff").localeCompare(b.id || "\uffff")
-}
-
-function pickLatestProfileEvent(
-  events: readonly VerifiedNostrEvent[],
-  pubkey: string
-): VerifiedNostrEvent | undefined {
-  return events
-    .filter((event) => event.pubkey === pubkey)
-    .sort(compareReplaceableProfileEvents)[0]
-}
-
-function pickLatestProfileEventWithContent(
-  events: readonly VerifiedNostrEvent[],
-  pubkey: string
-): VerifiedNostrEvent | undefined {
-  return events
-    .filter((event) => event.pubkey === pubkey)
-    .sort(compareReplaceableProfileEvents)
-    .find((event) => hasProfileContent(parseProfileEvent(event)))
-}
-
-function mergeProfileEvents(
-  pubkeys: readonly string[],
-  currentProfiles: Record<string, Profile>,
-  events: readonly VerifiedNostrEvent[],
-  currentRows: ReadonlyMap<string, CachedProfile> = new Map()
-): {
-  profiles: Record<string, Profile>
-  rowsToCache: CachedProfile[]
-  hasResolvedProfile: boolean
-  hasInvalidLatestProfile: boolean
-  profileFrontierStates: Record<string, ProfileFrontierState>
-} {
-  const profiles = { ...currentProfiles }
-  const rowsToCache: CachedProfile[] = []
-  const profileFrontierStates: Record<string, ProfileFrontierState> = {}
-  let hasResolvedProfile = false
-  let hasInvalidLatestProfile = false
-
-  for (const pubkey of pubkeys) {
-    const event = pickLatestProfileEventWithContent(events, pubkey)
-    const latestEvent = pickLatestProfileEvent(events, pubkey)
-    const currentRow = currentRows.get(pubkey)
-    const currentFrontier = currentRow?.eventCreatedAt ?? -1
-    const latestEventCreatedAt = latestEvent?.created_at ?? -1
-    const latestEventWins =
-      !!latestEvent &&
-      (latestEventCreatedAt > currentFrontier ||
-        (latestEventCreatedAt === currentFrontier &&
-          (latestEvent.id || "\uffff") < (currentRow?.eventId || "\uffff")))
-    const frontier = latestEventWins ? latestEvent : undefined
-    const exactCurrentFrontierObserved =
-      !!latestEvent?.id &&
-      latestEventCreatedAt === currentFrontier &&
-      latestEvent.id === currentRow?.eventId
-    const currentProjection = currentRow
-      ? projectProfilePaymentAuthority(currentRow)
-      : undefined
-    const currentFrontierWins =
-      currentRow?.eventCreatedAt !== undefined &&
-      (!latestEvent ||
-        latestEventCreatedAt < currentFrontier ||
-        (latestEventCreatedAt === currentFrontier &&
-          (currentRow.eventId || "\uffff") <= (latestEvent.id || "\uffff")))
-    const effectiveFrontierContent =
-      latestEventWins || exactCurrentFrontierObserved
-        ? latestEvent?.content
-        : currentFrontierWins
-          ? currentRow?.rawContent
-          : undefined
-    if (
-      effectiveFrontierContent !== undefined &&
-      !hasValidProfileEventContent(effectiveFrontierContent)
-    ) {
-      hasInvalidLatestProfile = true
-    }
-    const richProfile = exactCurrentFrontierObserved
-      ? mergeRicherProfile(
-          undefined,
-          event ? parseProfileEvent(event) : { pubkey }
-        )
-      : mergeRicherProfile(
-          profiles[pubkey] ?? currentProjection,
-          currentFrontierWins
-            ? undefined
-            : event
-              ? parseProfileEvent(event)
-              : { pubkey }
-        )
-    // Display identity may retain richer older fields, but a Lightning
-    // destination is action authority and must reflect the exact effective
-    // kind-0 frontier. A newer valid profile that removes lud16 must never
-    // inherit the obsolete address from display/cache enrichment.
-    const profile =
-      effectiveFrontierContent !== undefined
-        ? {
-            ...(richProfile ?? { pubkey }),
-            // An invalid exact frontier cannot authorize an older retained
-            // payment destination. Keep richer identity fields for display,
-            // but clear lud16 unless the current frontier parses safely.
-            lud16: hasValidProfileEventContent(effectiveFrontierContent)
-              ? projectProfileContent(pubkey, effectiveFrontierContent).lud16
-              : undefined,
-          }
-        : richProfile
-    const sourceRelayUrls = uniqueStrings([
-      ...(currentRow?.sourceRelayUrls ?? []),
-      ...(event ? getEventSourceRelayUrls(event) : []),
-      ...(latestEvent ? getEventSourceRelayUrls(latestEvent) : []),
-    ])
-    profiles[pubkey] = profile ?? { pubkey }
-    const observedFrontier =
-      frontier ?? (exactCurrentFrontierObserved ? latestEvent : undefined)
-    profileFrontierStates[pubkey] = !observedFrontier
-      ? retainedProfileFrontierState(currentRow)
-      : hasValidProfileEventContent(observedFrontier.content)
-        ? "observed_valid"
-        : "observed_malformed"
-    if (
-      observedFrontier ||
-      hasKnownProfileFrontier(currentRow) ||
-      (profile && hasProfileContent(profile))
-    ) {
-      if (event) hasResolvedProfile = true
-      const cachedProfile = profile ?? { pubkey }
-      rowsToCache.push({
-        pubkey: cachedProfile.pubkey,
-        name: cachedProfile.name,
-        displayName: cachedProfile.displayName,
-        about: cachedProfile.about,
-        picture: cachedProfile.picture,
-        banner: cachedProfile.banner,
-        nip05: cachedProfile.nip05,
-        lud16: cachedProfile.lud16,
-        website: cachedProfile.website,
-        rawContent: observedFrontier?.content ?? currentRow?.rawContent,
-        eventId: observedFrontier?.id || currentRow?.eventId,
-        eventCreatedAt:
-          observedFrontier?.created_at ?? currentRow?.eventCreatedAt,
-        sourceRelayUrls:
-          sourceRelayUrls.length > 0 ? sourceRelayUrls : undefined,
-        cachedAt: now(),
-      })
-    }
-  }
-
-  return {
-    profiles,
-    rowsToCache,
-    hasResolvedProfile,
-    hasInvalidLatestProfile,
-    profileFrontierStates,
-  }
 }
 
 async function loadCachedOrderMessages(
@@ -2242,6 +1595,7 @@ function deletionCandidateFromRecord(
 async function fetchProductDeletionTimestamps(
   candidates: readonly ProductDeletionCandidate[],
   options: {
+    readScope?: PublicReadScope
     readPolicy?: CommerceReadPolicy
     fallbackWhenEmpty?: boolean
     authenticatedPubkey?: string | null
@@ -2251,6 +1605,7 @@ async function fetchProductDeletionTimestamps(
     shouldContinue?: () => boolean
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
+    onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
   } = {}
 ): Promise<DeletionTimestamps> {
   const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
@@ -2295,6 +1650,7 @@ async function fetchProductDeletionTimestamps(
       ]
 
       const deletionRelayPlan = await planCommerceReadRelayPlan({
+        readScope: options.readScope,
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
@@ -2313,30 +1669,40 @@ async function fetchProductDeletionTimestamps(
         ...sourceRelayHints.publicRelayUrls,
         ...authenticatedOwnerSourceRelayUrls,
       ])
-      const preferredDeletionRelayUrls = uniqueStrings([
-        ...sourceRelayUrls,
-        ...config.appBackplaneRelayUrls,
-        ...deletionRelayPlan.relayUrls,
-      ])
-      const deletionRelayTargets = mergeRelayTargets(
-        deletionRelayPlan.relayTargets,
-        relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
-          kind: "public_hint",
-          operation: "read",
-        }),
-        configuredRelayTargets(
-          {
-            kind: "public_fallback",
-            operation: "read",
-            bucket: "commerce_discovery",
-          },
-          preferredDeletionRelayUrls
-        ),
-        configuredRelayTargets(
-          { kind: "public_fallback", operation: "read", bucket: "core_public" },
-          preferredDeletionRelayUrls
-        )
-      )
+      const preferredDeletionRelayUrls =
+        options.readScope === "public_feed"
+          ? deletionRelayPlan.candidateRelayUrls
+          : uniqueStrings([
+              ...sourceRelayUrls,
+              ...config.appBackplaneRelayUrls,
+              ...deletionRelayPlan.relayUrls,
+            ])
+      const deletionRelayTargets =
+        options.readScope === "public_feed"
+          ? deletionRelayPlan.relayTargets
+          : mergeRelayTargets(
+              deletionRelayPlan.relayTargets,
+              relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
+                kind: "public_hint",
+                operation: "read",
+              }),
+              configuredRelayTargets(
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "commerce_discovery",
+                },
+                preferredDeletionRelayUrls
+              ),
+              configuredRelayTargets(
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "core_public",
+                },
+                preferredDeletionRelayUrls
+              )
+            )
       options.onSkippedRelayUrls?.(
         deletionRelayPlan.parkedRelayUrls.filter(
           (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
@@ -2351,6 +1717,11 @@ async function fetchProductDeletionTimestamps(
         preferredDeletionRelayUrls,
         relayBatchSize
       )
+      if (
+        options.readScope === "public_feed" &&
+        preferredDeletionRelayUrls.length === 0
+      )
+        options.onReadCoverage?.("unavailable")
       const fetchDeletionFilter = async (
         filter: Filter
       ): Promise<SignedPublicNostrEvent[]> =>
@@ -2358,9 +1729,10 @@ async function fetchProductDeletionTimestamps(
           await mapWithConcurrency(
             deletionRelayBatches,
             PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-            async (relayUrls) =>
-              await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
+            async (relayUrls) => {
+              const fetchOptions = {
                 relayUrls,
+                requireAllRequestedRelays: options.readScope === "public_feed",
                 relayTargets: deletionRelayTargets.filter((target) =>
                   relayUrls.includes(target.url)
                 ),
@@ -2373,7 +1745,30 @@ async function fetchProductDeletionTimestamps(
                 signal: options.signal,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
-              })
+              }
+              if (options.readScope === "public_feed" && !options.fetchEvents) {
+                const result = await runFetchEventsFanoutDetailed(
+                  filter,
+                  fetchOptions
+                )
+                const coverage =
+                  result.completedRelayUrls.length === 0
+                    ? "unavailable"
+                    : result.degraded ||
+                        result.capped ||
+                        relayUrls.some(
+                          (url) => !result.completedRelayUrls.includes(url)
+                        )
+                      ? "partial"
+                      : "complete"
+                options.onReadCoverage?.(coverage)
+                return result.events
+              }
+              return await (options.fetchEvents ?? runFetchEventsFanout)(
+                filter,
+                fetchOptions
+              )
+            }
           )
         ).flat()
       const filterBatches = await mapWithConcurrency(
@@ -2409,7 +1804,9 @@ async function fetchDeletionTimestampsForProductRecords(
   ),
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  readScope?: PublicReadScope,
+  onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
 ): Promise<DeletionTimestamps> {
   const recordCandidates = records.map(deletionCandidateFromRecord)
   const candidateAuthors = new Set(
@@ -2423,6 +1820,8 @@ async function fetchDeletionTimestampsForProductRecords(
         .map((pubkey) => ({ pubkey })),
     ],
     {
+      readScope,
+      onReadCoverage,
       fallbackWhenEmpty: true,
       accountPubkey,
       authenticatedPubkey,
@@ -2457,6 +1856,7 @@ function mergeCachedAndLiveProductRecords(input: {
 }
 
 async function fetchPublicProductRecords(query: {
+  readScope?: PublicReadScope
   retainRevisions?: boolean
   authors?: string[]
   ids?: string[]
@@ -2490,44 +1890,62 @@ async function fetchPublicProductRecords(query: {
   if (query.parentAddresses) filter["#a"] = query.parentAddresses
   if (query.searchText) filter.search = query.searchText
 
-  const productSearchRelayUrls = config.searchIndexRelayUrls.slice(0, 1)
-  const relayPlan = query.searchText
-    ? {
-        candidateRelayUrls: productSearchRelayUrls,
-        relayTargets: configuredRelayTargets(
-          {
-            kind: "app",
-            operation: "read",
-            bucket: "search_index",
-          },
-          productSearchRelayUrls
-        ),
-        maxRelayAttempts: productSearchRelayUrls.length,
-        ownerSelectedRelayUrls: [],
-        appRelayUrls: productSearchRelayUrls,
-        personalRelayUrls: [],
-        independentRelayUrls: [],
-      }
-    : await planCommerceReadRelayPlan({
-        intent:
-          query.authors && query.authors.length > 0
-            ? "author_products"
-            : "commerce_products",
-        authors: query.authors,
-        authenticatedPubkey: query.authenticatedPubkey,
-        accountPubkey: query.accountPubkey,
-        maxRelays: query.extraRelayUrls?.length
-          ? Math.min(
-              query.readPolicy?.maxRelays ?? DEFAULT_READ_FANOUT,
-              DEFAULT_READ_FANOUT
-            )
-          : query.readPolicy?.maxRelays,
-        shouldContinue: query.shouldContinue,
-        signal: query.signal,
-        extraRelayUrls: query.extraRelayUrls,
-      })
+  const feedPlan =
+    query.readScope === "public_feed"
+      ? getPublicFeedReadPlan(query.readPolicy?.maxRelays)
+      : undefined
+  const productSearchRelayUrls =
+    feedPlan?.relayUrls.slice(0, 1) ?? config.searchIndexRelayUrls.slice(0, 1)
+  const relayPlan =
+    query.readScope === "public_feed"
+      ? {
+          ...feedPlan!,
+          candidateRelayUrls: query.searchText
+            ? productSearchRelayUrls
+            : feedPlan!.candidateRelayUrls,
+          relayTargets: query.searchText
+            ? feedPlan!.relayTargets.slice(0, 1)
+            : feedPlan!.relayTargets,
+        }
+      : query.searchText
+        ? {
+            candidateRelayUrls: productSearchRelayUrls,
+            relayTargets: configuredRelayTargets(
+              {
+                kind: "app",
+                operation: "read",
+                bucket: "search_index",
+              },
+              productSearchRelayUrls
+            ),
+            maxRelayAttempts: productSearchRelayUrls.length,
+            ownerSelectedRelayUrls: [],
+            appRelayUrls: productSearchRelayUrls,
+            personalRelayUrls: [],
+            independentRelayUrls: [],
+          }
+        : await planCommerceReadRelayPlan({
+            readScope: query.readScope,
+            intent:
+              query.authors && query.authors.length > 0
+                ? "author_products"
+                : "commerce_products",
+            authors: query.authors,
+            authenticatedPubkey: query.authenticatedPubkey,
+            accountPubkey: query.accountPubkey,
+            maxRelays: query.extraRelayUrls?.length
+              ? Math.min(
+                  query.readPolicy?.maxRelays ?? DEFAULT_READ_FANOUT,
+                  DEFAULT_READ_FANOUT
+                )
+              : query.readPolicy?.maxRelays,
+            shouldContinue: query.shouldContinue,
+            signal: query.signal,
+            extraRelayUrls: query.extraRelayUrls,
+          })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
+    requireAllRequestedRelays: query.readScope === "public_feed",
     relayUrls: relayPlan.candidateRelayUrls,
     relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
@@ -2555,6 +1973,9 @@ async function fetchPublicProductRecords(query: {
           ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
         ],
         {
+          readScope: query.readScope,
+          onReadCoverage: (coverage) =>
+            query.onTransportStatus?.(coverage !== "complete", false),
           readPolicy: query.deletionReadPolicy ?? query.readPolicy,
           fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
           authenticatedPubkey: query.authenticatedPubkey,
@@ -2572,6 +1993,7 @@ async function fetchPublicProductRecords(query: {
 
 async function fetchPublicProductRecordsProgressive(
   query: {
+    readScope?: PublicReadScope
     retainRevisions?: boolean
     authors?: string[]
     ids?: string[]
@@ -2612,6 +2034,7 @@ async function fetchPublicProductRecordsProgressive(
       ? chunkStrings(uniqueStrings(query.authors), PRODUCT_AUTHOR_CHUNK_SIZE)
       : [undefined]
   const relayPlan = await planCommerceReadRelayPlan({
+    readScope: query.readScope,
     intent:
       query.authors && query.authors.length > 0
         ? "author_products"
@@ -2634,6 +2057,7 @@ async function fetchPublicProductRecordsProgressive(
     query.authors && query.authors.length > BROAD_AUTHOR_HINT_LIMIT
   const expandedRelayPlanPromise = shouldExpandRelayHints
     ? planCommerceReadRelayPlan({
+        readScope: query.readScope,
         intent: "author_products",
         authors: query.authors,
         authenticatedPubkey: query.authenticatedPubkey,
@@ -2647,6 +2071,7 @@ async function fetchPublicProductRecordsProgressive(
   void expandedRelayPlanPromise.catch(() => undefined)
 
   await streamProductRecordChunks({
+    readScope: query.readScope,
     baseFilter: filter,
     authorChunks,
     relayUrls: relayPlan.candidateRelayUrls,
@@ -2673,6 +2098,7 @@ async function fetchPublicProductRecordsProgressive(
   if (expansionRelayUrls.length > 0) {
     const expansionRelayUrlSet = new Set(expansionRelayUrls)
     await streamProductRecordChunks({
+      readScope: query.readScope,
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
@@ -2701,6 +2127,9 @@ async function fetchPublicProductRecordsProgressive(
       ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
     ],
     {
+      readScope: query.readScope,
+      onReadCoverage: (coverage) =>
+        query.onTransportStatus?.(coverage !== "complete", false),
       readPolicy: query.readPolicy,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -2744,6 +2173,7 @@ export async function getFollowPubkeys(
       authenticatedPubkey: query.authenticatedPubkey,
     },
     {
+      readScope: query.readScope,
       now: testOverrides.now,
       accountNetworkLocalStateRepository:
         testOverrides.accountNetworkLocalStateRepository,
@@ -2788,336 +2218,34 @@ export async function getFollowPubkeys(
   }
 }
 
-/** Ranked discovery is independent of a broad catalog sweep. Only the returned
- * coordinates and their family context can survive into this response. */
-function projectRankedProductSearch(
-  hits: CommerceProductRecord[],
-  records: CommerceProductRecord[],
-  query: MarketplaceProductsQuery
-): CommerceProductRecord[] {
-  records = [...selectLatestProductRecordsByAddress(records).values()]
-  const wanted = new Set(hits.map((record) => record.addressId))
-  const byAddress = new Map(records.map((record) => [record.addressId, record]))
-  const eligible = new Set(
-    filterExactProductRecordsForRead(records, wanted).map(
-      (record) => record.addressId
-    )
-  )
-  const ranks = new Map<string, number>()
-  const matchesQuery = createProductQueryMatcher({
-    ...query,
-    textQuery: undefined,
-  })
-  hits.forEach((hit, index) => {
-    const current = byAddress.get(hit.addressId)
-    if (!current || !eligible.has(current.addressId)) return
-    const address = getVariationParentAddress(current) ?? current.addressId
-    if (!ranks.has(address)) ranks.set(address, index)
-  })
-  return applyProductLimit(
-    filterProductRecordsForRead(records)
-      .filter((record) => ranks.has(record.addressId) && matchesQuery(record))
-      .sort(
-        (left, right) =>
-          ranks.get(left.addressId)! - ranks.get(right.addressId)!
+function marketplaceReadDependencies(): MarketplaceReadDependencies {
+  return {
+    fetchPublicProductRecords,
+    fetchPublicProductRecordsProgressive,
+    mergeCachedAndLiveProductRecords,
+    readProductsByIds,
+    rethrowProductReadAuthorityChange,
+    now,
+    getSearchRelayUrls: () => getPublicFeedReadPlan().relayUrls.slice(0, 1),
+    createMeta: (source, options, sortModes) =>
+      createMeta(
+        "marketplace_products",
+        source,
+        sortModes
+          ? { ...PRODUCT_CAPABILITIES, sortModes }
+          : PRODUCT_CAPABILITIES,
+        options
       ),
-    query.limit
-  )
-}
-
-async function getRankedMarketplaceProducts(
-  query: MarketplaceProductsQuery
-): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const assertCurrent = () => {
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-  }
-  assertCurrent()
-  const authors = query.merchantPubkey
-    ? [query.merchantPubkey]
-    : query.authorPubkeys
-  const allowedAuthors = authors ? new Set(authors) : null
-  const transport: { coverage: "complete" | "partial" | "unavailable" } = {
-    coverage: "unavailable",
-  }
-  let capped = false
-  // Keep relay capabilities minimal. Perspective/merchant/category eligibility
-  // is a client filter of this one ranked response, never independently ranked chunks.
-  const hits = (
-    await fetchPublicProductRecords({
-      searchText: query.textQuery!.trim(),
-      accountPubkey: query.accountPubkey,
-      authenticatedPubkey: query.authenticatedPubkey,
-      signal: query.signal,
-      shouldContinue: query.shouldContinue,
-      limit: 100,
-      localDeletionEvidenceOnly: true,
-      readPolicy: {
-        maxRelays: 1,
-        connectTimeoutMs: 2_000,
-        fetchTimeoutMs: 3_000,
-      },
-      onTransportStatus: (_, value) => {
-        capped = value
-      },
-      onReadCoverage: (value) => {
-        transport.coverage = value
-      },
-    })
-  ).filter(
-    (record) =>
-      record.dTag !== null &&
-      (!allowedAuthors || allowedAuthors.has(record.product.pubkey))
-  )
-  assertCurrent()
-  if (transport.coverage === "unavailable")
-    throw new Error("Product search is unavailable")
-  const wanted = hits.map((record) => record.addressId)
-  const cached = await getCachedExactProductRecords(wanted, hits).catch(
-    () => []
-  )
-  assertCurrent()
-  const deletions = await getLocalProductDeletionTimestamps(
-    undefined,
-    uniqueStrings(hits.map((record) => record.product.pubkey))
-  )
-  const initialRecords = mergeCachedAndLiveProductRecords({
-    cached,
-    live: hits,
-    deletionTimestamps: deletions,
-  })
-  const resultFor = (
-    records: CommerceProductRecord[],
-    refreshing: boolean,
-    refreshMeta?: CommerceQueryMeta
-  ): CommerceResult<CommerceProductRecord[]> => {
-    const partial =
-      capped ||
-      !!allowedAuthors ||
-      !!query.tags?.length ||
-      transport.coverage !== "complete"
-    const meta = createMeta(
-      "marketplace_products",
-      "public",
-      { ...PRODUCT_CAPABILITIES, sortModes: [] },
-      {
-        stale: refreshing || !!refreshMeta?.stale,
-        degraded: partial || refreshing || !!refreshMeta?.degraded,
-        capped: capped || !!refreshMeta?.capped,
-      }
-    )
-    meta.productSearch = {
-      coverage: partial ? "partial" : transport.coverage,
-      tagScopeVerified: !query.tags?.length,
-      relayUrls: config.searchIndexRelayUrls.slice(0, 1),
-    }
-    return {
-      data: withProductFamilyReadEvidence(
-        projectRankedProductSearch(hits, records, query),
-        meta
-      ),
-      meta,
-    }
-  }
-  assertCurrent()
-  const initial = resultFor(initialRecords, wanted.length > 0)
-  query.onProgress?.(initial)
-  assertCurrent()
-  if (wanted.length === 0) return initial
-  // Seed the existing exact-product reader with verified discovery evidence.
-  // Cards have already painted; revisions/deletions/family context arrive lazily.
-  try {
-    await cacheProductRecords(initialRecords)
-  } catch {
-    // A failed seed write must not prevent live revision/deletion reads.
-  }
-  assertCurrent()
-  const project = (snapshot: ProductsByIdsResult) =>
-    resultFor(
-      snapshot.data.flatMap(
-        (record) =>
-          record.exactReadContext?.records ?? [
-            record,
-            ...(record.family
-              ? [record.family.parent, ...record.family.children]
-              : []),
-          ]
-      ),
-      !!snapshot.meta.stale,
-      snapshot.meta
-    )
-  try {
-    const refreshed = await readProductsByIds(
-      wanted,
-      {
-        accountPubkey: query.accountPubkey,
-        authenticatedPubkey: query.authenticatedPubkey,
-        signal: query.signal,
-        shouldContinue: () =>
-          !query.signal?.aborted && query.shouldContinue?.() !== false,
-        relayHintsByAddressId: Object.fromEntries(
-          hits.map((record) => [record.addressId, record.sourceRelayUrls])
-        ),
-        onProgress: query.onProgress
-          ? (snapshot) => {
-              assertCurrent()
-              query.onProgress?.(project(snapshot))
-            }
-          : undefined,
-      },
-      initialRecords
-    )
-    assertCurrent()
-    return project(refreshed)
-  } catch {
-    assertCurrent()
-    return initial
   }
 }
-
 export async function getMarketplaceProducts(
   query: MarketplaceProductsQuery = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  if (
-    !query.merchantPubkey &&
-    query.authorPubkeys &&
-    query.authorPubkeys.length === 0
-  ) {
-    return {
-      data: [],
-      meta: {
-        ...createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
-        ...(query.searchIndex && query.textQuery?.trim()
-          ? {
-              productSearch: {
-                coverage: "complete" as const,
-                relayUrls: [],
-                tagScopeVerified: true,
-              },
-            }
-          : {}),
-      },
-    }
-  }
-
-  if (query.searchIndex && query.textQuery?.trim()) {
-    return getRankedMarketplaceProducts(query)
-  }
-
-  try {
-    query.signal?.throwIfAborted()
-    const authorPubkeys = query.merchantPubkey
-      ? [query.merchantPubkey]
-      : query.authorPubkeys
-    const cached = await getCachedProductRecords(
-      query.merchantPubkey,
-      { includeStale: true, includeMarketHidden: true },
-      query.authorPubkeys
-    )
-    const rawEventLimit = getProductRawEventLimit(query.limit)
-    let transportDegraded = false
-    let readCapped = false
-    const fetchedRecords = await fetchPublicProductRecords({
-      retainRevisions: true,
-      authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
-      authenticatedPubkey: query.authenticatedPubkey,
-      accountPubkey: query.accountPubkey,
-      signal: query.signal,
-      shouldContinue: query.shouldContinue,
-      deletionCandidates: cached,
-      limit: rawEventLimit,
-      readPolicy: query.readPolicy,
-      onTransportStatus: (degraded, capped) => {
-        transportDegraded ||= degraded
-        readCapped ||= capped
-      },
-    })
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    const deletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey,
-      query.authorPubkeys
-    )
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    const records = mergeCachedAndLiveProductRecords({
-      cached,
-      live: fetchedRecords,
-      deletionTimestamps,
-    })
-    await cacheProductRecords(records)
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-
-    const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey,
-      query.authorPubkeys
-    )
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    const currentRecords = mergeCachedAndLiveProductRecords({
-      cached,
-      live: fetchedRecords,
-      deletionTimestamps: finalDeletionTimestamps,
-    })
-    const filtered = applyProductLimit(
-      sortProducts(
-        filterProductRecordsForRead(currentRecords).filter(
-          createProductQueryMatcher(query)
-        ),
-        query.sort
-      ),
-      query.limit
-    )
-
-    const meta = createMeta(
-      "marketplace_products",
-      "public",
-      PRODUCT_CAPABILITIES,
-      {
-        capped: readCapped || fetchedRecords.length >= rawEventLimit,
-        degraded:
-          transportDegraded ||
-          readCapped ||
-          fetchedRecords.length >= rawEventLimit,
-      }
-    )
-    return { data: withProductFamilyReadEvidence(filtered, meta), meta }
-  } catch (error) {
-    if (query.signal?.aborted || query.shouldContinue?.() === false) throw error
-    const cached = applyProductLimit(
-      sortProducts(
-        filterProductRecordsForRead(
-          await getCachedProductRecords(
-            query.merchantPubkey,
-            { includeStale: true, includeMarketHidden: true },
-            query.authorPubkeys
-          )
-        ).filter(createProductQueryMatcher(query)),
-        query.sort
-      ),
-      query.limit
-    )
-
-    if (cached.length > 0) {
-      const meta = createMeta(
-        "marketplace_products",
-        "local_cache",
-        PRODUCT_CAPABILITIES,
-        { stale: true, degraded: true }
-      )
-      return { data: withProductFamilyReadEvidence(cached, meta), meta }
-    }
-
-    throw error
-  }
+  return readMarketplaceProducts(
+    { ...query, readScope: "public_feed" },
+    marketplaceReadDependencies()
+  )
 }
-
 export async function getMarketplaceProductsProgressive(
   query: MarketplaceProductsQuery = {},
   onProgress: (
@@ -3125,245 +2253,21 @@ export async function getMarketplaceProductsProgressive(
     relayUrl: string
   ) => void
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  query.signal?.throwIfAborted()
-  if (
-    !query.merchantPubkey &&
-    query.authorPubkeys &&
-    query.authorPubkeys.length === 0
-  ) {
-    const empty = {
-      data: [],
-      meta: createMeta("marketplace_products", "public", PRODUCT_CAPABILITIES),
-    }
-    onProgress(empty, "none")
-    return empty
-  }
-
-  const authorPubkeys = query.merchantPubkey
-    ? [query.merchantPubkey]
-    : query.authorPubkeys
-  const limit = query.limit
-  const cached = await getCachedProductRecords(
-    query.merchantPubkey,
-    { includeStale: true, includeMarketHidden: true },
-    query.authorPubkeys
+  return readMarketplaceProductsProgressive(
+    { ...query, readScope: "public_feed" },
+    onProgress,
+    marketplaceReadDependencies()
   )
-  const rawEventLimit = getProductRawEventLimit(limit)
-  let transportDegraded = false
-  let readCapped = false
-  const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
-    query.merchantPubkey,
-    query.authorPubkeys
-  )
-  const matchesQuery = createProductQueryMatcher(query)
-  const toResult = (
-    records: CommerceProductRecord[],
-    options: { degraded?: boolean; capped?: boolean } = {},
-    deletionTimestamps: DeletionTimestamps = localDeletionTimestamps
-  ) => {
-    const filteredRecords = mergeCachedAndLiveProductRecords({
-      cached,
-      live: records,
-      deletionTimestamps,
-    })
-    const data = applyProductLimit(
-      sortProducts(
-        filterProductRecordsForRead(filteredRecords).filter(matchesQuery),
-        query.sort
-      ),
-      limit
-    )
-    const meta = createMeta(
-      "marketplace_products",
-      "public",
-      PRODUCT_CAPABILITIES,
-      {
-        capped:
-          (options.capped ?? readCapped) || records.length >= rawEventLimit,
-        degraded:
-          (options.degraded ?? readCapped) || records.length >= rawEventLimit,
-      }
-    )
-    return { data: withProductFamilyReadEvidence(data, meta), meta }
-  }
-
-  // Persist validated public revisions as they arrive. Leaving the page must
-  // not discard every batch just because another relay or deletion read waits.
-  // Writes remain serialized and use the existing monotonic cache/tombstones.
-  const persistedSignatures = new Map<string, string>()
-  let progressiveCacheWrite = Promise.resolve()
-  let progressiveCacheFailed = false
-  const persistProgress = (records: CommerceProductRecord[]) => {
-    progressiveCacheWrite = progressiveCacheWrite.then(async () => {
-      query.signal?.throwIfAborted()
-      if (query.shouldContinue?.() === false)
-        throw new NostrSignerError("authority_changed")
-      const changed = records.filter((record) => {
-        const signature = JSON.stringify([
-          record.eventId,
-          record.sourceRelayUrls ?? [],
-        ])
-        return persistedSignatures.get(record.eventId) !== signature
-      })
-      try {
-        await cacheProductRecords(changed)
-        for (const record of changed) {
-          persistedSignatures.set(
-            record.eventId,
-            JSON.stringify([record.eventId, record.sourceRelayUrls ?? []])
-          )
-        }
-      } catch (error) {
-        rethrowProductReadAuthorityChange(error, query.shouldContinue)
-        // Final persistence retries the full frontier. Interim write failure
-        // marks coverage degraded rather than stopping deletion reconciliation.
-        progressiveCacheFailed = true
-      }
-    })
-    return progressiveCacheWrite
-  }
-
-  const liveRecords = new Map<string, CommerceProductRecord>()
-  const publishProgress = async (
-    records: CommerceProductRecord[],
-    relayUrl: string
-  ): Promise<void> => {
-    for (const record of records) {
-      liveRecords.set(record.eventId, record)
-    }
-    await persistProgress(records)
-    query.signal?.throwIfAborted()
-    if (query.shouldContinue?.() === false)
-      throw new NostrSignerError("authority_changed")
-    const currentDeletions = await getLocalProductDeletionTimestamps(
-      query.merchantPubkey,
-      query.authorPubkeys
-    )
-    query.signal?.throwIfAborted()
-    // Until every planned relay settles, this snapshot remains incomplete.
-    onProgress(
-      toResult(
-        Array.from(liveRecords.values()),
-        { degraded: true, capped: readCapped },
-        currentDeletions
-      ),
-      relayUrl
-    )
-  }
-
-  const fetchedRecords = await fetchPublicProductRecordsProgressive(
-    {
-      retainRevisions: true,
-      authors:
-        authorPubkeys && authorPubkeys.length > 0
-          ? uniqueStrings(authorPubkeys)
-          : undefined,
-      authenticatedPubkey: query.authenticatedPubkey,
-      accountPubkey: query.accountPubkey,
-      shouldContinue: query.shouldContinue,
-      signal: query.signal,
-      deletionCandidates: cached,
-      limit: rawEventLimit,
-      readPolicy: query.readPolicy,
-      onTransportStatus: (degraded, capped) => {
-        transportDegraded ||= degraded
-        readCapped ||= capped
-      },
-    },
-    publishProgress
-  )
-
-  query.signal?.throwIfAborted()
-  const currentDeletionTimestamps = await getLocalProductDeletionTimestamps(
-    query.merchantPubkey,
-    query.authorPubkeys
-  )
-  const records = mergeCachedAndLiveProductRecords({
-    cached,
-    live: fetchedRecords,
-    deletionTimestamps: currentDeletionTimestamps,
-  })
-  // Final resolution must follow writes that can yield to a new deletion. A
-  // failed cache write still needs to retract the previous progressive paint;
-  // preserve its rejection after delivering the resolved snapshot.
-  let cacheFailure: { reason: unknown } | undefined
-  try {
-    await cacheProductRecords(records)
-    progressiveCacheFailed = false
-  } catch (reason) {
-    cacheFailure = { reason }
-  }
-  query.signal?.throwIfAborted()
-  const finalDeletionTimestamps = await getLocalProductDeletionTimestamps(
-    query.merchantPubkey,
-    query.authorPubkeys
-  )
-  const result = toResult(
-    fetchedRecords,
-    {
-      degraded:
-        transportDegraded ||
-        progressiveCacheFailed ||
-        readCapped ||
-        fetchedRecords.length >= rawEventLimit,
-      capped: readCapped || fetchedRecords.length >= rawEventLimit,
-    },
-    finalDeletionTimestamps
-  )
-  query.signal?.throwIfAborted()
-  if (query.shouldContinue?.() === false)
-    throw new NostrSignerError("authority_changed")
-  onProgress(result, "deletion-frontier")
-  if (cacheFailure) throw cacheFailure.reason
-  return result
 }
-
 export async function getCachedMarketplaceProducts(
   query: MarketplaceProductsQuery = {},
   options: CachedProductReadOptions = { includeStale: true }
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  if (
-    !query.merchantPubkey &&
-    query.authorPubkeys &&
-    query.authorPubkeys.length === 0
-  ) {
-    return {
-      data: [],
-      meta: createMeta(
-        "marketplace_products",
-        "local_cache",
-        PRODUCT_CAPABILITIES,
-        {
-          stale: true,
-        }
-      ),
-    }
-  }
-
-  const cached = applyProductLimit(
-    sortProducts(
-      filterProductRecordsForRead(
-        await getCachedProductRecords(
-          query.merchantPubkey,
-          { ...options, includeMarketHidden: true },
-          query.authorPubkeys
-        )
-      ).filter(createProductQueryMatcher(query)),
-      query.sort
-    ),
-    query.limit
+  return readCachedMarketplaceProducts(
+    query,
+    options,
+    marketplaceReadDependencies()
   )
-
-  const meta = createMeta(
-    "marketplace_products",
-    "local_cache",
-    PRODUCT_CAPABILITIES,
-    {
-      stale: true,
-      degraded: cached.length > 0,
-    }
-  )
-  return { data: withProductFamilyReadEvidence(cached, meta), meta }
 }
 
 function storefrontReadDependencies(): StorefrontReadDependencies {
@@ -3393,63 +2297,13 @@ export async function getCachedMerchantStorefront(
   )
 }
 
-function findProductDetailRecord(
-  records: CommerceProductRecord[],
-  lookupIds: string[],
-  includeMarketHidden?: boolean,
-  preparedRecords?: CommerceProductRecord[]
-): CommerceProductRecord | null {
-  const prepared =
-    preparedRecords ??
-    filterProductRecordsForRead(records, {
-      includeMarketHidden,
-      groupVariations: true,
-    })
-  const target =
-    records.find(
-      (item) =>
-        lookupIds.includes(item.product.id) ||
-        lookupIds.includes(item.addressId) ||
-        lookupIds.includes(item.eventId)
-    ) ?? null
-
-  if (!target) {
-    return (
-      prepared.find(
-        (item) =>
-          lookupIds.includes(item.product.id) ||
-          lookupIds.includes(item.addressId) ||
-          lookupIds.includes(item.eventId) ||
-          item.family?.children.some((variation) =>
-            lookupIds.includes(variation.product.id)
-          )
-      ) ?? null
-    )
-  }
-
-  const displayAddress =
-    target.product.type === "variation"
-      ? target.product.parentProductId
-      : target.addressId
-  if (displayAddress) {
-    const display = prepared.find((item) => item.addressId === displayAddress)
-    const includesTargetVariation =
-      target.product.type !== "variation" ||
-      display?.family?.children.some(
-        (variation) => variation.product.id === target.product.id
-      )
-    if (display && includesTargetVariation) return display
-  }
-
-  return includeMarketHidden ? target : null
-}
-
 async function fetchVariationGroupRecords(
   target: CommerceProductRecord,
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean,
-  relayHints: readonly string[] = []
+  relayHints: readonly string[] = [],
+  readScope?: PublicReadScope
 ): Promise<{
   records: CommerceProductRecord[]
   degraded: boolean
@@ -3481,6 +2335,7 @@ async function fetchVariationGroupRecords(
   const [parents, variations] = await Promise.all([
     target.product.type === "variation"
       ? fetchPublicProductRecords({
+          readScope,
           authors: [parsedParent.pubkey],
           dTags: [parsedParent.d],
           accountPubkey,
@@ -3495,6 +2350,7 @@ async function fetchVariationGroupRecords(
         })
       : Promise.resolve([]),
     fetchPublicProductRecords({
+      readScope,
       authors: [parsedParent.pubkey],
       parentAddresses: [parentAddress],
       accountPubkey,
@@ -3606,6 +2462,7 @@ async function fetchVariationGroupRecordBatch(
         return {
           targets: familyTargets,
           relayPlan: await planCommerceReadRelayPlan({
+            readScope: options.readScope,
             intent: "author_products",
             authors: [familyTargets[0]!.author],
             authenticatedPubkey: options.authenticatedPubkey,
@@ -3692,6 +2549,7 @@ async function fetchVariationGroupRecordBatch(
       // Each transport-safe chunk starts with at most two family reads.
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
+        requireAllRequestedRelays: options.readScope === "public_feed",
         relayUrls: relayPlan.candidateRelayUrls,
         relayTargets: relayPlan.relayTargets,
         maxRelayAttempts: relayPlan.maxRelayAttempts,
@@ -3785,7 +2643,11 @@ async function fetchVariationGroupRecordBatch(
         const relevantRelayHints = uniqueStrings([
           ...target.relayHints,
           ...relayPlan.hintRelayUrls,
-        ])
+        ]).filter(
+          (relayUrl) =>
+            options.readScope !== "public_feed" ||
+            consideredRelayUrlSet.has(relayUrl)
+        )
         const expectedRelayUrls = uniqueStrings([
           ...consideredRelayUrls,
           ...relevantRelayHints,
@@ -3869,354 +2731,24 @@ async function fetchVariationGroupRecordBatch(
   }
 }
 
-function getVariationParentAddress(
-  target: CommerceProductRecord
-): string | undefined {
-  if (target.product.type === "simple") return undefined
-  return target.product.type === "variable"
-    ? target.addressId
-    : target.product.parentProductId
-}
-
-function isProductRecordInFamily(
-  record: CommerceProductRecord,
-  parentAddress: string
-): boolean {
-  return (
-    record.addressId === parentAddress ||
-    record.product.parentProductId === parentAddress
-  )
-}
-
-function selectLatestProductRecordsByAddress(
-  records: readonly CommerceProductRecord[]
-): Map<string, CommerceProductRecord> {
-  const selected = new Map<string, CommerceProductRecord>()
-  for (const record of records) {
-    const existing = selected.get(record.addressId)
-    selected.set(
-      record.addressId,
-      existing ? mergeProductRecordSources(existing, record) : record
-    )
+function productDetailReadDependencies(): ProductDetailReadDependencies {
+  return {
+    fetchPublicProductRecords,
+    fetchVariationGroupRecords,
+    fetchDeletionTimestampsForProductRecords,
+    mergeCachedAndLiveProductRecords,
+    hasCompleteLiveVariationGroupCoverage,
+    getMerchantStorefront,
+    createMeta: (source, options) =>
+      createMeta("product_detail", source, PRODUCT_CAPABILITIES, options),
+    now,
   }
-  return selected
-}
-
-function hasCompleteLiveVariationGroupCoverage(input: {
-  target: CommerceProductRecord
-  groupRead: {
-    records: CommerceProductRecord[]
-    degraded: boolean
-  }
-  knownRecords: CommerceProductRecord[]
-  directRecords: CommerceProductRecord[]
-}): boolean {
-  if (input.target.product.type === "simple") return true
-  if (input.groupRead.degraded) return false
-
-  const parentAddress = getVariationParentAddress(input.target)
-  if (!parentAddress) return false
-
-  const liveByAddress = selectLatestProductRecordsByAddress([
-    ...input.directRecords,
-    ...input.groupRead.records,
-  ])
-  const selectedByAddress = selectLatestProductRecordsByAddress([
-    ...input.knownRecords,
-    ...input.directRecords,
-    ...input.groupRead.records,
-  ])
-  const knownFamilyAddressIds = new Set(
-    Array.from(selectedByAddress.values())
-      .filter((record) => isProductRecordInFamily(record, parentAddress))
-      .map((record) => record.addressId)
-  )
-  knownFamilyAddressIds.add(input.target.addressId)
-  knownFamilyAddressIds.add(parentAddress)
-
-  return Array.from(knownFamilyAddressIds).every((addressId) => {
-    const selected = selectedByAddress.get(addressId)
-    const live = liveByAddress.get(addressId)
-    return !!selected && !!live && selected.eventId === live.eventId
-  })
 }
 
 export async function getProductDetail(
   query: ProductDetailQuery
 ): Promise<CommerceResult<CommerceProductRecord | null>> {
-  const { decodedId, addressId, address } = getProductLookupIds(query.productId)
-
-  try {
-    if (address && addressId && address.kind === EVENT_KINDS.PRODUCT) {
-      const cached = await getCachedProductRecords(address.pubkey, {
-        includeStale: true,
-        includeMarketHidden: true,
-      })
-      let directReadDegraded = false
-      let directReadCapped = false
-      const direct = await fetchPublicProductRecords({
-        authors: [address.pubkey],
-        dTags: [address.d],
-        accountPubkey: query.authenticatedPubkey,
-        authenticatedPubkey: query.authenticatedPubkey,
-        shouldContinue: query.shouldContinue,
-        extraRelayUrls: address.relayHints,
-        deletionCandidates: cached,
-        limit: 10,
-        onTransportStatus: (degraded, capped) => {
-          directReadDegraded ||= degraded
-          directReadCapped ||= capped
-        },
-      })
-      const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
-        address.pubkey
-      )
-      const locallyVisibleDirect = filterDeletedProductRecords(
-        direct,
-        localDeletionTimestamps
-      )
-      const locallyMerged = mergeCachedAndLiveProductRecords({
-        cached,
-        live: locallyVisibleDirect,
-        deletionTimestamps: localDeletionTimestamps,
-      })
-      const targetCandidate =
-        locallyMerged.find((item) => item.addressId === addressId) ?? null
-      const groupRead = targetCandidate
-        ? await fetchVariationGroupRecords(
-            targetCandidate,
-            query.authenticatedPubkey,
-            query.authenticatedPubkey,
-            query.shouldContinue,
-            address.relayHints
-          )
-        : { records: [], degraded: false, capped: false }
-      const relayDeletionTimestamps =
-        await fetchDeletionTimestampsForProductRecords(
-          [...cached, ...direct, ...groupRead.records],
-          [address.pubkey],
-          query.authenticatedPubkey,
-          query.authenticatedPubkey,
-          query.shouldContinue
-        )
-      const deletionTimestamps = mergeDeletionTimestamps(
-        relayDeletionTimestamps,
-        localDeletionTimestamps
-      )
-      const directVisible = filterDeletedProductRecords(
-        direct,
-        deletionTimestamps
-      )
-      const groupVisible = filterDeletedProductRecords(
-        groupRead.records,
-        deletionTimestamps
-      )
-      const merged = mergeCachedAndLiveProductRecords({
-        cached,
-        live: [...directVisible, ...groupVisible],
-        deletionTimestamps,
-      })
-      await cacheProductRecords(merged)
-      const record = findProductDetailRecord(
-        merged,
-        [addressId],
-        query.includeMarketHidden
-      )
-      if (record) {
-        const selectedDirectTarget = merged.find(
-          (candidate) => candidate.addressId === addressId
-        )
-        const hasLiveDirectTarget =
-          !!selectedDirectTarget &&
-          directVisible.some(
-            (candidate) =>
-              candidate.addressId === addressId &&
-              candidate.eventId === selectedDirectTarget.eventId
-          )
-        const hasCompleteGroupCoverage =
-          record.product.type === "simple"
-            ? true
-            : !!targetCandidate &&
-              hasCompleteLiveVariationGroupCoverage({
-                target: targetCandidate,
-                groupRead: { ...groupRead, records: groupVisible },
-                knownRecords: filterDeletedProductRecords(
-                  cached,
-                  deletionTimestamps
-                ),
-                directRecords: directVisible,
-              })
-        const completeLiveRead =
-          hasLiveDirectTarget &&
-          !directReadDegraded &&
-          !directReadCapped &&
-          hasCompleteGroupCoverage
-        const hasLiveEvidence =
-          directVisible.length > 0 || groupVisible.length > 0
-        const meta = hasLiveEvidence
-          ? createMeta("product_detail", "commerce", PRODUCT_CAPABILITIES, {
-              stale: !completeLiveRead,
-              degraded: !completeLiveRead,
-              capped: groupRead.capped || directReadCapped,
-            })
-          : createMeta("product_detail", "local_cache", PRODUCT_CAPABILITIES, {
-              stale: true,
-              degraded: true,
-            })
-        return {
-          data: withProductFamilyRecordReadEvidence(record, meta),
-          meta,
-        }
-      }
-
-      const storefront = await getMerchantStorefront({
-        merchantPubkey: address.pubkey,
-        includeMarketHidden: query.includeMarketHidden,
-        accountPubkey: query.authenticatedPubkey,
-        authenticatedPubkey: query.authenticatedPubkey,
-        shouldContinue: query.shouldContinue,
-      })
-      const fallbackRecord =
-        storefront.data.find(
-          (item) =>
-            item.addressId === addressId ||
-            item.family?.children.some(
-              (variation) => variation.product.id === addressId
-            )
-        ) ?? null
-      const meta = { ...storefront.meta, fetchedAt: now() }
-      return {
-        data: withProductFamilyRecordReadEvidence(fallbackRecord, meta),
-        meta,
-      }
-    }
-
-    if (/^[0-9a-f]{64}$/i.test(decodedId)) {
-      const cached = (
-        await getCachedProductRecords(undefined, {
-          includeStale: true,
-          includeMarketHidden: query.includeMarketHidden,
-        })
-      ).filter(
-        (record) =>
-          record.eventId === decodedId || record.product.id === decodedId
-      )
-      let directReadDegraded = false
-      let directReadCapped = false
-      const records = await fetchPublicProductRecords({
-        ids: [decodedId],
-        accountPubkey: query.authenticatedPubkey,
-        authenticatedPubkey: query.authenticatedPubkey,
-        shouldContinue: query.shouldContinue,
-        deletionCandidates: cached,
-        onTransportStatus: (degraded, capped) => {
-          directReadDegraded ||= degraded
-          directReadCapped ||= capped
-        },
-      })
-      const target = records[0] ?? null
-      const groupRead = target
-        ? await fetchVariationGroupRecords(
-            target,
-            query.authenticatedPubkey,
-            query.authenticatedPubkey,
-            query.shouldContinue
-          )
-        : { records: [], degraded: false, capped: false }
-      const fetched = [...records, ...groupRead.records]
-      const localDeletionTimestamps = await getLocalProductDeletionTimestamps(
-        undefined,
-        uniqueStrings(fetched.map((record) => record.product.pubkey))
-      )
-      const relayDeletionTimestamps =
-        await fetchDeletionTimestampsForProductRecords(
-          fetched,
-          undefined,
-          query.authenticatedPubkey,
-          query.authenticatedPubkey,
-          query.shouldContinue
-        )
-      const deletionTimestamps = mergeDeletionTimestamps(
-        relayDeletionTimestamps,
-        localDeletionTimestamps
-      )
-      const visibleRecords = filterDeletedProductRecords(
-        fetched,
-        deletionTimestamps
-      )
-      await cacheProductRecords(visibleRecords)
-      const record = findProductDetailRecord(
-        visibleRecords,
-        [decodedId],
-        query.includeMarketHidden
-      )
-      const meta = createMeta(
-        "product_detail",
-        "public",
-        PRODUCT_CAPABILITIES,
-        {
-          stale: directReadDegraded || directReadCapped || groupRead.degraded,
-          degraded:
-            directReadDegraded || directReadCapped || groupRead.degraded,
-          capped: directReadCapped || groupRead.capped,
-        }
-      )
-      return {
-        data: withProductFamilyRecordReadEvidence(record, meta),
-        meta,
-      }
-    }
-  } catch (error) {
-    if (query.shouldContinue?.() === false) throw error
-    const cached = await getCachedProductRecords(undefined, {
-      includeStale: true,
-      includeMarketHidden: true,
-    })
-    const lookupIds = [decodedId, addressId].filter(
-      (lookupId): lookupId is string => !!lookupId
-    )
-    const record = findProductDetailRecord(
-      cached,
-      lookupIds,
-      query.includeMarketHidden
-    )
-    if (record) {
-      const meta = createMeta(
-        "product_detail",
-        "local_cache",
-        PRODUCT_CAPABILITIES,
-        { stale: true, degraded: true }
-      )
-      return {
-        data: withProductFamilyRecordReadEvidence(record, meta),
-        meta,
-      }
-    }
-    throw error
-  }
-
-  const cached = await getCachedProductRecords(undefined, {
-    includeStale: true,
-    includeMarketHidden: true,
-  })
-  const lookupIds = [decodedId, addressId].filter(
-    (lookupId): lookupId is string => !!lookupId
-  )
-  const record = findProductDetailRecord(
-    cached,
-    lookupIds,
-    query.includeMarketHidden
-  )
-  const meta = createMeta(
-    "product_detail",
-    record ? "local_cache" : "public",
-    PRODUCT_CAPABILITIES,
-    { stale: !!record, degraded: !!record }
-  )
-  return {
-    data: withProductFamilyRecordReadEvidence(record, meta),
-    meta,
-  }
+  return readProductDetail(query, productDetailReadDependencies())
 }
 
 /** Typed reason a requested product coordinate is not authoritatively live. */
@@ -4706,6 +3238,7 @@ async function readPreparedProductTargets(
         return {
           targets: group.targets,
           relayPlan: await planCommerceReadRelayPlan({
+            readScope: options.readScope,
             intent: "author_products",
             authors: [author],
             authenticatedPubkey: options.authenticatedPubkey,
@@ -4841,6 +3374,7 @@ async function readPreparedProductTargets(
             },
             {
               relayUrls: relayPlan.candidateRelayUrls,
+              requireAllRequestedRelays: options.readScope === "public_feed",
               relayTargets: relayPlan.relayTargets,
               maxRelayAttempts: relayPlan.maxRelayAttempts,
               accountPubkey:
@@ -4862,7 +3396,11 @@ async function readPreparedProductTargets(
           const completeRelayHints = uniqueStrings([
             ...knownRelayHints,
             ...relayPlan.hintRelayUrls,
-          ])
+          ]).filter(
+            (relayUrl) =>
+              options.readScope !== "public_feed" ||
+              consideredRelayUrlSet.has(relayUrl)
+          )
           return {
             targets,
             events: result.events,
@@ -4880,7 +3418,11 @@ async function readPreparedProductTargets(
                     ...consideredRelayUrls,
                     ...target.relayHints,
                     ...relayPlan.hintRelayUrls,
-                  ])
+                  ]).filter(
+                    (relayUrl) =>
+                      options.readScope !== "public_feed" ||
+                      consideredRelayUrlSet.has(relayUrl)
+                  )
                 ),
               ])
             ),
@@ -5032,6 +3574,7 @@ async function readPreparedProductTargets(
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
             signal: options.signal,
+            readScope: options.readScope,
             fetchEvents: fetchDeletionEventsWithCoverage,
             onSkippedRelayUrls: (relayUrls) => {
               deletionPlanSkippedRelay ||= relayUrls.length > 0
@@ -5343,30 +3886,11 @@ export async function getCachedProductDetail(
   query: ProductDetailQuery,
   options: CachedProductReadOptions = { includeStale: true }
 ): Promise<CommerceResult<CommerceProductRecord | null>> {
-  const { decodedId, addressId } = getProductLookupIds(query.productId)
-  const cached = await getCachedProductRecords(undefined, {
-    ...options,
-    includeMarketHidden: true,
-  })
-  const lookupIds = [decodedId, addressId].filter(
-    (lookupId): lookupId is string => !!lookupId
+  return readCachedProductDetail(
+    query,
+    options,
+    productDetailReadDependencies()
   )
-  const record = findProductDetailRecord(
-    cached,
-    lookupIds,
-    query.includeMarketHidden
-  )
-
-  const meta = createMeta(
-    "product_detail",
-    record ? "local_cache" : "public",
-    PRODUCT_CAPABILITIES,
-    { stale: !!record, degraded: !!record }
-  )
-  return {
-    data: withProductFamilyRecordReadEvidence(record, meta),
-    meta,
-  }
 }
 
 /** Read one cached catalog batch for exact coordinates without relay I/O.
@@ -5378,554 +3902,29 @@ export async function getCachedProductsByIds(
   productIds: readonly string[],
   options: CachedProductReadOptions = { includeStale: true }
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  const lookups = productIds.map(getProductLookupIds)
-  const authors = uniqueStrings(
-    lookups.flatMap(({ address }) =>
-      address?.kind === EVENT_KINDS.PRODUCT ? [address.pubkey] : []
-    )
+  return readCachedProductsByIds(
+    productIds,
+    options,
+    productDetailReadDependencies()
   )
-  const cached =
-    authors.length > 0
-      ? await getCachedProductRecords(
-          undefined,
-          { ...options, includeMarketHidden: true },
-          authors
-        )
-      : []
-  const prepared = filterProductRecordsForRead(cached, {
-    includeMarketHidden: options.includeMarketHidden,
-    groupVariations: true,
-  })
-  const records = new Map<string, CommerceProductRecord>()
-  for (const { decodedId, addressId } of lookups) {
-    const record = findProductDetailRecord(
-      cached,
-      [decodedId, addressId].filter((id): id is string => !!id),
-      options.includeMarketHidden,
-      prepared
-    )
-    if (record) records.set(record.addressId, record)
-  }
-  const meta = createMeta(
-    "product_detail",
-    "local_cache",
-    PRODUCT_CAPABILITIES,
-    {
-      stale: true,
-      degraded: true,
-    }
-  )
-  return {
-    data: [...records.values()].map((record) =>
-      withProductFamilyRecordReadEvidence(record, meta)!
-    ),
-    meta,
-  }
 }
 
 export async function getProfiles(
   query: ProfileBatchQuery
 ): Promise<ProfileBatchResult> {
-  const pubkeys = Array.from(
-    new Set(query.pubkeys.map((pubkey) => pubkey.trim()).filter(Boolean))
-  )
-  const result: Record<string, Profile> = {}
-  const missing: string[] = []
-
-  if (pubkeys.length === 0) {
-    return {
-      data: result,
-      profileContexts: {},
-      meta: createMeta("profile_batch", "public", PROFILE_CAPABILITIES),
-    }
-  }
-
-  // A forced refresh must bypass cached display data without forgetting the
-  // durable replaceable-event frontier. Otherwise a narrower relay view can
-  // regress raw kind-0 publish context and silently delete unchanged fields.
-  const initialCacheSnapshot = await loadProfileCacheSnapshot(pubkeys)
-  let profileStorageAvailable = initialCacheSnapshot.storageAvailable
-  const retainedCachedRows = initialCacheSnapshot.rows
-  const cachedRows = query.skipCache ? [] : retainedCachedRows
-  const cachedRowsByPubkey = new Map(
-    retainedCachedRows.flatMap((row) =>
-      row ? ([[row.pubkey, row]] as const) : []
-    )
-  )
-  const buildContexts = (
-    selectedRows: ReadonlyMap<string, CachedProfile>,
-    liveRows: ReadonlyMap<string, CachedProfile> = new Map(),
-    readComplete = false,
-    progressing = false
-  ): Record<string, SelectedProfileContext> =>
-    Object.fromEntries(
-      pubkeys.map((pubkey) => {
-        const row = selectedRows.get(pubkey)
-        const live = liveRows.get(pubkey)
-        const observed =
-          !!row?.eventId &&
-          row.eventId === live?.eventId &&
-          row.eventCreatedAt === live.eventCreatedAt
-        return [
-          pubkey,
-          createSelectedProfileContext({
-            pubkey,
-            row,
-            profile: result[pubkey],
-            observed,
-            readComplete:
-              readComplete && (row ? observed : profileStorageAvailable),
-            storageAvailable: profileStorageAvailable,
-            ...(progressing && observed
-              ? { persistence: "unknown" as const }
-              : {}),
-          }),
-        ]
-      })
-    )
-  pubkeys.forEach((pubkey, index) => {
-    const cached = cachedRows[index]
-    const isAuthenticatedOwner =
-      !!query.authenticatedPubkey &&
-      pubkey.toLowerCase() === query.authenticatedPubkey.trim().toLowerCase()
-    if (
-      cached &&
-      hasProfileContent(cached) &&
-      !isAuthenticatedOwner &&
-      !query.requireCompleteEvidence &&
-      now() - cached.cachedAt < PROFILE_CACHE_TTL_MS
-    ) {
-      result[pubkey] = projectProfilePaymentAuthority(cached)
-    } else {
-      if (cached && hasProfileContent(cached)) {
-        result[pubkey] = projectProfilePaymentAuthority(cached)
-      }
-      missing.push(pubkey)
-    }
+  return readProfiles(query, {
+    parseProfileEvent,
+    planProfileReadRelays: planCommerceReadRelayPlan,
+    fetchEvents: runFetchEventsFanout,
+    fetchEventsDetailed: runFetchEventsFanoutDetailed,
+    contextualRelayHints,
+    getAccountNetworkLocalStateRepository: () =>
+      testOverrides.accountNetworkLocalStateRepository,
+    hasFetchPublicEventsOverride: () => !!testOverrides.fetchPublicEvents,
+    createMeta: (source, options) =>
+      createMeta("profile_batch", source, PROFILE_CAPABILITIES, options),
+    now,
   })
-
-  if (missing.length === 0) {
-    return {
-      data: result,
-      profileContexts: buildContexts(cachedRowsByPubkey),
-      meta: {
-        ...createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, {
-          stale: false,
-        }),
-        profileFrontierStates: Object.fromEntries(
-          pubkeys.map((pubkey) => [
-            pubkey,
-            retainedProfileFrontierState(cachedRowsByPubkey.get(pubkey)),
-          ])
-        ),
-      },
-    }
-  }
-
-  if (
-    query.onProgress &&
-    Object.values(result).some((profile) => hasProfileContent(profile))
-  ) {
-    query.onProgress({
-      data: { ...result },
-      profileContexts: buildContexts(cachedRowsByPubkey),
-      meta: createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, {
-        stale: true,
-      }),
-    })
-  }
-
-  try {
-    const visible = query.priority !== "background"
-    const profileQueryRelayHints = getProfileQueryRelayHints({
-      ...query,
-      pubkeys: missing,
-    })
-    // Ordinary display reads use current caller hints, not the accumulated
-    // delivery sources of unrelated cached products. Strict profile discovery
-    // remains unchanged; product provenance never authorizes payment profiles.
-    const ordinaryDisplayRead =
-      !query.requireCompleteEvidence &&
-      query.evidenceScope !== "payment" &&
-      query.evidenceScope !== "profile_edit"
-    const sourceRelayHints =
-      query.evidenceScope === "payment" || ordinaryDisplayRead
-        ? profileQueryRelayHints
-        : mergeContextualRelayHints(
-            profileQueryRelayHints,
-            await loadProductSourceRelayHints(
-              missing,
-              query.authenticatedPubkey
-            )
-          )
-    const authorCriticalPaymentRead =
-      query.authorRelayPaymentPolicy === true &&
-      query.requireCompleteEvidence === true &&
-      query.evidenceScope === "payment" &&
-      missing.length === 1
-    const relayPlan = await planCommerceReadRelayPlan({
-      intent: "profiles",
-      authors: missing,
-      paymentProfileEvidence: authorCriticalPaymentRead,
-      authenticatedPubkey: query.authenticatedPubkey,
-      accountPubkey: query.accountPubkey,
-      shouldContinue: query.shouldContinue,
-      signal: query.signal,
-      maxRelays: query.readPolicy?.maxRelays ?? (visible ? 8 : 4),
-      extraRelayUrls: sourceRelayHints.publicRelayUrls,
-      authenticatedAuthorRelayUrls:
-        sourceRelayHints.authenticatedAuthorRelayUrls,
-    })
-    const profileFilter: Filter = {
-      kinds: [EVENT_KINDS.PROFILE],
-      authors: missing,
-      limit: Math.max(10, missing.length * 3),
-    }
-    const knownAuthorRelayUrls = authorCriticalPaymentRead
-      ? relayPlan.hintRelayUrls
-      : []
-    const authorRelayListState = authorCriticalPaymentRead
-      ? relayPlan.relayListResolutionStates.get(missing[0]!)
-      : undefined
-    const authorRelayListReady = authorRelayListState === "network"
-    const candidateRelayUrlSet = new Set(relayPlan.candidateRelayUrls)
-    // A single merchant's signed payment profile is read from all known
-    // NIP-65 author write relays first. Additive routes may discover a
-    // newer signed frontier on viewer/app relays, but those opportunistic
-    // relays do not define payment-read completion. No author write hints
-    // means no payment authority in this branch-only rehearsal.
-    const admittedAuthorRelayUrls = knownAuthorRelayUrls.filter((relayUrl) =>
-      candidateRelayUrlSet.has(relayUrl)
-    )
-    const authorRelayUrlSet = new Set(knownAuthorRelayUrls)
-    const optionalPaymentRelayUrls = relayPlan.candidateRelayUrls.filter(
-      (relayUrl) => !authorRelayUrlSet.has(relayUrl)
-    )
-    const paymentReadRelayUrls =
-      authorCriticalPaymentRead && knownAuthorRelayUrls.length > 0
-        ? [...admittedAuthorRelayUrls, ...optionalPaymentRelayUrls]
-        : relayPlan.candidateRelayUrls
-    const paymentReadRelayUrlSet = new Set(paymentReadRelayUrls)
-    const fanoutOptions = {
-      relayUrls: paymentReadRelayUrls,
-      relayTargets: relayPlan.relayTargets.filter((target) =>
-        paymentReadRelayUrlSet.has(target.url)
-      ),
-      maxRelayAttempts: relayPlan.maxRelayAttempts,
-      accountPubkey: query.accountPubkey ?? query.authenticatedPubkey,
-      authenticatedPubkey: query.authenticatedPubkey,
-      accountNetworkLocalStateRepository:
-        testOverrides.accountNetworkLocalStateRepository,
-      shouldContinue: query.shouldContinue,
-      signal: query.signal,
-      connectTimeoutMs:
-        query.readPolicy?.connectTimeoutMs ?? (visible ? 1_500 : 3_000),
-      fetchTimeoutMs:
-        query.readPolicy?.fetchTimeoutMs ?? (visible ? 3_000 : 6_000),
-      // The planner already applied relay health. Strict evidence reads must
-      // execute that exact surviving set rather than silently filtering it a
-      // second time at the transport boundary.
-      skipHealthFilter: query.requireCompleteEvidence ? true : undefined,
-    }
-    const emitProgress = (events: readonly VerifiedNostrEvent[]) => {
-      if (!query.onProgress) return
-
-      const progress = mergeProfileEvents(
-        missing,
-        result,
-        events,
-        cachedRowsByPubkey
-      )
-      if (!progress.hasResolvedProfile) return
-
-      const retained = Object.values(progress.profileFrontierStates).some(
-        (state) => state === "retained_valid" || state === "retained_malformed"
-      )
-      query.onProgress({
-        data: progress.profiles,
-        profileContexts: buildContexts(
-          new Map([
-            ...cachedRowsByPubkey,
-            ...progress.rowsToCache.map((row) => [row.pubkey, row] as const),
-          ]),
-          new Map(
-            mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
-              row.pubkey,
-              row,
-            ])
-          ),
-          false,
-          true
-        ),
-        meta: {
-          ...createMeta(
-            "profile_batch",
-            retained ? "local_cache" : "public",
-            PROFILE_CAPABILITIES,
-            {
-              stale: retained,
-            }
-          ),
-          profileFrontierStates: progress.profileFrontierStates,
-        },
-      })
-    }
-    let evidenceDegraded =
-      query.requireCompleteEvidence &&
-      (authorCriticalPaymentRead
-        ? !authorRelayListReady ||
-          relayPlan.relayListLookupIncomplete ||
-          knownAuthorRelayUrls.length === 0 ||
-          knownAuthorRelayUrls.some(
-            (relayUrl) => !candidateRelayUrlSet.has(relayUrl)
-          )
-        : relayPlan.parkedRelayUrls.length > 0)
-    // Concurrency does not truncate sources. Actual event saturation and
-    // missing required completion below still prevent complete evidence.
-    let evidenceCapped = false
-    let events: VerifiedNostrEvent[]
-    if (query.requireCompleteEvidence) {
-      const evidence = await runFetchEventsFanoutDetailed(
-        profileFilter,
-        fanoutOptions
-      )
-      events = evidence.events
-      evidenceDegraded =
-        evidenceDegraded ||
-        (authorCriticalPaymentRead && knownAuthorRelayUrls.length > 0
-          ? knownAuthorRelayUrls.some(
-              (relayUrl) => !evidence.completedRelayUrls.includes(relayUrl)
-            )
-          : evidence.degraded)
-      evidenceCapped = evidenceCapped || evidence.capped
-      emitProgress(events)
-    } else {
-      events =
-        query.onProgress && !testOverrides.fetchPublicEvents
-          ? await fetchPublicEventsProgressive(
-              profileFilter,
-              fanoutOptions,
-              ({ mergedEvents }) => emitProgress(mergedEvents)
-            )
-          : await runFetchEventsFanout(profileFilter, fanoutOptions)
-
-      if (query.onProgress && testOverrides.fetchPublicEvents) {
-        emitProgress(events)
-      }
-    }
-
-    const {
-      profiles,
-      rowsToCache,
-      hasInvalidLatestProfile,
-      profileFrontierStates,
-    } = mergeProfileEvents(missing, result, events, cachedRowsByPubkey)
-    // A fully observed malformed kind-0 must stay unusable as payment or
-    // display authority, but it cannot permanently lock its owner out of the
-    // repair surface. Only an explicitly complete profile-edit read may
-    // ignore that malformed frontier; partial reads remain degraded.
-    const canRepairMalformedProfile =
-      query.evidenceScope === "profile_edit" && query.requireCompleteEvidence
-    if (!canRepairMalformedProfile) {
-      evidenceDegraded = evidenceDegraded || hasInvalidLatestProfile
-    }
-    const liveRowsByPubkey = new Map(
-      mergeProfileEvents(missing, {}, events).rowsToCache.map((row) => [
-        row.pubkey,
-        row,
-      ])
-    )
-    let cacheRetention:
-      Awaited<ReturnType<typeof storeCachedProfiles>> | undefined
-
-    if (rowsToCache.length > 0) {
-      cacheRetention = await storeCachedProfiles(rowsToCache)
-    }
-    // Authors with no candidate did not enter the cache transaction. Another
-    // reader may have retained their frontier while this network read was empty.
-    const candidatePubkeys = new Set(rowsToCache.map((row) => row.pubkey))
-    const withoutCandidates = missing.filter(
-      (pubkey) => !candidatePubkeys.has(pubkey)
-    )
-    if (withoutCandidates.length > 0) {
-      const concurrentSnapshot =
-        await loadProfileCacheSnapshot(withoutCandidates)
-      profileStorageAvailable =
-        profileStorageAvailable && concurrentSnapshot.storageAvailable
-      const concurrentRows = concurrentSnapshot.rows.filter(
-        (row): row is CachedProfile => !!row
-      )
-      if (concurrentRows.length > 0) {
-        cacheRetention = {
-          ...cacheRetention,
-          rows: [...(cacheRetention?.rows ?? []), ...concurrentRows],
-          displacedPubkeys: cacheRetention?.displacedPubkeys ?? new Set(),
-        }
-      }
-    }
-    for (const row of cacheRetention?.rows ?? []) {
-      profiles[row.pubkey] = projectProfilePaymentAuthority(row)
-      const liveRow = liveRowsByPubkey.get(row.pubkey)
-      if (
-        !liveRow ||
-        row.eventId !== liveRow.eventId ||
-        row.eventCreatedAt !== liveRow.eventCreatedAt
-      ) {
-        profileFrontierStates[row.pubkey] = retainedProfileFrontierState(row)
-      }
-    }
-    const networkReadComplete =
-      !!query.requireCompleteEvidence && !evidenceDegraded && !evidenceCapped
-    evidenceDegraded =
-      evidenceDegraded ||
-      !!cacheRetention?.persistenceFailed ||
-      !profileStorageAvailable
-    Object.assign(result, profiles)
-
-    const displaced = (cacheRetention?.displacedPubkeys.size ?? 0) > 0
-    const missingPubkeys = new Set(missing)
-    const usesFreshCachedResult = pubkeys.some(
-      (pubkey) =>
-        !missingPubkeys.has(pubkey) && hasProfileContent(result[pubkey])
-    )
-    const usesUnconfirmedCachedResult =
-      cacheRetention?.rows.some((row) => {
-        if (!hasProfileContent(row) && !hasKnownProfileFrontier(row))
-          return false
-        const liveRow = liveRowsByPubkey.get(row.pubkey)
-        return (
-          !liveRow ||
-          row.eventId !== liveRow.eventId ||
-          row.eventCreatedAt !== liveRow.eventCreatedAt ||
-          (query.evidenceScope === "payment"
-            ? row.lud16 !== liveRow.lud16
-            : query.evidenceScope === "profile_edit"
-              ? false
-              : !areProfileProjectionsEqual(
-                  projectCachedProfile(row),
-                  projectCachedProfile(liveRow)
-                ))
-        )
-      }) ?? false
-    const dependsOnCache = usesFreshCachedResult || usesUnconfirmedCachedResult
-    const stale = displaced || usesUnconfirmedCachedResult
-    const profileContexts = buildContexts(
-      new Map([
-        ...cachedRowsByPubkey,
-        ...(cacheRetention?.rows ?? []).map(
-          (row) => [row.pubkey, row] as const
-        ),
-      ]),
-      liveRowsByPubkey,
-      networkReadComplete
-    )
-    if (query.evidenceScope === "payment") {
-      for (const [pubkey, context] of Object.entries(profileContexts)) {
-        const frontier = context.frontier
-        if (context.freshness !== "observed" || !frontier) continue
-        const signed = events.find(
-          (candidate) => candidate.id === frontier.eventId
-        )
-        if (
-          !signed ||
-          signed.kind !== EVENT_KINDS.PROFILE ||
-          signed.pubkey !== pubkey ||
-          signed.created_at !== frontier.eventCreatedAt ||
-          signed.content !== frontier.rawContent ||
-          !isValidSignedPublicNostrEvent(signed)
-        )
-          continue
-        // The cache commit can select a newer frontier while this read awaits.
-        // Carry only that final exact observed event, not an earlier display source.
-        context.signedEvent = {
-          id: signed.id,
-          pubkey: signed.pubkey,
-          created_at: signed.created_at,
-          kind: signed.kind,
-          tags: signed.tags.map((tag) => [...tag]),
-          content: signed.content,
-          sig: signed.sig,
-        }
-      }
-    }
-
-    return {
-      data: result,
-      profileContexts,
-      meta: {
-        ...createMeta(
-          "profile_batch",
-          dependsOnCache ? "local_cache" : "public",
-          PROFILE_CAPABILITIES,
-          {
-            stale,
-            degraded: stale || evidenceDegraded,
-            capped: evidenceCapped,
-          }
-        ),
-        profileFrontierStates,
-      },
-    }
-  } catch (error) {
-    if (query.shouldContinue?.() === false) throw error
-    const latestSnapshot = await loadProfileCacheSnapshot(pubkeys)
-    profileStorageAvailable =
-      profileStorageAvailable && latestSnapshot.storageAvailable
-    const latestRows = latestSnapshot.rows
-    const retainedRows = reduceCachedProfileRows(
-      [
-        ...cachedRowsByPubkey.values(),
-        ...latestRows.filter((row): row is CachedProfile => !!row),
-      ],
-      []
-    ).rows
-    const retained = mergeProfileEvents(
-      pubkeys,
-      result,
-      [],
-      new Map(retainedRows.map((row) => [row.pubkey, row]))
-    )
-    const hasAnyCached =
-      Object.keys(result).length > 0 || retainedRows.some((row) => !!row)
-    if (hasAnyCached || !profileStorageAvailable) {
-      return {
-        data: retained.profiles,
-        profileContexts: buildContexts(
-          new Map(retainedRows.map((row) => [row.pubkey, row]))
-        ),
-        meta: {
-          ...createMeta("profile_batch", "local_cache", PROFILE_CAPABILITIES, {
-            stale: true,
-          }),
-          profileFrontierStates: retained.profileFrontierStates,
-        },
-      }
-    }
-    throw error
-  }
-}
-
-function getConversationPreview(message: ParsedOrderMessage): string {
-  switch (message.type) {
-    case "order":
-      return `Order for ${message.payload.subtotal} ${message.payload.currency}`
-    case "payment_request":
-      return message.payload.note ?? "Invoice sent"
-    case "status_update":
-      return (
-        message.payload.note ?? `Status updated to ${message.payload.status}`
-      )
-    case "shipping_update":
-      return message.payload.note ?? "Shipping updated"
-    case "receipt":
-      return message.payload.note ?? "Payment received"
-    case "message":
-      return message.payload.note
-    case "payment_proof":
-      return "Payment proof shared"
-    default:
-      return "Order update"
-  }
 }
 
 function ownerInboxStatus(
@@ -6154,100 +4153,6 @@ async function fetchParsedDirectMessages(
     legacyDecryptFailures: snapshot.legacyDecryptFailures,
     inbox: ownerInboxStatus(snapshot),
   }
-}
-
-function buildBuyerConversationSummaries(
-  messages: ParsedOrderMessage[],
-  buyerPubkey: string
-): BuyerConversationSummary[] {
-  const conversations: BuyerConversationSummary[] = []
-  for (const group of groupOrderConversationMessages(messages, buyerPubkey)) {
-    if (group.buyerPubkey !== buyerPubkey) continue
-    const { id, orderId, merchantPubkey, messages: bucket } = group
-    bucket.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
-    const effectiveStatus = getEffectiveMerchantOrderStatus(bucket, {
-      buyerPubkey,
-      merchantPubkey,
-    })
-    const summary = extractOrderSummary(bucket, {
-      buyerPubkey,
-      merchantPubkey,
-    })
-
-    conversations.push({
-      id,
-      orderId,
-      merchantPubkey,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status: effectiveStatus.status,
-      totalSummary:
-        summary.items.length > 0
-          ? `${summary.subtotal} ${summary.currency}`
-          : null,
-      preview: getConversationPreview(latest),
-      messageCount: bucket.length,
-      messages: bucket,
-      context: bucket.some((message) => message.type === "order")
-        ? "complete"
-        : "missing_order",
-    })
-  }
-
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
-  return conversations
-}
-
-function buildMerchantConversationSummaries(
-  messages: ParsedOrderMessage[],
-  merchantPubkey: string
-): MerchantConversationSummary[] {
-  const conversations: MerchantConversationSummary[] = []
-  for (const group of groupOrderConversationMessages(
-    messages,
-    merchantPubkey
-  )) {
-    if (group.merchantPubkey !== merchantPubkey) continue
-    const { id, orderId, buyerPubkey, messages: bucket } = group
-    bucket.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-
-    const effectiveStatus = getEffectiveMerchantOrderStatus(bucket, {
-      buyerPubkey,
-      merchantPubkey,
-    })
-    const summary = extractOrderSummary(bucket, {
-      buyerPubkey,
-      merchantPubkey,
-    })
-
-    conversations.push({
-      id,
-      orderId,
-      buyerPubkey,
-      merchantPubkey,
-      latestAt: latest.createdAt,
-      latestType: latest.type,
-      status: effectiveStatus.status,
-      totalSummary:
-        summary.items.length > 0
-          ? `${summary.subtotal} ${summary.currency}`
-          : null,
-      preview: getConversationPreview(latest),
-      messageCount: bucket.length,
-      messages: bucket,
-      context: bucket.some((message) => message.type === "order")
-        ? "complete"
-        : "missing_order",
-    })
-  }
-
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
-  return conversations
 }
 
 export async function getBuyerConversationList(
@@ -8528,60 +6433,6 @@ export interface DirectMessageThread {
   counterpartyPubkey: string
   transport: ParsedDirectMessage["transport"]
   messages: ParsedDirectMessage[]
-}
-
-function counterpartyOf(
-  message: ParsedDirectMessage,
-  principalPubkey: string
-): string {
-  return message.senderPubkey === principalPubkey
-    ? message.recipientPubkey
-    : message.senderPubkey
-}
-
-function buildDirectConversationSummaries(
-  messages: ParsedDirectMessage[],
-  principalPubkey: string,
-  unreadMessageIds: ReadonlySet<string>
-): DirectConversationSummary[] {
-  const grouped = new Map<string, ParsedDirectMessage[]>()
-  for (const message of messages) {
-    const counterparty = counterpartyOf(message, principalPubkey)
-    if (!counterparty) continue
-    // The product supports two-party replies; extra p tags remain message metadata.
-    const threadId = `${message.transport}:${counterparty}`
-    const bucket = grouped.get(threadId) ?? []
-    bucket.push(message)
-    grouped.set(threadId, bucket)
-  }
-
-  const conversations: DirectConversationSummary[] = []
-  for (const [id, bucket] of grouped.entries()) {
-    bucket.sort((a, b) => a.createdAt - b.createdAt)
-    const latest = bucket[bucket.length - 1]
-    if (!latest) continue
-    const counterpartyPubkey = counterpartyOf(latest, principalPubkey)
-    conversations.push({
-      id,
-      transport: latest.transport,
-      counterpartyPubkey,
-      participants: latest.participants,
-      latestAt: latest.createdAt,
-      // Keep complete content so presentation can recognize structured legacy
-      // envelopes before applying visual line clamping.
-      preview: latest.content,
-      messageCount: bucket.length,
-      unreadFromCounterparty: bucket.filter(
-        (message) =>
-          message.senderPubkey === counterpartyPubkey &&
-          unreadMessageIds.has(message.id)
-      ).length,
-      messages: bucket,
-    })
-  }
-
-  conversations.sort((a, b) => b.latestAt - a.latestAt)
-  return conversations
 }
 
 export async function getDirectMessageConversationList(

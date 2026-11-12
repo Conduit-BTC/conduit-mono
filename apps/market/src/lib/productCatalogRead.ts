@@ -1,10 +1,12 @@
 import {
+  getPublicFeedReadScopeKey,
   isCommerceReadIncomplete,
   resolveEventMarketPerspectiveAuthorPubkeys,
   selectLatestFollowListEvent,
   type CommerceQueryMeta,
   type EventMarketPerspectiveAuthorSource,
   type SignedPublicNostrEvent,
+  type PublicReadScope,
 } from "@conduit/core"
 
 export type ProductCatalogScope = "marketplace" | "storefront"
@@ -13,6 +15,7 @@ export const DEFAULT_MARKET_CATALOG_SOURCE: ProductCatalogSourceMode =
   "combined"
 
 export interface ProductCatalogReadInput {
+  readScope?: PublicReadScope
   scope: ProductCatalogScope
   catalogSource?: ProductCatalogSourceMode
   merchantPubkey?: string
@@ -134,6 +137,13 @@ export function getCatalogAuthorKey(
     : `authors:${Array.from(new Set(authorPubkeys)).sort().join(",")}`
 }
 
+/** Marketplace owners always read the public feed; storefronts remain opt-in. */
+export function getProductCatalogReadScope(
+  input: Pick<ProductCatalogReadInput, "scope" | "readScope">
+): PublicReadScope | undefined {
+  return input.scope === "marketplace" ? "public_feed" : input.readScope
+}
+
 export function getProductCatalogQueryKey(
   input: ProductCatalogReadInput,
   source: "cache" | "network"
@@ -144,6 +154,9 @@ export function getProductCatalogQueryKey(
   return [
     "progressive-products",
     source,
+    ...(source === "network"
+      ? [getPublicFeedReadScopeKey(getProductCatalogReadScope(input))]
+      : []),
     input.scope,
     input.scope === "marketplace"
       ? (input.merchantPubkey ?? "all")

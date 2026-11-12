@@ -1,3 +1,7 @@
+import {
+  getPublicFeedReadScopeKey,
+  type PublicReadScope,
+} from "../protocol/public-feed-read-scope"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
@@ -14,6 +18,7 @@ import {
 export const PROFILE_SEARCH_SETTLE_MS = 350
 
 export interface UseProfileSearchOptions {
+  readScope?: PublicReadScope
   enabled?: boolean
   limit?: number
   /** Restrict matches to these authors before ranking and limiting. */
@@ -52,7 +57,8 @@ export function getProfileSearchQueryKey(
   limit: number,
   phase: "cached" | "network" = "network",
   accountPubkey: string | null = null,
-  authorPubkeys?: readonly string[]
+  authorPubkeys?: readonly string[],
+  readScope?: PublicReadScope
 ) {
   const authorKey =
     authorPubkeys === undefined
@@ -73,6 +79,7 @@ export function getProfileSearchQueryKey(
     limit,
     accountPubkey ?? "guest",
     authorKey,
+    getPublicFeedReadScopeKey(readScope),
   ] as const
 }
 
@@ -155,7 +162,8 @@ export function useProfileSearch(
     limit,
     "cached",
     accountPubkey,
-    authorPubkeys
+    authorPubkeys,
+    options.readScope
   )
   const cachedKeyId = getProfileSearchRepairKey(cachedKey)
   const cachedQuery = useQuery({
@@ -197,7 +205,8 @@ export function useProfileSearch(
       limit,
       "network",
       accountPubkey,
-      authorPubkeys
+      authorPubkeys,
+      options.readScope
     ),
     enabled: networkEligible && settledQuery.length > 0,
     refetchOnWindowFocus: false,
@@ -208,6 +217,7 @@ export function useProfileSearch(
     queryFn: ({ signal }) =>
       searchNetworkProfiles({
         query: settledQuery,
+        readScope: options.readScope,
         limit,
         signal,
         authorPubkeys,

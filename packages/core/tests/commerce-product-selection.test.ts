@@ -3,6 +3,9 @@ import {
   filterExactProductRecordsForRead,
   filterProductRecordsForRead,
   getProductLookupIds,
+  getVariationParentAddress,
+  selectLatestProductRecordsByAddress,
+  hasCompleteLiveVariationGroupCoverage,
   mergeProductRecordSources,
   reconcileProductRecordsWithDeletions,
   reconcileProductRecordsWithRevisions,
@@ -260,5 +263,178 @@ describe("commerce product selection", () => {
       getProductLookupIds(encodeURIComponent(winner.addressId)).addressId
     ).toBe(winner.addressId)
     expect(getProductLookupIds("%invalid").address).toBeNull()
+  })
+})
+
+describe("live product family coverage selection", () => {
+  function coverage(
+    overrides: Partial<
+      Parameters<typeof hasCompleteLiveVariationGroupCoverage>[0]
+    > = {}
+  ) {
+    const { parent, red, blue } = family()
+    return {
+      target: parent,
+      groupRead: { records: [parent, red, blue], degraded: false },
+      knownRecords: [parent, red, blue],
+      directRecords: [parent],
+      ...overrides,
+    }
+  }
+
+  it("resolves simple, parent and child roles without manufacturing parent evidence", () => {
+    const { parent, red } = family()
+    expect(getVariationParentAddress(record("simple"))).toBeUndefined()
+    expect(getVariationParentAddress(parent)).toBe(parent.addressId)
+    expect(getVariationParentAddress(red)).toBe(parent.addressId)
+    expect(
+      getVariationParentAddress(record("orphan", { type: "variation" }))
+    ).toBeUndefined()
+  })
+
+  it("does not require a family read for simple products", () => {
+    expect(
+      hasCompleteLiveVariationGroupCoverage(
+        coverage({
+          target: record("simple"),
+          groupRead: { records: [], degraded: true },
+          directRecords: [],
+        })
+      )
+    ).toBe(true)
+  })
+
+  it("refuses absent parent identity and degraded group reads", () => {
+    expect(
+      hasCompleteLiveVariationGroupCoverage(
+        coverage({ target: record("orphan", { type: "variation" }) })
+      )
+    ).toBe(false)
+    const input = coverage()
+    expect(
+      hasCompleteLiveVariationGroupCoverage({
+        ...input,
+        groupRead: { ...input.groupRead, degraded: true },
+      })
+    ).toBe(false)
+  })
+
+  it("accepts exact live revisions from direct and group observations together", () => {
+    const { parent, red, blue } = family()
+    expect(
+      hasCompleteLiveVariationGroupCoverage({
+        target: red,
+        knownRecords: [parent, red, blue],
+        directRecords: [red],
+        groupRead: { records: [parent, blue], degraded: false },
+      })
+    ).toBe(true)
+  })
+
+  it("requires positive live evidence for both the parent and every known child", () => {
+    const { parent, red, blue } = family()
+    for (const records of [
+      [red, blue],
+      [parent, red],
+    ]) {
+      expect(
+        hasCompleteLiveVariationGroupCoverage({
+          target: red,
+          knownRecords: [parent, red, blue],
+          directRecords: [red],
+          groupRead: { records, degraded: false },
+        })
+      ).toBe(false)
+    }
+  })
+
+  it("refuses a parent absent from every input even when the child names it", () => {
+    const { red } = family()
+    expect(
+      hasCompleteLiveVariationGroupCoverage({
+        target: red,
+        knownRecords: [red],
+        directRecords: [red],
+        groupRead: { records: [red], degraded: false },
+      })
+    ).toBe(false)
+  })
+
+  it("accepts a newer live revision than the retained cached family member", () => {
+    const { parent, red, blue } = family()
+    for (const member of [parent, blue]) {
+      const newer = { ...member, eventId: "f".repeat(64), eventCreatedAt: 20 }
+      expect(
+        hasCompleteLiveVariationGroupCoverage({
+          target: red,
+          knownRecords: [parent, red, blue],
+          directRecords: [red],
+          groupRead: { records: [parent, blue, newer], degraded: false },
+        })
+      ).toBe(true)
+    }
+  })
+
+  it("refuses an older live revision when a newer parent or child is known", () => {
+    const { parent, red, blue } = family()
+    for (const selected of [parent, blue]) {
+      const newer = { ...selected, eventId: "f".repeat(64), eventCreatedAt: 20 }
+      expect(
+        hasCompleteLiveVariationGroupCoverage({
+          target: red,
+          knownRecords: [parent, red, blue, newer],
+          directRecords: [red],
+          groupRead: { records: [parent, red, blue], degraded: false },
+        })
+      ).toBe(false)
+    }
+  })
+
+  it("ignores unrelated known families while accounting for newly observed members", () => {
+    const { parent, red, blue } = family()
+    const unrelated = record("other-parent", { type: "variable" })
+    expect(
+      hasCompleteLiveVariationGroupCoverage({
+        target: parent,
+        knownRecords: [parent, red, unrelated],
+        directRecords: [parent],
+        groupRead: { records: [red, blue], degraded: false },
+      })
+    ).toBe(true)
+  })
+
+  it("selects deterministic revision winners while retaining observed relay provenance", () => {
+    const old = {
+      ...record("revision", {}, 10),
+      sourceRelayUrls: ["wss://old.fixture.test"],
+    }
+    const newer = {
+      ...old,
+      eventId: "e".repeat(64),
+      eventCreatedAt: 20,
+      sourceRelayUrls: ["wss://new.fixture.test"],
+    }
+    const tieWinner = {
+      ...newer,
+      eventId: "a".repeat(64),
+      sourceRelayUrls: ["wss://tie.fixture.test"],
+    }
+    for (const input of [
+      [old, newer, tieWinner],
+      [tieWinner, newer, old],
+    ]) {
+      const selected = selectLatestProductRecordsByAddress(input)
+      expect(selected.size).toBe(1)
+      expect(selected.get(old.addressId)?.eventId).toBe(tieWinner.eventId)
+      expect(
+        selected.get(old.addressId)?.sourceRelayUrls?.slice().sort()
+      ).toEqual(
+        [
+          "wss://old.fixture.test",
+          "wss://new.fixture.test",
+          "wss://tie.fixture.test",
+        ].sort()
+      )
+    }
   })
 })

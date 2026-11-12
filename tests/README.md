@@ -6,13 +6,13 @@ add `--pass-with-no-tests`, skipped cases, or success-only test placeholders.
 
 The suite intentionally covers a small set of payment and recovery risks:
 
-| File                                                  | Cases | Protection                                                                                                                                                                            |
-| ----------------------------------------------------- | ----: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                          |
-| `checkout-spark-settled-outgoing.test.ts`             |    13 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, and provider identity. |
-| `checkout-spark-settled-preparation-recovery.test.ts` |     2 | Lost ACK and outbox-readback recovery preserve the original order, signed envelope, wallet, and funding invoice.                                                                      |
-| `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                          |
-| `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                              |
+| File                                                  | Cases | Protection                                                                                                                                                                                                                          |
+| ----------------------------------------------------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                                                                        |
+| `checkout-spark-settled-outgoing.test.ts`             |    25 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, provider identity, and pre-admission cancellation reaching Merchant. |
+| `checkout-spark-settled-preparation-recovery.test.ts` |     2 | Lost ACK and outbox-readback recovery preserve the original order, signed envelope, wallet, and funding invoice.                                                                                                                    |
+| `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                                                                        |
+| `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                                                                            |
 
 The five `address-gateway*.test.ts` / `address-preview-origin.test.ts` files
 retain 60 deployment-related cases unchanged. The production deployment workflow
@@ -24,7 +24,7 @@ visibility, exact pickup exceptions, shared family context, revision/deletion
 reconciliation and deterministic source merging. These use projected records;
 they do not establish signature admission, relay delivery or checkout authority.
 
-`commerce-product-cache.test.ts` adds six local cache cases using ordinary signed
+`commerce-product-cache.test.ts` adds eight local cache cases using ordinary signed
 listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
 and exact-family reads—not public relay delivery or browser cross-tab behavior.
@@ -69,6 +69,78 @@ deletions during relay and cache-write awaits, failure fallback and authority
 cancellation. These exercise the retained commerce facade with signed fixtures,
 in-memory IndexedDB and network guards; they do not establish public relay or
 browser persistence behavior.
+
+`packages/core/tests/commerce-profile-reads.test.ts` exercises profile reads
+through the commerce facade using signed kind-0 fixtures, in-memory IndexedDB
+and network guards. It covers display-cache expiry and owner refresh, retained
+frontiers during refresh and concurrent writes, address removal and malformed
+profiles, provisional progress, strict and payment relay completion, exact
+signed payment evidence and authority cancellation. These offline cases do not
+establish live relay delivery, browser persistence or funded settlement.
+
+`packages/core/tests/commerce-product-detail-reads.test.ts` exercises live and
+cached detail lookups through the commerce facade with signed listings and
+deletions, in-memory IndexedDB and network guards. It covers references,
+variation-family selection, visibility, cached batches, revision/deletion
+selection, fallback evidence, transport degradation and revoked-authority error
+propagation. Repeated observations of the same signed variation must not make
+its family conflict with itself; distinct conflicting variations remain refused.
+These display reads and offline tests do not establish checkout availability,
+public relay delivery, browser persistence or funded settlement.
+
+`packages/core/tests/commerce-conversation-projections.test.ts` characterizes
+conversation reads through the retained commerce facade. Its 38 offline cases
+cover participant and role isolation, summary previews and status, deterministic
+ordering, direct-message transport separation, unread counts, complete content,
+and inbox freshness/degradation metadata. Fixtures and a fake inbox owner avoid
+network access; these cases do not establish live delivery or payment settlement.
+
+Ten further `commerce-product-selection.test.ts` cases cover pure live-family
+coverage: parent identity, simple products, degraded reads, exact selected
+revisions, missing members, newer cached revisions, unrelated families and
+source-provenance union. Three facade detail cases characterize absent or older
+live parent/child evidence and pass before and after consolidation. These tests preserve
+conservative local selection; they do not establish relay completeness or
+checkout action authority. An additional exact-batch case checks complete
+versus missing-live-sibling coverage through `getProductsByIds`.
+
+`packages/core/tests/commerce-marketplace-reads.test.ts` adds 29 offline cases
+through the retained Marketplace facade. Signed fixtures cover empty scopes,
+ranked relevance/family projection, cache-seed failure, partial/capped metadata,
+authority cancellation, signed deletion/revision observations and serialized
+progressive persistence. A final deletion-frontier callback precedes propagation
+of a final write failure. Two exact/ranked frontier cases preserve newer signed
+cached terms against lagging live revisions without granting fresh action evidence.
+Cache admission controls reject forged signatures/identity and rebuild projected
+terms from admitted signed bytes. These cases preserve display-read behavior; they do
+not establish exact checkout action authority, live relay delivery or settlement.
+
+`packages/core/tests/merchant-recovery-evidence.test.ts` adds 19 offline
+admission/discovery cases through the real Merchant recovery facade with signed,
+encrypted handoffs, in-memory IndexedDB and scripted protected-relay reads.
+It covers exact-wrap result integrity, positive/empty/partial coverage,
+conflicting handoffs and unwrap failures, including the unchanged real deadline.
+Fixture creation and each case block external fetch and WebSocket access.
+These cases characterize refusal mechanisms; they do not reproduce a particular
+production incident or establish provider settlement or worker scheduling.
+
+`checkout-spark-observation-compatibility.test.ts` checks the exact audited SDK
+constructor/identity/cleanup boundary without network or initialization, plus
+unsupported-version and closed-session refusal. It does not establish provider
+responses or settlement.
+
+## Isolated browser checks
+
+`tests/browser/README.md` documents the shared headless/headed Playwright suite.
+It runs the real checkout outgoing engine, Buyer cancellation fences and Merchant
+serial worker in an isolated local test app with synthetic signer/provider seams.
+External page HTTP/WebSockets are denied; no normal Chrome profile or funded
+wallet is used. It does not establish production incident cause or settlement.
+
+Checkout preparation recovery tests also cover a slightly future provider invoice
+clock. Preparation waits for actual local time with a five-second monotonic budget;
+large/frozen clock differences, session revocation and takeover still refuse before
+saving or publishing recovery. These offline cases do not prove funded settlement.
 
 ## Scope and rebuilding
 

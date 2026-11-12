@@ -30,7 +30,7 @@ export interface MerchantSparkObservationWalletDependencies {
   sdkVersion?: string
 }
 
-const OBSERVATION_SDK_VERSION = "0.13.0"
+const OBSERVATION_SDK_VERSION = "0.14.0"
 const UNAVAILABLE = "Checkout Spark authenticated observation is unavailable."
 
 /**

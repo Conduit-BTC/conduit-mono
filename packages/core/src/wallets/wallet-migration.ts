@@ -1,15 +1,17 @@
 import {
   getNwcUriFingerprint,
-  getWalletDefaultReplacement,
-  isWalletNetwork,
   parseNwcUri,
   type NwcGetInfoResult,
+} from "../protocol/nwc"
+import {
+  getWalletDefaultReplacement,
+  isWalletNetwork,
   type WalletCapability,
   type WalletDescriptor,
   type WalletNetwork,
   type WalletRegistry,
   type WalletRegistryStore,
-} from "@conduit/core"
+} from "./index"
 import { registerNwcWalletAtomically } from "./wallet-storage"
 import { closeBuyerNwcSession } from "./buyer-nwc-session"
 import { notifyWalletChangeFallback } from "./wallet-change-fallback"
