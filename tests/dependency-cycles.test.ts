@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
 import type { ICruiseResult } from "dependency-cruiser"
 import {
+  discoverDependencyProjects,
   collectCoreSelfImports,
   collectRuntimeGraph,
   compareCycleBaseline,
@@ -125,6 +126,27 @@ test("core self-import policy sees type, runtime, dynamic and require imports", 
         { cycles: [], coreSelfImports: [] }
       )
     ).toHaveLength(5)
+  } finally {
+    if (
+      !resolve(directory).startsWith(resolve("packages/.cycle-guard-fixture-"))
+    )
+      throw new Error("Unexpected fixture path")
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("workspace discovery includes new packages and ignores non-package output", () => {
+  const directory = mkdtempSync("packages/.cycle-guard-fixture-")
+  try {
+    for (const name of ["new-app", "new-library", "generated"])
+      mkdirSync(join(directory, name))
+    for (const name of ["new-app", "new-library"])
+      writeFileSync(join(directory, name, "package.json"), "{}")
+    expect(discoverDependencyProjects([directory])).toEqual(
+      [join(directory, "new-app"), join(directory, "new-library")].map((path) =>
+        path.replaceAll("\\", "/")
+      )
+    )
   } finally {
     if (
       !resolve(directory).startsWith(resolve("packages/.cycle-guard-fixture-"))

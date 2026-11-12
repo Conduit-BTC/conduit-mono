@@ -4,7 +4,7 @@ Run `bun run cycles:check` before and after moving first-party modules. CI runs
 the same command before the retained test suite.
 
 The guard uses pinned dependency-cruiser with the supported TypeScript compiler
-to inspect Core, UI and all four applications. Each project is resolved with its
+to inspect all workspace packages under `packages/` and `apps/`, discovered from their package manifests. Each project is resolved with its
 own tsconfig and `@/` source alias. The workspace `@conduit/core` and
 `@conduit/ui` names resolve to their source directories, matching application
 builds rather than requiring existing package `dist` output. Unresolved internal

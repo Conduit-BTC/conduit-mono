@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join, resolve } from "node:path"
 import {
   cruise,
@@ -145,15 +145,25 @@ export function collectCoreSelfImports(root = "packages/core/src"): string[] {
   return [...new Set(imports)].sort()
 }
 
+/** Discover current workspace packages so a new app cannot silently evade CI. */
+export function discoverDependencyProjects(
+  roots = ["packages", "apps"]
+): string[] {
+  return roots
+    .flatMap((root) =>
+      readdirSync(root, { withFileTypes: true })
+        .filter(
+          (entry) =>
+            entry.isDirectory() &&
+            existsSync(join(root, entry.name, "package.json"))
+        )
+        .map((entry) => normalize(join(root, entry.name)))
+    )
+    .sort()
+}
+
 export async function collectRuntimeGraph(
-  projects = [
-    "packages/core",
-    "packages/ui",
-    "apps/market",
-    "apps/merchant",
-    "apps/address-gateway",
-    "apps/checkout-pricing",
-  ]
+  projects = discoverDependencyProjects()
 ): Promise<ICruiseResult> {
   if (
     !getAvailableTranspilers().some(
