@@ -2,7 +2,7 @@
 # dependency-cruiser loads an optional TypeScript compiler by package name.
 # Resolve it from the declared root pin instead of a phantom fallback alias.
 # Preserve isolated workspace SDK paths used by source and offline tests.
-hoist = false
+hoistPattern = ["@types/*"]
 # Hold newly-published npm versions for three days to reduce exposure to
 # fast-moving malicious package compromises. Existing bun.lock entries are
 # unchanged; this only affects new resolution.

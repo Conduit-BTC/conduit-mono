@@ -21,9 +21,9 @@ entrypoints run in a separate module realm and are not loading-cycle edges.
 TypeScript-erased edges do not form runtime cycles. A separate source check still
 rejects Core importing its own package name, including type-only imports. The
 root TypeScript override keeps dependency-cruiser's parser on supported 6.0.3.
-The existing isolated install layout is retained; disabling its phantom fallback
-hoist keeps the optional compiler on that root pin instead of the aliased native
-compiler. The native typecheck compiler remains independently pinned through
+The existing isolated install layout is retained. Restricting fallback hoisting
+to `@types/*` keeps the optional compiler on that declared root pin instead of
+the aliased native compiler, without removing workspace SDK paths. The native typecheck compiler remains independently pinned through
 `@typescript/native`. The guard refuses to run without a supported TypeScript
 transpiler, because loose JavaScript parsing can misclassify type-only edges.
 
@@ -61,3 +61,8 @@ The cleanup keeps implementation ownership below compatibility facades:
   [shipping schemas](shipping-schema-ownership.md) and
   [settlement models](checkout-spark-settlement-module-ownership.md) document the
   remaining dependency boundaries and their offline characterization checks.
+
+Shared Core and UI source currently uses relative internal imports. If a shared
+package introduces `@/` imports, extend the collector's cross-project resolution
+and regression checks: imports reached through an application graph otherwise
+use that application's `@/` mapping.
