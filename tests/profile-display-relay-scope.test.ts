@@ -1,3 +1,4 @@
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 import { resolveCheckoutSparkRecipientPayoutAddress } from "../packages/core/src/protocol/checkout-spark-recipient-profile"
 import { searchNetworkProfiles } from "../packages/core/src/protocol/profile-search"
 import { readLatestFollowLists } from "../packages/core/src/protocol/follows"
@@ -29,6 +30,7 @@ const originalConfig = { ...config }
 const originalFetch = globalThis.fetch
 const originalWebSocket = globalThis.WebSocket
 const attempted = new Set<string>()
+const socketDestinations = new Set<string>()
 const failedRelays = new Set<string>()
 let blockedNetworkAttempts = 0
 let cachedProfiles: CachedProfile[] = []
@@ -41,6 +43,7 @@ class FixtureSocket implements PublicRelayReadSocket {
   onerror: PublicRelayReadSocket["onerror"] = null
   onclose: PublicRelayReadSocket["onclose"] = null
   constructor(readonly url: string) {
+    socketDestinations.add(url)
     if (!allowed.has(url)) {
       blockedNetworkAttempts++
       throw new Error("Unexpected offline relay target")
@@ -83,6 +86,7 @@ class FixtureSocket implements PublicRelayReadSocket {
 
 beforeEach(async () => {
   attempted.clear()
+  socketDestinations.clear()
   failedRelays.clear()
   blockedNetworkAttempts = 0
   cachedProfiles = []
@@ -347,4 +351,30 @@ test("feed profile total outage is degraded without a broader fallback", async (
   expect(result.meta.degraded).toBe(true)
   expect(result.profileContexts[merchant]?.readComplete).toBe(false)
   expect(blockedNetworkAttempts).toBe(0)
+})
+
+test("feed app grants honor the account's disabled app layer before opening sockets", async () => {
+  Object.assign(config, {
+    appCommerceRelayUrls: [app],
+    commerceDiscoveryRelayUrls: [app],
+  })
+  const state = emptyAccountNetworkLocalState(merchant)
+  state.routingPolicy.appRelaysEnabled = false
+  let relayListLookups = 0
+  __setCommerceTestOverrides({
+    accountNetworkLocalStateRepository: { get: async () => state },
+    getRelayLists: async () => {
+      relayListLookups++
+      return new Map()
+    },
+  })
+  const result = await getProfiles({
+    pubkeys: [merchant],
+    accountPubkey: merchant,
+    readScope: "public_feed",
+    skipCache: true,
+  })
+  expect(result.meta.degraded).toBe(true)
+  expect(socketDestinations.size).toBe(0)
+  expect(relayListLookups).toBe(0)
 })

@@ -5,6 +5,7 @@ import type { PublicFeedBrowserFixtures } from "./public-feeds-app"
 type Mode = "healthy" | "partial" | "outage" | "rate-limited"
 type WireEvent = PublicFeedBrowserFixtures["catalog"][number]
 type Traffic = {
+  infrastructureSockets: number
   sockets: string[]
   deniedHttp: string[]
   requests: { url: string; filter: Filter }[]
@@ -12,6 +13,7 @@ type Traffic = {
   mode: Mode
 }
 const trafficByContext = new WeakMap<BrowserContext, Traffic>()
+test.use({ trace: "off" })
 
 function matches(event: WireEvent, filter: Filter) {
   if (filter.kinds && !filter.kinds.includes(event.kind)) return false
@@ -33,6 +35,7 @@ function matches(event: WireEvent, filter: Filter) {
 
 test.beforeEach(async ({ context }) => {
   const traffic: Traffic = {
+    infrastructureSockets: 0,
     sockets: [],
     deniedHttp: [],
     requests: [],
@@ -47,7 +50,15 @@ test.beforeEach(async ({ context }) => {
   })
   // Never connect to a server: every WebSocket is fulfilled in-process.
   await context.routeWebSocket(/.*/, (socket) => {
-    const url = socket.url().replace(/\/$/, "")
+    const parsed = new URL(socket.url())
+    // Vite injects its exact loopback HMR endpoint even with hmr:false.
+    // Count/close this infrastructure connection separately from relay I/O.
+    if (parsed.origin === "ws://127.0.0.1:4318" && parsed.pathname === "/") {
+      traffic.infrastructureSockets++
+      socket.close()
+      return
+    }
+    const url = `${parsed.origin}${parsed.pathname}`.replace(/\/$/, "")
     traffic.sockets.push(url)
     const fixtures = traffic.fixtures
     if (
@@ -137,9 +148,10 @@ async function run(page: Page, action: string) {
 function expectConfiguredOnly(traffic: Traffic) {
   expect(traffic.deniedHttp).toEqual([])
   expect(traffic.sockets.length).toBeGreaterThan(0)
-  expect(new Set(traffic.sockets).size).toBeLessThanOrEqual(
-    traffic.fixtures!.configured.length
-  )
+  expect(
+    new Set(traffic.sockets).size,
+    JSON.stringify([...new Set(traffic.sockets)])
+  ).toBeLessThanOrEqual(traffic.fixtures!.configured.length)
   expect(
     traffic.sockets.every((url) => traffic.fixtures!.configured.includes(url))
   ).toBe(true)
@@ -270,4 +282,22 @@ test("real profile hooks keep public display and unrestricted evidence in separa
   expect(
     traffic.sockets.some((url) => traffic.fixtures!.hints.includes(url))
   ).toBe(true)
+})
+
+test.afterEach(async ({ context }, testInfo) => {
+  const traffic = trafficByContext.get(context)!
+  await testInfo.attach("destination-counts", {
+    body: JSON.stringify(
+      {
+        configuredPeers: traffic.fixtures?.configured.length ?? 0,
+        uniqueRelayDestinations: new Set(traffic.sockets).size,
+        socketAttempts: traffic.sockets.length,
+        infrastructureSockets: traffic.infrastructureSockets,
+        deniedExternalHttp: traffic.deniedHttp.length,
+      },
+      null,
+      2
+    ),
+    contentType: "application/json",
+  })
 })

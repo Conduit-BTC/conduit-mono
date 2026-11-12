@@ -101,7 +101,8 @@ export interface ProductDetailReadDependencies {
     accountPubkey?: string | null,
     authenticatedPubkey?: string | null,
     shouldContinue?: () => boolean,
-    readScope?: PublicReadScope
+    readScope?: PublicReadScope,
+    onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
   ) => Promise<DeletionTimestamps>
   readonly mergeCachedAndLiveProductRecords: StorefrontReadDependencies["mergeCachedAndLiveProductRecords"]
   readonly hasCompleteLiveVariationGroupCoverage: (input: {
@@ -493,6 +494,7 @@ export async function getProductDetail(
   } = dependencies
 
   const { decodedId, addressId, address } = getProductLookupIds(query.productId)
+  let detailReadDegraded = false
 
   try {
     if (address && addressId && address.kind === EVENT_KINDS.PRODUCT) {
@@ -548,7 +550,10 @@ export async function getProductDetail(
           query.authenticatedPubkey,
           query.authenticatedPubkey,
           query.shouldContinue,
-          query.readScope
+          query.readScope,
+          (coverage) => {
+            detailReadDegraded ||= coverage !== "complete"
+          }
         )
       const deletionTimestamps = mergeDeletionTimestamps(
         relayDeletionTimestamps,
@@ -601,6 +606,7 @@ export async function getProductDetail(
         const completeLiveRead =
           hasLiveDirectTarget &&
           !directReadDegraded &&
+          !detailReadDegraded &&
           !directReadCapped &&
           hasCompleteGroupCoverage
         const hasLiveEvidence =
@@ -702,7 +708,10 @@ export async function getProductDetail(
           query.authenticatedPubkey,
           query.authenticatedPubkey,
           query.shouldContinue,
-          query.readScope
+          query.readScope,
+          (coverage) => {
+            detailReadDegraded ||= coverage !== "complete"
+          }
         )
       const deletionTimestamps = mergeDeletionTimestamps(
         relayDeletionTimestamps,
@@ -720,8 +729,16 @@ export async function getProductDetail(
         query.includeMarketHidden
       )
       const meta = createMeta("public", {
-        stale: directReadDegraded || directReadCapped || groupRead.degraded,
-        degraded: directReadDegraded || directReadCapped || groupRead.degraded,
+        stale:
+          directReadDegraded ||
+          detailReadDegraded ||
+          directReadCapped ||
+          groupRead.degraded,
+        degraded:
+          directReadDegraded ||
+          detailReadDegraded ||
+          directReadCapped ||
+          groupRead.degraded,
         capped: directReadCapped || groupRead.capped,
       })
       return {
@@ -1317,7 +1334,12 @@ export async function getMarketplaceProductsProgressive(
       ),
       limit
     )
-    const meta = createMeta("public", {
+    const cacheOnly =
+      query.readScope === "public_feed" &&
+      records.length === 0 &&
+      data.length > 0
+    const meta = createMeta(cacheOnly ? "local_cache" : "public", {
+      stale: cacheOnly,
       capped: (options.capped ?? readCapped) || records.length >= rawEventLimit,
       degraded:
         (options.degraded ?? readCapped) || records.length >= rawEventLimit,

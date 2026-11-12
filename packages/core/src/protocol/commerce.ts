@@ -1208,6 +1208,7 @@ function putMergedEvent(
 }
 
 async function streamProductRecordChunks(input: {
+  readScope?: PublicReadScope
   baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
@@ -1239,8 +1240,29 @@ async function streamProductRecordChunks(input: {
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
     input.authorChunks.length
   )
+  const fetchFeedProgressive: typeof fetchPublicEventsProgressive = async (
+    filter,
+    options,
+    onProgress
+  ) => {
+    const result = await runFetchEventsFanoutDetailed(filter, {
+      ...options,
+      onRelayProgress: onProgress,
+    })
+    // Progress callbacks cover attempted sources only. A health/policy
+    // omission must not turn a fixed-feed partial read into completion.
+    input.onTransportStatus?.(
+      result.degraded ||
+        input.relayUrls.some((url) => !result.completedRelayUrls.includes(url)),
+      result.capped
+    )
+    return result.events
+  }
   const fetchProgressive =
-    testOverrides.fetchPublicEventsProgressive ?? fetchPublicEventsProgressive
+    testOverrides.fetchPublicEventsProgressive ??
+    (input.readScope === "public_feed"
+      ? fetchFeedProgressive
+      : fetchPublicEventsProgressive)
   const yieldCatalogTask = async (): Promise<void> => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     input.signal?.throwIfAborted()
@@ -1582,6 +1604,7 @@ async function fetchProductDeletionTimestamps(
     shouldContinue?: () => boolean
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
+    onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
   } = {}
 ): Promise<DeletionTimestamps> {
   const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
@@ -1693,6 +1716,11 @@ async function fetchProductDeletionTimestamps(
         preferredDeletionRelayUrls,
         relayBatchSize
       )
+      if (
+        options.readScope === "public_feed" &&
+        preferredDeletionRelayUrls.length === 0
+      )
+        options.onReadCoverage?.("unavailable")
       const fetchDeletionFilter = async (
         filter: Filter
       ): Promise<SignedPublicNostrEvent[]> =>
@@ -1700,8 +1728,8 @@ async function fetchProductDeletionTimestamps(
           await mapWithConcurrency(
             deletionRelayBatches,
             PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-            async (relayUrls) =>
-              await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
+            async (relayUrls) => {
+              const fetchOptions = {
                 relayUrls,
                 relayTargets: deletionRelayTargets.filter((target) =>
                   relayUrls.includes(target.url)
@@ -1715,7 +1743,30 @@ async function fetchProductDeletionTimestamps(
                 signal: options.signal,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
-              })
+              }
+              if (options.readScope === "public_feed" && !options.fetchEvents) {
+                const result = await runFetchEventsFanoutDetailed(
+                  filter,
+                  fetchOptions
+                )
+                const coverage =
+                  result.completedRelayUrls.length === 0
+                    ? "unavailable"
+                    : result.degraded ||
+                        result.capped ||
+                        relayUrls.some(
+                          (url) => !result.completedRelayUrls.includes(url)
+                        )
+                      ? "partial"
+                      : "complete"
+                options.onReadCoverage?.(coverage)
+                return result.events
+              }
+              return await (options.fetchEvents ?? runFetchEventsFanout)(
+                filter,
+                fetchOptions
+              )
+            }
           )
         ).flat()
       const filterBatches = await mapWithConcurrency(
@@ -1752,7 +1803,8 @@ async function fetchDeletionTimestampsForProductRecords(
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean,
-  readScope?: PublicReadScope
+  readScope?: PublicReadScope,
+  onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
 ): Promise<DeletionTimestamps> {
   const recordCandidates = records.map(deletionCandidateFromRecord)
   const candidateAuthors = new Set(
@@ -1767,6 +1819,7 @@ async function fetchDeletionTimestampsForProductRecords(
     ],
     {
       readScope,
+      onReadCoverage,
       fallbackWhenEmpty: true,
       accountPubkey,
       authenticatedPubkey,
@@ -1918,6 +1971,8 @@ async function fetchPublicProductRecords(query: {
         ],
         {
           readScope: query.readScope,
+          onReadCoverage: (coverage) =>
+            query.onTransportStatus?.(coverage !== "complete", false),
           readPolicy: query.deletionReadPolicy ?? query.readPolicy,
           fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
           authenticatedPubkey: query.authenticatedPubkey,
@@ -2013,6 +2068,7 @@ async function fetchPublicProductRecordsProgressive(
   void expandedRelayPlanPromise.catch(() => undefined)
 
   await streamProductRecordChunks({
+    readScope: query.readScope,
     baseFilter: filter,
     authorChunks,
     relayUrls: relayPlan.candidateRelayUrls,
@@ -2039,6 +2095,7 @@ async function fetchPublicProductRecordsProgressive(
   if (expansionRelayUrls.length > 0) {
     const expansionRelayUrlSet = new Set(expansionRelayUrls)
     await streamProductRecordChunks({
+      readScope: query.readScope,
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
@@ -2068,6 +2125,8 @@ async function fetchPublicProductRecordsProgressive(
     ],
     {
       readScope: query.readScope,
+      onReadCoverage: (coverage) =>
+        query.onTransportStatus?.(coverage !== "complete", false),
       readPolicy: query.readPolicy,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,

@@ -53,5 +53,6 @@ wallet and LNURL work belongs to the cart/checkout action lifecycle.
 Offline tests exercise shared read owners with signed fixtures, 100+ advertised
 destinations, retained negative evidence, outages and unchanged authority controls.
 The disposable browser harness records actual attempted WebSocket destinations
-and blocks external HTTP. It exercises shared APIs/hooks rather than claiming
+and blocks external HTTP. The exact Vite loopback socket is counted separately
+from relay traffic. It exercises shared APIs/hooks rather than claiming
 complete production-route or live-relay/payment qualification.

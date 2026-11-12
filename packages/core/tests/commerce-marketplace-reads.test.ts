@@ -1015,10 +1015,10 @@ describe("progressive marketplace reads", () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: undefined,
       // Deletion discovery rides the diagnostics seam and finds nothing remote.
-      fetchPublicEventsWithDiagnostics: async () => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [],
-        attemptedRelayUrls: [],
-        successfulRelayUrls: [],
+        attemptedRelayUrls: options?.relayUrls ?? [],
+        successfulRelayUrls: options?.relayUrls ?? [],
         failedRelayUrls: [],
         cappedRelayUrls: [],
       }),
