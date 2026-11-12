@@ -83,7 +83,8 @@ profiles retain public verification keyrings with no issuance URL. New fiat
 preparation requires the explicit historical policy; legacy, missing or invalid
 selection fails before creating a funding invoice. Sats-only terms are unchanged.
 
-Rollback must retain historical issuance and both evidence-version readers.
+A rollback target must retain historical new-order pricing and both
+evidence-version readers.
 Changing the selector to `signed-v1` cannot restore issuance after the Workers
 are removed. Use a known-good historical/dual-reader release or forward-fix the
 historical path while new fiat preparation remains paused. Funded version 1

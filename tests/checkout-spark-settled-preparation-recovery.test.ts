@@ -332,6 +332,32 @@ describe("settled preparation phase recovery", () => {
     config.checkoutSparkPricingPolicy = originalPolicy
   })
 
+  it("creates a sats-only invoice under the legacy selector without pricing HTTP", async () => {
+    const database = new ConduitDB(`sats-legacy-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    const http = spyOn(globalThis, "fetch").mockImplementation(async () => {
+      throw new Error("Sats-only preparation must not request pricing")
+    })
+    try {
+      config.checkoutSparkPricingPolicy = "signed-v1"
+      const { input, options, calls } = fixture(new MemoryStorage())
+      const result = await prepareCheckoutSparkSettledFunding(input, {
+        ...options,
+        repository: new DexieCheckoutSparkSettledRepository(database),
+      })
+      expect(result.fundingInvoice).toBe(INVOICE)
+      expect(result.fundingReceive.grossFundingSats).toBe(GROSS)
+      expect(calls).toEqual({ open: 1, close: 0, invoice: 1, transport: 1 })
+      expect(http).not.toHaveBeenCalled()
+    } finally {
+      http.mockRestore()
+      database.close()
+      await database.delete()
+    }
+  })
+
   it.each([undefined, "", "invalid", "signed-v1"])(
     "rejects unsupported new-fiat selector %s before any receive, wallet, or HTTP",
     async (policy) => {
