@@ -93,9 +93,11 @@ for (const [app, appConfig] of Object.entries(profiles.apps)) {
     !("receiverContracts" in observedTrust) ||
     !("pricingUrl" in observedTrust) ||
     !("pricingPublicKeys" in observedTrust) ||
+    !("pricingPolicy" in observedTrust) ||
     observedTrust.receiverContracts !== expectedTrust.receiverContracts ||
     observedTrust.pricingUrl !== expectedTrust.pricingUrl ||
-    observedTrust.pricingPublicKeys !== expectedTrust.pricingPublicKeys
+    observedTrust.pricingPublicKeys !== expectedTrust.pricingPublicKeys ||
+    observedTrust.pricingPolicy !== expectedTrust.pricingPolicy
   ) {
     throw new Error(
       `${manifestPath} has mismatched compiled checkout trust settings.`

@@ -6,11 +6,20 @@ import {
   type BtcUsdRateQuote,
 } from "./index"
 import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
+import { fetchCommonPricingRateQuote } from "./common-rate-provider"
 import { getCheckoutSparkPricingConfiguration } from "../protocol/checkout-spark-pricing-config"
 import { fetchCheckoutSparkPricingRate } from "./signed-rate-client"
+import { config } from "../config"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
+const DISPLAY_STORAGE_KEY = "conduit:btc-usd-display-rate"
+const HISTORICAL_STORAGE_KEY = "conduit:btc-usd-rate:invoice-historical-1pct-v1"
 export const BTC_USD_RATE_QUERY_KEY = ["btc-usd-rate"] as const
+const HISTORICAL_RATE_QUERY_KEY = [
+  ...BTC_USD_RATE_QUERY_KEY,
+  "invoice-historical-1pct-v1",
+] as const
+export const BTC_USD_DISPLAY_RATE_QUERY_KEY = ["btc-usd-display-rate"] as const
 export const BTC_USD_RATE_STALE_MS = DEFAULT_PRICING_RATE_MAX_AGE_MS
 export const BTC_USD_RATE_REFRESH_INTERVAL_MS = 4 * 60_000
 
@@ -53,7 +62,20 @@ function parseEnvRate(): BtcUsdRateQuote | null {
   }
 }
 
+/** Current public observations are claims; historical verification is separate. */
+function fetchCurrentPublicRate(): Promise<BtcUsdRateQuote> {
+  return fetchCommonPricingRateQuote({ includeFiatRates: true })
+}
+
+export function getBtcUsdRateQueryKey() {
+  return config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1"
+    ? HISTORICAL_RATE_QUERY_KEY
+    : BTC_USD_RATE_QUERY_KEY
+}
+
 export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
+  if (config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1")
+    return fetchCurrentPublicRate()
   const configuration = getCheckoutSparkPricingConfiguration()
   if (configuration)
     return (await fetchCheckoutSparkPricingRate({ configuration })).pricing.rate
@@ -62,21 +84,29 @@ export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
   return fetchTrustedPricingRateQuote({ includeFiatRates: true })
 }
 
-function writeStoredRate(next: BtcUsdRateQuote): void {
+/** Estimates only: this feed never supplies checkout pricing authority. */
+export async function fetchDisplayBtcUsdRate(): Promise<BtcUsdRateQuote> {
+  return parseEnvRate() ?? fetchCurrentPublicRate()
+}
+
+function writeStoredRate(next: BtcUsdRateQuote, storageKey: string): void {
   if (typeof window === "undefined") return
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.localStorage.setItem(storageKey, JSON.stringify(next))
   } catch {
     // Keep price display non-blocking when storage is unavailable.
   }
 }
 
-function readStoredRate(): BtcUsdRateQuote | null {
+function readStoredRate(
+  storageKey: string,
+  allowEnv = true
+): BtcUsdRateQuote | null {
   if (typeof window === "undefined") return null
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     if (!raw) return null
 
     const parsed = JSON.parse(raw) as Partial<BtcUsdRateQuote>
@@ -85,7 +115,7 @@ function readStoredRate(): BtcUsdRateQuote | null {
       !Number.isFinite(parsed.rate) ||
       parsed.rate <= 0 ||
       typeof parsed.fetchedAt !== "number" ||
-      (parsed.source !== "env" &&
+      ((parsed.source !== "env" || !allowEnv) &&
         parsed.source !== "mempool" &&
         parsed.source !== "coinbase" &&
         parsed.source !== "kraken")
@@ -134,18 +164,33 @@ export function isBtcUsdRateQuoteFresh(
   return isPricingRateQuoteFresh(quote, nowMs, maxAgeMs)
 }
 
-export function useBtcUsdRate() {
-  const signedFeed = getCheckoutSparkPricingConfiguration()
-  const env = signedFeed ? null : parseEnvRate()
+function useRateQuery(displayOnly: boolean) {
+  const historical =
+    !displayOnly &&
+    config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1"
+  const signedFeed =
+    !displayOnly && !historical && getCheckoutSparkPricingConfiguration()
+  const env = signedFeed || historical ? null : parseEnvRate()
+  const storageKey = displayOnly
+    ? DISPLAY_STORAGE_KEY
+    : historical
+      ? HISTORICAL_STORAGE_KEY
+      : STORAGE_KEY
   // Legacy storage is display-only and must not suppress the authenticated feed.
-  const stored = signedFeed ? null : (env ?? readStoredRate())
+  const stored = signedFeed
+    ? null
+    : (env ?? readStoredRate(storageKey, !historical))
 
   return useQuery({
-    queryKey: BTC_USD_RATE_QUERY_KEY,
+    queryKey: displayOnly
+      ? BTC_USD_DISPLAY_RATE_QUERY_KEY
+      : getBtcUsdRateQueryKey(),
     queryFn: async () => {
       try {
-        const next = await fetchBtcUsdRate()
-        writeStoredRate(next)
+        const next = await (displayOnly
+          ? fetchDisplayBtcUsdRate()
+          : fetchBtcUsdRate())
+        writeStoredRate(next, storageKey)
         return next
       } catch (error) {
         if (stored) return stored
@@ -161,4 +206,14 @@ export function useBtcUsdRate() {
     refetchOnReconnect: true,
     refetchInterval: env ? false : BTC_USD_RATE_REFRESH_INTERVAL_MS,
   })
+}
+
+/** Current economic feed selected by the explicit new-order pricing policy. */
+export function useBtcUsdRate() {
+  return useRateQuery(false)
+}
+
+/** Approximate wallet/dashboard values, isolated from the economic query cache. */
+export function useDisplayBtcUsdRate() {
+  return useRateQuery(true)
 }

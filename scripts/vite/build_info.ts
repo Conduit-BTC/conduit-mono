@@ -86,6 +86,9 @@ export function defineCheckoutSparkDeploymentTrust(
     "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS": JSON.stringify(
       profile.quantumRouterTrust.pricingPublicKeys
     ),
+    "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_POLICY": JSON.stringify(
+      profile.quantumRouterTrust.pricingPolicy ?? "signed-v1"
+    ),
     "import.meta.env.VITE_CHECKOUT_SPARK_PUBLIC_TRUST_DIGEST": JSON.stringify(
       profile.quantumRouterTrustDigest
     ),

@@ -6,6 +6,8 @@ import {
   fetchLnurlPayMetadata,
 } from "@conduit/core"
 import { ConduitDB } from "@conduit/core/db"
+import { CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
+import { parseCheckoutSparkSignedProductFields } from "@conduit/core/protocol/checkout-spark-product-fields"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
 import { describe, expect, it, spyOn } from "bun:test"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
@@ -244,7 +246,331 @@ function fixture(storage: MemoryStorage, now = () => NOW) {
   }
 }
 
+function fiatFixture(storage: MemoryStorage, now: () => number) {
+  const result = fixture(storage, now)
+  const original = result.input.quoteAuthority
+  const product = finalizeEvent(
+    {
+      kind: 30_402,
+      created_at: NOW / 1_000,
+      tags: [
+        ["d", "router-fixture"],
+        ["title", "Fiat clock fixture"],
+        ["price", "1", "EUR"],
+        ["type", "simple", "digital"],
+      ],
+      content: "Synthetic fiat clock product",
+    },
+    MERCHANT_SECRET
+  )
+  // One EUR converts to the existing 1,000-sat fixture allocation.
+  result.input.quoteAuthority = {
+    ...original,
+    pricingPolicy: CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY,
+    pricing: {
+      ...original.pricing,
+      quote: {
+        rate: 110_000,
+        fetchedAt: NOW,
+        source: "coinbase",
+        fiatUsdRates: { EUR: 1.1 },
+        fiatSource: "ecb",
+        fiatSources: { EUR: "ecb" },
+      },
+      items: original.pricing.items.map((item) => ({
+        ...item,
+        sourcePrice: { amount: 1, currency: "EUR", normalizedCurrency: "EUR" },
+      })),
+    },
+    products: [
+      {
+        ...parseCheckoutSparkSignedProductFields(product),
+        sourceEventId: product.id,
+      },
+    ],
+    lines: original.lines.map((line) => ({
+      ...line,
+      productEventId: product.id,
+    })),
+  }
+  result.input.sourceEvents = [product, PROFILE]
+  return result
+}
+
+function historicalProviderFixture(now: () => number, onRead?: () => void) {
+  const reads: { url: URL; at: number }[] = []
+  const mock = spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    reads.push({ url, at: now() })
+    onRead?.()
+    if (url.hostname === "api.exchange.coinbase.com") {
+      const minute = Date.parse(url.searchParams.get("start")!) / 1_000
+      return Response.json([[minute, 109_000, 111_000, 110_000, 110_000, 1]])
+    }
+    if (url.hostname === "api.frankfurter.dev")
+      return Response.json([
+        {
+          date: url.searchParams.get("date"),
+          base: "EUR",
+          quote: "USD",
+          rate: 1.1,
+        },
+      ])
+    throw new Error("Unexpected synthetic historical provider request")
+  })
+  return { reads, restore: () => mock.mockRestore() }
+}
+
 describe("settled preparation phase recovery", () => {
+  it.each([2_000, 2_500])(
+    "waits for the full provider precision of a fiat invoice %i ms ahead before verifying or exposing funding",
+    async (lead) => {
+      const database = new ConduitDB(`fiat-clock-${crypto.randomUUID()}`, {
+        indexedDB,
+        IDBKeyRange,
+      })
+      const timers: ReturnType<typeof setTimeout>[] = []
+      let clock = NOW
+      const provider = historicalProviderFixture(() => clock)
+      try {
+        const repository = new DexieCheckoutSparkSettledRepository(database)
+        const storage = new MemoryStorage()
+        const { input, options, calls } = fiatFixture(storage, () => clock)
+        const providerCreatedAtMs = NOW + lead
+        const invoiceCreatedAt = Math.floor(providerCreatedAtMs / 1_000) * 1_000
+        let preparedAt = 0
+        let checkedAtInvoiceSecond = false
+        const result = await prepareCheckoutSparkSettledFunding(input, {
+          ...options,
+          repository,
+          createFundingReceive: async (...args) => {
+            const receive = await options.createFundingReceive(...args)
+            timers.push(
+              setTimeout(() => {
+                clock = invoiceCreatedAt
+                checkedAtInvoiceSecond =
+                  provider.reads.length === 0 &&
+                  calls.transport === 0 &&
+                  listCheckoutSparkSettledPreparations(storage).length === 0
+              }, 25)
+            )
+            timers.push(
+              setTimeout(() => {
+                clock = providerCreatedAtMs
+              }, 175)
+            )
+            return {
+              ...receive,
+              createdAt: invoiceCreatedAt,
+              expiresAt: invoiceCreatedAt + 900_000,
+              providerCreatedAtMs,
+              providerExpiresAtMs: providerCreatedAtMs + 900_000,
+              paymentRequest: fundingInvoice(
+                receive.grossFundingSats,
+                invoiceCreatedAt
+              ),
+            }
+          },
+          publishRecoveryHandoff: async (request) => {
+            preparedAt = request.preparedAt
+            return options.publishRecoveryHandoff(request)
+          },
+        })
+        expect(checkedAtInvoiceSecond).toBe(true)
+        expect(provider.reads.map(({ url }) => url.hostname).sort()).toEqual([
+          "api.exchange.coinbase.com",
+          "api.frankfurter.dev",
+        ])
+        expect(
+          provider.reads.every(({ at }) => at >= providerCreatedAtMs)
+        ).toBe(true)
+        expect(preparedAt).toBeGreaterThanOrEqual(providerCreatedAtMs)
+        expect(result.plan.commerceQuote.pricing?.version).toBe(2)
+        expect(result.plan.createdAt).toBe(invoiceCreatedAt)
+        expect(result.fundingReceive.providerCreatedAtMs).toBe(
+          providerCreatedAtMs
+        )
+        expect(result.fundingInvoice).toBe(result.fundingReceive.paymentRequest)
+        expect(calls).toEqual({ open: 1, close: 0, invoice: 1, transport: 1 })
+      } finally {
+        timers.forEach(clearTimeout)
+        provider.restore()
+        database.close()
+        await database.delete()
+      }
+    }
+  )
+
+  it.each(["excessive_skew", "takeover", "revoked", "frozen_clock"] as const)(
+    "refuses a fiat invoice with %s without a handoff or funding exposure",
+    async (mode) => {
+      const database = new ConduitDB(`fiat-clock-${crypto.randomUUID()}`, {
+        indexedDB,
+        IDBKeyRange,
+      })
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let clock = NOW
+      let active = true
+      const provider = historicalProviderFixture(() => clock)
+      try {
+        const repository = new DexieCheckoutSparkSettledRepository(database)
+        const storage = new MemoryStorage()
+        const { input, options, calls } = fiatFixture(storage, () => clock)
+        // The raw excessive lead exceeds the bound even though its invoice
+        // timestamp is rounded down to exactly five seconds ahead.
+        const providerCreatedAtMs =
+          NOW + (mode === "excessive_skew" ? 5_500 : 3_500)
+        const invoiceCreatedAt = Math.floor(providerCreatedAtMs / 1_000) * 1_000
+        const preparing = prepareCheckoutSparkSettledFunding(
+          { ...input, shouldContinue: () => active },
+          {
+            ...options,
+            repository,
+            createFundingReceive: async (...args) => {
+              const receive = await options.createFundingReceive(...args)
+              if (mode === "revoked")
+                timer = setTimeout(() => {
+                  active = false
+                }, 25)
+              if (mode === "takeover")
+                timer = setTimeout(() => {
+                  clock = input.takeoverAt
+                }, 25)
+              return {
+                ...receive,
+                createdAt: invoiceCreatedAt,
+                expiresAt: invoiceCreatedAt + 900_000,
+                providerCreatedAtMs,
+                providerExpiresAtMs: providerCreatedAtMs + 900_000,
+                paymentRequest: fundingInvoice(
+                  receive.grossFundingSats,
+                  invoiceCreatedAt
+                ),
+              }
+            },
+          }
+        )
+        await expect(
+          preparing.catch((error) => {
+            throw error.cause ?? error
+          })
+        ).rejects.toThrow(
+          mode === "revoked"
+            ? "session changed"
+            : mode === "takeover"
+              ? "routing window"
+              : "clock cannot admit"
+        )
+        if (mode !== "takeover") expect(provider.reads).toHaveLength(0)
+        expect(calls.transport).toBe(0)
+        expect(listCheckoutSparkSettledPreparations(storage)).toHaveLength(0)
+        expect(
+          (await repository.load(input.checkoutId, "a".repeat(64))).status
+        ).toBe("absent")
+      } finally {
+        clearTimeout(timer)
+        provider.restore()
+        database.close()
+        await database.delete()
+      }
+    },
+    10_000
+  )
+
+  it.each(["missing", "non_integer", "mismatched_bucket"] as const)(
+    "refuses %s fiat provider precision before provider reads or funding exposure",
+    async (mode) => {
+      const database = new ConduitDB(`fiat-clock-${crypto.randomUUID()}`, {
+        indexedDB,
+        IDBKeyRange,
+      })
+      const provider = historicalProviderFixture(() => NOW)
+      try {
+        const repository = new DexieCheckoutSparkSettledRepository(database)
+        const storage = new MemoryStorage()
+        const { input, options, calls } = fiatFixture(storage, () => NOW)
+        await expect(
+          prepareCheckoutSparkSettledFunding(input, {
+            ...options,
+            repository,
+            createFundingReceive: async (...args) => ({
+              ...(await options.createFundingReceive(...args)),
+              ...(mode === "missing"
+                ? {}
+                : {
+                    providerCreatedAtMs:
+                      mode === "non_integer" ? NOW + 0.5 : NOW - 1_000,
+                    providerExpiresAtMs: NOW + 900_000,
+                  }),
+            }),
+          })
+        ).rejects.toThrow()
+        expect(provider.reads).toHaveLength(0)
+        expect(calls).toEqual({ open: 1, close: 1, invoice: 1, transport: 0 })
+        expect(listCheckoutSparkSettledPreparations(storage)).toHaveLength(0)
+        expect(
+          (await repository.load(input.checkoutId, "a".repeat(64))).status
+        ).toBe("absent")
+      } finally {
+        provider.restore()
+        database.close()
+        await database.delete()
+      }
+    }
+  )
+
+  it("refuses a fiat invoice when the caller clock moves backward during historical verification", async () => {
+    const database = new ConduitDB(`fiat-clock-${crypto.randomUUID()}`, {
+      indexedDB,
+      IDBKeyRange,
+    })
+    const providerCreatedAtMs = NOW + 10_000
+    let clock = providerCreatedAtMs
+    const provider = historicalProviderFixture(
+      () => clock,
+      () => {
+        clock = providerCreatedAtMs - 1
+      }
+    )
+    try {
+      const repository = new DexieCheckoutSparkSettledRepository(database)
+      const storage = new MemoryStorage()
+      const { input, options, calls } = fiatFixture(storage, () => clock)
+      await expect(
+        prepareCheckoutSparkSettledFunding(input, {
+          ...options,
+          repository,
+          createFundingReceive: async (...args) => {
+            const receive = await options.createFundingReceive(...args)
+            return {
+              ...receive,
+              createdAt: providerCreatedAtMs,
+              expiresAt: providerCreatedAtMs + 900_000,
+              providerCreatedAtMs,
+              providerExpiresAtMs: providerCreatedAtMs + 900_000,
+              paymentRequest: fundingInvoice(
+                receive.grossFundingSats,
+                providerCreatedAtMs
+              ),
+            }
+          },
+        }).catch((error) => {
+          throw error.cause ?? error
+        })
+      ).rejects.toThrow("clock cannot admit")
+      expect(provider.reads).toHaveLength(2)
+      expect(calls).toEqual({ open: 1, close: 1, invoice: 1, transport: 0 })
+      expect(listCheckoutSparkSettledPreparations(storage)).toHaveLength(0)
+      expect(
+        (await repository.load(input.checkoutId, "a".repeat(64))).status
+      ).toBe("absent")
+    } finally {
+      provider.restore()
+      database.close()
+      await database.delete()
+    }
+  })
+
   it("waits for a slightly ahead provider invoice clock before exposing funding", async () => {
     const database = new ConduitDB(`preparation-clock-${crypto.randomUUID()}`, {
       indexedDB,

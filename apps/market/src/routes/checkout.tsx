@@ -32,7 +32,7 @@ import {
   type PrivateMessageEvent,
   SHIPPING_COUNTRIES,
   appendConduitClientTag,
-  BTC_USD_RATE_QUERY_KEY,
+  getBtcUsdRateQueryKey,
   config,
   isQuantumRouterEnabled,
   isQuantumRouterExecutionEnabled,
@@ -269,6 +269,8 @@ import {
   type EventMarketFreePurchaseDelivery,
 } from "../lib/event-market-free-purchase-delivery"
 import { fetchCheckoutSparkAuthorizedPricing } from "../lib/checkout-spark-authorized-pricing"
+import { fetchCommonPricingRateQuote } from "@conduit/core/pricing/common-rate-provider"
+import { CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
 import { getCheckoutSparkRequiredFiatCurrencies } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
 import {
@@ -2403,9 +2405,9 @@ function CheckoutPage() {
     })
     if (authorization.status === "changed") {
       if (rateEvidenceRefresh && rateInput && typeof rateInput === "object") {
-        // Show the authenticated price that needs review on the next render.
+        // Show the refreshed price that needs review on the next render.
         // This display refresh does not authorize a payment or save a quote.
-        queryClient.setQueryData(BTC_USD_RATE_QUERY_KEY, rateInput)
+        queryClient.setQueryData(getBtcUsdRateQueryKey(), rateInput)
       }
       void queryClient.invalidateQueries({
         queryKey: ["canonicalShippingOptions"],
@@ -2970,13 +2972,25 @@ function CheckoutPage() {
             buildCheckoutSparkCommerceEvidence(quoteAuthority)
           )
           if (fiatCurrencies.length) {
-            const authorizedPricing = await fetchCheckoutSparkAuthorizedPricing(
-              {
-                currencies: fiatCurrencies,
-                shouldContinue: canContinueSettledPreparation,
-              }
-            )
-            rateInput = authorizedPricing.pricing.rate
+            const historical =
+              config.checkoutSparkPricingPolicy ===
+              CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY
+            const authorizedPricing = historical
+              ? null
+              : await fetchCheckoutSparkAuthorizedPricing({
+                  currencies: fiatCurrencies,
+                  shouldContinue: canContinueSettledPreparation,
+                })
+            rateInput = historical
+              ? await fetchCommonPricingRateQuote({
+                  requiredFiatCurrencies: fiatCurrencies,
+                  includeFiatRates: true,
+                })
+              : authorizedPricing!.pricing.rate
+            if (!canContinueSettledPreparation())
+              throw new Error(
+                "Buyer session changed while checking currency pricing."
+              )
             authorization = await assertCheckoutItemsAvailable(
               "private_checkout",
               rateInput,
@@ -2985,7 +2999,9 @@ function CheckoutPage() {
             quoteAuthority = buildCheckoutSparkQuoteAuthority({
               authorization,
               rateInput,
-              pricingAuthority: authorizedPricing.pricingAuthority,
+              ...(historical
+                ? { pricingPolicy: CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY }
+                : { pricingAuthority: authorizedPricing!.pricingAuthority }),
             })
           }
           const purchaseClaim = await cart.capturePurchase(

@@ -284,10 +284,11 @@ export async function routeCheckoutSparkOrganizerOrder(
               walletRetirement: "retained",
             }
           const credit = proveSparkCheckoutReceiveCredit(funding)
-          assertCheckoutSparkMerchantPricingAuthority({
+          await assertCheckoutSparkMerchantPricingAuthority({
             plan,
             fundingProof: credit,
           })
+          await check()
           if (
             expected.updatedAt < plan.takeoverAt &&
             expected.legs.some((leg) => leg.intent !== null)

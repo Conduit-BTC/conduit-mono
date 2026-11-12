@@ -1,5 +1,5 @@
 import {
-  assessCheckoutSparkCommercePricingAuthority,
+  verifyCheckoutSparkCommercePricingAuthority,
   getCheckoutSparkRequiredFiatCurrencies,
 } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { getCheckoutSparkPricingAuthorityTrust } from "@conduit/core/protocol/checkout-spark-pricing-config"
@@ -13,11 +13,11 @@ import type { CheckoutSparkSettledPlan } from "@conduit/core/protocol/checkout-s
  * A provider-confirmed exact receive anchors the original frozen fiat quote.
  * Never use the recovery clock or unanchored buyer plan creation time here.
  */
-export function assertCheckoutSparkMerchantPricingAuthority(input: {
+export async function assertCheckoutSparkMerchantPricingAuthority(input: {
   plan: CheckoutSparkSettledPlan
   fundingProof: SparkCheckoutReceiveCreditProof
   trustedPublicKeys?: ReadonlyMap<string, string> | null
-}): void {
+}): Promise<void> {
   if (!getCheckoutSparkRequiredFiatCurrencies(input.plan.commerceQuote).length)
     return
   const anchor = getSparkCheckoutReceiveFundingTimeAnchor(input.fundingProof)
@@ -41,11 +41,11 @@ export function assertCheckoutSparkMerchantPricingAuthority(input: {
       ? getCheckoutSparkPricingAuthorityTrust()
       : input.trustedPublicKeys
   if (
-    assessCheckoutSparkCommercePricingAuthority({
+    (await verifyCheckoutSparkCommercePricingAuthority({
       quote: input.plan.commerceQuote,
       acceptedAtMs: anchor.createdAtMs,
       trustedPublicKeys,
-    }) !== "verified"
+    })) !== "verified"
   )
     throw new Error(
       "Original currency pricing could not be verified. Payment remains paused."

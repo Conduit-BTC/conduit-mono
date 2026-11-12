@@ -84,6 +84,7 @@ export {
 } from "./pricing"
 export {
   BTC_USD_RATE_QUERY_KEY,
+  getBtcUsdRateQueryKey,
   BTC_USD_RATE_REFRESH_INTERVAL_MS,
   BTC_USD_RATE_STALE_MS,
   fetchBtcUsdRate,
@@ -91,6 +92,7 @@ export {
   getConfiguredPricingRateQuote,
   isBtcUsdRateQuoteFresh,
   useBtcUsdRate,
+  useDisplayBtcUsdRate,
 } from "./pricing/rates"
 export { fetchTrustedPricingRateQuote } from "./pricing/trusted-rate-provider"
 export type { TrustedPricingRateOptions } from "./pricing/trusted-rate-provider"
