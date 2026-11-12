@@ -7,6 +7,7 @@ import {
   mergeEventSourceRelayUrls,
   verifySignedEvents,
 } from "../packages/core/src/protocol/relay-reader"
+import * as provenance from "../packages/core/src/protocol/relay-read-provenance"
 
 const firstRelay = "wss://first.provenance.test"
 const secondRelay = "wss://second.provenance.test"
@@ -24,6 +25,12 @@ function event() {
 }
 
 describe("relay-read provenance across account evidence", () => {
+  it("keeps the existing reader exports bound to one provenance owner", () => {
+    expect(attachEventSourceRelayUrl).toBe(provenance.attachEventSourceRelayUrl)
+    expect(getEventSourceRelayUrls).toBe(provenance.getEventSourceRelayUrls)
+    expect(mergeEventSourceRelayUrls).toBe(provenance.mergeEventSourceRelayUrls)
+  })
+
   it("carries exact observation sources through verification into readback", async () => {
     const wire = event()
     attachEventSourceRelayUrl(wire, ` ${firstRelay} `)
