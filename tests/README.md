@@ -10,7 +10,7 @@ The suite intentionally covers a small set of payment and recovery risks:
 | ----------------------------------------------------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                                                                        |
 | `checkout-spark-settled-outgoing.test.ts`             |    25 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, provider identity, and pre-admission cancellation reaching Merchant. |
-| `checkout-spark-settled-preparation-recovery.test.ts` |     2 | Lost ACK and outbox-readback recovery preserve the original order, signed envelope, wallet, and funding invoice.                                                                                                                    |
+| `checkout-spark-settled-preparation-recovery.test.ts` |    18 | Original-order/ACK recovery, precise provider-clock admission, strict fiat verification, cancellation, takeover and no early funding exposure.                                                                                      |
 | `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                                                                        |
 | `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                                                                            |
 
@@ -51,6 +51,12 @@ not browser or funded checks.
 The other `packages/core/tests/*pricing*.test.ts` cases cover versioned pricing
 digests, fixed historical observations, the effective 1% conversion bound,
 ordinary signed shipping, old signed recovery and managed rollout selection.
+The merchant historical-pricing cases in
+`checkout-spark-merchant-historical-pricing.test.ts` exercise the real observation
+and proof/pricing checks with synthetic provider transport: valid credit,
+unavailable history, session revocation, legacy signature recovery without HTTP
+and mismatched request/anchor rejection. The core authority cases also retain
+strict rejection of future-fetched rates and plain-line out-of-band conversions.
 Provider fixtures and local arithmetic do not prove funded/offline settlement.
 
 The recovery tests use real local signatures/encryption and the real repository

@@ -194,6 +194,41 @@ function quoteFor(
 }
 
 describe("invoice-time historical pricing authority", () => {
+  it.each([1, 2_000, 30_000])(
+    "rejects a claimed rate fetched %i ms after the provider invoice without rewriting time",
+    async (lead) => {
+      let historyReads = 0
+      const claimed = { ...rate(), fetchedAt: acceptedAtMs + lead }
+      expect(
+        await verifyCheckoutSparkCommercePricingAuthority({
+          quote: quoteFor("USD", claimed),
+          acceptedAtMs,
+          nowMs: acceptedAtMs + lead,
+          trustedPublicKeys: null,
+          fetchHistoricalRate: async () => {
+            historyReads++
+            return history(rate())
+          },
+        })
+      ).toBe("expired")
+      expect(historyReads).toBe(0)
+    }
+  )
+
+  it.each([98_999, 101_011])(
+    "rejects a plain fiat line outside the effective-rate bound at benchmark %i",
+    async (benchmark) => {
+      expect(
+        await verifyCheckoutSparkCommercePricingAuthority({
+          quote: quoteFor("USD"),
+          acceptedAtMs,
+          trustedPublicKeys: null,
+          fetchHistoricalRate: async () => history(rate(benchmark)),
+        })
+      ).toBe("invalid")
+    }
+  )
+
   it.each([
     ["USD", rate(), rate(99_000)],
     ["USD", rate(), rate(101_000)],

@@ -22,6 +22,12 @@ The five-second monotonic clock budget ends before historical HTTP lookup; it
 does not include network time. A fresh clock, routing-window and session check
 after asynchronous preparation still gates persistence and invoice exposure.
 
+The claimed rate must not have a fetch timestamp after the provider invoice
+creation time. A device clock ahead of the provider can therefore reject a
+historical-priced preparation even within a few seconds. Correct the device
+clock before retrying; neither retry nor verification rewrites that timestamp.
+This conservative preview limit remains in place rather than relaxing freshness.
+
 The fixed benchmark is:
 
 - Coinbase Exchange BTC-USD: close of the preceding completed UTC minute.
