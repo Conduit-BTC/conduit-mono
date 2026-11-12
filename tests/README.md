@@ -27,7 +27,7 @@ they do not establish signature admission, relay delivery or checkout authority.
 `commerce-product-cache.test.ts` adds eight local cache cases using ordinary signed
 listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
-and exact-family readsâ€”not public relay delivery or browser cross-tab behavior.
+and exact-family reads—not public relay delivery or browser cross-tab behavior.
 
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
