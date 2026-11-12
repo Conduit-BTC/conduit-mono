@@ -1,13 +1,12 @@
 import { createHash } from "node:crypto"
+import { spawnSync } from "node:child_process"
 import { describe, expect, it } from "bun:test"
 import {
   checkoutSparkPublicTrustDigest,
   resolveCheckoutSparkPricingPolicy,
   resolveCheckoutSparkPublicTrust,
 } from "../src/checkout-spark-deployment-trust"
-import { config } from "../src/config"
 import { defineCheckoutSparkDeploymentTrust } from "../../../scripts/vite/build_info"
-import { readCompiledCheckoutSparkPublicTrust } from "../../../scripts/vite/checkout_spark_trust_probe"
 import { resolveDeploymentProfile } from "../../../scripts/vite/deployment_profile"
 
 const legacyTrust = {
@@ -95,16 +94,41 @@ describe("pricing policy rollout", () => {
     expect(production.quantumRouterTrust.pricingPublicKeys).not.toBe("")
   })
 
-  it("retains explicit local choice and reports the resolved runtime policy", () => {
-    const local = resolveDeploymentProfile({
-      VITE_CHECKOUT_SPARK_PRICING_POLICY: "invoice-historical-1pct-v1",
-    })
-    expect(local.quantumRouterTrust.pricingPolicy).toBe(
-      "invoice-historical-1pct-v1"
-    )
-    expect(defineCheckoutSparkDeploymentTrust(local)).toEqual({})
-    expect(readCompiledCheckoutSparkPublicTrust().pricingPolicy).toBe(
-      config.checkoutSparkPricingPolicy
-    )
-  })
+  for (const policy of ["signed-v1", "invoice-historical-1pct-v1"] as const) {
+    it(`reports the explicit local ${policy} policy through the runtime probe`, () => {
+      const local = resolveDeploymentProfile({
+        VITE_CHECKOUT_SPARK_PRICING_POLICY: policy,
+      })
+      expect(local.quantumRouterTrust.pricingPolicy).toBe(policy)
+      expect(defineCheckoutSparkDeploymentTrust(local)).toEqual({})
+      const probeUrl = new URL(
+        "../../../scripts/vite/checkout_spark_trust_probe.ts",
+        import.meta.url
+      ).href
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--no-env-file",
+          "--eval",
+          `const { readCompiledCheckoutSparkPublicTrust } = await import(${JSON.stringify(probeUrl)}); console.log(JSON.stringify(readCompiledCheckoutSparkPublicTrust().pricingPolicy));`,
+        ],
+        {
+          env: {
+            ...process.env,
+            VITE_DEPLOYMENT_PROFILE: "local",
+            VITE_CHECKOUT_SPARK_PRICING_POLICY: policy,
+          },
+          encoding: "utf8",
+          timeout: 10_000,
+          windowsHide: true,
+        }
+      )
+      expect(child.error).toBeUndefined()
+      expect(child.status).toBe(0)
+      expect(child.stderr).toBe("")
+      expect(JSON.parse(child.stdout)).toBe(
+        local.quantumRouterTrust.pricingPolicy
+      )
+    }, 15_000)
+  }
 })
