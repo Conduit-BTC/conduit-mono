@@ -1,7 +1,3 @@
-import {
-  isVerifiedNostrEvent,
-  type VerifiedNostrEvent,
-} from "./verified-public-event"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import type { Profile } from "../types"
 import type { ProfileFormValues } from "../schemas"
@@ -139,11 +135,7 @@ function parseProfilePublishContent(content: string | null | undefined): {
   }
 }
 
-export function parseProfileEvent(event: VerifiedNostrEvent): Profile {
-  if (!isVerifiedNostrEvent(event))
-    throw new Error("Profile event must be admitted")
-  return projectProfileContent(event.pubkey, event.content)
-}
+export { parseProfileEvent } from "./profile-cache"
 
 export type ProfileFetchOptions = Omit<
   ProfileBatchQuery,

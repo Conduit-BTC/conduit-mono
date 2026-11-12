@@ -159,12 +159,12 @@ import {
 } from "./messaging"
 import { MAX_PRODUCT_RELAY_HINTS } from "./product-reference"
 import {
+  parseProfileEvent,
   __setProfileCacheTestOverrides,
   __resetProfileCacheTestOverrides,
   type ProfileFrontierState,
   type SelectedProfileContext,
 } from "./profile-cache"
-import { parseProfileEvent } from "./profiles"
 import {
   isValidSignedPublicNostrEvent,
   type SignedPublicNostrEvent,

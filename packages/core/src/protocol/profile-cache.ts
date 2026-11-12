@@ -1,3 +1,7 @@
+import {
+  isVerifiedNostrEvent,
+  type VerifiedNostrEvent,
+} from "./verified-public-event"
 import { db, type CachedProfile } from "../db"
 import type { Profile } from "../types"
 import { getProfileName } from "../utils"
@@ -721,4 +725,10 @@ async function persistCachedProfiles(
   }
 
   return await retainStrongestCachedProfiles(rows)
+}
+
+export function parseProfileEvent(event: VerifiedNostrEvent): Profile {
+  if (!isVerifiedNostrEvent(event))
+    throw new Error("Profile event must be admitted")
+  return projectProfileContent(event.pubkey, event.content)
 }
