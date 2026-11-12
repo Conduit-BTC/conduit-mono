@@ -10,6 +10,7 @@ import {
 } from "bun:test"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { finalizeEvent, getPublicKey, nip19, type Filter } from "nostr-tools"
+import { config } from "../src/config"
 import { ConduitDB, db } from "../src/db"
 import { NostrSignerError } from "../src/protocol/nostr-event-signer"
 import { attachEventSourceRelayUrl } from "../src/protocol/relay-reader"
@@ -170,6 +171,83 @@ afterAll(async () => {
 })
 
 describe("commerce product-detail reads", () => {
+  it("keeps public detail, family and deletion reads configured-only without dropping retained signed evidence", async () => {
+    const configured = new Set(config.appCommerceRelayUrls)
+    const hints = Array.from(
+      { length: 105 },
+      (_, index) => `wss://detail-${index}.feed-fixture.net`
+    )
+    const parent = listing("scoped-parent", 10, 10, [
+      ["type", "variable", "digital"],
+    ])
+    const childTags = [
+      ["type", "variation", "digital"],
+      ["a", coordinate("scoped-parent")],
+      ["spec", "Color", "Red"],
+    ]
+    const child = listing("scoped-child", 10, 11, childTags)
+    const retained = listing("scoped-child", 40, 20, childTags)
+    const deleted = listing("scoped-deleted", 15, 12, [
+      ["type", "variation", "digital"],
+      ["a", coordinate("scoped-parent")],
+      ["spec", "Color", "Blue"],
+    ])
+    await cacheSignedProductListingEvent(retained, {
+      sourceRelayUrls: hints,
+    })
+    await cacheSignedProductListingEvent(deleted, {
+      sourceRelayUrls: hints,
+    })
+    await cacheSignedProductDeletionEvent(deletion("scoped-deleted"))
+    const reads: { filter: Filter; relayUrls: string[] }[] = []
+    const fetchFixture = fixtureFetch([parent, child, deleted])
+    __setCommerceTestOverrides({
+      getRelayLists: async () =>
+        new Map([
+          [
+            merchant,
+            {
+              pubkey: merchant,
+              readRelayUrls: [],
+              writeRelayUrls: hints,
+              eventCreatedAt: 1,
+              cachedAt: clock(),
+            },
+          ],
+        ]),
+      fetchPublicEvents: async (filter, options) => {
+        reads.push({ filter, relayUrls: options?.relayUrls ?? [] })
+        return fetchFixture(filter)
+      },
+    })
+    const reference = nip19.naddrEncode({
+      kind: 30402,
+      pubkey: merchant,
+      identifier: "scoped-child",
+      relays: hints.slice(0, 2),
+    })
+    for (const productId of [reference, child.id]) {
+      const result = await getProductDetail({
+        productId,
+        readScope: "public_feed",
+      })
+      expect(result.data?.addressId).toBe(coordinate("scoped-parent"))
+      expect(
+        result.data?.family?.children.map((record) => record.dTag)
+      ).toEqual(["scoped-child"])
+      if (productId === reference) {
+        expect(result.data?.family?.children[0]?.eventId).toBe(retained.id)
+        expect(result.meta).toMatchObject({ stale: true, degraded: true })
+      }
+    }
+    expect(reads.some(({ filter }) => !!filter["#a"])).toBe(true)
+    expect(reads.some(({ filter }) => filter.kinds?.includes(5))).toBe(true)
+    const destinations = new Set(reads.flatMap((read) => read.relayUrls))
+    expect(destinations.size).toBeGreaterThan(0)
+    expect([...destinations].every((url) => configured.has(url))).toBe(true)
+    expect(destinations.size).toBeLessThanOrEqual(configured.size)
+  })
+
   it("resolves signed coordinates and naddr hints through the public facade", async () => {
     const event = listing("coordinate")
     const productReads: Filter[] = []

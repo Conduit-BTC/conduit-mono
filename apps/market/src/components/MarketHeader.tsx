@@ -365,6 +365,7 @@ export function MarketHeader({
   }, [authGeneration])
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const { data: profile } = useProfile(pubkey, {
+    readScope: "public_feed",
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,

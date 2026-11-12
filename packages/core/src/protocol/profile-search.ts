@@ -1,3 +1,7 @@
+import {
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import type { Filter } from "nostr-tools"
 import { config } from "../config"
@@ -179,6 +183,7 @@ export interface ProfileSearchResult {
 }
 
 export interface ProfileSearchQuery {
+  readScope?: PublicReadScope
   query: string
   limit?: number
   signal?: AbortSignal
@@ -790,9 +795,10 @@ export async function searchNetworkProfiles(
   if (authorPubkeys?.length === 0) return emptyResult(query)
   const authorSet = authorPubkeys ? new Set(authorPubkeys) : null
 
-  const relayTargets = await deps.planSearchRelayTargets(
-    input.authenticatedPubkey ?? null
-  )
+  const relayTargets =
+    input.readScope === "public_feed"
+      ? getPublicFeedReadPlan().relayTargets
+      : await deps.planSearchRelayTargets(input.authenticatedPubkey ?? null)
   const relayUrls = relayTargets.map((target) => target.url)
   let summary: ProfileSearchRelaySummary = {
     relaysPlanned: relayUrls.length,

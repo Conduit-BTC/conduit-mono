@@ -10,6 +10,7 @@ import {
 } from "bun:test"
 import { indexedDB, IDBKeyRange } from "fake-indexeddb"
 import { finalizeEvent, getPublicKey } from "nostr-tools"
+import { config } from "../src/config"
 import { ConduitDB, db } from "../src/db"
 import {
   __resetCommerceTestOverrides,
@@ -137,6 +138,50 @@ afterAll(async () => {
 })
 
 describe("merchant storefront product reads", () => {
+  it("keeps an explicitly public storefront on configured commerce destinations while retaining newer signed terms", async () => {
+    const configured = new Set(config.appCommerceRelayUrls)
+    const hints = Array.from(
+      { length: 105 },
+      (_, index) => `wss://storefront-${index}.feed-fixture.net`
+    )
+    const retained = listing("scoped-storefront", 40, 20)
+    await cacheSignedProductListingEvent(retained, {
+      sourceRelayUrls: hints,
+    })
+    const attempted = new Set<string>()
+    __setCommerceTestOverrides({
+      getRelayLists: async () =>
+        new Map([
+          [
+            merchant,
+            {
+              pubkey: merchant,
+              readRelayUrls: [],
+              writeRelayUrls: hints,
+              eventCreatedAt: 1,
+              cachedAt: clock(),
+            },
+          ],
+        ]),
+      fetchPublicEvents: async (filter, options) => {
+        for (const url of options?.relayUrls ?? []) attempted.add(url)
+        return filter.kinds?.includes(30402)
+          ? [listing("scoped-storefront", 10, 10)]
+          : []
+      },
+    })
+    const result = await getMerchantStorefront({
+      merchantPubkey: merchant,
+      readScope: "public_feed",
+      deletionFallbackWhenEmpty: false,
+    })
+    expect(attempted.size).toBeGreaterThan(0)
+    expect([...attempted].every((url) => configured.has(url))).toBe(true)
+    expect(attempted.size).toBeLessThanOrEqual(configured.size)
+    expect(result.data[0]?.eventId).toBe(retained.id)
+    expect(result.data[0]?.product.price).toBe(40)
+  })
+
   it("filters cached merchant visibility, text and tags before sorting and limiting", async () => {
     for (const event of [
       listing("shirt-middle", 20, 11),

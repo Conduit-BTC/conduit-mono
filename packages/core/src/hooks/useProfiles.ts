@@ -1,3 +1,7 @@
+import {
+  getPublicFeedReadScopeKey,
+  type PublicReadScope,
+} from "../protocol/public-feed-read-scope"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   useQuery,
@@ -25,6 +29,7 @@ const EMPTY_PROFILE_MAP: ProfileMap = {}
 type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
+  readScope?: PublicReadScope
   authenticatedPubkey?: string | null
   /** Signed-in account used only for final-I/O whole-relay exclusions. */
   accountPubkey?: string | null
@@ -125,6 +130,7 @@ export function useProfiles(
   options: UseProfilesOptions = {}
 ): UseProfilesResult {
   const queryClient = useQueryClient()
+  const readScopeKey = getPublicFeedReadScopeKey(options.readScope)
   const priority = options.priority ?? "visible"
   const authenticatedPerspective = getProfileQueryPerspectiveKey(
     options.authenticatedPubkey
@@ -186,6 +192,7 @@ export function useProfiles(
   }, [
     authenticatedPerspective,
     options.evidenceScope,
+    readScopeKey,
     options.skipCache,
     options.requireCompleteEvidence,
     priority,
@@ -224,6 +231,7 @@ export function useProfiles(
       options.requireCompleteEvidence,
       options.evidenceScope,
       accountPerspective,
+      readScopeKey,
     ],
     enabled,
     queryFn: async ({ signal }) => {
@@ -231,6 +239,7 @@ export function useProfiles(
         !signal.aborted && (options.shouldContinue?.() ?? true)
       const result = await getProfiles({
         pubkeys: unique,
+        readScope: options.readScope,
         authenticatedPubkey: options.authenticatedPubkey,
         accountPubkey: options.accountPubkey,
         shouldContinue,
@@ -246,7 +255,8 @@ export function useProfiles(
       return result
     },
     placeholderData: (previousData, previousQuery) =>
-      previousQuery?.queryKey[1] === authenticatedPerspective
+      previousQuery?.queryKey[1] === authenticatedPerspective &&
+      previousQuery?.queryKey.at(-1) === readScopeKey
         ? previousData
         : undefined,
     staleTime: options.staleTime ?? PROFILE_STALE_TIME_MS,

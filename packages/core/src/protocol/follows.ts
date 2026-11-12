@@ -1,3 +1,7 @@
+import {
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
 /**
  * NIP-02 contact-list helpers.
  *
@@ -124,6 +128,7 @@ export interface MerchantTrustSocialReadResult extends MerchantTrustSocialSummar
 }
 
 export interface FollowListReadOptions {
+  readScope?: PublicReadScope
   signal?: AbortSignal
   maxRelays?: number
   /** Force live NIP-65 discovery before a replacement-sensitive read. */
@@ -746,11 +751,14 @@ export async function readLatestFollowLists(
   const normalizedAccountPubkey = normalizeHexPubkey(
     accountPubkey ?? authenticatedPubkey ?? undefined
   )
-  const ownerSettingsSnapshot = await readAuthenticatedOwnerRelaySettings(
-    normalizedAuthenticatedPubkey,
-    normalizedAccountPubkey,
-    options
-  )
+  const ownerSettingsSnapshot =
+    options.readScope === "public_feed"
+      ? undefined
+      : await readAuthenticatedOwnerRelaySettings(
+          normalizedAuthenticatedPubkey,
+          normalizedAccountPubkey,
+          options
+        )
   const ownerReadRelayUrls = normalizeOwnerSelectedRelayUrls(
     ownerSettingsSnapshot?.settings.entries.flatMap((entry) =>
       entry.readEnabled ? [entry.url] : []
@@ -761,14 +769,17 @@ export async function readLatestFollowLists(
       entry.writeEnabled ? [entry.url] : []
     ) ?? []
   )
-  const relayListReadPlan = planRelayReads({
-    intent: "relay_lists",
-    authenticatedPubkey: normalizedAuthenticatedPubkey,
-    ownerSelectedRelayUrls: ownerReadRelayUrls,
-    settings: ownerSettingsSnapshot?.settings,
-    signedRelayListAuthoritative:
-      ownerSettingsSnapshot?.signedRelayListAuthoritative,
-  })
+  const relayListReadPlan =
+    options.readScope === "public_feed"
+      ? getPublicFeedReadPlan()
+      : planRelayReads({
+          intent: "relay_lists",
+          authenticatedPubkey: normalizedAuthenticatedPubkey,
+          ownerSelectedRelayUrls: ownerReadRelayUrls,
+          settings: ownerSettingsSnapshot?.settings,
+          signedRelayListAuthoritative:
+            ownerSettingsSnapshot?.signedRelayListAuthoritative,
+        })
   const relayLookupOptions = {
     relayUrls: relayListReadPlan.candidateRelayUrls,
     relayTargets: relayListReadPlan.relayTargets,
@@ -787,7 +798,12 @@ export async function readLatestFollowLists(
   }
   let relayLists: Map<string, RelayList>
   let relayListStates: Map<string, RelayListResolutionState>
-  if (options.resolveRelayLists) {
+  if (options.readScope === "public_feed") {
+    relayLists = new Map()
+    relayListStates = new Map(
+      normalizedPubkeys.map((pubkey) => [pubkey, "not-required" as const])
+    )
+  } else if (options.resolveRelayLists) {
     relayLists = await options.resolveRelayLists(
       normalizedPubkeys,
       relayLookupOptions
@@ -830,29 +846,35 @@ export async function readLatestFollowLists(
           ...(isAuthenticatedOwner ? ownerWriteRelayUrls : []),
         ])
       )
-      const authorPlan = planRelayReads({
-        intent: "contact_lists",
-        authors: [pubkey],
-        relayLists,
-        authenticatedPubkey,
-        ownerSelectedRelayUrls,
-        maxRelays,
-        settings: ownerSettingsSnapshot?.settings,
-        signedRelayListAuthoritative:
-          ownerSettingsSnapshot?.signedRelayListAuthoritative,
-        // Health is an availability signal, not permission to omit an
-        // author's declared write relay from a replacement-sensitive read.
-        skipHealthFilter: true,
-      })
-      const basePlan = planRelayReads({
-        intent: "contact_lists",
-        authenticatedPubkey,
-        maxRelays: 1,
-        // Reserve one curated/settings relay even when its health score is
-        // parked; otherwise an attacker-controlled hint can become the only
-        // destination and eliminate the independent observation.
-        skipHealthFilter: true,
-      })
+      const authorPlan =
+        options.readScope === "public_feed"
+          ? getPublicFeedReadPlan(maxRelays)
+          : planRelayReads({
+              intent: "contact_lists",
+              authors: [pubkey],
+              relayLists,
+              authenticatedPubkey,
+              ownerSelectedRelayUrls,
+              maxRelays,
+              settings: ownerSettingsSnapshot?.settings,
+              signedRelayListAuthoritative:
+                ownerSettingsSnapshot?.signedRelayListAuthoritative,
+              // Health is an availability signal, not permission to omit an
+              // author's declared write relay from a replacement-sensitive read.
+              skipHealthFilter: true,
+            })
+      const basePlan =
+        options.readScope === "public_feed"
+          ? getPublicFeedReadPlan(maxRelays)
+          : planRelayReads({
+              intent: "contact_lists",
+              authenticatedPubkey,
+              maxRelays: 1,
+              // Reserve one curated/settings relay even when its health score is
+              // parked; otherwise an attacker-controlled hint can become the only
+              // destination and eliminate the independent observation.
+              skipHealthFilter: true,
+            })
       const hintSet = new Set(authorPlan.hintRelayUrls)
       const hinted = [...authorPlan.hintRelayUrls]
       const nonHinted = authorPlan.candidateRelayUrls.filter(
@@ -1004,6 +1026,8 @@ export async function readLatestFollowLists(
       )
       const hasUsableSource = relays.some((relay) => relay.status !== "failed")
       const relayDiscoveryComplete =
+        (options.readScope === "public_feed" &&
+          relayListState === "not-required") ||
         relayListState === "network" ||
         relayListState === "fresh-cache" ||
         relayListState === "missing"

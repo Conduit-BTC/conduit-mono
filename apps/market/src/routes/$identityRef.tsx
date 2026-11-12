@@ -181,6 +181,7 @@ function PublicIdentityPage() {
   const [shareCopied, setShareCopied] = useState(false)
   // Read the bounded catalog once; visible filters must not erase store evidence.
   const productsQuery = useProgressiveProducts({
+    readScope: "public_feed",
     scope: "storefront",
     merchantPubkey: pubkey,
     authenticatedPubkey: activeViewerPubkey,
@@ -206,6 +207,7 @@ function PublicIdentityPage() {
   const storeProducts = productsQuery.products
   const productCount = storeProducts.length
   const merchantTrust = useMerchantTrustContext({
+    readScope: "public_feed",
     merchantPubkey: pubkey || null,
     listingCount: productCount > 0 ? productCount : undefined,
     profileRelayHints,

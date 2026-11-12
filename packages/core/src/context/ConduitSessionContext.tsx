@@ -101,6 +101,7 @@ export function ConduitSessionProvider({
   const profileQuery = useProfile(
     session.mode === "signed_in" ? session.pubkey : null,
     {
+      readScope: "public_feed",
       accountPubkey:
         session.mode === "signed_in" ? session.pubkey : null,
       authenticatedPubkey:

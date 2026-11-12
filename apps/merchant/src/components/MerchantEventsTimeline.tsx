@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, ChevronDown, Plus, RefreshCw } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  getPublicFeedReadScopeKey,
   useProgressiveEventMarketDiscovery,
   encodeEventMarketNaddr,
   getProfileDisplayLabel,
@@ -90,6 +91,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     queryKey: [
       "merchant-owned-event-timeline",
       session.relayScope,
+      getPublicFeedReadScopeKey("public_feed"),
       authenticatedPubkey,
       authGeneration,
       merchantPubkey,
@@ -117,6 +119,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     queryKey: [
       "merchant-future-event-timeline",
       session.relayScope,
+      getPublicFeedReadScopeKey("public_feed"),
       authenticatedPubkey,
       authGeneration,
       futureAuthors.join(","),
@@ -157,6 +160,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     queryKey: [
       "merchant-selling-event-refresh",
       session.relayScope,
+      getPublicFeedReadScopeKey("public_feed"),
       authenticatedPubkey,
       authGeneration,
       merchantPubkey,
@@ -168,6 +172,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         shouldContinue: () => authGenerationRef.current === authGeneration,
         read: (reference, marketSignal) =>
           readEventMarketRoster({
+            readScope: "public_feed",
             reference,
             authenticatedPubkey,
             signal: marketSignal,
@@ -293,7 +298,10 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     authGeneration,
     authGenerationRef,
     isAuthGenerationCurrent,
-    refreshScope: session.relayScope,
+    refreshScope: JSON.stringify([
+      session.relayScope,
+      getPublicFeedReadScopeKey("public_feed"),
+    ]),
   }
 }
 
@@ -472,6 +480,7 @@ function MerchantEventTimelineSection({
     [presentation.currentAndFuture, presentation.past]
   )
   const profiles = useProfiles(organizerPubkeys, {
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey,
     shouldContinue: () =>

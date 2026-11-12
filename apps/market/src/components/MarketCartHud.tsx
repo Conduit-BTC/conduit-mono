@@ -6,15 +6,12 @@ import {
   ShoppingCart,
   Store,
   Truck,
-  Zap,
   type LucideIcon,
 } from "lucide-react"
-import { Link, useNavigate } from "@tanstack/react-router"
+import { Link } from "@tanstack/react-router"
 import {
-  getProfilePaymentAddress,
   formatNpub,
   getProfileName,
-  isQuantumRouterEnabled,
   pubkeyToNpub,
   useAuth,
   useProfiles,
@@ -24,7 +21,6 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
-  HoldToReleaseButton,
   StatusPill,
   cn,
 } from "@conduit/ui"
@@ -38,25 +34,16 @@ import {
   useState,
 } from "react"
 import { useCart } from "../hooks/useCart"
-import {
-  useCartLnurlPreflights,
-  useCartReadiness,
-} from "../hooks/useCartReadiness"
-import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
-  getCartCommerceFingerprint,
   getCartItemKey,
-  getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
   getCartItemFulfillmentType,
   groupCartPurchases,
-  isCartProductAvailabilityBlocking,
   type CartPurchaseGroup,
 } from "../lib/cart-model"
 import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
-import { armHudZapIntent } from "../lib/hud-zap-intent"
 
 const HUD_EXIT_DURATION_MS = 240
 
@@ -179,7 +166,6 @@ export type MarketCartHudProps = {
 }
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
-  const navigate = useNavigate()
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -194,25 +180,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     [groups]
   )
   const profiles = useProfiles(merchantPubkeys, {
+    readScope: "public_feed",
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,
     priority: "visible",
     maxUnresolvedRefetches: 2,
   })
-  // Warm one LNURL-pay metadata read per merchant Lightning address while the
-  // cart has items, including on routes where the dock itself stays hidden.
-  const lud16ByMerchant = useMemo(() => {
-    const map = new Map<string, string | undefined>()
-    for (const merchantPubkey of merchantPubkeys) {
-      map.set(
-        merchantPubkey,
-        getProfilePaymentAddress(profiles.profileContexts[merchantPubkey])
-      )
-    }
-    return map
-  }, [merchantPubkeys, profiles.profileContexts])
-  useCartLnurlPreflights(lud16ByMerchant)
   const routeMode = getCartHudRouteMode(pathname)
   const [expanded, setExpanded] = useState(routeMode === "expanded")
   const [activePurchase, setActivePurchase] = useState<string | null>(
@@ -221,7 +195,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const [announcement, setAnnouncement] = useState("")
   const [mounted, setMounted] = useState(false)
   const [entered, setEntered] = useState(false)
-  const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const purchaseRailRef = useRef<HTMLDivElement>(null)
@@ -249,31 +222,11 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     routeMode !== "suppressed" && !!currentPurchase && !!currentGroup
   const activeGroup = currentGroup ?? lastVisibleRef.current?.group
   const selectedMerchant = activeGroup?.merchantPubkey ?? null
-  const cartReadiness = useCartReadiness(cart.items)
-  const activeReadiness = activeGroup
-    ? cartReadiness.byPurchase.get(activeGroup.id)
-    : undefined
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
     : undefined
-  const merchantLud16 = getProfilePaymentAddress(
-    selectedMerchant ? profiles.profileContexts[selectedMerchant] : undefined
-  )
-  const activeAvailabilityMessage = activeReadiness?.blockingMessage ?? null
-  const checkoutDisabled = !!activeAvailabilityMessage
-  // Cart presence is sufficient shopper intent for the LNURL metadata
-  // preflight, so the HUD decides Zap Out capability from the shared
-  // per-merchant readiness and metadata evidence. Checkout still performs
-  // the authoritative endpoint, amount, and invoice validation inside its
-  // explicit payment flow.
-  const capabilityView = useMerchantCheckoutCapability({
-    items: activeGroup?.items ?? [],
-    readiness: activeReadiness,
-    merchantLud16,
-    enabled: shouldShow,
-  })
-  const checkoutCapability = capabilityView.capability
-  const pricingIntent = capabilityView.pricingIntent
+  // Browsing displays the saved cart. Purchase evidence, endpoint preflights,
+  // and wallet readiness begin in the cart/checkout lifecycle.
   // Collapsing hides and inerts the panel. If focus is inside, move it to
   // the disclosure toggle first so keyboard and screen-reader users are not
   // dropped at the document root.
@@ -314,7 +267,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
 
   useEffect(() => {
     setExpanded(routeMode === "expanded")
-    if (pathname !== "/checkout") setZapStarting(false)
   }, [pathname, routeMode])
 
   useEffect(() => {
@@ -460,30 +412,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const merchantName =
     getProfileName(activeProfile) ??
     `Merchant ${formatNpub(selectedMerchant, 6)}`
-  const zapReady =
-    !isQuantumRouterEnabled() && checkoutCapability.outcome === "zap_candidate"
-  const startZapOut = () => {
-    if (!zapReady || zapStarting || !pubkey || pricingIntent?.status !== "ok") {
-      return
-    }
-    setZapStarting(true)
-    armHudZapIntent({
-      merchantPubkey: selectedMerchant,
-      purchaseId: activeGroup.id,
-      buyerPubkey: pubkey,
-      cartFingerprint: getCartCommerceFingerprint(activeGroup.items),
-      totalMsats: pricingIntent.totalMsats,
-      createdAt: Date.now(),
-    })
-    void navigate({
-      to: "/checkout",
-      search: {
-        merchant: pubkeyToNpub(selectedMerchant),
-        purchase: activeGroup.id,
-        intent: "zap",
-      },
-    })
-  }
 
   return (
     <div
@@ -571,56 +499,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 aria-hidden="true"
               />
             </Button>
-            {!expanded &&
-              (checkoutDisabled ? (
-                <>
-                  <Button
-                    size="sm"
-                    disabled
-                    aria-describedby={`${detailsPanelId}-blocked-reason`}
-                    title={
-                      activeAvailabilityMessage ??
-                      "Checking current product stock"
-                    }
-                  >
-                    Checkout
-                  </Button>
-                  <span
-                    id={`${detailsPanelId}-blocked-reason`}
-                    role="status"
-                    className="sr-only"
-                  >
-                    {activeAvailabilityMessage ??
-                      "Checking current product stock"}
-                  </span>
-                </>
-              ) : zapReady ? (
-                <HoldToReleaseButton
-                  size="sm"
-                  disabled={zapStarting}
-                  canComplete={() =>
-                    checkoutCapability.outcome === "zap_candidate" &&
-                    !zapStarting
-                  }
-                  onHoldComplete={startZapOut}
-                  chargedLabel="Release to zap out"
+            {!expanded && (
+              <Button asChild size="sm">
+                <Link
+                  to="/checkout"
+                  search={{
+                    merchant: pubkeyToNpub(selectedMerchant),
+                    purchase: activeGroup.id,
+                  }}
                 >
-                  <Zap className="h-4 w-4" aria-hidden="true" />
-                  Zap out
-                </HoldToReleaseButton>
-              ) : (
-                <Button asChild size="sm">
-                  <Link
-                    to="/checkout"
-                    search={{
-                      merchant: pubkeyToNpub(selectedMerchant),
-                      purchase: activeGroup.id,
-                    }}
-                  >
-                    Checkout
-                  </Link>
-                </Button>
-              ))}
+                  Checkout
+                </Link>
+              </Button>
+            )}
           </div>
         </div>
 
@@ -673,16 +564,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               >
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
-                  const availability =
-                    activeReadiness?.availabilityByProductId.get(item.productId)
                   const currentStock = getCartItemStockForAvailability(
                     item,
-                    availability
+                    undefined
                   )
-                  const currentStockEvidence =
-                    getCartItemStockEvidenceForAvailability(availability)
-                  const itemUnavailable =
-                    isCartProductAvailabilityBlocking(availability)
                   return (
                     <article
                       key={item.cartLineId ?? getCartItemKey(item)}
@@ -720,13 +605,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <div className="truncate text-xs text-[var(--text-muted)]">
                           {display.primary}
                         </div>
-                        {itemUnavailable ? (
-                          <div className="mt-1 text-xs font-medium text-[var(--error-text)]">
-                            {availability?.status === "sold_out"
-                              ? "Sold out"
-                              : `Only ${currentStock ?? 0} available`}
-                          </div>
-                        ) : null}
                         <div className="mt-1 flex justify-end">
                           <div className="flex shrink-0 items-center gap-1">
                             <Button
@@ -755,18 +633,10 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               className="h-9 w-9"
                               aria-label={`Increase ${item.title} quantity`}
                               disabled={
-                                activeReadiness?.isChecking === true ||
-                                itemUnavailable ||
-                                (typeof currentStock === "number" &&
-                                  item.quantity >= currentStock)
+                                typeof currentStock === "number" &&
+                                item.quantity >= currentStock
                               }
-                              onClick={() =>
-                                cart.incrementItem(
-                                  item,
-                                  1,
-                                  currentStockEvidence
-                                )
-                              }
+                              onClick={() => cart.incrementItem(item, 1)}
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />
                             </Button>
@@ -779,19 +649,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-                {activeAvailabilityMessage ||
-                activeReadiness?.isChecking ||
-                activeReadiness?.isRefreshing ? (
-                  <span
-                    role="status"
-                    className="max-w-md text-xs text-[var(--text-muted)]"
-                  >
-                    {activeAvailabilityMessage ??
-                      (activeReadiness?.isChecking
-                        ? "Checking stock…"
-                        : "Refreshing availability…")}
-                  </span>
-                ) : null}
                 <div className="ml-auto flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
                     <Link
@@ -804,44 +661,17 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       View full cart
                     </Link>
                   </Button>
-                  {checkoutDisabled ? (
-                    <Button
-                      size="sm"
-                      disabled
-                      title={
-                        activeAvailabilityMessage ??
-                        "Checking current product stock"
-                      }
+                  <Button asChild size="sm">
+                    <Link
+                      to="/checkout"
+                      search={{
+                        merchant: pubkeyToNpub(selectedMerchant),
+                        purchase: activeGroup.id,
+                      }}
                     >
                       Continue to checkout
-                    </Button>
-                  ) : zapReady ? (
-                    <HoldToReleaseButton
-                      size="sm"
-                      disabled={zapStarting}
-                      canComplete={() =>
-                        checkoutCapability.outcome === "zap_candidate" &&
-                        !zapStarting
-                      }
-                      onHoldComplete={startZapOut}
-                      chargedLabel="Release to zap out"
-                    >
-                      <Zap className="h-4 w-4" aria-hidden="true" />
-                      Continue to Zap Out
-                    </HoldToReleaseButton>
-                  ) : (
-                    <Button asChild size="sm">
-                      <Link
-                        to="/checkout"
-                        search={{
-                          merchant: pubkeyToNpub(selectedMerchant),
-                          purchase: activeGroup.id,
-                        }}
-                      >
-                        Continue to checkout
-                      </Link>
-                    </Button>
-                  )}
+                    </Link>
+                  </Button>
                 </div>
               </div>
             </div>

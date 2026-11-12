@@ -317,6 +317,7 @@ export function MerchantAccountMenu() {
 
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const profileQuery = useProfile(pubkey, {
+    readScope: "public_feed",
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,

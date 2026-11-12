@@ -1,5 +1,6 @@
 import {
   formatNpub,
+  getPublicFeedReadScopeKey,
   getProfileName,
   getShippingDestinationEligibility,
   isCommerceReadIncomplete,
@@ -10,6 +11,7 @@ import {
   type PricingRateInput,
   type Product,
   type Profile,
+  type PublicReadScope,
 } from "@conduit/core"
 import type { FacetOption } from "./facets"
 import { compareCommercePrices, getComparablePriceValue } from "./pricing"
@@ -81,6 +83,7 @@ export function isMarketBrowseRefreshStale(input: {
 }
 
 export function getGlobalProductSearchQueryKey(input: {
+  readScope?: PublicReadScope
   query: string
   pubkey: string | null
   catalogSource: ProductCatalogSourceMode
@@ -89,6 +92,7 @@ export function getGlobalProductSearchQueryKey(input: {
 }) {
   return [
     "market-global-product-search",
+    getPublicFeedReadScopeKey(input.readScope),
     input.query,
     input.pubkey,
     input.catalogSource,

@@ -21,6 +21,7 @@ import {
   getCachedMarketplaceProducts,
   getCachedMerchantStorefront,
   getMarketplaceProducts,
+  getPublicFeedReadScopeKey,
   getMerchantStorefront,
   getProfileName,
   isQuantumRouterEnabled,
@@ -228,6 +229,7 @@ async function fetchSuggestedProducts(
     ? source === "cache"
       ? await getCachedMerchantStorefront({ merchantPubkey, limit: 48 })
       : await getMerchantStorefront({
+          readScope: "public_feed",
           merchantPubkey,
           limit: 48,
           accountPubkey,
@@ -237,6 +239,7 @@ async function fetchSuggestedProducts(
     : source === "cache"
       ? await getCachedMarketplaceProducts({ limit: 120 })
       : await getMarketplaceProducts({
+          readScope: "public_feed",
           limit: 120,
           accountPubkey,
           authenticatedPubkey,
@@ -422,6 +425,7 @@ function RelatedProductRow({
   const imageUrl = images[0]?.url
   const price = formatPrice(selectedProduct)
   const { data: profile } = useProfile(product.pubkey, {
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey,
     shouldContinue,
@@ -1152,6 +1156,7 @@ function CartPage() {
 
   const relatedProductsQueryKey = [
     "cart-related-products",
+    getPublicFeedReadScopeKey("public_feed"),
     expandedMerchant ?? "all",
     relatedExcludedProductIds.slice().sort().join(":"),
     preferredTags.slice().sort().join(":"),

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  getPublicFeedReadScopeKey,
   extractFollowPubkeys,
   getMerchantStorefront,
   getFollowPubkeys,
@@ -74,6 +75,7 @@ export function useMerchantEventTimeline(input: {
   const authenticatedPubkey =
     signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
   const queryScope = [
+    getPublicFeedReadScopeKey("public_feed"),
     session.relayScope ?? "no-relay-scope",
     authenticatedPubkey,
     authGeneration,
@@ -94,6 +96,7 @@ export function useMerchantEventTimeline(input: {
     ],
     queryFn: ({ signal }) =>
       getFollowPubkeys({
+        readScope: "public_feed",
         pubkey: merchantPubkey,
         authenticatedPubkey,
         shouldContinue: () =>
@@ -159,6 +162,7 @@ export function useMerchantEventTimeline(input: {
     ],
     queryFn: ({ signal }) =>
       getFollowPubkeys({
+        readScope: "public_feed",
         pubkey: CONDUIT_MARKET_PERSPECTIVE_PUBKEY,
         authenticatedPubkey,
         shouldContinue: () =>
@@ -229,6 +233,7 @@ export function useMerchantEventTimeline(input: {
     ],
     queryFn: ({ signal }) =>
       getMerchantStorefront({
+        readScope: "public_feed",
         merchantPubkey,
         accountPubkey: merchantPubkey,
         authenticatedPubkey,
@@ -280,6 +285,7 @@ export function useMerchantEventTimeline(input: {
         shouldContinue: () => authGenerationRef.current === authGeneration,
         read: (reference, marketSignal) =>
           readEventMarketRoster({
+            readScope: "public_feed",
             reference,
             authenticatedPubkey,
             signal: marketSignal,

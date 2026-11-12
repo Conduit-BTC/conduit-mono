@@ -1,3 +1,4 @@
+import { getPublicFeedReadScopeKey } from "./public-feed-read-scope"
 import type { Filter } from "nostr-tools"
 import type { EventMarketReadPlan } from "./event-market"
 import {
@@ -30,6 +31,7 @@ export function getEventMarketDiscoveryScope(input: {
   plan: EventMarketReadPlan
 }): string {
   return JSON.stringify([
+    getPublicFeedReadScopeKey("public_feed"),
     input.accountPubkey ?? null,
     input.authenticatedPubkey ?? null,
     input.authors ?? null,

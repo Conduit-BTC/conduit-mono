@@ -1,3 +1,4 @@
+import { getPublicFeedReadScopeKey } from "../protocol/public-feed-read-scope"
 import { useLayoutEffect, useMemo, useRef } from "react"
 import {
   hashKey,
@@ -113,7 +114,8 @@ export function useProgressiveEventMarketDiscovery(input: {
   refetchInterval?: number
 }) {
   const queryClient = useQueryClient()
-  const scope = hashKey(input.queryKey)
+  const queryKey = [...input.queryKey, getPublicFeedReadScopeKey("public_feed")]
+  const scope = hashKey(queryKey)
   const activeScope = useRef(scope)
   const nextContinuation = useRef<DiscoveryInput["continuation"]>(undefined)
   useLayoutEffect(() => {
@@ -127,7 +129,7 @@ export function useProgressiveEventMarketDiscovery(input: {
     () =>
       createProgressiveEventMarketDiscoveryQuery({
         queryClient,
-        queryKey: input.queryKey,
+        queryKey,
         discoveryInput: input.discoveryInput,
         isCurrent: () => activeScope.current === scope,
         getContinuation: () => {
@@ -143,7 +145,7 @@ export function useProgressiveEventMarketDiscovery(input: {
     [queryClient, scope]
   )
   const query = useQuery({
-    queryKey: input.queryKey,
+    queryKey,
     queryFn,
     enabled: input.enabled,
     retry: false,

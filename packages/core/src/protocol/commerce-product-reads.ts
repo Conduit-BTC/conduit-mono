@@ -3,6 +3,7 @@ import type { Product } from "../types"
 import { EVENT_KINDS } from "./kinds"
 import { NostrSignerError } from "./nostr-event-signer"
 import { canonicalizeProductTags } from "./products"
+import type { PublicReadScope } from "./public-feed-read-scope"
 import {
   filterProductRecordsForRead,
   filterExactProductRecordsForRead,
@@ -41,6 +42,7 @@ import type {
 /** Existing transport and facade metadata remain composed by commerce.ts. */
 export interface StorefrontReadDependencies {
   readonly fetchPublicProductRecords: (query: {
+    readScope?: PublicReadScope
     retainRevisions: boolean
     authors: string[]
     authenticatedPubkey?: string | null
@@ -69,6 +71,7 @@ export interface StorefrontReadDependencies {
 /** Existing product transport, family coverage and metadata stay facade-owned. */
 export interface ProductDetailReadDependencies {
   readonly fetchPublicProductRecords: (query: {
+    readScope?: PublicReadScope
     authors?: string[]
     ids?: string[]
     dTags?: string[]
@@ -85,7 +88,8 @@ export interface ProductDetailReadDependencies {
     accountPubkey?: string | null,
     authenticatedPubkey?: string | null,
     shouldContinue?: () => boolean,
-    relayHints?: readonly string[]
+    relayHints?: readonly string[],
+    readScope?: PublicReadScope
   ) => Promise<{
     records: CommerceProductRecord[]
     degraded: boolean
@@ -96,7 +100,8 @@ export interface ProductDetailReadDependencies {
     authorPubkeys?: readonly string[],
     accountPubkey?: string | null,
     authenticatedPubkey?: string | null,
-    shouldContinue?: () => boolean
+    shouldContinue?: () => boolean,
+    readScope?: PublicReadScope
   ) => Promise<DeletionTimestamps>
   readonly mergeCachedAndLiveProductRecords: StorefrontReadDependencies["mergeCachedAndLiveProductRecords"]
   readonly hasCompleteLiveVariationGroupCoverage: (input: {
@@ -245,6 +250,7 @@ export async function getMerchantStorefront(
       "unavailable"
     const rawEventLimit = getProductRawEventLimit(query.limit)
     const liveRecords = await fetchPublicProductRecords({
+      readScope: query.readScope,
       retainRevisions: true,
       authors: [query.merchantPubkey],
       authenticatedPubkey: query.authenticatedPubkey,
@@ -497,6 +503,7 @@ export async function getProductDetail(
       let directReadDegraded = false
       let directReadCapped = false
       const direct = await fetchPublicProductRecords({
+        readScope: query.readScope,
         authors: [address.pubkey],
         dTags: [address.d],
         accountPubkey: query.authenticatedPubkey,
@@ -530,7 +537,8 @@ export async function getProductDetail(
             query.authenticatedPubkey,
             query.authenticatedPubkey,
             query.shouldContinue,
-            address.relayHints
+            address.relayHints,
+            query.readScope
           )
         : { records: [], degraded: false, capped: false }
       const relayDeletionTimestamps =
@@ -539,7 +547,8 @@ export async function getProductDetail(
           [address.pubkey],
           query.authenticatedPubkey,
           query.authenticatedPubkey,
-          query.shouldContinue
+          query.shouldContinue,
+          query.readScope
         )
       const deletionTimestamps = mergeDeletionTimestamps(
         relayDeletionTimestamps,
@@ -613,6 +622,7 @@ export async function getProductDetail(
       }
 
       const storefront = await getMerchantStorefront({
+        readScope: query.readScope,
         merchantPubkey: address.pubkey,
         includeMarketHidden: query.includeMarketHidden,
         accountPubkey: query.authenticatedPubkey,
@@ -647,6 +657,7 @@ export async function getProductDetail(
       let directReadDegraded = false
       let directReadCapped = false
       const records = await fetchPublicProductRecords({
+        readScope: query.readScope,
         ids: [decodedId],
         accountPubkey: query.authenticatedPubkey,
         authenticatedPubkey: query.authenticatedPubkey,
@@ -663,7 +674,9 @@ export async function getProductDetail(
             target,
             query.authenticatedPubkey,
             query.authenticatedPubkey,
-            query.shouldContinue
+            query.shouldContinue,
+            undefined,
+            query.readScope
           )
         : { records: [], degraded: false, capped: false }
       // The direct event is also a member of the family read. Merge repeated
@@ -688,7 +701,8 @@ export async function getProductDetail(
           undefined,
           query.authenticatedPubkey,
           query.authenticatedPubkey,
-          query.shouldContinue
+          query.shouldContinue,
+          query.readScope
         )
       const deletionTimestamps = mergeDeletionTimestamps(
         relayDeletionTimestamps,
@@ -848,6 +862,7 @@ export async function getCachedProductsByIds(
 }
 
 interface MarketplacePublicReadQuery {
+  readScope?: PublicReadScope
   retainRevisions?: boolean
   authors?: string[]
   deletionCandidates?: CommerceProductRecord[]
@@ -962,6 +977,7 @@ async function getRankedMarketplaceProducts(
   // is a client filter of this one ranked response, never independently ranked chunks.
   const hits = (
     await fetchPublicProductRecords({
+      readScope: query.readScope,
       searchText: query.textQuery!.trim(),
       accountPubkey: query.accountPubkey,
       authenticatedPubkey: query.authenticatedPubkey,
@@ -1066,6 +1082,7 @@ async function getRankedMarketplaceProducts(
     const refreshed = await readProductsByIds(
       wanted,
       {
+        readScope: query.readScope,
         accountPubkey: query.accountPubkey,
         authenticatedPubkey: query.authenticatedPubkey,
         signal: query.signal,
@@ -1142,6 +1159,7 @@ export async function getMarketplaceProducts(
     let transportDegraded = false
     let readCapped = false
     const fetchedRecords = await fetchPublicProductRecords({
+      readScope: query.readScope,
       retainRevisions: true,
       authors: authorPubkeys ? uniqueStrings(authorPubkeys) : undefined,
       authenticatedPubkey: query.authenticatedPubkey,
@@ -1373,6 +1391,7 @@ export async function getMarketplaceProductsProgressive(
 
   const fetchedRecords = await fetchPublicProductRecordsProgressive(
     {
+      readScope: query.readScope,
       retainRevisions: true,
       authors:
         authorPubkeys && authorPubkeys.length > 0

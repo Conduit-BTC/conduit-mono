@@ -1,4 +1,5 @@
 import type { Filter as PublicRelayFilter } from "nostr-tools"
+import type { PublicReadScope } from "./public-feed-read-scope"
 import { eventMarketEvidenceStore } from "./event-market-evidence-store"
 import {
   getEventMarketReadPlan,
@@ -30,6 +31,7 @@ async function admitRows(
 }
 
 export interface EventMarketAuthorizationReadResult {
+  readScope?: PublicReadScope
   marketCoordinate: string
   merchantPubkey: string
   resolution: EventMarketAuthorizationResolution
@@ -96,7 +98,18 @@ function options(
 
 /** Union live and retained organizer evidence; a stale relay cannot erase a revoke or fork. */
 export async function readEventMarketAuthorization(
+  input: Parameters<typeof readEventMarketAuthorizationImpl>[0],
+  dependencies: EventMarketAuthorizationReadDependencies = defaults
+): Promise<EventMarketAuthorizationReadResult> {
+  const result = await readEventMarketAuthorizationImpl(input, dependencies)
+  return input.readScope
+    ? { ...result, readScope: input.readScope, actionable: false }
+    : result
+}
+
+async function readEventMarketAuthorizationImpl(
   input: {
+    readScope?: PublicReadScope
     marketCoordinate: string
     merchantPubkey: string
     accountPubkey?: string | null
@@ -160,6 +173,7 @@ export async function readEventMarketAuthorization(
   let plan: EventMarketReadPlan
   try {
     plan = await dependencies.plan({
+      readScope: input.readScope,
       organizerPubkey: market.authorPubkey,
       accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
       authenticatedPubkey: input.authenticatedPubkey,

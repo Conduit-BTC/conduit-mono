@@ -1,3 +1,4 @@
+import type { PublicReadScope } from "./public-feed-read-scope"
 import type { Filter } from "nostr-tools"
 import type { CachedProfile } from "../db"
 import type { Profile } from "../types"
@@ -47,6 +48,7 @@ type ContextualRelayHints = {
 export interface ProfileReadDependencies {
   readonly parseProfileEvent: (event: VerifiedNostrEvent) => Profile
   readonly planProfileReadRelays: (input: {
+    readScope?: PublicReadScope
     intent: "profiles"
     authors: readonly string[]
     paymentProfileEvidence: boolean
@@ -354,6 +356,16 @@ export async function getProfiles(
   query: ProfileBatchQuery,
   dependencies: ProfileReadDependencies
 ): Promise<ProfileBatchResult> {
+  if (
+    query.readScope === "public_feed" &&
+    (query.evidenceScope === "payment" ||
+      query.evidenceScope === "profile_edit" ||
+      query.authorRelayPaymentPolicy)
+  ) {
+    throw new TypeError(
+      "Public feed profiles cannot supply payment or profile-edit authority."
+    )
+  }
   const {
     now,
     createMeta,
@@ -408,7 +420,7 @@ export async function getProfiles(
             pubkey,
             row,
             profile: result[pubkey],
-            observed,
+            observed: observed && query.readScope !== "public_feed",
             readComplete:
               readComplete && (row ? observed : profileStorageAvailable),
             storageAvailable: profileStorageAvailable,
@@ -499,11 +511,13 @@ export async function getProfiles(
             )
           )
     const authorCriticalPaymentRead =
+      query.readScope !== "public_feed" &&
       query.authorRelayPaymentPolicy === true &&
       query.requireCompleteEvidence === true &&
       query.evidenceScope === "payment" &&
       missing.length === 1
     const relayPlan = await planCommerceReadRelayPlan({
+      readScope: query.readScope,
       intent: "profiles",
       authors: missing,
       paymentProfileEvidence: authorCriticalPaymentRead,
@@ -622,7 +636,7 @@ export async function getProfiles(
     // missing required completion below still prevent complete evidence.
     let evidenceCapped = false
     let events: VerifiedNostrEvent[]
-    if (query.requireCompleteEvidence) {
+    if (query.requireCompleteEvidence || query.readScope === "public_feed") {
       const evidence = await runFetchEventsFanoutDetailed(
         profileFilter,
         fanoutOptions
@@ -718,7 +732,10 @@ export async function getProfiles(
       }
     }
     const networkReadComplete =
-      !!query.requireCompleteEvidence && !evidenceDegraded && !evidenceCapped
+      query.readScope !== "public_feed" &&
+      !!query.requireCompleteEvidence &&
+      !evidenceDegraded &&
+      !evidenceCapped
     evidenceDegraded =
       evidenceDegraded ||
       !!cacheRetention?.persistenceFailed ||

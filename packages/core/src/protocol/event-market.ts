@@ -1,4 +1,8 @@
 import { nip19 } from "@nostr-dev-kit/ndk"
+import {
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
 import { EVENT_KINDS } from "./kinds"
 import type { PublicRelayReadOptions } from "./relay-reader"
 import { appendConduitClientTag, type ConduitAppId } from "./nip89"
@@ -17,7 +21,6 @@ import {
 } from "./relay-authority"
 import {
   getConfiguredIsolatedE2eRelayUrl,
-  loadRelaySettingsPlanningSnapshot,
   normalizeOwnerSelectedRelayUrls,
   normalizePublicOrIsolatedE2eRelayHints,
   normalizeSecureOrIsolatedE2eRelayUrls,
@@ -1100,112 +1103,24 @@ export interface EventMarketReadPlan {
   relayHintTruncated: boolean
 }
 
-/** One bounded public plan, including batched NIP-65 hints for explicit authors. */
+/** Public discovery uses only configured feed sources, regardless of authors. */
 export async function getEventMarketDiscoveryReadPlan(input: {
+  readScope?: PublicReadScope
   organizerPubkeys?: readonly string[]
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketReadPlan> {
-  const accountPubkey = normalizePubkey(
-    input.accountPubkey === undefined
-      ? input.authenticatedPubkey
-      : input.accountPubkey
-  )
-  const requestedAuth = normalizePubkey(input.authenticatedPubkey)
-  const authenticatedPubkey =
-    requestedAuth === accountPubkey ? requestedAuth : null
-  const authors = [
-    ...new Set(
-      (input.organizerPubkeys ?? []).filter((author) =>
-        /^[0-9a-f]{64}$/.test(author)
-      )
-    ),
-  ].sort()
-  const includesAuthenticatedOwner =
-    authenticatedPubkey !== null && authors.includes(authenticatedPubkey)
-  const snapshot = authenticatedPubkey
-    ? await readDurableAccountRelaySettingsPlanningSnapshot(authenticatedPubkey)
-    : loadRelaySettingsPlanningSnapshot()
-  const ownerSelectedRelayUrls = normalizeOwnerSelectedRelayUrls(
-    snapshot.settings.entries.flatMap((entry) =>
-      entry.readEnabled || (includesAuthenticatedOwner && entry.writeEnabled)
-        ? [entry.url]
-        : []
+  if (input.signal?.aborted || input.shouldContinue?.() === false)
+    throw new DOMException(
+      "Event Market discovery was cancelled.",
+      "AbortError"
     )
-  )
-  const lookupPlan = planRelayReads({
-    intent: "relay_lists",
-    authenticatedPubkey,
-    ownerSelectedRelayUrls,
-    settings: snapshot.settings,
-    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
-    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
-  })
-  let discoveredLists = {
-    relayLists: new Map<string, RelayList>(),
-    resolutionStates: new Map<string, RelayListResolutionState>(),
-  }
-  if (authors.length) {
-    try {
-      discoveredLists = await lookupEventMarketRelayLists(authors, {
-        relayUrls: lookupPlan.candidateRelayUrls,
-        relayTargets: lookupPlan.relayTargets,
-        maxRelayAttempts: lookupPlan.maxRelayAttempts,
-        accountPubkey,
-        authenticatedPubkey,
-        ownerSelectedRelayUrls,
-        appRelayUrls: lookupPlan.appRelayUrls,
-        personalRelayUrls: lookupPlan.personalRelayUrls,
-        independentRelayUrls: lookupPlan.independentRelayUrls,
-        shouldContinue: input.shouldContinue,
-        signal: input.signal,
-      })
-    } catch (error) {
-      if (input.signal?.aborted || input.shouldContinue?.() === false)
-        throw error
-      // Optional routing metadata cannot veto the selected public sources.
-      // Missing states below preserve the unavailable lookup as limited coverage.
-    }
-  }
-  const { relayLists, resolutionStates } = discoveredLists
-  const relayListState = authors.reduce<RelayListResolutionState>(
-    (state, author) => {
-      const next = resolutionStates.get(author) ?? "lookup-unavailable"
-      for (const limited of [
-        "lookup-unavailable",
-        "stale-cache",
-        "partial-network",
-      ] as const)
-        if (state === limited || next === limited) return limited
-      return next
-    },
-    "missing"
-  )
-  const plan = planRelayReads({
-    intent: "commerce_products",
-    authors,
-    relayLists,
-    authenticatedPubkey,
-    ownerSelectedRelayUrls,
-    settings: snapshot.settings,
-    signedRelayListAuthoritative: snapshot.signedRelayListAuthoritative,
-    maxRelays: EVENT_MARKET_MAX_RELAY_HINTS,
-  })
   return {
-    relayUrls: plan.candidateRelayUrls,
-    candidateRelayUrls: plan.candidateRelayUrls,
-    relayTargets: plan.relayTargets,
-    maxRelayAttempts: plan.maxRelayAttempts,
-    ownerSelectedRelayUrls: plan.ownerSelectedRelayUrls ?? [],
-    appRelayUrls: plan.appRelayUrls ?? [],
-    personalRelayUrls: plan.personalRelayUrls ?? [],
-    independentRelayUrls: plan.independentRelayUrls ?? [],
-    relayListState,
-    relayHintTruncated: plan.hintRelayUrls.some(
-      (url) => !plan.candidateRelayUrls.includes(url)
-    ),
+    ...getPublicFeedReadPlan(EVENT_MARKET_MAX_RELAY_HINTS),
+    relayListState: "not-required",
+    relayHintTruncated: false,
   }
 }
 
@@ -1243,6 +1158,7 @@ async function lookupEventMarketRelayLists(
 }
 
 export async function getEventMarketReadPlan(input: {
+  readScope?: PublicReadScope
   organizerPubkey: string
   relayHints?: readonly string[]
   accountPubkey?: string | null
@@ -1251,6 +1167,12 @@ export async function getEventMarketReadPlan(input: {
   shouldContinue?: PublicRelayReadOptions["shouldContinue"]
   signal?: AbortSignal
 }): Promise<EventMarketReadPlan> {
+  if (input.readScope === "public_feed")
+    return {
+      ...getPublicFeedReadPlan(EVENT_MARKET_MAX_RELAY_HINTS),
+      relayListState: "not-required",
+      relayHintTruncated: false,
+    }
   const accountPubkey = normalizePubkey(
     input.accountPubkey === undefined
       ? input.authenticatedPubkey
