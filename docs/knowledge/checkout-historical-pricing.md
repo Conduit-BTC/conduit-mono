@@ -16,6 +16,12 @@ repeats the check using its exact received-payment proof and that same original
 invoice time. Transfer creation, recipient claim and the recovery clock do not
 replace this anchor. Existing funding-invoice expiry and payment checks remain.
 
+If provider time is slightly ahead, preparation waits for real device time to
+reach the full provider millisecond timestamp before the strict pricing check.
+The five-second monotonic clock budget ends before historical HTTP lookup; it
+does not include network time. A fresh clock, routing-window and session check
+after asynchronous preparation still gates persistence and invoice exposure.
+
 The fixed benchmark is:
 
 - Coinbase Exchange BTC-USD: close of the preceding completed UTC minute.
