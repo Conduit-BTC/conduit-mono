@@ -20,12 +20,12 @@ the native typecheck compiler remains independently pinned through
 `@typescript/native`. The guard refuses to run without a supported TypeScript
 transpiler, because loose JavaScript parsing can misclassify type-only edges.
 
-`scripts/ci/dependency_cycle_baseline.json` records temporary existing cycles and
-self-imports while the cleanup is delivered. Every runtime strongly connected
-component includes its exact members and internal edges. A new edge inside an
-existing component is therefore a regression, not an allowed extension. Removed
-or changed components also require an explicit baseline reduction in the same
-reviewed change. The completed cleanup should leave both baseline arrays empty.
+`scripts/ci/dependency_cycle_baseline.json` has no exceptions: both arrays are
+empty after the runtime cleanup. Any runtime cycle or Core self-import fails CI.
+During a staged cleanup, exceptions identify exact strongly connected component
+members and internal edges; adding an edge is not an allowed extension. Removed
+or changed components require an explicit baseline reduction in the same reviewed
+change.
 
 For a private graph report, run `bun run cycles:check --report <output-path>`.
 This writes the current graph without updating or accepting the baseline. Do not
@@ -36,3 +36,20 @@ growth, obsolete exceptions and static/dynamic/type Core self-imports.
 This guard addresses module loading dependencies. It does not establish package
 publishability, independently deployable application releases, runtime relay
 behavior or payment settlement.
+
+The cleanup keeps implementation ownership below compatibility facades:
+
+- Core modules use direct owner imports, and UI components import sibling
+  components directly instead of their package barrel.
+- `profile-cache.ts` owns the admitted profile parser; `profiles.ts` retains its
+  existing public binding.
+- Relay-read provenance has one WeakMap in `relay-read-provenance.ts`. Retained
+  owner-list and inbox declaration evidence live in
+  `owner-relay-list-evidence-store.ts` and
+  `private-message-retained-evidence.ts`; transport and publishing stay in their
+  original modules, with compatibility reexports for existing callers. These
+  moves preserve the same caches, authorization checks and persistence behavior.
+- [Commerce planning](commerce-relay-planning.md),
+  [shipping schemas](shipping-schema-ownership.md) and
+  [settlement models](checkout-spark-settlement-module-ownership.md) document the
+  remaining dependency boundaries and their offline characterization checks.
