@@ -26,7 +26,7 @@ The claimed rate must not have a fetch timestamp after the provider invoice
 creation time. A device clock ahead of the provider can therefore reject a
 historical-priced preparation even within a few seconds. Correct the device
 clock before retrying; neither retry nor verification rewrites that timestamp.
-This conservative preview limit remains in place rather than relaxing freshness.
+This conservative limit remains in place rather than relaxing freshness.
 
 The fixed benchmark is:
 
@@ -72,11 +72,19 @@ understand version 2 cannot verify those orders; they must upgrade, not silently
 downgrade the policy. Updated readers retain both versions.
 
 Managed builds bind the new-order selector to their reviewed trust digest.
-Preview explicitly selects historical pricing; production new orders remain
-`signed-v1`. Missing/invalid selection never opts into historical pricing.
-Both Workers, their URLs and legacy public keys remain until preview/funded
-validation and the separate production transition establish that issuance is
-no longer needed. This document does not establish live payment settlement.
+Preview and production explicitly select historical pricing for new orders;
+staging remains on the default `signed-v1` policy without mainnet trust.
+Missing/invalid selection never opts into historical pricing. Publish the
+production selector change only after the dual-version reader release is
+served by both apps and the older-client refresh/grace gate is satisfied.
+
+Both Workers, their URLs and legacy public keys remain during activation.
+Rollback changes only the new-order production selector to `signed-v1` and
+retains the dual-version readers: funded version 2 orders still require their
+original historical policy. Never restore a pre-reader release or downgrade
+funded terms. Removing the issuance footprint and the two Workers is a later
+step, after deployed supported flows and outstanding-order recovery no longer
+depend on issuance. This document does not establish live payment settlement.
 
 Sources: [Coinbase candles](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-candles),
 [Frankfurter API](https://api.frankfurter.dev/v2/openapi.json),
