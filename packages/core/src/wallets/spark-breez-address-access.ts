@@ -12,7 +12,7 @@ import {
   type BreezAddressCheckpoint,
   type BreezAddressSigner,
   type BreezAddressState,
-} from "@conduit/core"
+} from "./breez-lightning-address"
 
 export function getBreezAddressConfiguration(input: {
   enabled?: boolean
