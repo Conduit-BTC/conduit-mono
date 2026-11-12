@@ -20,9 +20,10 @@ entrypoints run in a separate module realm and are not loading-cycle edges.
 
 TypeScript-erased edges do not form runtime cycles. A separate source check still
 rejects Core importing its own package name, including type-only imports. The
-root TypeScript override keeps dependency-cruiser's parser on supported 6.0.3;
-a hoisted install keeps its optional compiler on that root pin instead of the
-aliased native compiler. The native typecheck compiler remains independently pinned through
+root TypeScript override keeps dependency-cruiser's parser on supported 6.0.3.
+The existing isolated install layout is retained; disabling its phantom fallback
+hoist keeps the optional compiler on that root pin instead of the aliased native
+compiler. The native typecheck compiler remains independently pinned through
 `@typescript/native`. The guard refuses to run without a supported TypeScript
 transpiler, because loose JavaScript parsing can misclassify type-only edges.
 
