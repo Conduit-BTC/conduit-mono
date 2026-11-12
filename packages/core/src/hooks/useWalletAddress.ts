@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
-import { useAuth, useProfile, useUpdateProfile } from "@conduit/core"
+import { useAuth } from "../context/AuthContext"
+import { useProfile } from "./useProfile"
+import { useUpdateProfile } from "./useUpdateProfile"
 import { isValidLud16Address } from "../protocol/lightning"
 import { getProfileLightningAddress } from "../protocol/profiles"
 

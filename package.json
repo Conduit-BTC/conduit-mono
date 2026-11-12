@@ -15,7 +15,8 @@
     "seroval": "1.6.11",
     "sharp": "0.35.5",
     "source-map-js": "1.2.2",
-    "undici": "7.30.1"
+    "undici": "7.30.1",
+    "typescript": "6.0.3"
   },
   "scripts": {
     "seed:nsec": "bun -e 'import { nip19 } from \"@nostr-dev-kit/ndk\"; import { randomBytes } from \"node:crypto\"; console.log(nip19.nsecEncode(randomBytes(32)));'",
@@ -64,7 +65,8 @@
     "preview:ui": "bun run --filter @conduit/market preview:ui",
     "typecheck:ui": "bun node_modules/@typescript/native/bin/tsc -p packages/ui/workbench/tsconfig.json --noEmit",
     "test:browser": "playwright test",
-    "test:browser:headed": "playwright test --headed"
+    "test:browser:headed": "playwright test --headed",
+    "cycles:check": "bun scripts/ci/check_dependency_cycles.ts"
   },
   "dependencies": {
     "react": "^19.3.1",
@@ -77,6 +79,7 @@
     "@playwright/test": "1.65.0",
     "@types/node": "26.6.6",
     "@typescript/native": "npm:typescript@^7.0.2",
+    "dependency-cruiser": "18.7.2",
     "dexie": "^4.4.7",
     "eslint": "^10.14.0",
     "eslint-plugin-react": "^7.37.4",

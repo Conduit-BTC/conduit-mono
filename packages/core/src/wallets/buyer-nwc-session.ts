@@ -15,12 +15,9 @@ import type {
   Nip47PayInvoiceRequest,
   Nip47PayResponse,
 } from "@getalby/sdk/nwc"
-import {
-  decodeLightningInvoiceAmount,
-  type ConduitAppId,
-  type NwcConnection,
-  type NwcGetInfoResult,
-} from "@conduit/core"
+import { decodeLightningInvoiceAmount } from "../protocol/lightning"
+import { type ConduitAppId } from "../protocol/nip89"
+import { type NwcConnection, type NwcGetInfoResult } from "../protocol/nwc"
 
 export type NwcSessionStatus =
   | "disconnected"

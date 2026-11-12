@@ -8,7 +8,7 @@ import type {
   PublicRelayReadDiagnosticsResult,
   PublicRelayReadResult,
 } from "./relay-reader"
-import { getEventSourceRelayUrls } from "./relay-reader"
+import { getEventSourceRelayUrls } from "./relay-read-provenance"
 import type { SignedPublicNostrEvent } from "./signed-event"
 import { isVerifiedNostrEvent } from "./verified-public-event"
 

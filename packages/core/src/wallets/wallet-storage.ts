@@ -1,16 +1,16 @@
+import { db } from "../db/index"
+import { getAccountSigner } from "../protocol/session-signer"
+import { getNwcUriFingerprint } from "../protocol/nwc"
 import {
-  db,
-  getAccountSigner,
-  getNwcUriFingerprint,
   getWalletDefaultUpdates,
-  readAuthSession,
   isWalletNetwork,
   WalletRegistry,
   type SetWalletDefaultInput,
   type WalletDescriptor,
   type WalletNetwork,
   type WalletRegistryStore,
-} from "@conduit/core"
+} from "./index"
+import { readAuthSession } from "../protocol/auth-session"
 
 import type { NwcCredentialStore } from "./wallet-migration"
 import {

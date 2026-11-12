@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { QRCodeSVG } from "qrcode.react"
 import { encodeLnurl, type BreezAddressState } from "@conduit/core"
-import { Button } from "../index"
+import { Button } from "./Button"
 
 import { walletAddressStatus } from "./wallet-address-status"
 

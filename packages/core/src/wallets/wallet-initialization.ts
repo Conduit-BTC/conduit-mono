@@ -1,4 +1,4 @@
-import type { WalletDescriptor, WalletProviderId } from "@conduit/core"
+import { type WalletDescriptor, type WalletProviderId } from "./index"
 
 /**
  * Deduplicates wallet storage initialization across hook consumers while still

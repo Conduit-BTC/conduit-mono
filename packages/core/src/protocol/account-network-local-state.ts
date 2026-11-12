@@ -865,7 +865,7 @@ async function currentOwnerGrantSelection(
     (grant.kind === "owner_selection" && grant.eventKind === 10002)
   ) {
     const { readRetainedOwnerRelayList } =
-      await import("./owner-relay-list-evidence")
+      await import("./owner-relay-list-evidence-store")
     const retained = await readRetainedOwnerRelayList(pubkey, {
       durableOnly: true,
       durableEvidenceRepository: repositories?.owner,
@@ -903,7 +903,7 @@ async function currentOwnerGrantSelection(
     { readRetainedInboxDeclarationEvidence },
     { getActiveInboxCutoverRecoveryRelayUrls },
   ] = await Promise.all([
-    import("./private-message-routing"),
+    import("./private-message-retained-evidence"),
     import("./inbox-declaration-evidence"),
   ])
   const retained = await readRetainedInboxDeclarationEvidence(pubkey, {
@@ -1065,7 +1065,7 @@ export async function filterEligibleAccountRelayTargets(input: {
         ) {
           try {
             const { readRetainedInboxDeclaration } =
-              await import("./private-message-routing")
+              await import("./private-message-retained-evidence")
             const declaration = await readRetainedInboxDeclaration(
               grant.recipientPubkey,
               {

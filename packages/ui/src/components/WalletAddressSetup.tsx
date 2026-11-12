@@ -1,7 +1,7 @@
 import { useState } from "react"
 import type { BreezAddressState } from "@conduit/core"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { Button } from "../index"
+import { Button } from "./Button"
 import { walletAddressStatus } from "./wallet-address-status"
 
 /** Default-address retry; branded names are approved through the request form. */

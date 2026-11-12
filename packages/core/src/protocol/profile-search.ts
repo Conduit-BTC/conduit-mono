@@ -32,7 +32,7 @@ import {
   projectCachedProfile,
   type ProfileFrontier,
 } from "./profile-cache"
-import { parseProfileEvent } from "./profiles"
+import { parseProfileEvent } from "./profile-cache"
 import { readDurableAccountRelaySettingsPlanningSnapshot } from "./network-preferences"
 
 export const PROFILE_SEARCH_MIN_QUERY_LENGTH = 1

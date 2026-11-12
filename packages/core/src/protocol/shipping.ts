@@ -54,8 +54,8 @@ import {
   parsePrivateOrderShippingPolicyTags,
   shippingMinorUnitsToAmount,
   type ShippingPolicy,
-  type ShippingPolicyQuote,
-} from "./shipping-policy"
+} from "./shipping-policy-model"
+import type { ShippingPolicyQuote } from "./shipping-policy"
 
 export const CONDUIT_DEFAULT_SHIPPING_OPTION_D_TAG = "conduit-default"
 export const FIXED_PRODUCT_SHIPPING_D_TAG_SUFFIX = "-shipping-standard"
