@@ -10,6 +10,8 @@
   "options": {
     "tsPreCompilationDeps": false,
     "doNotFollow": { "path": "(^|/)node_modules/" },
-    "exclude": { "path": "(^|/)(dist|build|node_modules|\\.git)/" }
+    "exclude": {
+      "path": "(^|/)(node_modules|\\.git)/|^(apps|packages)/[^/]+/(dist|build)/"
+    }
   }
 }

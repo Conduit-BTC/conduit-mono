@@ -1,4 +1,7 @@
 [install]
+# dependency-cruiser loads an optional TypeScript compiler by package name.
+# Keep it on the root supported compiler, not the aliased native compiler.
+linker = "hoisted"
 # Hold newly-published npm versions for three days to reduce exposure to
 # fast-moving malicious package compromises. Existing bun.lock entries are
 # unchanged; this only affects new resolution.

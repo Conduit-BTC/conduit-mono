@@ -1,26 +1,29 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import {
   collectCoreSelfImports,
+  validateCycleReportPath,
   collectRuntimeGraph,
   compareCycleBaseline,
   findRuntimeCycles,
   type CycleBaseline,
 } from "./dependency_cycles"
 
+const baselinePath = "scripts/ci/dependency_cycle_baseline.json"
+const baseline = JSON.parse(readFileSync(baselinePath, "utf8")) as CycleBaseline
+const reportIndex = process.argv.indexOf("--report")
+let reportPath: string | undefined
+if (reportIndex !== -1) {
+  reportPath = process.argv[reportIndex + 1]
+  if (!reportPath) throw new Error("--report requires an output path")
+  validateCycleReportPath(reportPath, baselinePath)
+}
 const graph = await collectRuntimeGraph()
 const actual: CycleBaseline = {
   cycles: findRuntimeCycles(graph),
   coreSelfImports: collectCoreSelfImports(),
 }
-const reportIndex = process.argv.indexOf("--report")
-if (reportIndex !== -1) {
-  const path = process.argv[reportIndex + 1]
-  if (!path) throw new Error("--report requires an output path")
-  writeFileSync(path, JSON.stringify({ ...actual, graph }, null, 2))
-}
-const baseline = JSON.parse(
-  readFileSync("scripts/ci/dependency_cycle_baseline.json", "utf8")
-) as CycleBaseline
+if (reportPath)
+  writeFileSync(reportPath, JSON.stringify({ ...actual, graph }, null, 2))
 const problems = compareCycleBaseline(actual, baseline)
 for (const problem of problems) console.error(problem)
 console.log(

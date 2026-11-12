@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs"
+import { basename, dirname, join, resolve } from "node:path"
 import {
   cruise,
   getAvailableTranspilers,
@@ -117,11 +117,13 @@ export function collectCoreSelfImports(root = "packages/core/src"): string[] {
         )
         function visit(node: ts.Node) {
           if (
-            ts.isStringLiteral(node) &&
+            ts.isStringLiteralLike(node) &&
             /^@conduit\/core(?:\/|$)/.test(node.text)
           ) {
             const parent = node.parent
             if (
+              (ts.isExternalModuleReference(parent) &&
+                parent.expression === node) ||
               ((ts.isImportDeclaration(parent) ||
                 ts.isExportDeclaration(parent)) &&
                 parent.moduleSpecifier === node) ||
@@ -162,9 +164,28 @@ export function discoverDependencyProjects(
     .sort()
 }
 
+/** Reports may not become an implicit baseline acceptance command. */
+export function validateCycleReportPath(
+  path: string,
+  baselinePath: string
+): string {
+  const canonical = (file: string) => {
+    const absolute = resolve(file)
+    const physical = existsSync(absolute)
+      ? realpathSync(absolute)
+      : join(realpathSync(dirname(absolute)), basename(absolute))
+    return process.platform === "win32" ? physical.toLowerCase() : physical
+  }
+  if (canonical(path) === canonical(baselinePath))
+    throw new Error("Cycle report cannot overwrite the baseline")
+  return path
+}
+
 export async function collectRuntimeGraph(
   projects = discoverDependencyProjects()
 ): Promise<ICruiseResult> {
+  if (projects.length === 0)
+    throw new Error("No dependency projects discovered")
   if (
     !getAvailableTranspilers().some(
       (t) => t.name === "typescript" && t.available
@@ -174,18 +195,42 @@ export async function collectRuntimeGraph(
       "dependency-cruiser requires a supported TypeScript transpiler; refusing a loose-parser graph"
     )
   const modules: ICruiseResult["modules"] = []
+  const sourceAliases: Record<string, string> = {}
+  const externals = new Set<string>()
+  for (const file of [
+    "package.json",
+    ...projects.map((project) => `${project}/package.json`),
+  ]) {
+    if (!existsSync(file)) continue
+    const manifest = JSON.parse(readFileSync(file, "utf8"))
+    for (const field of [
+      "dependencies",
+      "devDependencies",
+      "peerDependencies",
+      "optionalDependencies",
+    ])
+      for (const name of Object.keys(manifest[field] ?? {})) externals.add(name)
+    if (file !== "package.json" && manifest.name)
+      sourceAliases[manifest.name] = resolve(dirname(file), "src")
+  }
+  for (const name of Object.keys(sourceAliases)) externals.delete(name)
   for (const project of projects) {
     const file = `${project}/tsconfig.json`
     const config = ts.readConfigFile(file, ts.sys.readFile)
     if (config.error) throw new Error(`Cannot read dependency project ${file}`)
-    const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, project)
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      resolve(project),
+      undefined,
+      resolve(file)
+    )
     if (parsed.errors.length)
       throw new Error(`Invalid dependency project ${file}`)
     const resolveOptions = {
       tsConfig: file,
       alias: {
-        "@conduit/core": resolve("packages/core/src"),
-        "@conduit/ui": resolve("packages/ui/src"),
+        ...sourceAliases,
         "@": resolve(project, "src"),
       },
     }
@@ -198,18 +243,50 @@ export async function collectRuntimeGraph(
         outputType: "json",
       },
       resolveOptions,
-      { tsConfig: parsed }
+      {
+        tsConfig: {
+          ...parsed,
+          options: {
+            ...parsed.options,
+            // transpileModule strips the parser's internal pathsBasePath;
+            // supply its explicit base for TS path-aware diagnostics.
+            baseUrl: parsed.options.baseUrl ?? resolve(project),
+          },
+        },
+      }
     )
     const graph =
       typeof result.output === "string"
         ? (JSON.parse(result.output) as ICruiseResult)
         : result.output
+    if (
+      !graph.modules.some((module) =>
+        normalize(module.source).startsWith(`${project}/src/`)
+      )
+    )
+      throw new Error(
+        `Dependency project contributed no source modules: ${project}`
+      )
+    if (
+      project === "packages/core" &&
+      !graph.modules.some(
+        (module) => normalize(module.source) === "packages/core/src/index.ts"
+      )
+    )
+      throw new Error("Dependency graph is missing the Core entrypoint")
     for (const module of graph.modules) {
       if (!firstParty(normalize(module.source))) continue
       for (const dependency of module.dependencies) {
         if (
           dependency.couldNotResolve &&
-          /^(\.|@\/|@conduit\/)/.test(dependency.module) &&
+          !dependency.module.startsWith("node:") &&
+          !dependency.module.startsWith("bun:") &&
+          dependency.module !== "virtual:conduit-repository-contributors" &&
+          !externals.has(
+            dependency.module.startsWith("@")
+              ? dependency.module.split("/").slice(0, 2).join("/")
+              : dependency.module.split("/")[0]
+          ) &&
           !/\.(css|svg|png|jpe?g|webp|ico)(\?|$)/.test(dependency.module)
         )
           throw new Error(

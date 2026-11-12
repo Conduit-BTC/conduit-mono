@@ -9,14 +9,20 @@ own tsconfig and `@/` source alias. The workspace `@conduit/core` and
 `@conduit/ui` names resolve to their source directories, matching application
 builds rather than requiring existing package `dist` output. Unresolved internal
 code imports fail the check instead of silently disappearing from the graph.
-External dependencies are not traversed. Known CSS/image assets are not treated
+Workspace package names are resolved from their manifests. Unknown unresolved
+specifiers fail unless they name a declared external package, builtin, known Vite
+virtual module or asset. Each project must contribute source modules, and the
+Core entrypoint must be present. External dependencies are not traversed. Known CSS/image assets are not treated
 as unresolved code. Literal dynamic imports participate conservatively; computed
-dynamic imports cannot be enumerated by this static graph.
+dynamic imports cannot be enumerated by this static graph. TypeScript import
+assignments erased by ES module compilation are not runtime edges. Worker URL
+entrypoints run in a separate module realm and are not loading-cycle edges.
 
 TypeScript-erased edges do not form runtime cycles. A separate source check still
 rejects Core importing its own package name, including type-only imports. The
 root TypeScript override keeps dependency-cruiser's parser on supported 6.0.3;
-the native typecheck compiler remains independently pinned through
+a hoisted install keeps its optional compiler on that root pin instead of the
+aliased native compiler. The native typecheck compiler remains independently pinned through
 `@typescript/native`. The guard refuses to run without a supported TypeScript
 transpiler, because loose JavaScript parsing can misclassify type-only edges.
 
@@ -28,7 +34,8 @@ or changed components require an explicit baseline reduction in the same reviewe
 change.
 
 For a private graph report, run `bun run cycles:check --report <output-path>`.
-This writes the current graph without updating or accepting the baseline. Do not
+This writes the current graph without updating or accepting the baseline; a report
+path resolving to the baseline is rejected before graph collection. Do not
 automatically regenerate exceptions to make CI green. Tests cover alias and
 dynamic runtime cycles, type-only cycles, unresolved internal imports, cycle
 growth, obsolete exceptions and static/dynamic/type Core self-imports.
