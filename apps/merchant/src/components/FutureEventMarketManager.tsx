@@ -1703,6 +1703,7 @@ export function FutureEventMarketManager({
   const profiles = useProfiles(
     [...merchantIds, ...(market ? [market.organizerPubkey] : [])],
     {
+      readScope: "public_feed",
       accountPubkey,
       authenticatedPubkey,
       priority: "visible",

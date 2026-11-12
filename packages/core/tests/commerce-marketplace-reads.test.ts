@@ -283,6 +283,63 @@ describe("marketplace empty author scope", () => {
 })
 
 describe("ranked marketplace search", () => {
+  it("keeps lazy ranked hydration configured-only and retains signed revision and deletion vetoes", async () => {
+    const configured = new Set(config.appCommerceRelayUrls)
+    const hints = Array.from(
+      { length: 105 },
+      (_, index) => `wss://ranked-${index}.feed-fixture.net`
+    )
+    const old = listing("scoped-ranked", 10, 10)
+    const retained = listing("scoped-ranked", 40, 20)
+    const withdrawn = listing("scoped-withdrawn", 15, 10)
+    await cacheSignedProductListingEvent(retained, { sourceRelayUrls: hints })
+    await cacheSignedProductListingEvent(withdrawn, { sourceRelayUrls: hints })
+    await cacheSignedProductDeletionEvent(deletion("scoped-withdrawn"))
+    const attempted = new Set<string>()
+    const reads: Filter[] = []
+    const fetchFixture = relayFixture([old, withdrawn], {
+      ranked: [withdrawn, old],
+      reads,
+    })
+    __setCommerceTestOverrides({
+      getRelayLists: async () =>
+        new Map([
+          [
+            author,
+            {
+              pubkey: author,
+              readRelayUrls: [],
+              writeRelayUrls: hints,
+              eventCreatedAt: 1,
+              cachedAt: clock(),
+            },
+          ],
+        ]),
+      fetchPublicEvents: async (filter, options) => {
+        for (const url of options?.relayUrls ?? []) attempted.add(url)
+        return fetchFixture(filter)
+      },
+    })
+    const progress = recorder()
+    for (let refresh = 0; refresh < 2; refresh++) {
+      const result = await getMarketplaceProducts(
+        rankedQuery({ onProgress: progress.onProgress })
+      )
+      expect(result.data.map((record) => record.eventId)).toEqual([retained.id])
+      expect(result.meta.stale).toBe(true)
+    }
+    expect(progress.snapshots.length).toBeGreaterThan(0)
+    for (const snapshot of progress.snapshots) {
+      expect(snapshot.data.map((record) => record.eventId)).toEqual([
+        retained.id,
+      ])
+    }
+    expect(reads.some((filter) => !!filter["#d"])).toBe(true)
+    expect(attempted.size).toBeGreaterThan(0)
+    expect([...attempted].every((url) => configured.has(url))).toBe(true)
+    expect(attempted.size).toBeLessThanOrEqual(configured.size)
+  })
+
   it("keeps relay relevance through author, tag and visibility filters and lifts child hits to their parent family", async () => {
     const parent = parentListing("tent-system", 12, [["title", "Shelter"]])
     const red = variationListing("tent-red", "tent-system", "Red")
@@ -612,6 +669,74 @@ describe("ranked marketplace search under concurrent local evidence", () => {
 })
 
 describe("catalog marketplace reads", () => {
+  it("keeps plain and progressive catalog refreshes configured-only when peers fail", async () => {
+    const configured = config.appCommerceRelayUrls
+    const hints = Array.from(
+      { length: 105 },
+      (_, index) => `wss://catalog-${index}.feed-fixture.net`
+    )
+    const old = listing("scoped-catalog", 10, 10)
+    const retained = listing("scoped-catalog", 40, 20)
+    await cacheSignedProductListingEvent(retained, { sourceRelayUrls: hints })
+    const attempted = new Set<string>()
+    let relayListLookups = 0
+    const capture = (options?: { relayUrls?: string[] }) => {
+      for (const url of options?.relayUrls ?? []) attempted.add(url)
+    }
+    __setCommerceTestOverrides({
+      getRelayLists: async () => {
+        relayListLookups++
+        return new Map()
+      },
+      fetchPublicEvents: undefined,
+      fetchPublicEventsWithDiagnostics: async (filter, options) => {
+        capture(options)
+        return {
+          events: filter.kinds?.includes(30402) ? [old] : [],
+          attemptedRelayUrls: options?.relayUrls ?? [],
+          successfulRelayUrls: configured.slice(0, 1),
+          failedRelayUrls: configured.slice(1),
+          cappedRelayUrls: [],
+        }
+      },
+      fetchPublicEventsProgressive: async (_filter, options, onProgress) => {
+        capture(options)
+        for (const [index, relayUrl] of (options?.relayUrls ?? []).entries()) {
+          await onProgress({
+            relayUrl,
+            events: index === 0 ? [old] : [],
+            mergedEvents: [old],
+            status: index === 0 ? "success" : "failed",
+          })
+        }
+        return [old]
+      },
+    })
+    const query = {
+      authorPubkeys: [
+        author,
+        ...Array.from({ length: 20 }, (_, index) =>
+          (index + 1).toString(16).padStart(64, "0")
+        ),
+      ],
+    }
+    for (let refresh = 0; refresh < 2; refresh++) {
+      const plain = await getMarketplaceProducts(query)
+      const progressive = await getMarketplaceProductsProgressive(
+        query,
+        () => {}
+      )
+      for (const result of [plain, progressive]) {
+        expect(result.data.map((record) => record.eventId)).toEqual([
+          retained.id,
+        ])
+        expect(result.meta.degraded).toBe(true)
+      }
+    }
+    expect(relayListLookups).toBe(0)
+    expect(attempted).toEqual(new Set(configured))
+  })
+
   it("filters merged signed cache and live revisions before sorting and limiting, and reports partial transport", async () => {
     for (const event of [
       listing("shirt-retained", 20, 10),
@@ -890,10 +1015,10 @@ describe("progressive marketplace reads", () => {
     __setCommerceTestOverrides({
       fetchPublicEvents: undefined,
       // Deletion discovery rides the diagnostics seam and finds nothing remote.
-      fetchPublicEventsWithDiagnostics: async () => ({
+      fetchPublicEventsWithDiagnostics: async (_filter, options) => ({
         events: [],
-        attemptedRelayUrls: [],
-        successfulRelayUrls: [],
+        attemptedRelayUrls: options?.relayUrls ?? [],
+        successfulRelayUrls: options?.relayUrls ?? [],
         failedRelayUrls: [],
         cappedRelayUrls: [],
       }),

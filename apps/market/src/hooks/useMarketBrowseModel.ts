@@ -91,6 +91,7 @@ export function useMarketBrowseModel({
     normalizedSearchQuery
   )
   const productsQuery = useProgressiveProducts({
+    readScope: "public_feed",
     scope: "marketplace",
     catalogSource: effectiveCatalogSource,
     perspectivePubkey: status === "connected" && pubkey ? pubkey : null,
@@ -104,6 +105,7 @@ export function useMarketBrowseModel({
   // Merchant and category facets filter this response locally, preserving rank
   // without repeating the same relay search when a selection changes.
   const globalSearchKey = getGlobalProductSearchQueryKey({
+    readScope: "public_feed",
     query: normalizedSearchQuery,
     pubkey,
     catalogSource: effectiveCatalogSource,
@@ -115,6 +117,7 @@ export function useMarketBrowseModel({
     queryKey: globalSearchKey,
     queryFn: ({ signal }) =>
       getMarketplaceProducts({
+        readScope: "public_feed",
         authenticatedPubkey: status === "connected" ? pubkey : null,
         shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         signal,
@@ -331,6 +334,7 @@ export function useMarketBrowseModel({
   ])
   const authenticatedPubkey = status === "connected" ? pubkey : null
   const merchantIdentities = useMerchantIdentities({
+    readScope: "public_feed",
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue: shouldContinueAccountRead,

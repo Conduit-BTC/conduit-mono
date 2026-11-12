@@ -2,6 +2,19 @@ import { normalizePubkey } from "@conduit/core"
 
 export type CartHudRouteMode = "expanded" | "compact" | "suppressed"
 
+export function isCartHudPreparationEnabled(input: {
+  expanded: boolean
+  visible: boolean
+  requestedScope: string | null
+  currentScope: string
+}): boolean {
+  return (
+    input.visible &&
+    input.expanded &&
+    input.requestedScope === input.currentScope
+  )
+}
+
 export type CartHudCheckoutBlocker =
   | "listing_freshness_unavailable"
   | "shopper_preset_unavailable"

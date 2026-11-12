@@ -43,6 +43,7 @@ function hasWriteEvidence(input: {
 export function isEventMarketRosterWriteReady(
   read: EventMarketRosterReadResult | null | undefined
 ): boolean {
+  if (read?.readScope === "public_feed") return false
   return (
     read?.resolution.state === "current" &&
     hasWriteEvidence({
@@ -56,6 +57,7 @@ export function isEventMarketRosterWriteReady(
 export function isEventMarketCalendarWriteReady(
   read: EventMarketRosterReadResult | null | undefined
 ): boolean {
+  if (read?.readScope === "public_feed") return false
   return (
     !!read &&
     hasWriteEvidence({
@@ -69,7 +71,7 @@ export function isEventMarketCalendarWriteReady(
 export function isEventMarketAuthorizationWriteReady(
   read: EventMarketAuthorizationReadResult | null | undefined
 ): boolean {
-  if (!read) return false
+  if (!read || read.readScope === "public_feed") return false
   // Keep first-grant absence and explicit repair on the existing complete-read lane.
   if (!["active", "revoked"].includes(read.resolution.state))
     return read.retained && read.coverage === "complete"

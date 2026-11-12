@@ -8,6 +8,7 @@ import {
   formatNpub,
   getListingAvailabilityDisplay,
   getProfileName,
+  getPublicFeedReadScopeKey,
   isCommerceReadIncomplete,
   parseAddressableCoordinate,
   readEventMarketProduct,
@@ -62,8 +63,8 @@ import {
 } from "../../hooks/useProgressiveProducts"
 import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
-import { getEventMarketCartReviewReasons } from "../../lib/event-market-cart-review"
-import { getFuturePickupHandoffSummary } from "../../lib/pickup-handoff"
+import { getEventMarketProductPreview } from "../../lib/event-market-product-preview"
+import { assertReviewedEventMarketProductRevision } from "../../lib/event-market-product-revision"
 import {
   cartItemInputFromProductSelection,
   getProductSelection,
@@ -143,12 +144,15 @@ function ProductPage() {
   const descriptionRef = useRef<HTMLDivElement>(null)
   const shopperPricing = useShopperPricing()
 
-  const productQuery = useProgressiveProductDetail(productId)
+  const productQuery = useProgressiveProductDetail(productId, {
+    readScope: "public_feed",
+  })
   const product = productQuery.product
   const futureEventReference = product?.eventMarketRefs?.[0]
   const futureEventQuery = useQuery({
     queryKey: [
-      "product-future-event-authority",
+      "product-future-event-display",
+      getPublicFeedReadScopeKey("public_feed"),
       futureEventReference,
       product?.id,
       session.relayScope,
@@ -158,6 +162,7 @@ function ProductPage() {
     retry: false,
     queryFn: async ({ signal }) => {
       const marketRead = await readEventMarketRoster({
+        readScope: "public_feed",
         reference: futureEventReference!,
         authenticatedPubkey,
         signal,
@@ -165,14 +170,14 @@ function ProductPage() {
       if (marketRead.resolution.state !== "current" || !marketRead.calendar)
         return null
       const productRead = await readEventMarketProduct({
+        readScope: "public_feed",
         marketRead,
         productCoordinate: product!.id,
         selectedOccurrenceCoordinate: marketRead.calendar.coordinate,
         authenticatedPubkey,
         signal,
       })
-      return productRead.resolution.state === "eligible" &&
-        productRead.actionable
+      return productRead.resolution.state === "eligible"
         ? encodeEventMarketNaddr(marketRead.coordinate)
         : null
     },
@@ -189,6 +194,7 @@ function ProductPage() {
   const eventMarketQuery = useQuery({
     queryKey: [
       "product-event-market",
+      getPublicFeedReadScopeKey("public_feed"),
       eventMarketReference,
       selectedOccurrence,
       selectedProduct?.id,
@@ -197,11 +203,13 @@ function ProductPage() {
     ],
     queryFn: async ({ signal }) => {
       const marketRead = await readEventMarketRoster({
+        readScope: "public_feed",
         reference: eventMarketReference!,
         authenticatedPubkey,
         signal,
       })
       const productRead = await readEventMarketProduct({
+        readScope: "public_feed",
         marketRead,
         productCoordinate: selectedProduct!.id,
         selectedOccurrenceCoordinate:
@@ -218,10 +226,8 @@ function ProductPage() {
       !!eventMarketReference && !!selectedProduct && session.relaySettingsReady,
     retry: false,
   })
-  const eventMarketFulfillment = (() => {
-    if (!eventMarketReference || !eventMarketQuery.data) return null
-    try {
-      return createEventMarketPickupSnapshot({
+  const eventMarketPreview = eventMarketQuery.data
+    ? getEventMarketProductPreview({
         ...eventMarketQuery.data,
         selectedOccurrenceCoordinate:
           selectedOccurrence ??
@@ -229,10 +235,7 @@ function ProductPage() {
             ? undefined
             : eventMarketQuery.data.marketRead.calendar?.coordinate),
       })
-    } catch {
-      return null
-    }
-  })()
+    : null
   const productCartFulfillment = useProductCartFulfillment(
     selectedProduct,
     shopperPricing.quote
@@ -246,10 +249,11 @@ function ProductPage() {
     !!listingAvailability &&
     !productQuery.isMarketVisible &&
     (!eventMarketReference ||
-      (!eventMarketQuery.isPending && !eventMarketFulfillment))
+      (!eventMarketQuery.isPending && !eventMarketPreview))
   const productSoldOut = selectedProduct?.stock === 0
 
   const merchantProfile = useProfile(product?.pubkey, {
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey,
     shouldContinue: () => authGenerationRef.current === authGeneration,
@@ -261,6 +265,7 @@ function ProductPage() {
   })
 
   const relatedProductsQuery = useProgressiveProducts({
+    readScope: "public_feed",
     scope: "marketplace",
     merchantPubkey: product?.pubkey ?? "",
     accountPubkey,
@@ -294,9 +299,7 @@ function ProductPage() {
     : ""
   const merchantNip05 = getProfileNip05(merchantProfile.data)
   const productCartResolution = productCartFulfillment.resolution
-  const productPickupHandoff = eventMarketFulfillment
-    ? getFuturePickupHandoffSummary(eventMarketFulfillment)
-    : null
+  const productPickupHandoff = eventMarketPreview?.handoff ?? null
   const pickupHandlerIdentity = useEventActorIdentity(
     productPickupHandoff?.handlerPubkey
   )
@@ -308,28 +311,32 @@ function ProductPage() {
           { type: productCartResolution.type }
         )
       : null
-  const productCartCandidate =
-    eventMarketReference && selectedProduct
-      ? eventMarketFulfillment
-        ? cartItemInputFromProductSelection(
-            product!,
-            selectedProduct,
-            eventMarketFulfillment
-          )
-        : null
-      : ordinaryProductCartCandidate
-  const cartItem = productCartCandidate
-    ? selectCartLine(cart.items, productCartCandidate)
-    : undefined
-  const productCartBlocked =
-    (eventMarketReference
-      ? eventMarketQuery.isFetching || !eventMarketFulfillment
-      : productCartFulfillment.isChecking) || !productCartCandidate
+  const productCartCandidate = ordinaryProductCartCandidate
+  const cartItem = eventMarketReference
+    ? cart.items.find(
+        (item) =>
+          item.productId === selectedProduct?.id &&
+          item.fulfillment?.type === "event_market_pickup" &&
+          item.fulfillment.market.coordinate ===
+            eventMarketPreview?.marketCoordinate &&
+          item.fulfillment.calendar.coordinate ===
+            eventMarketPreview?.occurrenceCoordinate &&
+          item.fulfillment.product.eventId ===
+            eventMarketPreview?.productEventId &&
+          item.fulfillment.mode === eventMarketPreview?.mode &&
+          item.fulfillment.assignment === eventMarketPreview?.assignment
+      )
+    : productCartCandidate
+      ? selectCartLine(cart.items, productCartCandidate)
+      : undefined
+  const productCartBlocked = eventMarketReference
+    ? eventMarketQuery.isFetching || !eventMarketPreview
+    : productCartFulfillment.isChecking || !productCartCandidate
   const productEventNaddr = eventMarketReference
   const productFulfillmentNotice = eventMarketReference
     ? eventMarketQuery.isFetching
       ? "Checking current signed Event Market participation."
-      : eventMarketFulfillment
+      : eventMarketPreview
         ? null
         : "This product is not currently eligible at this Event Market. Review the event catalog or try again."
     : null
@@ -362,8 +369,7 @@ function ProductPage() {
   )
   const priceDisplay = selectedProduct
     ? shopperPricing.formatListingPrice(selectedProduct, {
-        allowZero:
-          productCartCandidate?.fulfillment?.type === "event_market_pickup",
+        allowZero: !!eventMarketReference && !!eventMarketPreview,
       })
     : null
   const updatedLabel = product
@@ -496,7 +502,7 @@ function ProductPage() {
       cartActionLock.current ||
       !product ||
       !selectedProduct ||
-      !productCartCandidate ||
+      (!eventMarketReference && !productCartCandidate) ||
       productCartBlocked ||
       !productAddAvailability.canAdd
     ) {
@@ -539,10 +545,11 @@ function ProductPage() {
           throw new Error(
             "This product is not currently available for event pickup."
           )
-        if (productRead.resolution.revision.id !== candidate.productEventId)
-          throw new Error(
-            "Product details changed. Review the refreshed item before adding it."
-          )
+        await assertReviewedEventMarketProductRevision(
+          selectedProduct.sourceEventId,
+          productRead.resolution.revision
+        )
+        if (!shouldContinue()) return
         const fulfillment = createEventMarketPickupSnapshot({
           marketRead,
           productRead,
@@ -557,23 +564,28 @@ function ProductPage() {
           productRead.resolution.product,
           fulfillment
         )
+        const freshPreview = getEventMarketProductPreview({
+          marketRead,
+          productRead,
+          selectedOccurrenceCoordinate: fulfillment.calendar.coordinate,
+        })
         if (
-          !eventMarketFulfillment ||
-          getEventMarketCartReviewReasons({
-            saved: eventMarketFulfillment,
-            current: fulfillment,
-            savedPrice: candidate.price,
-            currentPrice: current.price,
-          }).length > 0
+          !eventMarketPreview ||
+          freshPreview?.termsKey !== eventMarketPreview.termsKey
         )
           throw new Error(
             "Pickup terms changed. Review the refreshed item before adding it."
           )
         candidate = current
       }
-      if (!shouldContinue()) return
-      const added = cartItem
-        ? await cart.refreshAndIncrementItem(cartItem, candidate, quantity)
+      if (!shouldContinue() || !candidate) return
+      const currentCartItem = selectCartLine(cart.items, candidate)
+      const added = currentCartItem
+        ? await cart.refreshAndIncrementItem(
+            currentCartItem,
+            candidate,
+            quantity
+          )
         : await cart.addItem(candidate, quantity)
       if (!added)
         throw new Error(
@@ -1089,7 +1101,7 @@ function ProductPage() {
                         ? "Sold out"
                         : eventMarketReference && eventMarketQuery.isFetching
                           ? "Checking Event Market"
-                          : eventMarketReference && !eventMarketFulfillment
+                          : eventMarketReference && !eventMarketPreview
                             ? "Review event catalog"
                             : productCartFulfillment.isChecking
                               ? "Checking event pickup"

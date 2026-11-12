@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  getPublicFeedReadScopeKey,
   extractFollowPubkeys,
   getMerchantStorefront,
   getFollowPubkeys,
@@ -74,6 +75,7 @@ export function useMerchantEventTimeline(input: {
   const authenticatedPubkey =
     signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
   const queryScope = [
+    "owner_management",
     session.relayScope ?? "no-relay-scope",
     authenticatedPubkey,
     authGeneration,
@@ -95,6 +97,7 @@ export function useMerchantEventTimeline(input: {
     queryFn: ({ signal }) =>
       getFollowPubkeys({
         pubkey: merchantPubkey,
+        accountPubkey,
         authenticatedPubkey,
         shouldContinue: () =>
           !signal.aborted && authGenerationRef.current === authGeneration,
@@ -154,11 +157,13 @@ export function useMerchantEventTimeline(input: {
       "merchant-event-perspective-follows",
       ...queryScope,
       "conduit",
+      getPublicFeedReadScopeKey("public_feed"),
       CONDUIT_MARKET_PERSPECTIVE_PUBKEY,
       merchantPubkey || "none",
     ],
     queryFn: ({ signal }) =>
       getFollowPubkeys({
+        readScope: "public_feed",
         pubkey: CONDUIT_MARKET_PERSPECTIVE_PUBKEY,
         authenticatedPubkey,
         shouldContinue: () =>

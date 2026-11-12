@@ -209,6 +209,7 @@ export function MarketEventsTimeline({
     [presentation.currentAndFuture, presentation.past]
   )
   const organizerIdentities = useMerchantIdentities({
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey: connected ? pubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,

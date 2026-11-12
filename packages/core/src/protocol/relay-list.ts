@@ -101,6 +101,7 @@ export interface RelayListLookupOptions {
 }
 
 export type RelayListResolutionState =
+  | "not-required"
   | "network"
   | "fresh-cache"
   | "stale-cache"

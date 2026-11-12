@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   getProfilePaymentAddress,
+  getPublicFeedReadScopeKey,
+  type PublicReadScope,
   hasFreshProfilePaymentAddress,
   buildMerchantTrustSocialSummary,
   fetchMerchantTrustSocialSummary,
@@ -54,11 +56,13 @@ export function getMerchantProfileAuthenticatedPubkey(
 }
 
 export function useMerchantTrustContext({
+  readScope,
   merchantPubkey,
   listingCount,
   profileRelayHints,
   requireCompleteProfileEvidence = false,
 }: {
+  readScope?: PublicReadScope
   merchantPubkey: string | null | undefined
   listingCount?: number
   profileRelayHints?: string[]
@@ -103,7 +107,12 @@ export function useMerchantTrustContext({
     !!accountPubkey &&
     signerPubkey === accountPubkey
   const authenticatedPubkey = signerReady ? signerPubkey : null
+  // Payment evidence always uses its existing complete-evidence routing.
+  const displayReadScope = requireCompleteProfileEvidence
+    ? undefined
+    : readScope
   const profileQuery = useProfile(merchantPubkey ?? null, {
+    readScope: displayReadScope,
     authenticatedPubkey: getMerchantProfileAuthenticatedPubkey(
       merchantPubkey,
       authenticatedPubkey
@@ -123,6 +132,7 @@ export function useMerchantTrustContext({
       [
         "merchant-trust-social",
         "v2",
+        getPublicFeedReadScopeKey(displayReadScope),
         session.relayScope ?? "none",
         viewerPubkey ?? "none",
         `${authGeneration}:${signerReadiness}`,
@@ -130,6 +140,7 @@ export function useMerchantTrustContext({
       ] as const,
     [
       authGeneration,
+      displayReadScope,
       merchantPubkey,
       session.relayScope,
       signerReadiness,
@@ -152,6 +163,7 @@ export function useMerchantTrustContext({
         },
         {
           signal,
+          readScope: displayReadScope,
           authenticatedPubkey,
           shouldContinue: () => !signal.aborted && shouldContinueAccountRead(),
         }

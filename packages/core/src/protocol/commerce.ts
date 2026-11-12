@@ -1,4 +1,8 @@
 import {
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
+import {
   BROAD_AUTHOR_HINT_LIMIT,
   planCommerceReadRelayPlan,
   __setCommerceRelayPlanningTestOverrides,
@@ -345,6 +349,7 @@ export interface FollowListResult extends CommerceResult<string[]> {
 export type { CommerceProductRecord } from "./commerce-product-selection"
 
 export interface MarketplaceProductsQuery {
+  readScope?: PublicReadScope
   merchantPubkey?: string
   authorPubkeys?: string[]
   authenticatedPubkey?: string | null
@@ -366,6 +371,7 @@ export interface MarketplaceProductsQuery {
 }
 
 export interface MerchantStorefrontQuery {
+  readScope?: PublicReadScope
   merchantPubkey: string
   authenticatedPubkey?: string | null
   /** Final-I/O account exclusions without changing merchant-hint authority. */
@@ -384,6 +390,7 @@ export interface MerchantStorefrontQuery {
 }
 
 export interface ProductDetailQuery {
+  readScope?: PublicReadScope
   productId: string
   revalidateCanonical?: boolean
   includeMarketHidden?: boolean
@@ -394,6 +401,7 @@ export interface ProductDetailQuery {
 }
 
 export interface ProductsByIdsOptions {
+  readScope?: PublicReadScope
   /**
    * One initial locally reconciled snapshot, including an empty cache, before
    * relay discovery. Success-only: an initial cache failure or cancellation
@@ -440,6 +448,7 @@ export interface ProductsByIdsOptions {
 }
 
 export interface ProfileBatchQuery {
+  readScope?: PublicReadScope
   pubkeys: string[]
   authenticatedPubkey?: string | null
   /** Final-I/O account exclusions without changing profile hint authority. */
@@ -462,6 +471,7 @@ export interface ProfileBatchQuery {
 }
 
 export interface FollowListQuery {
+  readScope?: PublicReadScope
   pubkey: string
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
@@ -1128,6 +1138,7 @@ async function preloadExactProductRelayLists(
   ): Promise<RelayListChunkResult[]> => {
     try {
       const relayPlan = await planCommerceReadRelayPlan({
+        readScope: options.readScope,
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
@@ -1197,6 +1208,7 @@ function putMergedEvent(
 }
 
 async function streamProductRecordChunks(input: {
+  readScope?: PublicReadScope
   baseFilter: Filter
   authorChunks: Array<string[] | undefined>
   relayUrls: string[]
@@ -1228,8 +1240,29 @@ async function streamProductRecordChunks(input: {
     PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
     input.authorChunks.length
   )
+  const fetchFeedProgressive: typeof fetchPublicEventsProgressive = async (
+    filter,
+    options,
+    onProgress
+  ) => {
+    const result = await runFetchEventsFanoutDetailed(filter, {
+      ...options,
+      onRelayProgress: onProgress,
+    })
+    // Progress callbacks cover attempted sources only. A health/policy
+    // omission must not turn a fixed-feed partial read into completion.
+    input.onTransportStatus?.(
+      result.degraded ||
+        input.relayUrls.some((url) => !result.completedRelayUrls.includes(url)),
+      result.capped
+    )
+    return result.events
+  }
   const fetchProgressive =
-    testOverrides.fetchPublicEventsProgressive ?? fetchPublicEventsProgressive
+    testOverrides.fetchPublicEventsProgressive ??
+    (input.readScope === "public_feed"
+      ? fetchFeedProgressive
+      : fetchPublicEventsProgressive)
   const yieldCatalogTask = async (): Promise<void> => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     input.signal?.throwIfAborted()
@@ -1343,6 +1376,7 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            requireAllRequestedRelays: input.readScope === "public_feed",
             relayTargets: input.relayTargets,
             maxRelayAttempts: input.maxRelayAttempts,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
@@ -1561,6 +1595,7 @@ function deletionCandidateFromRecord(
 async function fetchProductDeletionTimestamps(
   candidates: readonly ProductDeletionCandidate[],
   options: {
+    readScope?: PublicReadScope
     readPolicy?: CommerceReadPolicy
     fallbackWhenEmpty?: boolean
     authenticatedPubkey?: string | null
@@ -1570,6 +1605,7 @@ async function fetchProductDeletionTimestamps(
     shouldContinue?: () => boolean
     fetchEvents?: typeof runFetchEventsFanout
     onSkippedRelayUrls?: (relayUrls: readonly string[]) => void
+    onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
   } = {}
 ): Promise<DeletionTimestamps> {
   const authors = uniqueStrings(candidates.map((candidate) => candidate.pubkey))
@@ -1614,6 +1650,7 @@ async function fetchProductDeletionTimestamps(
       ]
 
       const deletionRelayPlan = await planCommerceReadRelayPlan({
+        readScope: options.readScope,
         intent: "author_products",
         authors: authorChunk,
         authenticatedPubkey: options.authenticatedPubkey,
@@ -1632,30 +1669,40 @@ async function fetchProductDeletionTimestamps(
         ...sourceRelayHints.publicRelayUrls,
         ...authenticatedOwnerSourceRelayUrls,
       ])
-      const preferredDeletionRelayUrls = uniqueStrings([
-        ...sourceRelayUrls,
-        ...config.appBackplaneRelayUrls,
-        ...deletionRelayPlan.relayUrls,
-      ])
-      const deletionRelayTargets = mergeRelayTargets(
-        deletionRelayPlan.relayTargets,
-        relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
-          kind: "public_hint",
-          operation: "read",
-        }),
-        configuredRelayTargets(
-          {
-            kind: "public_fallback",
-            operation: "read",
-            bucket: "commerce_discovery",
-          },
-          preferredDeletionRelayUrls
-        ),
-        configuredRelayTargets(
-          { kind: "public_fallback", operation: "read", bucket: "core_public" },
-          preferredDeletionRelayUrls
-        )
-      )
+      const preferredDeletionRelayUrls =
+        options.readScope === "public_feed"
+          ? deletionRelayPlan.candidateRelayUrls
+          : uniqueStrings([
+              ...sourceRelayUrls,
+              ...config.appBackplaneRelayUrls,
+              ...deletionRelayPlan.relayUrls,
+            ])
+      const deletionRelayTargets =
+        options.readScope === "public_feed"
+          ? deletionRelayPlan.relayTargets
+          : mergeRelayTargets(
+              deletionRelayPlan.relayTargets,
+              relayTargetsFromUrls(sourceRelayHints.publicRelayUrls, {
+                kind: "public_hint",
+                operation: "read",
+              }),
+              configuredRelayTargets(
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "commerce_discovery",
+                },
+                preferredDeletionRelayUrls
+              ),
+              configuredRelayTargets(
+                {
+                  kind: "public_fallback",
+                  operation: "read",
+                  bucket: "core_public",
+                },
+                preferredDeletionRelayUrls
+              )
+            )
       options.onSkippedRelayUrls?.(
         deletionRelayPlan.parkedRelayUrls.filter(
           (relayUrl) => !preferredDeletionRelayUrls.includes(relayUrl)
@@ -1670,6 +1717,11 @@ async function fetchProductDeletionTimestamps(
         preferredDeletionRelayUrls,
         relayBatchSize
       )
+      if (
+        options.readScope === "public_feed" &&
+        preferredDeletionRelayUrls.length === 0
+      )
+        options.onReadCoverage?.("unavailable")
       const fetchDeletionFilter = async (
         filter: Filter
       ): Promise<SignedPublicNostrEvent[]> =>
@@ -1677,9 +1729,10 @@ async function fetchProductDeletionTimestamps(
           await mapWithConcurrency(
             deletionRelayBatches,
             PRODUCT_AUTHOR_CHUNK_CONCURRENCY,
-            async (relayUrls) =>
-              await (options.fetchEvents ?? runFetchEventsFanout)(filter, {
+            async (relayUrls) => {
+              const fetchOptions = {
                 relayUrls,
+                requireAllRequestedRelays: options.readScope === "public_feed",
                 relayTargets: deletionRelayTargets.filter((target) =>
                   relayUrls.includes(target.url)
                 ),
@@ -1692,7 +1745,30 @@ async function fetchProductDeletionTimestamps(
                 signal: options.signal,
                 connectTimeoutMs: options.readPolicy?.connectTimeoutMs ?? 4_000,
                 fetchTimeoutMs: options.readPolicy?.fetchTimeoutMs ?? 10_000,
-              })
+              }
+              if (options.readScope === "public_feed" && !options.fetchEvents) {
+                const result = await runFetchEventsFanoutDetailed(
+                  filter,
+                  fetchOptions
+                )
+                const coverage =
+                  result.completedRelayUrls.length === 0
+                    ? "unavailable"
+                    : result.degraded ||
+                        result.capped ||
+                        relayUrls.some(
+                          (url) => !result.completedRelayUrls.includes(url)
+                        )
+                      ? "partial"
+                      : "complete"
+                options.onReadCoverage?.(coverage)
+                return result.events
+              }
+              return await (options.fetchEvents ?? runFetchEventsFanout)(
+                filter,
+                fetchOptions
+              )
+            }
           )
         ).flat()
       const filterBatches = await mapWithConcurrency(
@@ -1728,7 +1804,9 @@ async function fetchDeletionTimestampsForProductRecords(
   ),
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
-  shouldContinue?: () => boolean
+  shouldContinue?: () => boolean,
+  readScope?: PublicReadScope,
+  onReadCoverage?: (coverage: "complete" | "partial" | "unavailable") => void
 ): Promise<DeletionTimestamps> {
   const recordCandidates = records.map(deletionCandidateFromRecord)
   const candidateAuthors = new Set(
@@ -1742,6 +1820,8 @@ async function fetchDeletionTimestampsForProductRecords(
         .map((pubkey) => ({ pubkey })),
     ],
     {
+      readScope,
+      onReadCoverage,
       fallbackWhenEmpty: true,
       accountPubkey,
       authenticatedPubkey,
@@ -1776,6 +1856,7 @@ function mergeCachedAndLiveProductRecords(input: {
 }
 
 async function fetchPublicProductRecords(query: {
+  readScope?: PublicReadScope
   retainRevisions?: boolean
   authors?: string[]
   ids?: string[]
@@ -1809,44 +1890,62 @@ async function fetchPublicProductRecords(query: {
   if (query.parentAddresses) filter["#a"] = query.parentAddresses
   if (query.searchText) filter.search = query.searchText
 
-  const productSearchRelayUrls = config.searchIndexRelayUrls.slice(0, 1)
-  const relayPlan = query.searchText
-    ? {
-        candidateRelayUrls: productSearchRelayUrls,
-        relayTargets: configuredRelayTargets(
-          {
-            kind: "app",
-            operation: "read",
-            bucket: "search_index",
-          },
-          productSearchRelayUrls
-        ),
-        maxRelayAttempts: productSearchRelayUrls.length,
-        ownerSelectedRelayUrls: [],
-        appRelayUrls: productSearchRelayUrls,
-        personalRelayUrls: [],
-        independentRelayUrls: [],
-      }
-    : await planCommerceReadRelayPlan({
-        intent:
-          query.authors && query.authors.length > 0
-            ? "author_products"
-            : "commerce_products",
-        authors: query.authors,
-        authenticatedPubkey: query.authenticatedPubkey,
-        accountPubkey: query.accountPubkey,
-        maxRelays: query.extraRelayUrls?.length
-          ? Math.min(
-              query.readPolicy?.maxRelays ?? DEFAULT_READ_FANOUT,
-              DEFAULT_READ_FANOUT
-            )
-          : query.readPolicy?.maxRelays,
-        shouldContinue: query.shouldContinue,
-        signal: query.signal,
-        extraRelayUrls: query.extraRelayUrls,
-      })
+  const feedPlan =
+    query.readScope === "public_feed"
+      ? getPublicFeedReadPlan(query.readPolicy?.maxRelays)
+      : undefined
+  const productSearchRelayUrls =
+    feedPlan?.relayUrls.slice(0, 1) ?? config.searchIndexRelayUrls.slice(0, 1)
+  const relayPlan =
+    query.readScope === "public_feed"
+      ? {
+          ...feedPlan!,
+          candidateRelayUrls: query.searchText
+            ? productSearchRelayUrls
+            : feedPlan!.candidateRelayUrls,
+          relayTargets: query.searchText
+            ? feedPlan!.relayTargets.slice(0, 1)
+            : feedPlan!.relayTargets,
+        }
+      : query.searchText
+        ? {
+            candidateRelayUrls: productSearchRelayUrls,
+            relayTargets: configuredRelayTargets(
+              {
+                kind: "app",
+                operation: "read",
+                bucket: "search_index",
+              },
+              productSearchRelayUrls
+            ),
+            maxRelayAttempts: productSearchRelayUrls.length,
+            ownerSelectedRelayUrls: [],
+            appRelayUrls: productSearchRelayUrls,
+            personalRelayUrls: [],
+            independentRelayUrls: [],
+          }
+        : await planCommerceReadRelayPlan({
+            readScope: query.readScope,
+            intent:
+              query.authors && query.authors.length > 0
+                ? "author_products"
+                : "commerce_products",
+            authors: query.authors,
+            authenticatedPubkey: query.authenticatedPubkey,
+            accountPubkey: query.accountPubkey,
+            maxRelays: query.extraRelayUrls?.length
+              ? Math.min(
+                  query.readPolicy?.maxRelays ?? DEFAULT_READ_FANOUT,
+                  DEFAULT_READ_FANOUT
+                )
+              : query.readPolicy?.maxRelays,
+            shouldContinue: query.shouldContinue,
+            signal: query.signal,
+            extraRelayUrls: query.extraRelayUrls,
+          })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
+    requireAllRequestedRelays: query.readScope === "public_feed",
     relayUrls: relayPlan.candidateRelayUrls,
     relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
@@ -1874,6 +1973,9 @@ async function fetchPublicProductRecords(query: {
           ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
         ],
         {
+          readScope: query.readScope,
+          onReadCoverage: (coverage) =>
+            query.onTransportStatus?.(coverage !== "complete", false),
           readPolicy: query.deletionReadPolicy ?? query.readPolicy,
           fallbackWhenEmpty: query.deletionFallbackWhenEmpty,
           authenticatedPubkey: query.authenticatedPubkey,
@@ -1891,6 +1993,7 @@ async function fetchPublicProductRecords(query: {
 
 async function fetchPublicProductRecordsProgressive(
   query: {
+    readScope?: PublicReadScope
     retainRevisions?: boolean
     authors?: string[]
     ids?: string[]
@@ -1931,6 +2034,7 @@ async function fetchPublicProductRecordsProgressive(
       ? chunkStrings(uniqueStrings(query.authors), PRODUCT_AUTHOR_CHUNK_SIZE)
       : [undefined]
   const relayPlan = await planCommerceReadRelayPlan({
+    readScope: query.readScope,
     intent:
       query.authors && query.authors.length > 0
         ? "author_products"
@@ -1953,6 +2057,7 @@ async function fetchPublicProductRecordsProgressive(
     query.authors && query.authors.length > BROAD_AUTHOR_HINT_LIMIT
   const expandedRelayPlanPromise = shouldExpandRelayHints
     ? planCommerceReadRelayPlan({
+        readScope: query.readScope,
         intent: "author_products",
         authors: query.authors,
         authenticatedPubkey: query.authenticatedPubkey,
@@ -1966,6 +2071,7 @@ async function fetchPublicProductRecordsProgressive(
   void expandedRelayPlanPromise.catch(() => undefined)
 
   await streamProductRecordChunks({
+    readScope: query.readScope,
     baseFilter: filter,
     authorChunks,
     relayUrls: relayPlan.candidateRelayUrls,
@@ -1992,6 +2098,7 @@ async function fetchPublicProductRecordsProgressive(
   if (expansionRelayUrls.length > 0) {
     const expansionRelayUrlSet = new Set(expansionRelayUrls)
     await streamProductRecordChunks({
+      readScope: query.readScope,
       baseFilter: filter,
       authorChunks,
       relayUrls: expansionRelayUrls,
@@ -2020,6 +2127,9 @@ async function fetchPublicProductRecordsProgressive(
       ...(query.deletionCandidates ?? []).map(deletionCandidateFromRecord),
     ],
     {
+      readScope: query.readScope,
+      onReadCoverage: (coverage) =>
+        query.onTransportStatus?.(coverage !== "complete", false),
       readPolicy: query.readPolicy,
       authenticatedPubkey: query.authenticatedPubkey,
       accountPubkey: query.accountPubkey,
@@ -2063,6 +2173,7 @@ export async function getFollowPubkeys(
       authenticatedPubkey: query.authenticatedPubkey,
     },
     {
+      readScope: query.readScope,
       now: testOverrides.now,
       accountNetworkLocalStateRepository:
         testOverrides.accountNetworkLocalStateRepository,
@@ -2115,7 +2226,7 @@ function marketplaceReadDependencies(): MarketplaceReadDependencies {
     readProductsByIds,
     rethrowProductReadAuthorityChange,
     now,
-    getSearchRelayUrls: () => config.searchIndexRelayUrls.slice(0, 1),
+    getSearchRelayUrls: () => getPublicFeedReadPlan().relayUrls.slice(0, 1),
     createMeta: (source, options, sortModes) =>
       createMeta(
         "marketplace_products",
@@ -2130,7 +2241,10 @@ function marketplaceReadDependencies(): MarketplaceReadDependencies {
 export async function getMarketplaceProducts(
   query: MarketplaceProductsQuery = {}
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
-  return readMarketplaceProducts(query, marketplaceReadDependencies())
+  return readMarketplaceProducts(
+    { ...query, readScope: "public_feed" },
+    marketplaceReadDependencies()
+  )
 }
 export async function getMarketplaceProductsProgressive(
   query: MarketplaceProductsQuery = {},
@@ -2140,7 +2254,7 @@ export async function getMarketplaceProductsProgressive(
   ) => void
 ): Promise<CommerceResult<CommerceProductRecord[]>> {
   return readMarketplaceProductsProgressive(
-    query,
+    { ...query, readScope: "public_feed" },
     onProgress,
     marketplaceReadDependencies()
   )
@@ -2188,7 +2302,8 @@ async function fetchVariationGroupRecords(
   accountPubkey?: string | null,
   authenticatedPubkey?: string | null,
   shouldContinue?: () => boolean,
-  relayHints: readonly string[] = []
+  relayHints: readonly string[] = [],
+  readScope?: PublicReadScope
 ): Promise<{
   records: CommerceProductRecord[]
   degraded: boolean
@@ -2220,6 +2335,7 @@ async function fetchVariationGroupRecords(
   const [parents, variations] = await Promise.all([
     target.product.type === "variation"
       ? fetchPublicProductRecords({
+          readScope,
           authors: [parsedParent.pubkey],
           dTags: [parsedParent.d],
           accountPubkey,
@@ -2234,6 +2350,7 @@ async function fetchVariationGroupRecords(
         })
       : Promise.resolve([]),
     fetchPublicProductRecords({
+      readScope,
       authors: [parsedParent.pubkey],
       parentAddresses: [parentAddress],
       accountPubkey,
@@ -2345,6 +2462,7 @@ async function fetchVariationGroupRecordBatch(
         return {
           targets: familyTargets,
           relayPlan: await planCommerceReadRelayPlan({
+            readScope: options.readScope,
             intent: "author_products",
             authors: [familyTargets[0]!.author],
             authenticatedPubkey: options.authenticatedPubkey,
@@ -2431,6 +2549,7 @@ async function fetchVariationGroupRecordBatch(
       // Each transport-safe chunk starts with at most two family reads.
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
+        requireAllRequestedRelays: options.readScope === "public_feed",
         relayUrls: relayPlan.candidateRelayUrls,
         relayTargets: relayPlan.relayTargets,
         maxRelayAttempts: relayPlan.maxRelayAttempts,
@@ -2524,7 +2643,11 @@ async function fetchVariationGroupRecordBatch(
         const relevantRelayHints = uniqueStrings([
           ...target.relayHints,
           ...relayPlan.hintRelayUrls,
-        ])
+        ]).filter(
+          (relayUrl) =>
+            options.readScope !== "public_feed" ||
+            consideredRelayUrlSet.has(relayUrl)
+        )
         const expectedRelayUrls = uniqueStrings([
           ...consideredRelayUrls,
           ...relevantRelayHints,
@@ -3115,6 +3238,7 @@ async function readPreparedProductTargets(
         return {
           targets: group.targets,
           relayPlan: await planCommerceReadRelayPlan({
+            readScope: options.readScope,
             intent: "author_products",
             authors: [author],
             authenticatedPubkey: options.authenticatedPubkey,
@@ -3250,6 +3374,7 @@ async function readPreparedProductTargets(
             },
             {
               relayUrls: relayPlan.candidateRelayUrls,
+              requireAllRequestedRelays: options.readScope === "public_feed",
               relayTargets: relayPlan.relayTargets,
               maxRelayAttempts: relayPlan.maxRelayAttempts,
               accountPubkey:
@@ -3271,7 +3396,11 @@ async function readPreparedProductTargets(
           const completeRelayHints = uniqueStrings([
             ...knownRelayHints,
             ...relayPlan.hintRelayUrls,
-          ])
+          ]).filter(
+            (relayUrl) =>
+              options.readScope !== "public_feed" ||
+              consideredRelayUrlSet.has(relayUrl)
+          )
           return {
             targets,
             events: result.events,
@@ -3289,7 +3418,11 @@ async function readPreparedProductTargets(
                     ...consideredRelayUrls,
                     ...target.relayHints,
                     ...relayPlan.hintRelayUrls,
-                  ])
+                  ]).filter(
+                    (relayUrl) =>
+                      options.readScope !== "public_feed" ||
+                      consideredRelayUrlSet.has(relayUrl)
+                  )
                 ),
               ])
             ),
@@ -3441,6 +3574,7 @@ async function readPreparedProductTargets(
             accountPubkey: options.accountPubkey ?? options.authenticatedPubkey,
             shouldContinue: options.shouldContinue,
             signal: options.signal,
+            readScope: options.readScope,
             fetchEvents: fetchDeletionEventsWithCoverage,
             onSkippedRelayUrls: (relayUrls) => {
               deletionPlanSkippedRelay ||= relayUrls.length > 0

@@ -9,6 +9,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   getMarketplaceProducts,
+  getPublicFeedReadScopeKey,
   getLocalProductDeletionSnapshot,
   reconcileProductRecordsWithDeletions,
   subscribeLocalProductDeletionChanges,
@@ -71,6 +72,7 @@ export function useSellerDirectory(input: {
     ? input.catalogSource
     : "conduit"
   const productsQuery = useProgressiveProducts({
+    readScope: "public_feed",
     scope: "marketplace",
     catalogSource: effectiveSource,
     enabled,
@@ -83,6 +85,7 @@ export function useSellerDirectory(input: {
   const fallbackQueryKey = useMemo(
     () => [
       "header-catalog-fallback",
+      getPublicFeedReadScopeKey("public_feed"),
       connected ? pubkey : null,
       authGeneration,
       effectiveSource,
@@ -118,6 +121,7 @@ export function useSellerDirectory(input: {
     queryKey: fallbackQueryKey,
     queryFn: ({ signal }) =>
       getMarketplaceProducts({
+        readScope: "public_feed",
         authorPubkeys: productsQuery.catalogAuthorPubkeys ?? [],
         accountPubkey: connected ? pubkey : null,
         authenticatedPubkey: connected ? pubkey : null,
@@ -201,6 +205,7 @@ export function useSellerDirectory(input: {
     [sellers]
   )
   const identities = useMerchantIdentities({
+    readScope: "public_feed",
     accountPubkey: connected ? pubkey : null,
     authenticatedPubkey: connected ? pubkey : null,
     shouldContinue: () => authGenerationRef.current === authGeneration,
@@ -225,6 +230,7 @@ export function useSellerDirectory(input: {
     discoveryStale: productsQuery.discoveryStale,
   })
   const accountSearch = useProfileSearch(query, {
+    readScope: "public_feed",
     enabled: enabled && eligibleAuthorPubkeys !== undefined,
     limit: ACCOUNT_SEARCH_CANDIDATE_LIMIT,
     settleMs: input.accountSearchSettleMs,

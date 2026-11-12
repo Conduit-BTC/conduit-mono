@@ -1,3 +1,8 @@
+import {
+  getPublicFeedReadPlan,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
+import { NostrSignerError } from "./nostr-event-signer"
 import { config } from "../config"
 import { configuredRelayTargets } from "./account-network-local-state"
 import {
@@ -135,6 +140,7 @@ export async function planLegacyDirectMessageRead(
 }
 
 export async function planCommerceReadRelayPlan(input: {
+  readScope?: PublicReadScope
   intent: RelayReadIntent
   authors?: readonly string[]
   recipients?: readonly string[]
@@ -153,6 +159,17 @@ export async function planCommerceReadRelayPlan(input: {
   shouldContinue?: () => boolean
   signal?: AbortSignal
 }): Promise<CommerceReadRelayPlan> {
+  if (input.readScope === "public_feed") {
+    input.signal?.throwIfAborted()
+    if (input.shouldContinue?.() === false)
+      throw new NostrSignerError("authority_changed")
+    return {
+      ...getPublicFeedReadPlan(input.maxRelays),
+      relayLists: new Map(),
+      relayListResolutionStates: new Map(),
+      relayListLookupIncomplete: false,
+    }
+  }
   const accountPubkey = input.accountPubkey ?? input.authenticatedPubkey
   const settingsSnapshot = input.authenticatedPubkey
     ? await readDurableAccountRelaySettingsPlanningSnapshot(

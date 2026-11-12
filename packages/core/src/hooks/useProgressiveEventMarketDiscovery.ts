@@ -1,3 +1,4 @@
+import { getPublicFeedReadScopeKey } from "../protocol/public-feed-read-scope"
 import { useLayoutEffect, useMemo, useRef } from "react"
 import {
   hashKey,
@@ -8,6 +9,7 @@ import {
 } from "@tanstack/react-query"
 import {
   discoverFutureEventMarkets,
+  discoverOwnedEventMarkets,
   type FutureEventMarketDiscoveryResult,
 } from "../protocol/event-market-roster-read"
 
@@ -107,13 +109,21 @@ export function createProgressiveEventMarketDiscoveryQuery(input: {
 }
 
 export function useProgressiveEventMarketDiscovery(input: {
+  /** Only the authenticated organizer's management list uses owner routing. */
+  purpose?: "owner_management"
   queryKey: QueryKey
   discoveryInput: DiscoveryInput
   enabled: boolean
   refetchInterval?: number
 }) {
   const queryClient = useQueryClient()
-  const scope = hashKey(input.queryKey)
+  const queryKey = [
+    ...input.queryKey,
+    input.purpose === "owner_management"
+      ? "owner_management"
+      : getPublicFeedReadScopeKey("public_feed"),
+  ]
+  const scope = hashKey(queryKey)
   const activeScope = useRef(scope)
   const nextContinuation = useRef<DiscoveryInput["continuation"]>(undefined)
   useLayoutEffect(() => {
@@ -127,8 +137,19 @@ export function useProgressiveEventMarketDiscovery(input: {
     () =>
       createProgressiveEventMarketDiscoveryQuery({
         queryClient,
-        queryKey: input.queryKey,
+        queryKey,
         discoveryInput: input.discoveryInput,
+        discover:
+          input.purpose === "owner_management"
+            ? (query) =>
+                discoverOwnedEventMarkets({
+                  ...query,
+                  organizerPubkey:
+                    query.organizerPubkeys?.length === 1
+                      ? (query.organizerPubkeys[0] ?? "")
+                      : "",
+                })
+            : discoverFutureEventMarkets,
         isCurrent: () => activeScope.current === scope,
         getContinuation: () => {
           const continuation = nextContinuation.current
@@ -143,7 +164,7 @@ export function useProgressiveEventMarketDiscovery(input: {
     [queryClient, scope]
   )
   const query = useQuery({
-    queryKey: input.queryKey,
+    queryKey,
     queryFn,
     enabled: input.enabled,
     retry: false,

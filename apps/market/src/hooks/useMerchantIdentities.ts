@@ -1,5 +1,9 @@
 import { useCallback, useMemo } from "react"
-import { mergeRicherProfiles, useProfiles } from "@conduit/core"
+import {
+  mergeRicherProfiles,
+  useProfiles,
+  type PublicReadScope,
+} from "@conduit/core"
 import {
   getMerchantIdentityFromMap,
   type MerchantIdentityView,
@@ -7,6 +11,7 @@ import {
 import { splitMerchantHydrationTargets } from "../lib/clientHydration"
 
 interface UseMerchantIdentitiesInput {
+  readScope?: PublicReadScope
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   shouldContinue?: () => boolean
@@ -24,6 +29,7 @@ interface UseMerchantIdentitiesResult {
 }
 
 export function useMerchantIdentities({
+  readScope,
   accountPubkey,
   authenticatedPubkey,
   shouldContinue,
@@ -60,6 +66,7 @@ export function useMerchantIdentities({
   const visibleMerchantProfiles = useProfiles(
     merchantHydrationTargets.visibleMerchantPubkeys,
     {
+      readScope,
       accountPubkey,
       authenticatedPubkey,
       shouldContinue,
@@ -70,6 +77,7 @@ export function useMerchantIdentities({
     }
   )
   const backgroundMerchantProfiles = useProfiles(requestedBackgroundPubkeys, {
+    readScope,
     accountPubkey,
     authenticatedPubkey,
     shouldContinue,

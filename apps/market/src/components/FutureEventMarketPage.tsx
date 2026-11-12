@@ -3,6 +3,7 @@ import { ExternalLink, RefreshCw } from "lucide-react"
 import { useNavigate } from "@tanstack/react-router"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
+  getPublicFeedReadScopeKey,
   buildMarketEventCatalogUrl,
   buildMerchantEventParticipationUrl,
   createEventMarketPickupSnapshot,
@@ -178,6 +179,7 @@ export function FutureEventMarketPage({
   const pricing = useShopperPricing()
   const catalogQueryKey = [
     "future-event-market",
+    getPublicFeedReadScopeKey("public_feed"),
     reference,
     selectedOccurrence,
     session.relayScope,
@@ -219,6 +221,7 @@ export function FutureEventMarketPage({
     selectedOccurrence ?? (series ? undefined : calendar?.coordinate)
   const organizerPubkey = market?.organizerPubkey ?? ""
   const organizerProfile = useProfile(organizerPubkey, {
+    readScope: "public_feed",
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue,
@@ -229,6 +232,7 @@ export function FutureEventMarketPage({
     [market?.merchants]
   )
   const identities = useMerchantIdentities({
+    readScope: "public_feed",
     accountPubkey: authenticatedPubkey,
     authenticatedPubkey,
     shouldContinue,

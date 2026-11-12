@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react"
 import { CalendarDays, ChevronDown, Plus, RefreshCw } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  getPublicFeedReadScopeKey,
   useProgressiveEventMarketDiscovery,
   encodeEventMarketNaddr,
   getProfileDisplayLabel,
@@ -87,9 +88,11 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     source: "combined",
   })
   const ownQuery = useProgressiveEventMarketDiscovery({
+    purpose: "owner_management",
     queryKey: [
       "merchant-owned-event-timeline",
       session.relayScope,
+      "owner_management",
       authenticatedPubkey,
       authGeneration,
       merchantPubkey,
@@ -99,7 +102,10 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       authenticatedPubkey,
       shouldContinue: () => authGenerationRef.current === authGeneration,
     },
-    enabled: session.relaySettingsReady && !!merchantPubkey,
+    enabled:
+      session.relaySettingsReady &&
+      !!merchantPubkey &&
+      authenticatedPubkey === merchantPubkey,
     refetchInterval: 60_000,
   })
   const futureAuthors = useMemo(
@@ -117,6 +123,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     queryKey: [
       "merchant-future-event-timeline",
       session.relayScope,
+      getPublicFeedReadScopeKey("public_feed"),
       authenticatedPubkey,
       authGeneration,
       futureAuthors.join(","),
@@ -157,6 +164,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     queryKey: [
       "merchant-selling-event-refresh",
       session.relayScope,
+      "owner_management",
       authenticatedPubkey,
       authGeneration,
       merchantPubkey,
@@ -293,7 +301,10 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     authGeneration,
     authGenerationRef,
     isAuthGenerationCurrent,
-    refreshScope: session.relayScope,
+    refreshScope: JSON.stringify([
+      session.relayScope,
+      getPublicFeedReadScopeKey("public_feed"),
+    ]),
   }
 }
 
@@ -472,6 +483,7 @@ function MerchantEventTimelineSection({
     [presentation.currentAndFuture, presentation.past]
   )
   const profiles = useProfiles(organizerPubkeys, {
+    readScope: "public_feed",
     accountPubkey,
     authenticatedPubkey,
     shouldContinue: () =>

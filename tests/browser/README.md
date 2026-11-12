@@ -1,4 +1,4 @@
-# Isolated checkout browser tests
+# Isolated read and checkout browser tests
 
 Install dependencies and the disposable Chromium distribution once:
 
@@ -62,3 +62,20 @@ production, load real identities or seed funded browser storage into it.
 
 Local harness typecheck: `bun node_modules/@typescript/native/bin/tsc -p tests/browser/tsconfig.json`.
 The `.pw.ts` suffix keeps Playwright cases out of Bun's ordinary unit-test discovery.
+
+Public feed scenarios use separate `public-feeds.html` and
+`public-event-feeds.html` test pages. They invoke the shared production read
+owners (and profile React Query hooks) with disposable signed fixtures and real
+WebSocket transport intercepted entirely in process. No server connection is
+made. Each case attaches content-free destination counts. The exact Vite loopback
+socket is closed and counted separately from relay destinations; query tokens
+are not retained in diagnostic URLs, and traces are disabled for these cases.
+
+Product cases cover browse/refresh/increased-limit reads, ranked hydration,
+family/deletion support, profile/follow/search reads, partial/total outages and
+rate limiting with 105 advertised sources. Event cases cover discovery, real
+continuation, calendar/series/assignment/authorization support and retained signed
+negative evidence with 120 advertised sources. Unscoped payment/exact and
+organizer-action controls still contact their advertised sources, establishing
+that feed policy is not a global relay cap. These are API/hook journeys, not
+full production-route or live-network qualification.

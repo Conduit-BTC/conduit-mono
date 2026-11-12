@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  getPublicFeedReadScopeKey,
   useProgressiveEventMarketDiscovery,
   extractFollowPubkeys,
   getFollowPubkeys,
@@ -98,11 +99,13 @@ export function useEventTimeline(
   const firstDegreeQuery = useQuery({
     queryKey: [
       "market-perspective-follows",
+      getPublicFeedReadScopeKey("public_feed"),
       normalizedPerspectivePubkey,
       authenticatedPubkey,
     ],
     queryFn: ({ signal }) =>
       getFollowPubkeys({
+        readScope: "public_feed",
         pubkey: normalizedPerspectivePubkey!,
         accountPubkey: perspectivePubkey,
         authenticatedPubkey,
@@ -120,6 +123,7 @@ export function useEventTimeline(
   const retainedFirstDegreeQuery = useQuery({
     queryKey: [
       "market-perspective-follows",
+      getPublicFeedReadScopeKey("public_feed"),
       "retained",
       normalizedPerspectivePubkey,
       authenticatedPubkey,
@@ -252,6 +256,7 @@ export function useEventTimeline(
   const organizerKey = organizerPubkeys?.join(",") ?? "unresolved"
   const discoveryQueryKey = [
     "market-event-timeline",
+    getPublicFeedReadScopeKey("public_feed"),
     session.relayScope ?? "no-relay-scope",
     authenticatedPubkey,
     authGeneration,
