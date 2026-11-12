@@ -5,7 +5,7 @@ import {
   type ProductSupplierAllocation,
   type ProductSupplierAllocationIssue,
   type ProductSupplierAllocationRecipient,
-} from "../schemas"
+} from "./product-schema"
 import { normalizePubkey } from "../utils"
 import { EVENT_KINDS } from "./kinds"
 import {
