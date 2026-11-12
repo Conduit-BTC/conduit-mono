@@ -66,3 +66,8 @@ Shared Core and UI source currently uses relative internal imports. If a shared
 package introduces `@/` imports, extend the collector's cross-project resolution
 and regression checks: imports reached through an application graph otherwise
 use that application's `@/` mapping.
+
+Extracted owners include cache and validation wiring exports shared with their
+original adapters. These are internal composition details, even though the Core
+package wildcard exposes their file paths. Application callers should keep using
+the existing facades rather than importing or mutating owner caches directly.
