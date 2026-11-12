@@ -874,52 +874,84 @@ describe("unwrap failure", () => {
   it("an exact unwrap that never answers waits for its unmodified 4 s deadline", async () => {
     await withHarness(async (h) => {
       const { candidate } = await seedControl(h)
-      let exactStarted: number | undefined
+      let markUnwrapStarted!: () => void
+      const unwrapStarted = new Promise<void>((resolve) => {
+        markUnwrapStarted = resolve
+      })
       let exactOpenAttempts = 0
       __setCommerceTestOverrides({
         giftUnwrap: (event, signer) => {
           if (h.relays.exactReads === 0)
             return unwrapPrivateMessageEnvelope(event, signer)
           exactOpenAttempts += 1
-          exactStarted = performance.now()
+          markUnwrapStarted()
           return new Promise(() => {})
         },
       })
-      // The deadline starts when opening begins, before awaited signer work
-      // reaches giftUnwrap. Measure that same phase on slow runners, without
-      // replacing the real scheduler or shortening the four-second wait.
+      // Control only the exact-open deadline at the scheduler boundary. Signer
+      // latency and runner clock jitter must not change the four-second policy.
       const nativeSetTimeout = globalThis.setTimeout
-      const firedDeadlines: number[] = []
+      let markScheduled!: () => void
+      const scheduled = new Promise<void>((resolve) => {
+        markScheduled = resolve
+      })
+      const deadlines: { at: number; fire: () => void }[] = []
+      let clock = 0
       const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
         ...args: Parameters<typeof setTimeout>
       ) => {
         const [callback, delay, ...rest] = args
         if (delay !== 4_000 || h.relays.exactReads === 0)
           return nativeSetTimeout(...args)
-        const started = performance.now()
-        return nativeSetTimeout(
-          (...callbackArgs: unknown[]) => {
-            firedDeadlines.push(performance.now() - started)
-            callback(...callbackArgs)
+        const handle = nativeSetTimeout(() => {}, 60_000)
+        let fired = false
+        deadlines.push({
+          at: clock + delay,
+          fire: () => {
+            if (fired) return
+            fired = true
+            clearTimeout(handle)
+            callback(...rest)
           },
-          delay,
-          ...rest
-        )
+        })
+        markScheduled()
+        return handle
       }) as typeof setTimeout)
+      const advance = (ms: number) => {
+        clock += ms
+        for (const deadline of deadlines)
+          if (clock >= deadline.at) deadline.fire()
+      }
+      let finished = false
+      const checking = h.check(candidate).then((result) => {
+        finished = true
+        return result
+      })
       try {
-        const result = await h.check(candidate)
+        await Promise.race([
+          Promise.all([scheduled, unwrapStarted]),
+          checking.then(() => {
+            throw new Error("Exact opening completed before its deadline")
+          }),
+        ])
+        expect(exactOpenAttempts).toBe(1)
+        expect(deadlines.map((deadline) => deadline.at)).toEqual([4_000])
+        advance(3_999)
+        await Promise.resolve()
+        expect(finished).toBe(false)
+        expect(h.consumed.count).toBe(0)
+        advance(1)
+        const result = await checking
         expect(summary(result)).toEqual({
           status: "incomplete",
           coverage: "partial",
           candidate: false,
         })
-        expect(exactOpenAttempts).toBe(1)
-        expect(exactStarted).toBeDefined()
-        expect(firedDeadlines).toHaveLength(1)
-        expect(firedDeadlines[0]).toBeGreaterThanOrEqual(3_900)
         expect(h.consumed.count).toBe(0)
       } finally {
+        for (const deadline of deadlines) deadline.fire()
         timer.mockRestore()
+        await checking.catch(() => undefined)
       }
     })
   }, 15_000)
