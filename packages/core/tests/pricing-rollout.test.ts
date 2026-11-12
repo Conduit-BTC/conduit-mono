@@ -7,7 +7,10 @@ import {
   resolveCheckoutSparkPublicTrust,
 } from "../src/checkout-spark-deployment-trust"
 import { defineCheckoutSparkDeploymentTrust } from "../../../scripts/vite/build_info"
-import { resolveDeploymentProfile } from "../../../scripts/vite/deployment_profile"
+import {
+  loadPagesProfiles,
+  resolveDeploymentProfile,
+} from "../../../scripts/vite/deployment_profile"
 
 const legacyTrust = {
   receiverContracts: "[]",
@@ -60,7 +63,7 @@ describe("pricing policy rollout", () => {
     ).toEqual(historicalTrust)
   })
 
-  it("qualifies preview explicitly while production and staging remain signed", () => {
+  it("selects historical pricing for mainnet releases while staging remains signed", () => {
     const preview = resolveDeploymentProfile({
       CONDUIT_DEPLOYMENT_PROFILE: "preview",
     })
@@ -73,7 +76,9 @@ describe("pricing policy rollout", () => {
     expect(preview.quantumRouterTrust.pricingPolicy).toBe(
       "invoice-historical-1pct-v1"
     )
-    expect(production.quantumRouterTrust.pricingPolicy).toBe("signed-v1")
+    expect(production.quantumRouterTrust.pricingPolicy).toBe(
+      "invoice-historical-1pct-v1"
+    )
     expect(staging.quantumRouterTrust.pricingPolicy).toBe("signed-v1")
     for (const profile of [preview, production, staging]) {
       const definitions = defineCheckoutSparkDeploymentTrust(profile)
@@ -92,6 +97,29 @@ describe("pricing policy rollout", () => {
     }
     expect(preview.quantumRouterTrust.pricingUrl).not.toBe("")
     expect(production.quantumRouterTrust.pricingPublicKeys).not.toBe("")
+  })
+
+  it("can roll back new production issuance without changing legacy verification trust", () => {
+    const env = { CONDUIT_DEPLOYMENT_PROFILE: "production" }
+    const active = resolveDeploymentProfile(env)
+    const rollbackProfiles = loadPagesProfiles()
+    rollbackProfiles.quantumRouterTrust.production.pricingPolicy = "signed-v1"
+    const rollback = resolveDeploymentProfile(env, rollbackProfiles)
+
+    expect(rollback.quantumRouterTrust.pricingPolicy).toBe("signed-v1")
+    expect(rollback.quantumRouterTrustDigest).not.toBe(
+      active.quantumRouterTrustDigest
+    )
+    expect(rollback.configDigest).not.toBe(active.configDigest)
+    expect(rollback.quantumRouterTrust.pricingUrl).toBe(
+      active.quantumRouterTrust.pricingUrl
+    )
+    expect(rollback.quantumRouterTrust.pricingPublicKeys).toBe(
+      active.quantumRouterTrust.pricingPublicKeys
+    )
+    expect(rollback.quantumRouterTrust.receiverContracts).toBe(
+      active.quantumRouterTrust.receiverContracts
+    )
   })
 
   for (const policy of ["signed-v1", "invoice-historical-1pct-v1"] as const) {
