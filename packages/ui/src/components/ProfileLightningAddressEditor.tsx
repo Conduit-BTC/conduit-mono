@@ -1,16 +1,16 @@
 import type { WalletAddressController } from "@conduit/core/hooks/useWalletAddress"
 import { useState, type RefObject } from "react"
+import { Button } from "./Button"
+import { Input } from "./Input"
+import { Label } from "./Label"
 import {
-  Button,
-  Input,
-  Label,
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogDescription,
   DialogTrigger,
-} from "../index"
+} from "./Dialog"
 
 export function ProfileLightningAddressEditor({
   controller,

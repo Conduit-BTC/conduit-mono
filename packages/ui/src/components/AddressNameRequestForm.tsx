@@ -3,7 +3,8 @@ import { ADDRESS_REQUEST_ACTION } from "@conduit/core/wallets/address-name-reque
 import { requestEvidence } from "@conduit/core/wallets/address-request-record"
 import type { AddressRequestView } from "@conduit/core/wallets/address-request-workflow"
 import type { UseWalletsReturn } from "@conduit/core/hooks/useWallets"
-import { Button, Input } from "../index"
+import { Button } from "./Button"
+import { Input } from "./Input"
 
 interface ChallengeApi {
   render(node: HTMLElement, options: Record<string, unknown>): string
