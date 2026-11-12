@@ -1,6 +1,6 @@
 import { generateMnemonic, validateMnemonic } from "@scure/bip39"
 import { wordlist } from "@scure/bip39/wordlists/english.js"
-import { isWalletNetwork, type WalletNetwork } from "@conduit/core"
+import { isWalletNetwork, type WalletNetwork } from "./index"
 
 const DEFAULT_PBKDF2_ITERATIONS = 600_000
 const MIN_PBKDF2_ITERATIONS = 100_000

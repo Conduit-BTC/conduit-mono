@@ -29,18 +29,20 @@ import {
   useRef,
   useState,
 } from "react"
+import { config } from "../config"
+import { useAuth } from "../context/AuthContext"
 import {
-  config,
-  useAuth,
   getAccountSigner,
   subscribeToAccountSignerChanges,
+} from "../protocol/session-signer"
+import {
   getWalletDefaultReplacement,
   getWalletNetworkFromLightningConfig,
-  parseNwcUri,
-  subscribeToWalletDescriptorChanges,
-  type AccountSigner,
   type WalletDescriptor,
-} from "@conduit/core"
+} from "../wallets/index"
+import { parseNwcUri } from "../protocol/nwc"
+import { subscribeToWalletDescriptorChanges } from "../db/index"
+import { type AccountSigner } from "../protocol/nostr-event-signer"
 
 import {
   closeBuyerNwcSession,
@@ -189,7 +191,7 @@ export interface UseWalletsReturn {
     username?: string,
     domain?: "breez.tips" | "conduit.cash",
     options?: AccountSignerOperationOptions
-  ): Promise<import("@conduit/core").BreezAddressState>
+  ): Promise<import("../wallets/breez-lightning-address").BreezAddressState>
   requestAddressName?: AddressRequestWorkflow
   receiveSparkLightning(
     walletId: string,

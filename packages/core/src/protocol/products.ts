@@ -20,7 +20,7 @@ import {
   type ProductSchema,
   type ProductShippingOptionReference,
   type ProductZapMessagePolicy,
-} from "../schemas"
+} from "./product-schema"
 import { normalizePublicMediaUrl } from "../network-target-safety"
 import { EVENT_KINDS } from "./kinds"
 import { parseLegacyConduitInlineShippingTags } from "./compat/conduit-inline-shipping"

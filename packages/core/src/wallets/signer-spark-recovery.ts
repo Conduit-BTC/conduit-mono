@@ -1,9 +1,6 @@
-import {
-  getAccountSigner,
-  isWalletNetwork,
-  SessionSigner,
-  type AccountSigner,
-} from "@conduit/core"
+import { getAccountSigner, SessionSigner } from "../protocol/session-signer"
+import { isWalletNetwork } from "./index"
+import { type AccountSigner } from "../protocol/nostr-event-signer"
 
 import {
   isValidSparkAccountNumber,

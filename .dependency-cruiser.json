@@ -1,0 +1,17 @@
+{
+  "forbidden": [
+    {
+      "name": "no-runtime-cycles",
+      "severity": "error",
+      "from": {},
+      "to": { "circular": true }
+    }
+  ],
+  "options": {
+    "tsPreCompilationDeps": false,
+    "doNotFollow": { "path": "(^|/)node_modules/" },
+    "exclude": {
+      "path": "(^|/)(node_modules|\\.git)/|^(apps|packages)/[^/]+/(dist|build)/"
+    }
+  }
+}
