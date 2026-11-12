@@ -10,7 +10,7 @@ The suite intentionally covers a small set of payment and recovery risks:
 | ----------------------------------------------------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                                                                        |
 | `checkout-spark-settled-outgoing.test.ts`             |    25 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, provider identity, and pre-admission cancellation reaching Merchant. |
-| `checkout-spark-settled-preparation-recovery.test.ts` |    18 | Original-order/ACK recovery, precise provider-clock admission, strict fiat verification, cancellation, takeover and no early funding exposure.                                                                                      |
+| `checkout-spark-settled-preparation-recovery.test.ts` |    24 | Original-order/ACK recovery, precise provider-clock admission, strict fiat verification, cancellation, takeover and no early funding exposure.                                                                                      |
 | `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                                                                        |
 | `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                                                                            |
 
@@ -27,7 +27,7 @@ they do not establish signature admission, relay delivery or checkout authority.
 `commerce-product-cache.test.ts` adds eight local cache cases using ordinary signed
 listings/deletions and Dexie with in-memory IndexedDB. They cover round trips,
 revision/provenance retention, failed-save observers, deletion retry/concurrency
-and exact-family reads—not public relay delivery or browser cross-tab behavior.
+and exact-family readsâ€”not public relay delivery or browser cross-tab behavior.
 
 `packages/core/tests/checkout-spark-native-sdk-version.test.ts` guards all three SDK pins and the
 real public codec loader, exact native debit, offline-receiver commitment and
