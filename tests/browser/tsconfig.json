@@ -3,7 +3,21 @@
   "compilerOptions": {
     "composite": false,
     "noEmit": true,
-    "types": ["vite/client", "node"]
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["vite/client", "node"],
+    "paths": {
+      "@conduit/core": ["../../packages/core/src"],
+      "@conduit/core/*": ["../../packages/core/src/*"],
+      "@conduit/ui": ["../../packages/ui/src"],
+      "@conduit/ui/*": ["../../packages/ui/src/*"],
+      "react": ["../../apps/market/node_modules/@types/react"],
+      "react/*": ["../../apps/market/node_modules/@types/react/*"],
+      "react-dom/*": ["../../apps/market/node_modules/@types/react-dom/*"],
+      "@tanstack/react-query": [
+        "../../apps/market/node_modules/@tanstack/react-query"
+      ]
+    }
   },
   "include": [
     "./*.ts",
