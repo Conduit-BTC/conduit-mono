@@ -12,6 +12,7 @@ import {
   finalizeEvent,
   getPublicKey,
   matchFilter,
+  nip19,
   type Filter,
 } from "nostr-tools"
 import { config } from "../packages/core/src/config"
@@ -25,6 +26,7 @@ import {
   getMarketplaceProductsProgressive,
   getMerchantStorefront,
   getProductDetail,
+  getProductsByIds,
   isCommerceReadIncomplete,
   type CommerceQueryMeta,
 } from "../packages/core/src/protocol/commerce"
@@ -54,18 +56,24 @@ const hints = Array.from(
   { length: 105 },
   (_, index) => `wss://old-${index}.deletion-source-fixture.net`
 )
-function listing(name: string) {
+function listing(name: string, extraTags: string[][] = []) {
+  const tags = [
+    ["d", name],
+    ["title", name],
+    ["price", "10", "SATS"],
+    ["type", "simple", "digital"],
+    ["image", "https://images.deletion-feed-fixture.net/synthetic.png"],
+  ]
   return finalizeEvent(
     {
       kind: 30402,
       created_at: 10,
       content: "",
       tags: [
-        ["d", name],
-        ["title", name],
-        ["price", "10", "SATS"],
-        ["type", "simple", "digital"],
-        ["image", "https://images.deletion-feed-fixture.net/synthetic.png"],
+        ...tags.filter(
+          (tag) => !extraTags.some((extra) => extra[0] === tag[0])
+        ),
+        ...extraTags,
       ],
     },
     key
@@ -86,6 +94,9 @@ type FailureMode = "healthy" | "one" | "all"
 let failureMode: FailureMode = "healthy"
 let listingsUnavailable = false
 let skipDeletionReads = 0
+let allowHintDestinations = false
+let failedHint: string | undefined
+let liveEvents = [active, removed]
 let unexpectedNetwork = 0
 let relayListLookups = 0
 let restoreTransaction: () => void
@@ -103,7 +114,10 @@ class FixtureSocket implements PublicRelayReadSocket {
   onclose: PublicRelayReadSocket["onclose"] = null
   constructor(readonly url: string) {
     attempted.add(url)
-    if (!feed.includes(url)) {
+    if (
+      !feed.includes(url) &&
+      !(allowHintDestinations && hints.includes(url))
+    ) {
       unexpectedNetwork++
       throw new Error("Unexpected offline feed destination")
     }
@@ -126,6 +140,7 @@ class FixtureSocket implements PublicRelayReadSocket {
       : 0
     if (deletionRead) deletionReadCounts.set(this.url, deletionReadCount)
     const fails =
+      this.url === failedHint ||
       (listingsUnavailable &&
         filters.some((filter) => filter.kinds?.includes(30402))) ||
       (deletionRead &&
@@ -147,7 +162,7 @@ class FixtureSocket implements PublicRelayReadSocket {
         )
         return
       }
-      for (const event of [active, removed]) {
+      for (const event of liveEvents) {
         if (!filters.some((filter) => matchFilter(filter, event))) continue
         this.onmessage?.(
           new MessageEvent("message", {
@@ -199,6 +214,9 @@ beforeEach(async () => {
   failureMode = "healthy"
   listingsUnavailable = false
   skipDeletionReads = 0
+  allowHintDestinations = false
+  failedHint = undefined
+  liveEvents = [active, removed]
   unexpectedNetwork = 0
   relayListLookups = 0
   await testDb.products.clear()
@@ -374,4 +392,117 @@ test("an empty configured set retains stale negative-aware cache without opening
   }
   expect(attempted.size).toBe(0)
   expect(relayListLookups).toBe(0)
+})
+
+async function seedHintedFamily() {
+  const parent = listing("hint-parent", [["type", "variable", "digital"]])
+  const child = listing("hint-child", [
+    ["type", "variation", "digital"],
+    ["a", coordinate("hint-parent")],
+    ["spec", "Color", "Red"],
+  ])
+  const removedChild = listing("hint-removed", [
+    ["type", "variation", "digital"],
+    ["a", coordinate("hint-parent")],
+    ["spec", "Color", "Blue"],
+  ])
+  for (const event of [parent, child, removedChild]) {
+    await cacheSignedProductListingEvent(event, { sourceRelayUrls: hints })
+  }
+  await cacheSignedProductDeletionEvent(
+    finalizeEvent(
+      {
+        kind: 5,
+        created_at: 20,
+        content: "",
+        tags: [["a", coordinate("hint-removed")]],
+      },
+      key
+    )
+  )
+  liveEvents = [...liveEvents, parent, child, removedChild]
+  __setCommerceTestOverrides({
+    getRelayLists: async () => {
+      relayListLookups++
+      return new Map([
+        [
+          author,
+          {
+            pubkey: author,
+            writeRelayUrls: hints,
+            readRelayUrls: [],
+            cachedAt: Date.now(),
+            eventCreatedAt: 10,
+          },
+        ],
+      ])
+    },
+  })
+  const reference = (name: string) =>
+    nip19.naddrEncode({
+      kind: 30402,
+      pubkey: author,
+      identifier: name,
+      relays: hints.slice(0, 3),
+    })
+  return {
+    ids: [
+      reference("hint-child"),
+      reference("hint-parent"),
+      coordinate("active"),
+    ],
+    relayHintsByAddressId: {
+      [coordinate("hint-child")]: hints,
+      [coordinate("hint-parent")]: hints,
+      [coordinate("active")]: hints,
+    },
+  }
+}
+
+test("healthy configured exact and family reads do not treat retained external hints as missing feed coverage", async () => {
+  const input = await seedHintedFamily()
+  const result = await getProductsByIds(input.ids, {
+    readScope: "public_feed",
+    relayHintsByAddressId: input.relayHintsByAddressId,
+  })
+  expect(result.data.map((record) => record.dTag).sort()).toEqual([
+    "active",
+    "hint-child",
+    "hint-parent",
+  ])
+  expect(result.meta.capped).toBe(false)
+  expect(
+    result.diagnostics.every((value) => value.coverage?.listing === "complete")
+  ).toBe(true)
+  expect(result.meta).toMatchObject({ stale: false, degraded: false })
+  const family = result.data.find(
+    (record) => record.dTag === "hint-parent"
+  )?.family
+  expect(family?.children.map((record) => record.dTag)).toEqual(["hint-child"])
+  expect(family?.readEvidence).toMatchObject({ stale: false, degraded: false })
+  expect(
+    result.data.every((record) =>
+      hints.every((url) => record.sourceRelayUrls?.includes(url))
+    )
+  ).toBe(true)
+  expect(attempted).toEqual(new Set(feed))
+  expect(relayListLookups).toBe(0)
+})
+
+test("unscoped exact and family coverage still requires advertised author sources", async () => {
+  const input = await seedHintedFamily()
+  allowHintDestinations = true
+  failedHint = hints.at(-1)
+  const result = await getProductsByIds(input.ids, {
+    relayHintsByAddressId: input.relayHintsByAddressId,
+  })
+  expect(
+    result.diagnostics.some((value) => value.coverage?.listing === "partial")
+  ).toBe(true)
+  expect(result.meta.degraded).toBe(true)
+  expect(attempted.has(failedHint!)).toBe(true)
+  expect(relayListLookups).toBeGreaterThan(0)
+  expect(result.data.some((record) => record.dTag === "hint-removed")).toBe(
+    false
+  )
 })

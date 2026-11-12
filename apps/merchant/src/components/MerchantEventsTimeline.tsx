@@ -88,10 +88,11 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     source: "combined",
   })
   const ownQuery = useProgressiveEventMarketDiscovery({
+    purpose: "owner_management",
     queryKey: [
       "merchant-owned-event-timeline",
       session.relayScope,
-      getPublicFeedReadScopeKey("public_feed"),
+      "owner_management",
       authenticatedPubkey,
       authGeneration,
       merchantPubkey,
@@ -101,7 +102,10 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
       authenticatedPubkey,
       shouldContinue: () => authGenerationRef.current === authGeneration,
     },
-    enabled: session.relaySettingsReady && !!merchantPubkey,
+    enabled:
+      session.relaySettingsReady &&
+      !!merchantPubkey &&
+      authenticatedPubkey === merchantPubkey,
     refetchInterval: 60_000,
   })
   const futureAuthors = useMemo(
@@ -160,7 +164,7 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
     queryKey: [
       "merchant-selling-event-refresh",
       session.relayScope,
-      getPublicFeedReadScopeKey("public_feed"),
+      "owner_management",
       authenticatedPubkey,
       authGeneration,
       merchantPubkey,
@@ -172,7 +176,6 @@ function useMerchantEventTimelineData(merchantPubkey: string) {
         shouldContinue: () => authGenerationRef.current === authGeneration,
         read: (reference, marketSignal) =>
           readEventMarketRoster({
-            readScope: "public_feed",
             reference,
             authenticatedPubkey,
             signal: marketSignal,

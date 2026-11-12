@@ -127,6 +127,10 @@ export interface PublicRelayReadSocketScope {
 const WEBSOCKET_OPEN = 1
 
 export interface PublicRelayReadOptions {
+  /** Include explicitly requested but policy/health-suppressed sources in coverage.
+   * This does not admit, contact, or retry them. Other reads retain existing scope.
+   */
+  requireAllRequestedRelays?: boolean
   /** Separate public-only pool for injected transports; never an authenticated socket. */
   socketScope?: PublicRelayReadSocketScope
   onConnection?: (relayUrl: string) => void
@@ -204,6 +208,8 @@ export type PublicRelayReadOutcome =
   | "verification_failed"
   | "unavailable"
 export interface PublicRelayReadSourceStatus {
+  /** False for a required source omitted before I/O; attempt sets stay factual. */
+  attempted?: false
   relayUrl: string
   status: "success" | "partial" | "failed"
   /** Distinct verified event ids selected from this source; copies are counted separately. */
@@ -1410,7 +1416,7 @@ export async function fetchSignedEventsFanoutDetailed(
     cancelled = false
   ): SignedEventRelayReadResult => {
     const events = Array.from(merged.values())
-    const relays = results.map((result) => ({
+    const relays: PublicRelayReadSourceStatus[] = results.map((result) => ({
       relayUrl: result.relayUrl,
       status: result.status,
       eventCount: result.events.length,
@@ -1437,6 +1443,21 @@ export async function fetchSignedEventsFanoutDetailed(
             outcome: "cancelled",
           })
       }
+    if (phase === "terminal" && options.requireAllRequestedRelays) {
+      for (const requested of new Set(options.relayUrls ?? relayUrls)) {
+        const normalized = tryNormalizeRelayUrl(requested)
+        const relayUrl = normalized.ok ? normalized.url : requested
+        if (!relays.some((relay) => relay.relayUrl === relayUrl))
+          relays.push({
+            relayUrl,
+            status: "failed",
+            attempted: false,
+            eventCount: 0,
+            eoseReceived: false,
+            outcome: "unavailable",
+          })
+      }
+    }
     const coverage = cancelled
       ? "cancelled"
       : phase === "terminal" &&

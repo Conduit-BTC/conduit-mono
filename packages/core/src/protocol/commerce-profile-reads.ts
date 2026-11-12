@@ -561,6 +561,7 @@ export async function getProfiles(
         : relayPlan.candidateRelayUrls
     const paymentReadRelayUrlSet = new Set(paymentReadRelayUrls)
     const fanoutOptions = {
+      requireAllRequestedRelays: query.readScope === "public_feed",
       relayUrls: paymentReadRelayUrls,
       relayTargets: relayPlan.relayTargets.filter((target) =>
         paymentReadRelayUrlSet.has(target.url)
@@ -637,10 +638,17 @@ export async function getProfiles(
     let evidenceCapped = false
     let events: VerifiedNostrEvent[]
     if (query.requireCompleteEvidence || query.readScope === "public_feed") {
-      const evidence = await runFetchEventsFanoutDetailed(
-        profileFilter,
-        fanoutOptions
-      )
+      const evidence = await runFetchEventsFanoutDetailed(profileFilter, {
+        ...fanoutOptions,
+        ...(query.readScope === "public_feed" &&
+        !query.requireCompleteEvidence &&
+        query.onProgress &&
+        !dependencies.hasFetchPublicEventsOverride()
+          ? {
+              onRelayProgress: ({ mergedEvents }) => emitProgress(mergedEvents),
+            }
+          : {}),
+      })
       events = evidence.events
       evidenceDegraded =
         evidenceDegraded ||

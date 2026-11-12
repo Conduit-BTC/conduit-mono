@@ -12,6 +12,7 @@ import {
 import { buildEventMarketRosterDraft } from "../packages/core/src/protocol/event-market-roster"
 import {
   discoverFutureEventMarkets,
+  discoverOwnedEventMarkets,
   readEventMarketCatalog,
   readEventMarketRoster,
   readEventMarketProduct,
@@ -32,6 +33,380 @@ import {
   type EventMarketAuthorizationReadResult,
 } from "../packages/core/src/protocol/event-market-authorization-read"
 import { buildEventMarketAuthorizationDraft } from "../packages/core/src/protocol/event-market-authorization"
+import { buildEventMarketAssignmentDraft } from "../packages/core/src/protocol/event-market-assignment"
+import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
+import { __resetRelayHealth } from "../packages/core/src/protocol/relay-health"
+import { getEventMarketDiscoveryScope } from "../packages/core/src/protocol/event-market-candidates"
+
+test.each(["cooldown", "account denial"] as const)(
+  "direct feed coverage stays partial across repeated %s reads",
+  async (mode) => {
+    const key = new Uint8Array(32).fill(46)
+    const merchantKey = new Uint8Array(32).fill(47)
+    const organizer = getPublicKey(key)
+    const merchant = getPublicKey(merchantKey)
+    const coordinate = `30409:${organizer}:coverage`
+    const occurrence = `31922:${organizer}:date`
+    const productCoordinate = `30402:${merchant}:product`
+    const rows = [
+      finalizeEvent(
+        {
+          ...buildEventMarketRosterDraft({
+            dTag: "coverage",
+            organizerPubkey: organizer,
+            calendarCoordinate: occurrence,
+            state: "open",
+            merchants: [
+              {
+                pubkey: merchant,
+                mode: "merchant_present",
+                assignment: "Booth",
+              },
+            ],
+          }),
+          created_at: 100,
+        },
+        key
+      ),
+      finalizeEvent(
+        {
+          ...buildEventMarketCalendarDraft({
+            kind: 31922,
+            dTag: "date",
+            title: "Coverage",
+            start: "2035-01-01",
+            end: "2035-01-02",
+          }),
+          created_at: 100,
+        },
+        key
+      ),
+      finalizeEvent(
+        {
+          ...buildEventMarketAuthorizationDraft({
+            marketCoordinate: coordinate,
+            merchantPubkey: merchant,
+            state: "active",
+            sequence: 0,
+            parentIds: [],
+          }),
+          created_at: 100,
+        },
+        key
+      ),
+      finalizeEvent(
+        {
+          kind: 30402,
+          created_at: 100,
+          content: "Fixture item",
+          tags: [
+            ["d", "product"],
+            ["title", "Fixture"],
+            ["price", "10", "SATS"],
+            ["type", "simple", "physical"],
+            ["image", "https://image.synthetic.invalid/item.png"],
+          ],
+        },
+        merchantKey
+      ),
+      finalizeEvent(
+        {
+          ...buildEventMarketAssignmentDraft({
+            marketCoordinate: coordinate,
+            occurrenceCoordinate: occurrence,
+            productCoordinate,
+            merchantPubkey: merchant,
+            state: "active",
+            inventory: { mode: "untracked" },
+            fulfillmentMethods: ["pickup"],
+          }),
+          created_at: 100,
+        },
+        merchantKey
+      ),
+    ]
+    const feed = [
+      "wss://coverage-a.event-scope-fixture.net",
+      "wss://coverage-b.event-scope-fixture.net",
+    ]
+    const previousConfig = { ...config }
+    const previousSocket = globalThis.WebSocket
+    const previousFetch = globalThis.fetch
+    const destinations: string[] = []
+    const kinds = new Set<number>()
+    const state = emptyAccountNetworkLocalState(organizer)
+    if (mode === "account denial")
+      state.exclusions = [
+        {
+          relayUrl: feed[1]!,
+          committedAt: 1,
+          relayListFrontier: { eventId: null, createdAt: null },
+          inboxDeclarationFrontier: { eventId: null, createdAt: null },
+        },
+      ]
+    class FixtureSocket implements PublicRelayReadSocket {
+      readyState = 0
+      onopen: PublicRelayReadSocket["onopen"] = null
+      onmessage: PublicRelayReadSocket["onmessage"] = null
+      onerror: PublicRelayReadSocket["onerror"] = null
+      onclose: PublicRelayReadSocket["onclose"] = null
+      constructor(readonly url: string) {
+        destinations.push(url)
+        if (!feed.includes(url)) throw new Error("Unexpected feed destination")
+        queueMicrotask(() => {
+          if (url === feed[1]) {
+            this.onerror?.(new Event("error"))
+            return
+          }
+          this.readyState = 1
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send(payload: string) {
+        const [type, id, filter] = JSON.parse(payload)
+        if (type !== "REQ") return
+        for (const kind of filter.kinds ?? []) kinds.add(kind)
+        queueMicrotask(() => {
+          for (const row of rows.filter((row) => matchFilter(filter, row)))
+            this.onmessage?.(
+              new MessageEvent("message", {
+                data: JSON.stringify(["EVENT", id, row]),
+              })
+            )
+          this.onmessage?.(
+            new MessageEvent("message", { data: JSON.stringify(["EOSE", id]) })
+          )
+        })
+      }
+      close() {
+        this.readyState = 3
+        this.onclose?.(new Event("close"))
+      }
+    }
+    __resetRelayHealth()
+    Object.assign(config, {
+      commerceDiscoveryRelayUrls: feed,
+      appCommerceRelayUrls: feed,
+      e2eRelayIsolationEnabled: false,
+    })
+    globalThis.WebSocket = FixtureSocket as unknown as typeof WebSocket
+    globalThis.fetch = (async () => {
+      throw new Error("Unexpected metadata network")
+    }) as typeof fetch
+    const dependencies = {
+      plan: getEventMarketReadPlan,
+      fetch: (
+        filter: Parameters<typeof fetchSignedEventsFanoutDetailed>[0],
+        options: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
+      ) =>
+        fetchSignedEventsFanoutDetailed(filter, {
+          ...options,
+          accountNetworkLocalStateRepository: { get: async () => state },
+        }),
+      load: async () => [],
+      retain: async () => {},
+    }
+    try {
+      for (let round = 0; round < 3; round++) {
+        closePublicRelayConnections()
+        const input = {
+          readScope: "public_feed" as const,
+          ...(mode === "account denial"
+            ? { accountPubkey: organizer, authenticatedPubkey: organizer }
+            : {}),
+        }
+        const roster = await readEventMarketRoster(
+          { ...input, reference: coordinate },
+          dependencies
+        )
+        expect(roster.resolution.state).toBe("current")
+        expect(roster.coverage).toBe("partial")
+        expect(roster.calendarCoverage).toBe("partial")
+        const authorization = await readEventMarketAuthorization(
+          { ...input, marketCoordinate: coordinate, merchantPubkey: merchant },
+          dependencies
+        )
+        expect(authorization.resolution.state).toBe("active")
+        expect(authorization.coverage).toBe("partial")
+        const product = await readEventMarketProduct(
+          {
+            ...input,
+            marketRead: roster,
+            productCoordinate,
+            selectedOccurrenceCoordinate: occurrence,
+          },
+          dependencies
+        )
+        expect(product.resolution.state).toBe("eligible")
+        expect(product.coverage).toBe("partial")
+        expect(product.actionable).toBe(false)
+        const catalog = await readEventMarketCatalog(
+          {
+            reference: coordinate,
+            accountPubkey: input.accountPubkey,
+            authenticatedPubkey: input.authenticatedPubkey,
+            selectedOccurrenceCoordinate: occurrence,
+          },
+          dependencies
+        )
+        expect(catalog.coverage).toBe("partial")
+      }
+      expect([...kinds]).toEqual(
+        expect.arrayContaining([30409, 31922, 3841, 30402, 30410, 5])
+      )
+      expect(destinations.every((url) => feed.includes(url))).toBe(true)
+      expect(destinations.filter((url) => url === feed[1]).length).toBe(
+        mode === "cooldown" ? 1 : 0
+      )
+    } finally {
+      closePublicRelayConnections()
+      __resetRelayHealth()
+      Object.assign(config, previousConfig)
+      globalThis.WebSocket = previousSocket
+      globalThis.fetch = previousFetch
+    }
+  }
+)
+
+test("owner management finds an off-feed market on a new device without widening public discovery", async () => {
+  const key = new Uint8Array(32).fill(45)
+  const owner = getPublicKey(key)
+  const coordinate = `30409:${owner}:owned`
+  const calendarCoordinate = `31922:${owner}:owned-date`
+  const advertised = Array.from(
+    { length: 12 },
+    (_, index) => `wss://owner-${index}.event-scope-fixture.net`
+  )
+  const source = advertised.at(-1)!
+  const rows = [
+    finalizeEvent(
+      {
+        ...buildEventMarketRosterDraft({
+          dTag: "owned",
+          organizerPubkey: owner,
+          calendarCoordinate,
+          state: "open",
+          merchants: [],
+        }),
+        created_at: 100,
+      },
+      key
+    ),
+    finalizeEvent(
+      {
+        ...buildEventMarketCalendarDraft({
+          kind: 31922,
+          dTag: "owned-date",
+          title: "Owned event",
+          start: "2035-01-01",
+          end: "2035-01-02",
+        }),
+        created_at: 100,
+      },
+      key
+    ),
+  ]
+  __setEventMarketTestOverrides({
+    readAccountRelaySettingsPlanningSnapshot: async () => ({
+      settings: { version: 1, entries: [], updatedAt: 1 },
+      signedRelayListAuthoritative: false,
+    }),
+    getRelayLists: async () =>
+      new Map([
+        [
+          owner,
+          {
+            pubkey: owner,
+            writeRelayUrls: advertised,
+            readRelayUrls: [],
+            eventCreatedAt: 1,
+            cachedAt: 1,
+          },
+        ],
+      ]),
+  })
+  const destinations = new Set<string>()
+  const dependencies = {
+    plan: getEventMarketReadPlan,
+    planDiscovery: getEventMarketDiscoveryReadPlan,
+    load: async () => [],
+    loadDiscovered: async () => [],
+    retain: async () => {},
+    fetch: async (
+      filter: Parameters<typeof fetchSignedEventsFanoutDetailed>[0],
+      options: Parameters<typeof fetchSignedEventsFanoutDetailed>[1]
+    ) => {
+      const urls = options?.relayUrls ?? []
+      urls.forEach((url) => destinations.add(url))
+      return {
+        events: urls.includes(source)
+          ? rows.filter((row) => matchFilter(filter, row))
+          : [],
+        relays: urls.map((relayUrl) => ({
+          relayUrl,
+          status: "success" as const,
+        })),
+      }
+    },
+  }
+  try {
+    const owned = await discoverOwnedEventMarkets(
+      { organizerPubkey: owner, authenticatedPubkey: owner },
+      dependencies
+    )
+    expect(owned.markets).toHaveLength(1)
+    expect(owned.markets[0]?.coordinate).toBe(coordinate)
+    expect(owned.markets[0]?.calendar?.coordinate).toBe(calendarCoordinate)
+    expect(owned.markets[0]?.readScope).toBeUndefined()
+    expect(destinations.has(source)).toBe(true)
+    destinations.clear()
+    const authorityPlan = await getEventMarketReadPlan({
+      organizerPubkey: owner,
+      authenticatedPubkey: owner,
+    })
+    const continuationInput = {
+      authors: [owner],
+      accountPubkey: owner,
+      authenticatedPubkey: owner,
+      plan: { ...authorityPlan, relayUrls: authorityPlan.candidateRelayUrls },
+    }
+    const ownerScope = getEventMarketDiscoveryScope(continuationInput)
+    expect(ownerScope).not.toBe(
+      getEventMarketDiscoveryScope({
+        ...continuationInput,
+        readScope: "public_feed",
+      })
+    )
+    const publicRead = await discoverFutureEventMarkets(
+      {
+        organizerPubkeys: [owner],
+        authenticatedPubkey: owner,
+        continuation: {
+          scope: ownerScope,
+          pages: [],
+          pendingCoordinates: [{ coordinate, relayHints: [source] }],
+        },
+      },
+      dependencies
+    )
+    expect(publicRead.markets).toEqual([])
+    expect(
+      [...destinations].every((url) =>
+        config.commerceDiscoveryRelayUrls.includes(url)
+      )
+    ).toBe(true)
+    destinations.clear()
+    await expect(
+      discoverOwnedEventMarkets(
+        { organizerPubkey: owner, authenticatedPubkey: "a".repeat(64) },
+        dependencies
+      )
+    ).rejects.toThrow("Authenticated Event Market owner")
+    expect(destinations.size).toBe(0)
+  } finally {
+    __resetEventMarketTestOverrides()
+  }
+})
 
 test("complete feed display cannot authorize organizer writes or a first grant", () => {
   const roster = {

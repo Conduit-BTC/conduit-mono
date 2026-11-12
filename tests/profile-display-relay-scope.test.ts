@@ -1,3 +1,5 @@
+import { getPublicFeedReadPlan } from "../packages/core/src/protocol/public-feed-read-scope"
+import { fetchSignedEventsFanoutDetailed } from "../packages/core/src/protocol/relay-reader"
 import { emptyAccountNetworkLocalState } from "../packages/core/src/protocol/account-network-local-state"
 import { resolveCheckoutSparkRecipientPayoutAddress } from "../packages/core/src/protocol/checkout-spark-recipient-profile"
 import { searchNetworkProfiles } from "../packages/core/src/protocol/profile-search"
@@ -32,6 +34,9 @@ const originalWebSocket = globalThis.WebSocket
 const attempted = new Set<string>()
 const socketDestinations = new Set<string>()
 const failedRelays = new Set<string>()
+const heldRelays = new Set<string>()
+const heldRequests = new Set<string>()
+const replies: (() => void)[] = []
 let blockedNetworkAttempts = 0
 let cachedProfiles: CachedProfile[] = []
 let profileEvent: ReturnType<typeof finalizeEvent> | undefined
@@ -61,22 +66,30 @@ class FixtureSocket implements PublicRelayReadSocket {
   }
   send(payload: string) {
     const [type, subscription] = JSON.parse(payload)
+    if (type === "CLOSE") heldRequests.delete(this.url)
     if (type !== "REQ") return
     attempted.add(this.url)
     queueMicrotask(() => {
-      if (profileEvent)
+      const reply = () => {
+        if (profileEvent)
+          this.onmessage?.(
+            new MessageEvent("message", {
+              data: JSON.stringify(["EVENT", subscription, profileEvent]),
+            })
+          )
         this.onmessage?.(
           new MessageEvent("message", {
-            data: JSON.stringify(["EVENT", subscription, profileEvent]),
+            data: JSON.stringify(["EOSE", subscription]),
           })
         )
-      this.onmessage?.(
-        new MessageEvent("message", {
-          data: JSON.stringify(["EOSE", subscription]),
-        })
-      )
+      }
+      if (heldRelays.has(this.url)) {
+        heldRequests.add(this.url)
+        replies.push(reply)
+      } else reply()
     })
   }
+
   close() {
     if (this.readyState === 3) return
     this.readyState = 3
@@ -88,6 +101,9 @@ beforeEach(async () => {
   attempted.clear()
   socketDestinations.clear()
   failedRelays.clear()
+  heldRelays.clear()
+  heldRequests.clear()
+  replies.length = 0
   blockedNetworkAttempts = 0
   cachedProfiles = []
   profileEvent = undefined
@@ -377,4 +393,97 @@ test("feed app grants honor the account's disabled app layer before opening sock
   expect(result.meta.degraded).toBe(true)
   expect(socketDestinations.size).toBe(0)
   expect(relayListLookups).toBe(0)
+})
+
+test("repeated feed profile reads retain configured-peer coverage through cooldown", async () => {
+  const failingPeer = relay("feed-b")
+  allowed.add(failingPeer)
+  Object.assign(config, {
+    appCommerceRelayUrls: [app, failingPeer],
+    commerceDiscoveryRelayUrls: [app, failingPeer],
+  })
+  failedRelays.add(failingPeer)
+  for (let round = 0; round < 4; round++) {
+    closePublicRelayConnections()
+    const result = await getProfiles({
+      pubkeys: [merchant],
+      readScope: "public_feed",
+      skipCache: true,
+    })
+    expect(result.meta.degraded).toBe(true)
+  }
+})
+
+test("a denied configured peer stays incomplete without being counted as an I/O attempt", async () => {
+  const excludedPeer = relay("excluded")
+  allowed.add(excludedPeer)
+  Object.assign(config, {
+    appCommerceRelayUrls: [app, excludedPeer],
+    commerceDiscoveryRelayUrls: [app, excludedPeer],
+  })
+  const state = emptyAccountNetworkLocalState(merchant)
+  state.exclusions = [
+    {
+      relayUrl: excludedPeer,
+      committedAt: 1,
+      relayListFrontier: { eventId: null, createdAt: null },
+      inboxDeclarationFrontier: { eventId: null, createdAt: null },
+    },
+  ]
+  const plan = getPublicFeedReadPlan()
+  const result = await fetchSignedEventsFanoutDetailed(
+    { kinds: [0], authors: [merchant] },
+    {
+      relayUrls: plan.candidateRelayUrls,
+      relayTargets: plan.relayTargets,
+      requireAllRequestedRelays: true,
+      accountPubkey: merchant,
+      accountNetworkLocalStateRepository: { get: async () => state },
+    }
+  )
+  expect(result.readCoverage).toBe("partial")
+  expect(result.attemptedRelayUrls).toEqual([app])
+  expect(result.admittedRelayUrls).toEqual([app])
+  expect(socketDestinations).toEqual(new Set([app]))
+  expect(
+    result.relays.find((row) => row.relayUrl === excludedPeer)
+  ).toMatchObject({ status: "failed", attempted: false })
+})
+
+test("feed profile progress paints before a second peer finishes", async () => {
+  const heldPeer = relay("held")
+  allowed.add(heldPeer)
+  Object.assign(config, {
+    appCommerceRelayUrls: [app, heldPeer],
+    commerceDiscoveryRelayUrls: [app, heldPeer],
+  })
+  heldRelays.add(heldPeer)
+  profileEvent = finalizeEvent(
+    {
+      kind: 0,
+      created_at: 1,
+      tags: [],
+      content: JSON.stringify({ name: "Early fixture" }),
+    },
+    fixtureKey
+  )
+  let observed!: () => void
+  const progress = new Promise<void>((resolve) => {
+    observed = resolve
+  })
+  const reading = getProfiles({
+    pubkeys: [merchant],
+    readScope: "public_feed",
+    skipCache: true,
+    onProgress: (result) => {
+      if (result.data[merchant]?.name === "Early fixture") observed()
+    },
+  })
+  try {
+    await progress
+    expect(heldRequests.has(heldPeer)).toBe(true)
+  } finally {
+    for (const reply of replies.splice(0)) reply()
+    await reading
+  }
 })

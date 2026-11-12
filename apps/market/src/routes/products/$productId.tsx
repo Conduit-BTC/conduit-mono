@@ -64,6 +64,7 @@ import {
 import { getProductAddAvailability, selectCartLine } from "../../lib/cart-model"
 import { getProductDisplaySummary } from "../../lib/productDisplaySummary"
 import { getEventMarketProductPreview } from "../../lib/event-market-product-preview"
+import { assertReviewedEventMarketProductRevision } from "../../lib/event-market-product-revision"
 import {
   cartItemInputFromProductSelection,
   getProductSelection,
@@ -544,12 +545,11 @@ function ProductPage() {
           throw new Error(
             "This product is not currently available for event pickup."
           )
-        if (
-          productRead.resolution.revision.id !== selectedProduct.sourceEventId
+        await assertReviewedEventMarketProductRevision(
+          selectedProduct.sourceEventId,
+          productRead.resolution.revision
         )
-          throw new Error(
-            "Product details changed. Review the refreshed item before adding it."
-          )
+        if (!shouldContinue()) return
         const fulfillment = createEventMarketPickupSnapshot({
           marketRead,
           productRead,

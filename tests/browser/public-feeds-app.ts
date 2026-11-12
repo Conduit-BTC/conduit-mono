@@ -1,10 +1,20 @@
-import { createElement, useEffect } from "react"
+import { createElement, useEffect, useRef } from "react"
 import { createRoot } from "react-dom/client"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools"
 import { config } from "../../packages/core/src/config"
 import { useProfiles } from "../../packages/core/src/hooks/useProfiles"
 import { useProfileSearch } from "../../packages/core/src/hooks/useProfileSearch"
+import {
+  AuthProvider,
+  useAuth,
+} from "../../packages/core/src/context/AuthContext"
+import {
+  ConduitSessionProvider,
+  useConduitSession,
+} from "../../packages/core/src/context/ConduitSessionContext"
+import { useProgressiveProducts } from "../../apps/market/src/hooks/useProgressiveProducts"
+import { useSellerDirectory } from "../../apps/market/src/hooks/useSellerDirectory"
 import {
   cacheSignedProductDeletionEvent,
   cacheSignedProductListingEvent,
@@ -235,6 +245,10 @@ function ProfileScopeProbe({
     readScope: "public_feed",
   })
   const evidence = useProfiles([author], options)
+  const preparation = useProfiles([author], {
+    ...options,
+    lifecycleKey: "synthetic-preparation",
+  })
   const search = useProfileSearch("Fixture", {
     readScope: "public_feed",
     authorPubkeys: [author],
@@ -246,6 +260,8 @@ function ProfileScopeProbe({
       display.isLoading ||
       evidence.isFetching ||
       evidence.isLoading ||
+      preparation.isFetching ||
+      preparation.isLoading ||
       search.isFetching ||
       !search.data
     )
@@ -253,6 +269,7 @@ function ProfileScopeProbe({
     complete({
       displayComplete: display.profileContexts[author]?.readComplete,
       evidenceComplete: evidence.profileContexts[author]?.readComplete,
+      preparationComplete: preparation.profileContexts[author]?.readComplete,
       displayAddress: !!getProfilePaymentAddress(
         display.profileContexts[author]
       ),
@@ -264,12 +281,72 @@ function ProfileScopeProbe({
         .findAll({ queryKey: ["profiles"] }).length,
       searchMatches: search.data.matches.length,
     })
-  }, [complete, display, evidence, search])
+  }, [complete, display, evidence, preparation, search])
   return createElement(
     "p",
     null,
     "Reading independent display and evidence profile queries"
   )
+}
+
+function PublicAppHooksProbe({
+  complete,
+}: {
+  complete: (result: Record<string, unknown>) => void
+}) {
+  const auth = useAuth()
+  const session = useConduitSession()
+  const completed = useRef(false)
+  // Omit readScope deliberately: the production marketplace hook selects it.
+  const products = useProgressiveProducts({
+    scope: "marketplace",
+    merchantPubkey: author,
+    limit: 6,
+  })
+  // Guest directory authors remain repository-owned. Do not replace that module
+  // with a synthetic list just to manufacture seller rows for this fixture.
+  const directory = useSellerDirectory({
+    catalogSource: "conduit",
+    query: "Fixture",
+    accountSearchSettleMs: 0,
+    networkEnabled: true,
+    hydrateSellerProfiles: true,
+  })
+  useEffect(() => {
+    if (
+      completed.current ||
+      !session.relaySettingsReady ||
+      products.isInitialLoading ||
+      products.isHydrating ||
+      !products.meta ||
+      directory.isFetching ||
+      directory.accountSearch.isFetching ||
+      !directory.accountSearch.data ||
+      directory.accountSearch.data.evidence === "not_queried"
+    )
+      return
+    completed.current = true
+    complete({
+      authStatus: auth.status,
+      guest: session.mode === "guest",
+      hasSigner: !!auth.signer,
+      hasAccount: !!auth.accountPubkey,
+      ids: products.products.map((product) => product.id.split(":").at(-1)),
+      prices: Object.fromEntries(
+        products.products.map((product) => [
+          product.id.split(":").at(-1),
+          product.price,
+        ])
+      ),
+      productError: !!products.error,
+      directoryConnected: directory.connected,
+      directorySource: directory.effectiveSource,
+      directorySearchEvidence: directory.accountSearch.data.evidence,
+      directorySearchSettled: true,
+      sellerCount: directory.sellers.length,
+    })
+  }, [auth, complete, directory, products, session])
+  return createElement("p", null, "Reading the production Market guest hooks")
 }
 
 const actions = [
@@ -281,6 +358,7 @@ const actions = [
   "detail",
   "support",
   "hook scopes",
+  "public app hooks",
   "generic exact",
   "generic profile",
 ] as const
@@ -364,6 +442,25 @@ async function run(action: Action): Promise<Record<string, unknown>> {
           QueryClientProvider,
           { client: queryClient },
           createElement(ProfileScopeProbe, { complete })
+        )
+      )
+    })
+  }
+  if (action === "public app hooks") {
+    const appQueryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    return new Promise((complete) => {
+      hookRoot.render(
+        createElement(
+          QueryClientProvider,
+          { client: appQueryClient },
+          createElement(AuthProvider, {
+            children: createElement(ConduitSessionProvider, {
+              appId: "market",
+              children: createElement(PublicAppHooksProbe, { complete }),
+            }),
+          })
         )
       )
     })

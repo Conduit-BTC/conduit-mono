@@ -137,6 +137,13 @@ export function getCatalogAuthorKey(
     : `authors:${Array.from(new Set(authorPubkeys)).sort().join(",")}`
 }
 
+/** Marketplace owners always read the public feed; storefronts remain opt-in. */
+export function getProductCatalogReadScope(
+  input: Pick<ProductCatalogReadInput, "scope" | "readScope">
+): PublicReadScope | undefined {
+  return input.scope === "marketplace" ? "public_feed" : input.readScope
+}
+
 export function getProductCatalogQueryKey(
   input: ProductCatalogReadInput,
   source: "cache" | "network"
@@ -148,7 +155,7 @@ export function getProductCatalogQueryKey(
     "progressive-products",
     source,
     ...(source === "network"
-      ? [getPublicFeedReadScopeKey(input.readScope)]
+      ? [getPublicFeedReadScopeKey(getProductCatalogReadScope(input))]
       : []),
     input.scope,
     input.scope === "marketplace"

@@ -3,6 +3,7 @@ import { getEventMarketProductPreview } from "../apps/market/src/lib/event-marke
 
 function displayEvidence(): Parameters<typeof getEventMarketProductPreview>[0] {
   const calendar = {
+    kind: 31922,
     coordinate: "31922:organizer:date",
     start: Date.now() + 3_600_000,
     end: Date.now() + 7_200_000,
@@ -29,6 +30,7 @@ function displayEvidence(): Parameters<typeof getEventMarketProductPreview>[0] {
       calendar,
     },
     productRead: {
+      productCoordinate: "30402:merchant:item",
       readScope: "public_feed",
       actionable: false,
       resolution: {
@@ -67,6 +69,39 @@ test("feed eligibility displays pickup terms without producing a committable sna
   expect(getEventMarketProductPreview(authority)?.termsKey).toBe(
     preview?.termsKey
   )
+})
+
+test("pickup preview rejects a mismatched coordinate, self-organizer handoff, and unbounded time event", () => {
+  const mismatched = displayEvidence()
+  mismatched.productRead.productCoordinate = "30402:merchant:other"
+  expect(getEventMarketProductPreview(mismatched)).toBeNull()
+  const ownHandoff = displayEvidence()
+  if (ownHandoff.productRead.resolution.state !== "eligible")
+    throw new Error("fixture")
+  ownHandoff.productRead.resolution.merchant.pubkey = "organizer"
+  expect(getEventMarketProductPreview(ownHandoff)).toBeNull()
+  const timeEvent = displayEvidence()
+  timeEvent.marketRead.calendar!.kind = 31923
+  expect(getEventMarketProductPreview(timeEvent)).toBeNull()
+})
+
+test("series preview requires current signed occurrence and master coverage", () => {
+  const input = displayEvidence()
+  const occurrence = input.marketRead.calendar!
+  input.marketRead.calendarCoverage = "complete"
+  input.marketRead.schedule = {
+    kind: "series",
+    coordinate: "31924:organizer:series",
+    series: { signedEvent: { tags: [["a", occurrence.coordinate]] } },
+    occurrences: [{ occurrence, coverage: "stale" }],
+  } as unknown as NonNullable<typeof input.marketRead.schedule>
+  expect(getEventMarketProductPreview(input)).toBeNull()
+  if (input.marketRead.schedule.kind !== "series") throw new Error("fixture")
+  input.marketRead.schedule.occurrences[0]!.coverage = "partial"
+  input.marketRead.calendarCoverage = "unavailable"
+  expect(getEventMarketProductPreview(input)).toBeNull()
+  input.marketRead.calendarCoverage = "partial"
+  expect(getEventMarketProductPreview(input)).not.toBeNull()
 })
 
 test("a fresh grant or pickup-term change requires reviewing the display again", () => {

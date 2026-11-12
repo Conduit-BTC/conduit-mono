@@ -1105,7 +1105,6 @@ export interface EventMarketReadPlan {
 
 /** Public discovery uses only configured feed sources, regardless of authors. */
 export async function getEventMarketDiscoveryReadPlan(input: {
-  readScope?: PublicReadScope
   organizerPubkeys?: readonly string[]
   accountPubkey?: string | null
   authenticatedPubkey?: string | null

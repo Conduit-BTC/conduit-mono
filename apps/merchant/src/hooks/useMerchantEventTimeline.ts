@@ -75,7 +75,7 @@ export function useMerchantEventTimeline(input: {
   const authenticatedPubkey =
     signerReadiness === "ready" && pubkey === accountPubkey ? pubkey : null
   const queryScope = [
-    getPublicFeedReadScopeKey("public_feed"),
+    "owner_management",
     session.relayScope ?? "no-relay-scope",
     authenticatedPubkey,
     authGeneration,
@@ -96,8 +96,8 @@ export function useMerchantEventTimeline(input: {
     ],
     queryFn: ({ signal }) =>
       getFollowPubkeys({
-        readScope: "public_feed",
         pubkey: merchantPubkey,
+        accountPubkey,
         authenticatedPubkey,
         shouldContinue: () =>
           !signal.aborted && authGenerationRef.current === authGeneration,
@@ -157,6 +157,7 @@ export function useMerchantEventTimeline(input: {
       "merchant-event-perspective-follows",
       ...queryScope,
       "conduit",
+      getPublicFeedReadScopeKey("public_feed"),
       CONDUIT_MARKET_PERSPECTIVE_PUBKEY,
       merchantPubkey || "none",
     ],
@@ -233,7 +234,6 @@ export function useMerchantEventTimeline(input: {
     ],
     queryFn: ({ signal }) =>
       getMerchantStorefront({
-        readScope: "public_feed",
         merchantPubkey,
         accountPubkey: merchantPubkey,
         authenticatedPubkey,
@@ -285,7 +285,6 @@ export function useMerchantEventTimeline(input: {
         shouldContinue: () => authGenerationRef.current === authGeneration,
         read: (reference, marketSignal) =>
           readEventMarketRoster({
-            readScope: "public_feed",
             reference,
             authenticatedPubkey,
             signal: marketSignal,

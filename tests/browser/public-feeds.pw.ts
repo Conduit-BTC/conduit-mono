@@ -173,6 +173,52 @@ test("public browse refresh and increased-limit reads keep all actual destinatio
   expectConfiguredOnly(traffic)
 })
 
+test("production Market guest hooks select the configured public scope on demand", async ({
+  page,
+  context,
+}) => {
+  const traffic = await open(page, context)
+  expect(traffic.sockets).toEqual([])
+  const result = await run(page, "public app hooks")
+  expect(result).toMatchObject({
+    authStatus: "disconnected",
+    guest: true,
+    hasSigner: false,
+    hasAccount: false,
+    productError: false,
+    directoryConnected: false,
+    directorySource: "conduit",
+    directorySearchSettled: true,
+    directorySearchEvidence: "absent_within_scope",
+    sellerCount: 0,
+  })
+  expect(result.ids as string[]).not.toContain("removed")
+  expect(result.prices).toMatchObject({ current: 40 })
+  const fixtureAuthor = traffic.fixtures!.profile.pubkey
+  // The merchant-selected production hook reads the disposable signed author.
+  expect(
+    traffic.requests.some(
+      ({ filter }) =>
+        filter.kinds?.includes(30402) && filter.authors?.includes(fixtureAuthor)
+    )
+  ).toBe(true)
+  // The real guest directory independently uses its repository author scope.
+  expect(
+    traffic.requests.some(
+      ({ filter }) =>
+        filter.kinds?.includes(30402) &&
+        !!filter.authors?.length &&
+        !filter.authors.includes(fixtureAuthor)
+    )
+  ).toBe(true)
+  expect(
+    traffic.requests.some(
+      ({ filter }) => filter.kinds?.includes(0) && filter.search === "Fixture"
+    )
+  ).toBe(true)
+  expectConfiguredOnly(traffic)
+})
+
 test("ranked search hydrates current terms, family and deletion evidence without following advertised sources", async ({
   page,
   context,
@@ -273,9 +319,10 @@ test("real profile hooks keep public display and unrestricted evidence in separa
   expect(result).toMatchObject({
     displayComplete: false,
     evidenceComplete: true,
+    preparationComplete: true,
     displayAddress: false,
     evidenceAddress: false,
-    profileQueries: 2,
+    profileQueries: 3,
     searchMatches: 1,
   })
   expect(traffic.deniedHttp).toEqual([])

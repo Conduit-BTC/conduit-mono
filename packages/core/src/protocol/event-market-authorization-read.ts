@@ -79,6 +79,7 @@ const defaults: EventMarketAuthorizationReadDependencies = {
 function options(
   plan: EventMarketReadPlan,
   input: {
+    readScope?: PublicReadScope
     accountPubkey?: string | null
     authenticatedPubkey?: string | null
     shouldContinue?: () => boolean
@@ -86,6 +87,7 @@ function options(
   }
 ): PublicRelayReadOptions {
   return {
+    requireAllRequestedRelays: input.readScope === "public_feed",
     relayUrls: plan.candidateRelayUrls,
     relayTargets: plan.relayTargets,
     maxRelayAttempts: plan.maxRelayAttempts,

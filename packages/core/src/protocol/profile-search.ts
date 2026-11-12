@@ -224,6 +224,7 @@ export interface ProfileSearchDependencies {
     filter: Filter,
     options: {
       relayUrls: string[]
+      requireAllRequestedRelays?: boolean
       relayTargets: RelayTarget[]
       accountPubkey?: string | null
       authenticatedPubkey?: string | null
@@ -471,6 +472,7 @@ const defaultDependencies: ProfileSearchDependencies = {
   planSearchRelayTargets: defaultPlanSearchRelayTargets,
   fetchEvents: async (filter, options) => {
     return await fetchSignedEventsFanoutDetailed(filter, {
+      requireAllRequestedRelays: options.requireAllRequestedRelays,
       relayUrls: options.relayUrls,
       relayTargets: options.relayTargets,
       accountPubkey: options.accountPubkey,
@@ -839,6 +841,7 @@ export async function searchNetworkProfiles(
               },
               {
                 relayUrls,
+                requireAllRequestedRelays: input.readScope === "public_feed",
                 relayTargets,
                 accountPubkey: input.authenticatedPubkey ?? null,
                 authenticatedPubkey: input.authenticatedPubkey ?? null,

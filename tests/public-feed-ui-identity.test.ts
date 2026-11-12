@@ -39,7 +39,7 @@ test("public catalog freshness cannot reuse an evidence query or an old configur
   }
 })
 
-test("ranked search freshness keeps feed results separate from evidence results", () => {
+test("pure marketplace and ranked-search keys use their effective feed purpose when omitted", () => {
   const client = new QueryClient()
   const input = {
     query: "coffee",
@@ -48,7 +48,7 @@ test("ranked search freshness keeps feed results separate from evidence results"
     anonymous: true,
     authorPubkeys: ["merchant"],
   }
-  client.setQueryData(getGlobalProductSearchQueryKey(input), "evidence")
+  client.setQueryData(getGlobalProductSearchQueryKey(input), "feed search")
   expect(
     client.getQueryData(
       getGlobalProductSearchQueryKey({
@@ -56,6 +56,14 @@ test("ranked search freshness keeps feed results separate from evidence results"
         readScope: "public_feed",
       })
     )
-  ).toBeUndefined()
+  ).toBe("feed search")
+  expect(
+    getProductCatalogQueryKey({ scope: "marketplace" }, "network")
+  ).toEqual(
+    getProductCatalogQueryKey(
+      { scope: "marketplace", readScope: "public_feed" },
+      "network"
+    )
+  )
   client.clear()
 })

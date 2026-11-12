@@ -65,7 +65,8 @@ const merchants = [
 const signRoster = (
   name: string,
   created_at: number,
-  state: "open" | "closed" = "open"
+  state: "open" | "closed" = "open",
+  previousEventId?: string
 ) =>
   finalizeEvent(
     {
@@ -74,6 +75,7 @@ const signRoster = (
         organizerPubkey: organizer,
         calendarCoordinate: seriesCoordinate,
         state,
+        previousEventId,
         merchants,
       }),
       created_at,
@@ -81,7 +83,7 @@ const signRoster = (
     organizerKey
   )
 const oldRoster = signRoster("active", 100)
-const newerRoster = signRoster("active", 200, "closed")
+const newerRoster = signRoster("active", 200, "closed", oldRoster.id)
 const removedRoster = signRoster("removed", 101)
 const tombstone = finalizeEvent(
   {

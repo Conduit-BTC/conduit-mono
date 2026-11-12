@@ -6,12 +6,15 @@ import {
   ShoppingCart,
   Store,
   Truck,
+  Zap,
   type LucideIcon,
 } from "lucide-react"
-import { Link } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import {
+  getProfilePaymentAddress,
   formatNpub,
   getProfileName,
+  isQuantumRouterEnabled,
   pubkeyToNpub,
   useAuth,
   useProfiles,
@@ -21,6 +24,7 @@ import {
   AvatarFallback,
   AvatarImage,
   Button,
+  HoldToReleaseButton,
   StatusPill,
   cn,
 } from "@conduit/ui"
@@ -34,16 +38,29 @@ import {
   useState,
 } from "react"
 import { useCart } from "../hooks/useCart"
+import {
+  useCartLnurlPreflights,
+  useCartReadiness,
+} from "../hooks/useCartReadiness"
+import { useMerchantCheckoutCapability } from "../hooks/useMerchantCheckoutCapability"
 import { useShopperPricing } from "../hooks/useShopperPricing"
 import {
+  getCartCommerceFingerprint,
   getCartItemKey,
+  getCartItemStockEvidenceForAvailability,
   getCartItemStockForAvailability,
   getCartItemFulfillmentType,
   groupCartPurchases,
+  isCartProductAvailabilityBlocking,
   type CartPurchaseGroup,
 } from "../lib/cart-model"
-import { getCartHudRouteMode, reconcileCartHudMerchant } from "../lib/cart-hud"
+import {
+  getCartHudRouteMode,
+  isCartHudPreparationEnabled,
+  reconcileCartHudMerchant,
+} from "../lib/cart-hud"
 import { MerchantAvatarFallback } from "./MerchantIdentity"
+import { armHudZapIntent } from "../lib/hud-zap-intent"
 
 const HUD_EXIT_DURATION_MS = 240
 
@@ -166,6 +183,7 @@ export type MarketCartHudProps = {
 }
 
 export function MarketCartHud({ pathname }: MarketCartHudProps) {
+  const navigate = useNavigate()
   const { pubkey, status, authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
   useLayoutEffect(() => {
@@ -188,13 +206,72 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     maxUnresolvedRefetches: 2,
   })
   const routeMode = getCartHudRouteMode(pathname)
-  const [expanded, setExpanded] = useState(routeMode === "expanded")
+  const [expanded, setExpanded] = useState(false)
+  const [preparationIntent, setPreparationIntent] = useState<string | null>(
+    null
+  )
+  const preparationScope = JSON.stringify([
+    pathname,
+    authenticatedPubkey,
+    authGeneration,
+  ])
+  const preparationEnabled = isCartHudPreparationEnabled({
+    expanded,
+    visible: routeMode !== "suppressed" && groups.length > 0,
+    requestedScope: preparationIntent,
+    currentScope: preparationScope,
+  })
+  const preparationAuthorityRef = useRef({
+    enabled: preparationEnabled,
+    scope: preparationScope,
+  })
+  useLayoutEffect(() => {
+    preparationAuthorityRef.current = {
+      enabled: preparationEnabled,
+      scope: preparationScope,
+    }
+  }, [preparationEnabled, preparationScope])
+  const shouldContinuePreparation = () =>
+    preparationAuthorityRef.current.enabled &&
+    preparationAuthorityRef.current.scope === preparationScope &&
+    authGenerationRef.current === authGeneration
+  const expandHud = useCallback(() => {
+    setPreparationIntent(preparationScope)
+    setExpanded(true)
+  }, [preparationScope])
+  const preparationProfiles = useProfiles(merchantPubkeys, {
+    lifecycleKey: preparationScope,
+    accountPubkey: authenticatedPubkey,
+    authenticatedPubkey,
+    enabled: preparationEnabled,
+    shouldContinue: shouldContinuePreparation,
+    priority: "visible",
+    maxUnresolvedRefetches: 2,
+  })
+  const lud16ByMerchant = useMemo(() => {
+    const map = new Map<string, string | undefined>()
+    if (!preparationEnabled) return map
+    for (const merchantPubkey of merchantPubkeys) {
+      map.set(
+        merchantPubkey,
+        getProfilePaymentAddress(
+          preparationProfiles.profileContexts[merchantPubkey]
+        )
+      )
+    }
+    return map
+  }, [merchantPubkeys, preparationEnabled, preparationProfiles.profileContexts])
+  useCartLnurlPreflights(lud16ByMerchant, {
+    shouldContinue: shouldContinuePreparation,
+    lifecycleKey: preparationScope,
+  })
   const [activePurchase, setActivePurchase] = useState<string | null>(
     groups[0]?.id ?? null
   )
   const [announcement, setAnnouncement] = useState("")
   const [mounted, setMounted] = useState(false)
   const [entered, setEntered] = useState(false)
+  const [zapStarting, setZapStarting] = useState(false)
   const hudRef = useRef<HTMLElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const purchaseRailRef = useRef<HTMLDivElement>(null)
@@ -222,15 +299,42 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     routeMode !== "suppressed" && !!currentPurchase && !!currentGroup
   const activeGroup = currentGroup ?? lastVisibleRef.current?.group
   const selectedMerchant = activeGroup?.merchantPubkey ?? null
+  const cartReadiness = useCartReadiness(cart.items, {
+    enabled: preparationEnabled,
+    shouldContinue: shouldContinuePreparation,
+    lifecycleKey: preparationScope,
+  })
+  const activeReadiness = activeGroup
+    ? cartReadiness.byPurchase.get(activeGroup.id)
+    : undefined
   const activeProfile = selectedMerchant
     ? profiles.data[selectedMerchant]
     : undefined
-  // Browsing displays the saved cart. Purchase evidence, endpoint preflights,
-  // and wallet readiness begin in the cart/checkout lifecycle.
+  const merchantLud16 = getProfilePaymentAddress(
+    selectedMerchant
+      ? preparationProfiles.profileContexts[selectedMerchant]
+      : undefined
+  )
+  const activeAvailabilityMessage = activeReadiness?.blockingMessage ?? null
+  const checkoutDisabled = !!activeAvailabilityMessage
+  // Explicit HUD expansion starts stock, payment-profile, LNURL and wallet
+  // preparation. Collapsed browse and route/account transitions remain inert.
+  const capabilityView = useMerchantCheckoutCapability({
+    items: activeGroup?.items ?? [],
+    readiness: activeReadiness,
+    merchantLud16,
+    enabled: preparationEnabled,
+    shouldContinue: shouldContinuePreparation,
+    lifecycleKey: preparationScope,
+  })
+  const checkoutCapability = capabilityView.capability
+  const pricingIntent = capabilityView.pricingIntent
   // Collapsing hides and inerts the panel. If focus is inside, move it to
   // the disclosure toggle first so keyboard and screen-reader users are not
   // dropped at the document root.
   const collapseHud = useCallback(() => {
+    preparationAuthorityRef.current.enabled = false
+    setPreparationIntent(null)
     const panel = panelRef.current
     if (
       panel &&
@@ -245,28 +349,33 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   // One activation path for pointer, Enter, and Space: selecting a merchant
   // while collapsed both selects it and expands the panel, including when the
   // activated merchant is already selected.
-  const activatePurchase = useCallback((purchaseId: string, index?: number) => {
-    setActivePurchase(purchaseId)
-    setExpanded(true)
-    const rail = purchaseRailRef.current
-    const tab = index === undefined ? null : rail?.children.item(index)
-    if (!rail || !(tab instanceof HTMLElement)) return
-    const railBounds = rail.getBoundingClientRect()
-    const tabBounds = tab.getBoundingClientRect()
-    rail.scrollTo({
-      left:
-        index === 0
-          ? 0
-          : rail.scrollLeft +
-            tabBounds.left -
-            railBounds.left -
-            (railBounds.width - tabBounds.width) / 2,
-      behavior: "smooth",
-    })
-  }, [])
+  const activatePurchase = useCallback(
+    (purchaseId: string, index?: number) => {
+      setActivePurchase(purchaseId)
+      expandHud()
+      const rail = purchaseRailRef.current
+      const tab = index === undefined ? null : rail?.children.item(index)
+      if (!rail || !(tab instanceof HTMLElement)) return
+      const railBounds = rail.getBoundingClientRect()
+      const tabBounds = tab.getBoundingClientRect()
+      rail.scrollTo({
+        left:
+          index === 0
+            ? 0
+            : rail.scrollLeft +
+              tabBounds.left -
+              railBounds.left -
+              (railBounds.width - tabBounds.width) / 2,
+        behavior: "smooth",
+      })
+    },
+    [expandHud]
+  )
 
   useEffect(() => {
-    setExpanded(routeMode === "expanded")
+    setExpanded(false)
+    setPreparationIntent(null)
+    if (pathname !== "/checkout") setZapStarting(false)
   }, [pathname, routeMode])
 
   useEffect(() => {
@@ -314,7 +423,6 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
     // advance it and must still announce and expand the shopper's first add.
     if (!observedMutation || !increasedPurchase) return
     setActivePurchase(increasedPurchase)
-    setExpanded(true)
     setAnnouncement(
       increasedTitle
         ? `Cart updated: ${increasedTitle}, quantity ${increasedQuantity}`
@@ -412,6 +520,38 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
   const merchantName =
     getProfileName(activeProfile) ??
     `Merchant ${formatNpub(selectedMerchant, 6)}`
+  const zapReady =
+    preparationEnabled &&
+    !isQuantumRouterEnabled() &&
+    checkoutCapability.outcome === "zap_candidate"
+  const startZapOut = () => {
+    if (
+      !zapReady ||
+      !shouldContinuePreparation() ||
+      zapStarting ||
+      !pubkey ||
+      pricingIntent?.status !== "ok"
+    ) {
+      return
+    }
+    setZapStarting(true)
+    armHudZapIntent({
+      merchantPubkey: selectedMerchant,
+      purchaseId: activeGroup.id,
+      buyerPubkey: pubkey,
+      cartFingerprint: getCartCommerceFingerprint(activeGroup.items),
+      totalMsats: pricingIntent.totalMsats,
+      createdAt: Date.now(),
+    })
+    void navigate({
+      to: "/checkout",
+      search: {
+        merchant: pubkeyToNpub(selectedMerchant),
+        purchase: activeGroup.id,
+        intent: "zap",
+      },
+    })
+  }
 
   return (
     <div
@@ -487,7 +627,7 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               aria-expanded={expanded}
               aria-controls={detailsPanelId}
               className="h-11 w-11 shrink-0 text-[var(--text-muted)]"
-              onClick={() => (expanded ? collapseHud() : setExpanded(true))}
+              onClick={() => (expanded ? collapseHud() : expandHud())}
             >
               {/* Bottom-anchored dock: expanding raises content (up), collapsing
                   lowers it (down), so the arrow points at the resulting motion. */}
@@ -499,19 +639,58 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                 aria-hidden="true"
               />
             </Button>
-            {!expanded && (
-              <Button asChild size="sm">
-                <Link
-                  to="/checkout"
-                  search={{
-                    merchant: pubkeyToNpub(selectedMerchant),
-                    purchase: activeGroup.id,
-                  }}
+            {!expanded &&
+              (checkoutDisabled ? (
+                <>
+                  <Button
+                    size="sm"
+                    disabled
+                    aria-describedby={`${detailsPanelId}-blocked-reason`}
+                    title={
+                      activeAvailabilityMessage ??
+                      "Checking current product stock"
+                    }
+                  >
+                    Checkout
+                  </Button>
+                  <span
+                    id={`${detailsPanelId}-blocked-reason`}
+                    role="status"
+                    className="sr-only"
+                  >
+                    {activeAvailabilityMessage ??
+                      "Checking current product stock"}
+                  </span>
+                </>
+              ) : zapReady ? (
+                <HoldToReleaseButton
+                  size="sm"
+                  disabled={zapStarting}
+                  canComplete={() =>
+                    preparationEnabled &&
+                    shouldContinuePreparation() &&
+                    checkoutCapability.outcome === "zap_candidate" &&
+                    !zapStarting
+                  }
+                  onHoldComplete={startZapOut}
+                  chargedLabel="Release to zap out"
                 >
-                  Checkout
-                </Link>
-              </Button>
-            )}
+                  <Zap className="h-4 w-4" aria-hidden="true" />
+                  Zap out
+                </HoldToReleaseButton>
+              ) : (
+                <Button asChild size="sm">
+                  <Link
+                    to="/checkout"
+                    search={{
+                      merchant: pubkeyToNpub(selectedMerchant),
+                      purchase: activeGroup.id,
+                    }}
+                  >
+                    Checkout
+                  </Link>
+                </Button>
+              ))}
           </div>
         </div>
 
@@ -564,10 +743,16 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               >
                 {activeGroup.items.map((item) => {
                   const display = shopperPricing.formatPrice(item)
+                  const availability =
+                    activeReadiness?.availabilityByProductId.get(item.productId)
                   const currentStock = getCartItemStockForAvailability(
                     item,
-                    undefined
+                    availability
                   )
+                  const currentStockEvidence =
+                    getCartItemStockEvidenceForAvailability(availability)
+                  const itemUnavailable =
+                    isCartProductAvailabilityBlocking(availability)
                   return (
                     <article
                       key={item.cartLineId ?? getCartItemKey(item)}
@@ -605,6 +790,13 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                         <div className="truncate text-xs text-[var(--text-muted)]">
                           {display.primary}
                         </div>
+                        {itemUnavailable ? (
+                          <div className="mt-1 text-xs font-medium text-[var(--error-text)]">
+                            {availability?.status === "sold_out"
+                              ? "Sold out"
+                              : `Only ${currentStock ?? 0} available`}
+                          </div>
+                        ) : null}
                         <div className="mt-1 flex justify-end">
                           <div className="flex shrink-0 items-center gap-1">
                             <Button
@@ -633,10 +825,18 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                               className="h-9 w-9"
                               aria-label={`Increase ${item.title} quantity`}
                               disabled={
-                                typeof currentStock === "number" &&
-                                item.quantity >= currentStock
+                                activeReadiness?.isChecking === true ||
+                                itemUnavailable ||
+                                (typeof currentStock === "number" &&
+                                  item.quantity >= currentStock)
                               }
-                              onClick={() => cart.incrementItem(item, 1)}
+                              onClick={() =>
+                                cart.incrementItem(
+                                  item,
+                                  1,
+                                  currentStockEvidence
+                                )
+                              }
                             >
                               <Plus className="h-4 w-4" aria-hidden="true" />
                             </Button>
@@ -649,6 +849,19 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
+                {activeAvailabilityMessage ||
+                activeReadiness?.isChecking ||
+                activeReadiness?.isRefreshing ? (
+                  <span
+                    role="status"
+                    className="max-w-md text-xs text-[var(--text-muted)]"
+                  >
+                    {activeAvailabilityMessage ??
+                      (activeReadiness?.isChecking
+                        ? "Checking stock…"
+                        : "Refreshing availability…")}
+                  </span>
+                ) : null}
                 <div className="ml-auto flex shrink-0 gap-2">
                   <Button asChild variant="outline" size="sm">
                     <Link
@@ -661,17 +874,46 @@ export function MarketCartHud({ pathname }: MarketCartHudProps) {
                       View full cart
                     </Link>
                   </Button>
-                  <Button asChild size="sm">
-                    <Link
-                      to="/checkout"
-                      search={{
-                        merchant: pubkeyToNpub(selectedMerchant),
-                        purchase: activeGroup.id,
-                      }}
+                  {checkoutDisabled ? (
+                    <Button
+                      size="sm"
+                      disabled
+                      title={
+                        activeAvailabilityMessage ??
+                        "Checking current product stock"
+                      }
                     >
                       Continue to checkout
-                    </Link>
-                  </Button>
+                    </Button>
+                  ) : zapReady ? (
+                    <HoldToReleaseButton
+                      size="sm"
+                      disabled={zapStarting}
+                      canComplete={() =>
+                        preparationEnabled &&
+                        shouldContinuePreparation() &&
+                        checkoutCapability.outcome === "zap_candidate" &&
+                        !zapStarting
+                      }
+                      onHoldComplete={startZapOut}
+                      chargedLabel="Release to zap out"
+                    >
+                      <Zap className="h-4 w-4" aria-hidden="true" />
+                      Continue to Zap Out
+                    </HoldToReleaseButton>
+                  ) : (
+                    <Button asChild size="sm">
+                      <Link
+                        to="/checkout"
+                        search={{
+                          merchant: pubkeyToNpub(selectedMerchant),
+                          purchase: activeGroup.id,
+                        }}
+                      >
+                        Continue to checkout
+                      </Link>
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>

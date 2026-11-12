@@ -30,6 +30,8 @@ type ProfilePriority = "visible" | "background"
 
 export interface UseProfilesOptions {
   readScope?: PublicReadScope
+  /** Isolate an explicitly revocable UI operation's network lease, not data custody. */
+  lifecycleKey?: string
   authenticatedPubkey?: string | null
   /** Signed-in account used only for final-I/O whole-relay exclusions. */
   accountPubkey?: string | null
@@ -130,7 +132,11 @@ export function useProfiles(
   options: UseProfilesOptions = {}
 ): UseProfilesResult {
   const queryClient = useQueryClient()
-  const readScopeKey = getPublicFeedReadScopeKey(options.readScope)
+  const scopeKey = getPublicFeedReadScopeKey(options.readScope)
+  const readScopeKey =
+    options.lifecycleKey === undefined
+      ? scopeKey
+      : JSON.stringify([scopeKey, "lifecycle", options.lifecycleKey])
   const priority = options.priority ?? "visible"
   const authenticatedPerspective = getProfileQueryPerspectiveKey(
     options.authenticatedPubkey

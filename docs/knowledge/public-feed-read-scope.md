@@ -33,6 +33,12 @@ Completion describes the configured feed observation; it is not global absence
 or permission to purchase or mutate. Failed or denied configured reads remain
 partial/unavailable, and retained-only data remains stale.
 
+Feed transport opts into coverage of every requested configured peer. A peer
+suppressed by health or account policy contributes an unsuccessful coverage row,
+with `attempted: false`; actual attempted/admitted destination sets remain factual.
+This requires no additional connection or retry and leaves ordinary read coverage
+unchanged.
+
 Event feed results carry provenance and are nonactionable. Write-readiness,
 first-grant and pickup snapshot gates reject them, including mixed-provenance
 inputs. Product pages render a noncommittable Event preview and perform their
@@ -45,8 +51,16 @@ profile-edit reads retain their existing routing and validation.
 Generic exact reader calls with no scope retain their existing behavior. Checkout,
 organizer actions, signed order pickup evidence, publication, private messaging,
 recovery and account relay preferences are outside this feed policy. The browsing
-cart HUD uses saved cart state and the existing Checkout links; fresh readiness,
-wallet and LNURL work belongs to the cart/checkout action lifecycle.
+cart HUD initially uses saved cart state. Explicit expansion starts a separate
+preparation lifecycle for fresh stock, wallet and LNURL checks and the existing
+Zap Out control. Collapsing or changing route/account revokes queued preparation;
+cart and checkout retain their existing read lifecycle.
+
+Own-account identity reads retain account routing. Merchant owner-management
+discovery uses `discoverOwnedEventMarkets`, requiring matching owner, account and
+authenticated identities; its query and continuation identities are distinct from
+public discovery. Finding an owned market must not depend on publication to the
+public feed peers.
 
 ## Verification boundary
 
@@ -56,3 +70,6 @@ The disposable browser harness records actual attempted WebSocket destinations
 and blocks external HTTP. The exact Vite loopback socket is counted separately
 from relay traffic. It exercises shared APIs/hooks rather than claiming
 complete production-route or live-relay/payment qualification.
+
+CI runs both public-feed browser files in a separate job. The build gate requires
+both that job and the existing payment/recovery tests to succeed.

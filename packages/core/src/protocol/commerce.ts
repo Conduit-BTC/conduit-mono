@@ -1376,6 +1376,7 @@ async function streamProductRecordChunks(input: {
           chunkFilter,
           {
             relayUrls: input.relayUrls,
+            requireAllRequestedRelays: input.readScope === "public_feed",
             relayTargets: input.relayTargets,
             maxRelayAttempts: input.maxRelayAttempts,
             accountPubkey: input.accountPubkey ?? input.authenticatedPubkey,
@@ -1731,6 +1732,7 @@ async function fetchProductDeletionTimestamps(
             async (relayUrls) => {
               const fetchOptions = {
                 relayUrls,
+                requireAllRequestedRelays: options.readScope === "public_feed",
                 relayTargets: deletionRelayTargets.filter((target) =>
                   relayUrls.includes(target.url)
                 ),
@@ -1943,6 +1945,7 @@ async function fetchPublicProductRecords(query: {
           })
 
   const result = await runFetchEventsFanoutDetailed(filter, {
+    requireAllRequestedRelays: query.readScope === "public_feed",
     relayUrls: relayPlan.candidateRelayUrls,
     relayTargets: relayPlan.relayTargets,
     maxRelayAttempts: relayPlan.maxRelayAttempts,
@@ -2546,6 +2549,7 @@ async function fetchVariationGroupRecordBatch(
       // Each transport-safe chunk starts with at most two family reads.
       // Saturated results split below without increasing concurrency.
       const fetchOptions = {
+        requireAllRequestedRelays: options.readScope === "public_feed",
         relayUrls: relayPlan.candidateRelayUrls,
         relayTargets: relayPlan.relayTargets,
         maxRelayAttempts: relayPlan.maxRelayAttempts,
@@ -2639,7 +2643,11 @@ async function fetchVariationGroupRecordBatch(
         const relevantRelayHints = uniqueStrings([
           ...target.relayHints,
           ...relayPlan.hintRelayUrls,
-        ])
+        ]).filter(
+          (relayUrl) =>
+            options.readScope !== "public_feed" ||
+            consideredRelayUrlSet.has(relayUrl)
+        )
         const expectedRelayUrls = uniqueStrings([
           ...consideredRelayUrls,
           ...relevantRelayHints,
@@ -3366,6 +3374,7 @@ async function readPreparedProductTargets(
             },
             {
               relayUrls: relayPlan.candidateRelayUrls,
+              requireAllRequestedRelays: options.readScope === "public_feed",
               relayTargets: relayPlan.relayTargets,
               maxRelayAttempts: relayPlan.maxRelayAttempts,
               accountPubkey:
@@ -3387,7 +3396,11 @@ async function readPreparedProductTargets(
           const completeRelayHints = uniqueStrings([
             ...knownRelayHints,
             ...relayPlan.hintRelayUrls,
-          ])
+          ]).filter(
+            (relayUrl) =>
+              options.readScope !== "public_feed" ||
+              consideredRelayUrlSet.has(relayUrl)
+          )
           return {
             targets,
             events: result.events,
@@ -3405,7 +3418,11 @@ async function readPreparedProductTargets(
                     ...consideredRelayUrls,
                     ...target.relayHints,
                     ...relayPlan.hintRelayUrls,
-                  ])
+                  ]).filter(
+                    (relayUrl) =>
+                      options.readScope !== "public_feed" ||
+                      consideredRelayUrlSet.has(relayUrl)
+                  )
                 ),
               ])
             ),

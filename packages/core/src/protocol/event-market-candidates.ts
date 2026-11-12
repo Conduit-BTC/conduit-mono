@@ -1,4 +1,7 @@
-import { getPublicFeedReadScopeKey } from "./public-feed-read-scope"
+import {
+  getPublicFeedReadScopeKey,
+  type PublicReadScope,
+} from "./public-feed-read-scope"
 import type { Filter } from "nostr-tools"
 import type { EventMarketReadPlan } from "./event-market"
 import {
@@ -25,13 +28,14 @@ export interface EventMarketDiscoveryContinuation {
 }
 
 export function getEventMarketDiscoveryScope(input: {
+  readScope?: PublicReadScope
   authors?: readonly string[]
   accountPubkey?: string | null
   authenticatedPubkey?: string | null
   plan: EventMarketReadPlan
 }): string {
   return JSON.stringify([
-    getPublicFeedReadScopeKey("public_feed"),
+    getPublicFeedReadScopeKey(input.readScope),
     input.accountPubkey ?? null,
     input.authenticatedPubkey ?? null,
     input.authors ?? null,
@@ -42,6 +46,7 @@ export function getEventMarketDiscoveryScope(input: {
 
 /** Fair, bounded NIP-01 paging; a full timestamp boundary is never skipped. */
 export async function scanEventMarketCandidates(input: {
+  readScope?: PublicReadScope
   authors?: readonly string[]
   accountPubkey?: string | null
   authenticatedPubkey?: string | null

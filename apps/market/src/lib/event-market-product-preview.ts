@@ -4,6 +4,10 @@ import type {
 } from "@conduit/core"
 import type { PickupHandoffSummary } from "./pickup-handoff"
 
+function hasCurrentSignedCoverage(coverage: string | undefined): boolean {
+  return coverage === "complete" || coverage === "partial"
+}
+
 /** Display terms cannot be stored as an order pickup snapshot. */
 export function getEventMarketProductPreview(input: {
   marketRead: EventMarketRosterReadResult
@@ -17,7 +21,9 @@ export function getEventMarketProductPreview(input: {
     schedule?.kind === "series"
       ? schedule.occurrences.find(
           (entry) =>
-            entry.occurrence.coordinate === input.selectedOccurrenceCoordinate
+            entry.occurrence.coordinate ===
+              input.selectedOccurrenceCoordinate &&
+            hasCurrentSignedCoverage(entry.coverage)
         )?.occurrence
       : input.marketRead.calendar
   const authorization = input.productRead.authorization?.resolution
@@ -30,7 +36,14 @@ export function getEventMarketProductPreview(input: {
     !calendar.signedEvent ||
     calendar.coordinate !== input.selectedOccurrenceCoordinate ||
     calendar.end <= Date.now() ||
-    product.assignment.occurrenceCoordinate !== calendar.coordinate
+    (calendar.kind === 31923 &&
+      !calendar.signedEvent.tags.some((tag) => tag[0] === "end")) ||
+    (schedule?.kind === "series" &&
+      !hasCurrentSignedCoverage(input.marketRead.calendarCoverage)) ||
+    product.assignment.occurrenceCoordinate !== calendar.coordinate ||
+    (product.merchant.pubkey === market.market.organizerPubkey &&
+      product.merchant.mode === "organizer_handoff") ||
+    product.product.id !== input.productRead.productCoordinate
   )
     return null
 

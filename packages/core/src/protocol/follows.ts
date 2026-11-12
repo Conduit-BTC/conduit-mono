@@ -929,6 +929,7 @@ export async function readLatestFollowLists(
           },
           {
             relayUrls: candidateRelayUrls,
+            requireAllRequestedRelays: options.readScope === "public_feed",
             relayTargets: mergeRelayTargets(
               authorPlan.relayTargets,
               basePlan.relayTargets

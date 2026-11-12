@@ -73,7 +73,8 @@ export function merchantCartAvailabilityQueryKey(
   merchantPubkey: string,
   productIds: readonly string[],
   merchantHiddenProductIds: readonly string[] = [],
-  relayScope?: string | null
+  relayScope?: string | null,
+  lifecycleKey?: string
 ): readonly unknown[] {
   return [
     "merchant-cart-availability",
@@ -81,6 +82,7 @@ export function merchantCartAvailabilityQueryKey(
     productIds,
     merchantHiddenProductIds,
     ...(relayScope ? [relayScope] : []),
+    ...(lifecycleKey ? ["lifecycle", lifecycleKey] : []),
   ]
 }
 
@@ -128,7 +130,21 @@ export function getCartAvailabilityReadScopes(
  * while a delivery purchase for the same coordinate must still observe the
  * ordinary listing filter. Each purchase resolves independently.
  */
-export function useCartReadiness(items: CartItem[]): CartReadiness {
+export function useCartReadiness(
+  items: CartItem[],
+  options: {
+    enabled?: boolean
+    shouldContinue?: () => boolean
+    lifecycleKey?: string
+  } = {}
+): CartReadiness {
+  const enabled = options.enabled ?? true
+  const enabledRef = useRef(enabled)
+  const continueRef = useRef(options.shouldContinue)
+  useLayoutEffect(() => {
+    enabledRef.current = enabled
+    continueRef.current = options.shouldContinue
+  }, [enabled, options.shouldContinue])
   const session = useConduitSession()
   const { authGeneration } = useAuth()
   const authGenerationRef = useRef(authGeneration)
@@ -137,10 +153,13 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
   }, [authGeneration])
   const authenticatedPubkey =
     session.mode === "signed_in" ? session.pubkey : null
-  const purchaseGroups = useMemo(() => groupCartPurchases(items), [items])
+  const purchaseGroups = useMemo(
+    () => (enabled ? groupCartPurchases(items) : []),
+    [items, enabled]
+  )
   const readScopes = useMemo(
-    () => getCartAvailabilityReadScopes(items),
-    [items]
+    () => (enabled ? getCartAvailabilityReadScopes(items) : []),
+    [items, enabled]
   )
   const queries = useQueries({
     queries: readScopes.map((scope) => {
@@ -150,17 +169,27 @@ export function useCartReadiness(items: CartItem[]): CartReadiness {
           scope.merchantPubkey,
           scope.productIds,
           scope.merchantHiddenProductIds,
-          session.relayScope
+          session.relayScope,
+          options.lifecycleKey
         ),
-        queryFn: () =>
-          readinessReadLimiter(() =>
+        queryFn: (context: { signal: AbortSignal }) => {
+          const signal =
+            options.enabled !== undefined || options.shouldContinue
+              ? context.signal
+              : undefined
+          return readinessReadLimiter(() =>
             getProductsByIds(scope.productIds, {
+              signal,
               includeMerchantHiddenProductIds: scope.merchantHiddenProductIds,
               authenticatedPubkey,
               shouldContinue: () =>
+                enabledRef.current &&
+                continueRef.current?.() !== false &&
+                !signal?.aborted &&
                 authGenerationRef.current === readAuthGeneration,
             })
-          ),
+          )
+        },
         enabled: scope.productIds.length > 0,
         staleTime: CART_READINESS_LEASE_MS,
         gcTime: 5 * 60_000,
@@ -287,19 +316,34 @@ export function normalizeMerchantLnurlAddress(
  */
 export function merchantLnurlPreflightQueryOptions(
   normalizedLud16: string | null,
-  options: { bounded?: boolean; retry?: number | boolean } = {}
+  options: {
+    bounded?: boolean
+    retry?: number | boolean
+    shouldContinue?: () => boolean
+    lifecycleKey?: string
+  } = {}
 ) {
   const bounded = options.bounded ?? true
-  const request = () =>
-    bounded
-      ? lnurlPreflightLimiter(() =>
-          fetchLnurlPayMetadata(normalizedLud16 as string, {
-            timeoutMs: LNURL_PREFLIGHT_TIMEOUT_MS,
-          })
-        )
-      : fetchLnurlPayMetadata(normalizedLud16 as string)
+  const request = (context?: { signal?: AbortSignal }) => {
+    const signal = options.shouldContinue ? context?.signal : undefined
+    const fetchMetadata = () => {
+      if (
+        options.shouldContinue &&
+        (signal?.aborted || !options.shouldContinue())
+      )
+        throw new DOMException("Read canceled", "AbortError")
+      return fetchLnurlPayMetadata(
+        normalizedLud16 as string,
+        bounded ? { timeoutMs: LNURL_PREFLIGHT_TIMEOUT_MS } : undefined
+      )
+    }
+    return bounded ? lnurlPreflightLimiter(fetchMetadata) : fetchMetadata()
+  }
   return {
-    queryKey: merchantLnurlPreflightQueryKey(normalizedLud16),
+    queryKey: [
+      ...merchantLnurlPreflightQueryKey(normalizedLud16),
+      ...(options.lifecycleKey ? ["lifecycle", options.lifecycleKey] : []),
+    ],
     queryFn: request,
     staleTime: LNURL_METADATA_LEASE_MS,
     gcTime: 5 * 60_000,
@@ -318,12 +362,19 @@ export function merchantLnurlPreflightQueryOptions(
  */
 export function useMerchantLnurlPreflight(
   lud16: string | null | undefined,
-  options: { enabled?: boolean } = {}
+  options: {
+    enabled?: boolean
+    shouldContinue?: () => boolean
+    lifecycleKey?: string
+  } = {}
 ): MerchantLnurlPreflight {
   const normalized = normalizeMerchantLnurlAddress(lud16)
   const enabled = Boolean(normalized) && (options.enabled ?? true)
   const query = useQuery({
-    ...merchantLnurlPreflightQueryOptions(normalized),
+    ...merchantLnurlPreflightQueryOptions(normalized, {
+      shouldContinue: options.shouldContinue,
+      lifecycleKey: options.lifecycleKey,
+    }),
     enabled,
   })
 
@@ -344,7 +395,8 @@ export function useMerchantLnurlPreflight(
  * read the same query keys per merchant.
  */
 export function useCartLnurlPreflights(
-  lud16ByMerchant: ReadonlyMap<string, string | undefined>
+  lud16ByMerchant: ReadonlyMap<string, string | undefined>,
+  options: { shouldContinue?: () => boolean; lifecycleKey?: string } = {}
 ): void {
   const normalizedAddresses = useMemo(
     () =>
@@ -359,7 +411,7 @@ export function useCartLnurlPreflights(
   )
   useQueries({
     queries: normalizedAddresses.map((address) =>
-      merchantLnurlPreflightQueryOptions(address)
+      merchantLnurlPreflightQueryOptions(address, options)
     ),
   })
 }

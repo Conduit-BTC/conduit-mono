@@ -33,6 +33,7 @@ import {
   getCatalogAuthorKey,
   getCatalogAuthorPubkeys,
   getProductCatalogQueryKey,
+  getProductCatalogReadScope,
   isProductDiscoveryReadIncomplete,
   isPerspectiveMarketplaceRead,
   refreshProductCatalogSources,
@@ -197,7 +198,7 @@ async function fetchNetworkList(
     const readsPerspectiveCatalog = isPerspectiveMarketplaceRead(input)
 
     return await getMarketplaceProducts({
-      readScope: input.readScope,
+      readScope: getProductCatalogReadScope(input),
       merchantPubkey: input.merchantPubkey,
       authorPubkeys,
       authenticatedPubkey: input.authenticatedPubkey,
@@ -212,7 +213,7 @@ async function fetchNetworkList(
   }
 
   return await getMerchantStorefront({
-    readScope: input.readScope,
+    readScope: getProductCatalogReadScope(input),
     merchantPubkey: input.merchantPubkey,
     authenticatedPubkey: input.authenticatedPubkey,
     accountPubkey: input.accountPubkey,
@@ -277,13 +278,13 @@ export function useProgressiveProducts(
   const firstDegreeQuery = useQuery({
     queryKey: [
       "market-perspective-follows",
-      getPublicFeedReadScopeKey(input.readScope),
+      getPublicFeedReadScopeKey(getProductCatalogReadScope(input)),
       perspectivePubkey,
       authenticatedPubkey,
     ],
     queryFn: ({ signal }) =>
       getFollowPubkeys({
-        readScope: input.readScope,
+        readScope: getProductCatalogReadScope(input),
         pubkey: perspectivePubkey!,
         authenticatedPubkey,
         shouldContinue: () =>
@@ -552,7 +553,7 @@ export function useProgressiveProducts(
           !signal.aborted && authGenerationRef.current === authGeneration
         return await getMarketplaceProductsProgressive(
           {
-            readScope: input.readScope,
+            readScope: getProductCatalogReadScope(input),
             merchantPubkey: input.merchantPubkey,
             authorPubkeys: catalogAuthorPubkeys,
             textQuery: catalogTextQuery,

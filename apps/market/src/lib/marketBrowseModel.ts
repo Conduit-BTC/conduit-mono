@@ -92,7 +92,7 @@ export function getGlobalProductSearchQueryKey(input: {
 }) {
   return [
     "market-global-product-search",
-    getPublicFeedReadScopeKey(input.readScope),
+    getPublicFeedReadScopeKey("public_feed"),
     input.query,
     input.pubkey,
     input.catalogSource,
