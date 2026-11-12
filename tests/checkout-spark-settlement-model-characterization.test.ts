@@ -12,10 +12,12 @@ import { checkoutSparkCommerceQuoteDigestValue } from "../packages/core/src/prot
 import {
   deriveCheckoutSparkNativeTreasuryBudget,
   prepareCheckoutSparkNativeTreasury,
+  recordCheckoutSparkNativeTreasuryStatus,
 } from "../packages/core/src/protocol/checkout-spark-treasury-finalization"
 import {
   restoreCheckoutSparkMerchantSettlementRecord,
   projectCheckoutSparkMerchantSettlement,
+  recordCheckoutSparkMerchantTreasury,
 } from "../packages/core/src/protocol/checkout-spark-merchant-settlement"
 import {
   proveCheckoutSparkSettledReturnedTransfer,
@@ -203,9 +205,10 @@ describe("settlement model extraction characterization", () => {
       expect(() =>
         deriveCheckoutSparkNativeTreasuryBudget(state, {
           ...record,
-          paidLegs: record.paidLegs.map(
-            ({ recipientVerified: _verified, ...leg }) => leg
-          ),
+          paidLegs: record.paidLegs.map(({ recipientVerified, ...leg }) => {
+            expect(recipientVerified).toBe(true)
+            return leg
+          }),
         })
       ).toThrow()
       expect(() =>
@@ -258,6 +261,38 @@ describe("settlement model extraction characterization", () => {
       prepared
     )
     expect(Object.isFrozen(prepared.treasuryFinalization!.intent)).toBe(true)
+    const evidence = {
+      invoiceId: prepared.treasuryFinalization!.intent!.invoiceId,
+      status: "paid" as const,
+      providerTransferId: "native-provider-transfer",
+      observedAt: AT + 5,
+      finalFeeSats: 0,
+      finalDebitSats: 112,
+    }
+    const paid = recordCheckoutSparkNativeTreasuryStatus(prepared, evidence)
+    const collected = recordCheckoutSparkMerchantTreasury(
+      record,
+      paid,
+      evidence
+    )
+    expect(projectCheckoutSparkMerchantSettlement(collected).feePending).toBe(
+      false
+    )
+    expect(Object.isFrozen(collected.nativeTreasury)).toBe(true)
+    for (const change of [{ finalFeeSats: 1 }, { finalDebitSats: 111 }]) {
+      expect(() =>
+        recordCheckoutSparkNativeTreasuryStatus(prepared, {
+          ...evidence,
+          ...change,
+        })
+      ).toThrow()
+      expect(() =>
+        restoreCheckoutSparkMerchantSettlementRecord({
+          ...collected,
+          nativeTreasury: { ...collected.nativeTreasury!, ...change },
+        } as typeof collected)
+      ).toThrow()
+    }
     for (const change of [
       { accountingDigest: "0".repeat(64) },
       { preparedAt: AT },
