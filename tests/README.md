@@ -6,13 +6,13 @@ add `--pass-with-no-tests`, skipped cases, or success-only test placeholders.
 
 The suite intentionally covers a small set of payment and recovery risks:
 
-| File                                                  | Cases | Protection                                                                                                                                                                            |
-| ----------------------------------------------------- | ----: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                          |
-| `checkout-spark-settled-outgoing.test.ts`             |    13 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, and provider identity. |
-| `checkout-spark-settled-preparation-recovery.test.ts` |     2 | Lost ACK and outbox-readback recovery preserve the original order, signed envelope, wallet, and funding invoice.                                                                      |
-| `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                          |
-| `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                              |
+| File                                                  | Cases | Protection                                                                                                                                                                                                                          |
+| ----------------------------------------------------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                                                                        |
+| `checkout-spark-settled-outgoing.test.ts`             |    25 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, provider identity, and pre-admission cancellation reaching Merchant. |
+| `checkout-spark-settled-preparation-recovery.test.ts` |     2 | Lost ACK and outbox-readback recovery preserve the original order, signed envelope, wallet, and funding invoice.                                                                                                                    |
+| `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                                                                        |
+| `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                                                                            |
 
 The five `address-gateway*.test.ts` / `address-preview-origin.test.ts` files
 retain 60 deployment-related cases unchanged. The production deployment workflow
@@ -117,6 +117,19 @@ production incident or establish provider settlement or worker scheduling.
 constructor/identity/cleanup boundary without network or initialization, plus
 unsupported-version and closed-session refusal. It does not establish provider
 responses or settlement.
+
+## Isolated browser checks
+
+`tests/browser/README.md` documents the shared headless/headed Playwright suite.
+It runs the real checkout outgoing engine, Buyer cancellation fences and Merchant
+serial worker in an isolated local test app with synthetic signer/provider seams.
+External page HTTP/WebSockets are denied; no normal Chrome profile or funded
+wallet is used. It does not establish production incident cause or settlement.
+
+Checkout preparation recovery tests also cover a slightly future provider invoice
+clock. Preparation waits for actual local time with a five-second monotonic budget;
+large/frozen clock differences, session revocation and takeover still refuse before
+saving or publishing recovery. These offline cases do not prove funded settlement.
 
 ## Scope and rebuilding
 

@@ -62,7 +62,9 @@
     "dev:ui": "bun run --filter @conduit/market dev:ui",
     "build:ui": "bun run --filter @conduit/market build:ui",
     "preview:ui": "bun run --filter @conduit/market preview:ui",
-    "typecheck:ui": "bun node_modules/@typescript/native/bin/tsc -p packages/ui/workbench/tsconfig.json --noEmit"
+    "typecheck:ui": "bun node_modules/@typescript/native/bin/tsc -p packages/ui/workbench/tsconfig.json --noEmit",
+    "test:browser": "playwright test",
+    "test:browser:headed": "playwright test --headed"
   },
   "dependencies": {
     "react": "^19.3.1",
@@ -72,6 +74,9 @@
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.1.1",
     "@nostr-dev-kit/ndk": "^3.0.3",
+    "@playwright/test": "1.65.0",
+    "@types/node": "26.6.6",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "dexie": "^4.4.7",
     "eslint": "^10.14.0",
     "eslint-plugin-react": "^7.37.4",
@@ -81,9 +86,9 @@
     "lint-staged": "^17.6.0",
     "nostr-tools": "2.25.5",
     "prettier": "^3.9.10",
-    "@typescript/native": "npm:typescript@^7.0.2",
     "typescript": "6.0.3",
-    "typescript-eslint": "^8.72.1"
+    "typescript-eslint": "^8.72.1",
+    "vite": "8.3.6"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx,cjs,mjs}": [

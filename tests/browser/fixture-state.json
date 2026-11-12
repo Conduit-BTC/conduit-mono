@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 3,
+  "plan": {
+    "schemaVersion": 3,
+    "checkoutId": "checkout-1",
+    "orderId": "order-1",
+    "merchantPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "walletId": "wallet-1",
+    "network": "mainnet",
+    "createdAt": 1800000000000,
+    "takeoverAt": 1800000060000,
+    "commerceQuote": {
+      "commerceTotalSats": 1000,
+      "lines": [
+        {
+          "productCoordinate": "30402:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:item",
+          "productEventId": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "merchantPubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "quantity": 1,
+          "unitMerchandiseSats": 1000,
+          "unitShippingSats": 0
+        }
+      ]
+    },
+    "funding": {
+      "requestId": "receive-1",
+      "paymentRequest": "lnbc11130n1p45n5sqpp5qvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpssp5pyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysdquwpkxz6twypjx2umrwf5hqarfdahqn5g6pt04eadgyh49sp2xjmzpnrh8u823c2qyp6j6srs759qk2rm8apkfvq3ktvyd9v9pspmnxwzt9xem3rxwstcr67jckqjx8d83jxsp8699zp",
+      "paymentHash": "0303030303030303030303030303030303030303030303030303030303030303",
+      "receiverIdentityPublicKey": "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "grossFundingSats": 1113,
+      "createdAt": 1800000000000,
+      "expiresAt": 1800003600000
+    },
+    "recipients": [
+      {
+        "position": 0,
+        "legId": "eab37babec60e0a9a66614507ce9deb9736f8890f7942353acce5ed115663ca1",
+        "kind": "merchant",
+        "recipientId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "destination": {
+          "type": "lightning_address",
+          "value": "merchant@example.test",
+          "source": {
+            "type": "signed_profile",
+            "profileEventId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "profileEventCreatedAt": 1800000000
+          }
+        },
+        "weightSats": 1000
+      },
+      {
+        "position": 1,
+        "legId": "0c7dcec4a9f6b5f7df332e104c22c6591ca164f20adde3e4ba5547b2384d2f6f",
+        "kind": "conduit",
+        "recipientId": "conduithodlings@strike.me",
+        "destination": {
+          "type": "lightning_address",
+          "value": "conduithodlings@strike.me",
+          "source": {
+            "type": "conduit_allowlist",
+            "policy": "production"
+          }
+        },
+        "weightSats": 111
+      }
+    ],
+    "planDigest": "a5626fa1268d6dcf8d4b2be16932b0fa2cf6de190a9364e9b0475f78042c8e26"
+  },
+  "credit": {
+    "requestId": "receive-1",
+    "paymentHash": "0303030303030303030303030303030303030303030303030303030303030303",
+    "transferId": "funding-transfer-1",
+    "receiverIdentityPublicKey": "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "grossSats": 1113,
+    "creditedSats": 1111,
+    "observedAt": 1800000000001
+  },
+  "legs": [
+    {
+      "legId": "eab37babec60e0a9a66614507ce9deb9736f8890f7942353acce5ed115663ca1",
+      "allocationSats": 1000,
+      "intent": {
+        "legId": "eab37babec60e0a9a66614507ce9deb9736f8890f7942353acce5ed115663ca1",
+        "transferId": "1b90ebfe-172e-5a6c-ab42-46c24502035a",
+        "paymentRequest": "lnbc9950n1p45n5sqpp5qszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqsp5pyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysdquwpkxz6twypjx2umrwf5hqarfdahqugrms07jshugjguz034pjka3cqhj73awe9enk026cczkgpc0y8p5gu28p739zs4shnqpvqskm8e0pr9mm704ratwq2qx0dsezstn6gcprpqz4y",
+        "paymentHash": "0404040404040404040404040404040404040404040404040404040404040404",
+        "invoiceAmountSats": 995,
+        "maxFeeSats": 5,
+        "preparedAt": 1800000000002
+      },
+      "status": "prepared",
+      "observedAt": 1800000000002,
+      "finalFeeSats": null,
+      "finalDebitSats": null
+    },
+    {
+      "legId": "0c7dcec4a9f6b5f7df332e104c22c6591ca164f20adde3e4ba5547b2384d2f6f",
+      "allocationSats": 111,
+      "intent": null,
+      "status": "unprepared",
+      "observedAt": null,
+      "finalFeeSats": null,
+      "finalDebitSats": null
+    }
+  ],
+  "updatedAt": 1800000000002
+}

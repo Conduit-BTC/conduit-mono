@@ -1,5 +1,6 @@
 import { hasCheckoutSparkProviderSendWindow } from "./checkout-spark-invoice-expiry"
 import { CheckoutSparkInvoiceOriginUnavailableError } from "./checkout-spark-lnurl-invoice"
+import { CheckoutSparkOutgoingNotAdmittedError } from "./checkout-spark-outgoing-admission"
 import {
   checkoutSparkSettledOutgoingStatusObservation,
   requireCheckoutSparkSettledExactOutgoingRequest,
@@ -142,6 +143,17 @@ export function createCheckoutSparkSettledNativeOutgoingProvider(input: {
     },
     async send(target) {
       const request = exactRequest(target)
+      // Every throw before sendFrozen comes from app-owned validation or guard
+      // code, so it is typed as not admitted. A sendFrozen throw is not.
+      const guard = async <T>(operation: () => Promise<T>): Promise<T> => {
+        try {
+          return await operation()
+        } catch (error) {
+          throw error instanceof CheckoutSparkOutgoingNotAdmittedError
+            ? error
+            : new CheckoutSparkOutgoingNotAdmittedError(error)
+        }
+      }
       // The runner already inspected history before persisting its submitted
       // marker. Re-read the exact transfer close to the irreversible call.
       let before: CheckoutSparkSettledOutgoingObservation
@@ -154,9 +166,11 @@ export function createCheckoutSparkSettledNativeOutgoingProvider(input: {
         )
       }
       if (before.status !== "not_found") return before
-      const safety = await currentSafety(target, request.paymentRequest)
+      const safety = await guard(() =>
+        currentSafety(target, request.paymentRequest)
+      )
       if (safety !== "ready") return { status: "not_sent" }
-      const fee = await feeSafety(target, request.paymentRequest)
+      const fee = await guard(() => feeSafety(target, request.paymentRequest))
       if (fee !== "ready") return { status: "not_sent" }
       // Fee/balance reads can be slow; do not rely on the earlier absence.
       try {
@@ -168,7 +182,9 @@ export function createCheckoutSparkSettledNativeOutgoingProvider(input: {
         )
       }
       if (before.status !== "not_found") return before
-      const finalSafety = await currentSafety(target, request.paymentRequest)
+      const finalSafety = await guard(() =>
+        currentSafety(target, request.paymentRequest)
+      )
       if (finalSafety !== "ready") return { status: "not_sent" }
 
       try {
