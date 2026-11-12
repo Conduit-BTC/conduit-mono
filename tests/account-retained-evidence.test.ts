@@ -5,17 +5,22 @@ import {
   createInMemoryOwnerRelayListEvidenceRepository,
   readRetainedOwnerRelayList,
   reconcileOwnerRelayListEvidence,
+  resolveOwnerRelayList,
 } from "../packages/core/src/protocol/owner-relay-list-evidence"
 import {
   __resetInboxDeclarationCache,
   primeInboxDeclarationEvidence,
   readRetainedInboxDeclarationEvidence,
+  resolveInboxDeclaration,
 } from "../packages/core/src/protocol/private-message-routing"
 import {
   createInMemoryInboxDeclarationEvidenceRepository,
   mergeInboxDeclarationEvidence,
 } from "../packages/core/src/protocol/inbox-declaration-evidence"
 import { admitPublicEvent } from "../packages/core/src/protocol/verified-public-event"
+import { filterEligibleAccountRelayTargets } from "../packages/core/src/protocol/account-network-local-state"
+import * as ownerStore from "../packages/core/src/protocol/owner-relay-list-evidence-store"
+import * as inboxStore from "../packages/core/src/protocol/private-message-retained-evidence"
 
 const firstRelay = "wss://first.retained-evidence.test"
 const nextRelay = "wss://next.retained-evidence.test"
@@ -76,6 +81,127 @@ async function inboxFixture(createdAt: number, relays: string[]) {
 afterEach(() => {
   __resetOwnerRelayListEvidenceForTests()
   __resetInboxDeclarationCache()
+})
+
+describe("retained account evidence remains separate from transport", () => {
+  it("reexports the retained owners without creating second cache or reset bindings", () => {
+    expect(readRetainedOwnerRelayList).toBe(
+      ownerStore.readRetainedOwnerRelayList
+    )
+    expect(reconcileOwnerRelayListEvidence).toBe(
+      ownerStore.reconcileOwnerRelayListEvidence
+    )
+    expect(__resetOwnerRelayListEvidenceForTests).toBe(
+      ownerStore.__resetOwnerRelayListEvidenceForTests
+    )
+    expect(primeInboxDeclarationEvidence).toBe(
+      inboxStore.primeInboxDeclarationEvidence
+    )
+    expect(readRetainedInboxDeclarationEvidence).toBe(
+      inboxStore.readRetainedInboxDeclarationEvidence
+    )
+    expect(__resetInboxDeclarationCache).toBe(
+      inboxStore.__resetInboxDeclarationCache
+    )
+  })
+  it("shares fresh owner transport evidence with final grant admission", async () => {
+    const { event, repository } = await ownerFixture(10, [firstRelay])
+    const resolution = await resolveOwnerRelayList(event.pubkey, {
+      relayUrls: [firstRelay],
+      now,
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: async () => ({
+        events: [event],
+        attemptedRelayUrls: [firstRelay],
+        successfulRelayUrls: [firstRelay],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+      }),
+    })
+    expect(resolution.current?.signedEvent.id).toBe(event.id)
+    const targets = [
+      {
+        url: firstRelay,
+        grants: [
+          {
+            kind: "owner_nip65" as const,
+            operation: "read" as const,
+            ownerPubkey: event.pubkey,
+            selection: "read" as const,
+          },
+        ],
+      },
+    ]
+    expect(
+      await filterEligibleAccountRelayTargets({
+        accountPubkey: event.pubkey,
+        authenticatedPubkey: event.pubkey,
+        targets,
+        operation: "read",
+        repository: { get: async () => undefined },
+        ownerRelayListEvidenceRepository: repository,
+      })
+    ).toEqual(targets)
+    const newer = await ownerFixture(20, [])
+    expect(
+      await filterEligibleAccountRelayTargets({
+        accountPubkey: event.pubkey,
+        authenticatedPubkey: event.pubkey,
+        targets,
+        operation: "read",
+        repository: { get: async () => undefined },
+        ownerRelayListEvidenceRepository: newer.repository,
+      })
+    ).toEqual([])
+  })
+
+  it("shares fresh inbox transport evidence without authorizing an obsolete recipient grant", async () => {
+    const event = await signed(10050, 10, [firstRelay])
+    const repository = createInMemoryInboxDeclarationEvidenceRepository([], now)
+    const resolution = await resolveInboxDeclaration(event.pubkey, {
+      relayUrls: [firstRelay],
+      now,
+      evidenceRepository: repository,
+      fetchEventsWithDiagnostics: async () => ({
+        events: [event],
+        attemptedRelayUrls: [firstRelay],
+        successfulRelayUrls: [firstRelay],
+        failedRelayUrls: [],
+        cappedRelayUrls: [],
+      }),
+    })
+    expect(resolution.eventId).toBe(event.id)
+    const target = {
+      url: firstRelay,
+      grants: [
+        {
+          kind: "recipient_nip17" as const,
+          operation: "write" as const,
+          recipientPubkey: event.pubkey,
+          eventId: event.id,
+        },
+      ],
+    }
+    const input = {
+      accountPubkey: event.pubkey,
+      targets: [target],
+      operation: "write" as const,
+      repository: { get: async () => undefined },
+      inboxDeclarationEvidenceRepository: repository,
+    }
+    expect(await filterEligibleAccountRelayTargets(input)).toEqual([target])
+    expect(
+      await filterEligibleAccountRelayTargets({
+        ...input,
+        targets: [
+          {
+            ...target,
+            grants: [{ ...target.grants[0]!, eventId: "f".repeat(64) }],
+          },
+        ],
+      })
+    ).toEqual([])
+  })
 })
 
 describe("retained account evidence preserves durable and process authority", () => {
