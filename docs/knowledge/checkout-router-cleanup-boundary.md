@@ -22,13 +22,13 @@ Wallet fiat estimates and the Merchant revenue dashboard use
 browser-storage keys are separate from the economic `useBtcUsdRate` feed.
 Display estimates are not checkout pricing authority.
 
-Production new orders retain signed pricing. Preview explicitly qualifies the
-[invoice-time historical policy](checkout-historical-pricing.md) for new fiat
-orders. Recovered orders keep their original policy and quote, anchored to the
-provider-confirmed funding invoice creation time, not the recovery clock or
-recipient claim time. Both Workers and legacy verification keys remain during
-this transition. Other application hooks can still request the economic feed;
-the display split alone does not make an entire page Worker-independent.
+Production and preview new fiat orders use the
+[invoice-time historical policy](checkout-historical-pricing.md). Pricing
+Worker issuance clients and deployment source are retired; managed profiles
+retain verification keys without an issuance URL. Recovered orders keep their
+original policy and quote, anchored to the provider-confirmed funding invoice
+creation time, not the recovery clock or recipient claim time. Public rate
+observations and display estimates do not authorize payment by themselves.
 
 The old receive-reconciliation adapter remains as a read-only historical
 provider-evidence boundary. Removing a send executor does not remove historical

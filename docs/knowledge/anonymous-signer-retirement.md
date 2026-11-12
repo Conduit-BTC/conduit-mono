@@ -4,7 +4,7 @@ Guest payments remain supported. Market guests tip `receiver@conduit.cash` with 
 
 New checkout defaults to private invoices, with shopper-signed public zaps available as an explicit signed-in choice. Guest checkout always uses private invoices. Historical anonymous orders and receipts remain readable; existing private-invoice recovery remains available. New invoice preparation for a historical anonymous mode selects a private invoice. The signer-dependent zapout feed is replaced with a retirement notice. Obsolete signing and authority endpoints return HTTP 410 with `Cache-Control: no-store`, so stale clients fail explicitly.
 
-The checkout-pricing source moved from `apps/anon-zap-signer` to `apps/checkout-pricing`; its Worker names and pricing implementation are unchanged. Keep both checkout-pricing Workers, the address gateway and its payment paths, and all other unrelated services. PostHog retirement is a separate change.
+The earlier signer retirement moved checkout-pricing source from `apps/anon-zap-signer` to `apps/checkout-pricing` and preserved both pricing Workers. Their later retirement follows the independent [historical-pricing transition](./checkout-historical-pricing.md); it does not remove the address gateway or its payment paths. PostHog retirement is a separate change.
 
 ## Production sequence
 

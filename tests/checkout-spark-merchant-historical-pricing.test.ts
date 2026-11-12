@@ -9,11 +9,12 @@ import {
   type CheckoutSparkSettledRecoveryPayload,
   type SparkCheckoutReceiveCreditProofInput,
 } from "@conduit/core"
+import { config } from "@conduit/core/config"
 import { CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
 import {
   createCheckoutSparkPricingRateAttestation,
   getCheckoutSparkPricingAuthorityPublicKey,
-} from "@conduit/core/protocol/checkout-spark-pricing-authority-server"
+} from "../packages/core/tests/fixtures/checkout-spark-pricing-authority"
 import { describe, expect, it, spyOn } from "bun:test"
 import {
   finalizeEvent,
@@ -413,17 +414,26 @@ describe("merchant invoice-anchored pricing", () => {
     }
   })
 
-  it("verifies the original signed-v1 merchant quote with retained keys and no Worker or historical HTTP", async () => {
+  it("verifies the original signed-v1 merchant quote with configured retained keys and a null URL without HTTP", async () => {
     const f = fixture(1)
     const http = historicalHttp({ unavailable: true })
+    const original = {
+      url: config.checkoutSparkPricingUrl,
+      keys: config.checkoutSparkPricingPublicKeys,
+    }
+    config.checkoutSparkPricingUrl = null
+    config.checkoutSparkPricingPublicKeys = [...TRUST]
+      .map(([id, key]) => `${id}:${key}`)
+      .join(",")
     try {
       await assertCheckoutSparkMerchantPricingAuthority({
         plan: f.plan,
         fundingProof: f.proof,
-        trustedPublicKeys: TRUST,
       })
       expect(http.hosts).toEqual([])
     } finally {
+      config.checkoutSparkPricingUrl = original.url
+      config.checkoutSparkPricingPublicKeys = original.keys
       http.restore()
     }
   })

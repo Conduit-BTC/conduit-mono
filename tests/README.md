@@ -10,7 +10,7 @@ The suite intentionally covers a small set of payment and recovery risks:
 | ----------------------------------------------------- | ----: | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `payment-proof.test.ts`                               |     5 | Missing, malformed, reported, disputed, or failed payment evidence cannot establish payment.                                                                                                                                        |
 | `checkout-spark-settled-outgoing.test.ts`             |    25 | Durable intent before sending, failed persistence/handoff, exact retry authority, ambiguous results, invoice expiry, fee limits, recipient ordering, takeover, provider identity, and pre-admission cancellation reaching Merchant. |
-| `checkout-spark-settled-preparation-recovery.test.ts` |    18 | Original-order/ACK recovery, precise provider-clock admission, strict fiat verification, cancellation, takeover and no early funding exposure.                                                                                      |
+| `checkout-spark-settled-preparation-recovery.test.ts` |    24 | Original-order/ACK recovery, precise provider-clock admission, strict fiat verification, cancellation, takeover and no early funding exposure.                                                                                      |
 | `order-payment-recovery.test.ts`                      |     4 | Live proof ownership, expired proof recovery, and recoverable state during storage failures.                                                                                                                                        |
 | `wallet-migration.test.ts`                            |     5 | Verified replacement before legacy deletion, invalid/colliding data, concurrent migration, and rollback.                                                                                                                            |
 
@@ -42,9 +42,9 @@ continuation, failed-attempt private recovery, and preventing replacement of an
 invoice already awaiting payment. It uses the real payment service and atomic
 lifecycle updates against in-memory IndexedDB, with provider responses simulated.
 
-`packages/core/tests/pricing-display.test.ts` adds seven feed-boundary cases:
+`packages/core/tests/pricing-display.test.ts` covers feed boundaries:
 direct display lookup/failover, isolated query/storage caches, saved-estimate
-fallback, unchanged signed economic pricing/recovery and separate historical
+fallback, no issuance requests despite stale URL settings, and separate historical
 policy caches. It uses simulated provider responses and React server rendering,
 not browser or funded checks.
 
@@ -58,6 +58,14 @@ unavailable history, session revocation, legacy signature recovery without HTTP
 and mismatched request/anchor rejection. The core authority cases also retain
 strict rejection of future-fetched rates and plain-line out-of-band conversions.
 Provider fixtures and local arithmetic do not prove funded/offline settlement.
+
+`checkout-spark-new-fiat-pricing.test.ts` and the preparation/recovery cases
+exercise the explicit historical-policy boundary, session revocation and refusal
+to create a fresh fiat invoice from legacy terms. Existing signed recovery keeps
+real signature verification with a synthetic test-only signer fixture.
+`pricing-issuance-retirement.test.ts` prevents retired issuance endpoints, clients
+and the Worker workspace from returning to shipping source; its scan requires the
+checkout and rate owners to be present rather than accepting an empty scan.
 
 The recovery tests use real local signatures/encryption and the real repository
 with in-memory IndexedDB. Provider and relay responses are simulated. Wallet

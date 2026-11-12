@@ -15,7 +15,7 @@ import { verifyCheckoutSparkCommercePricingAuthority } from "../src/protocol/che
 import {
   createCheckoutSparkPricingRateAttestation,
   getCheckoutSparkPricingAuthorityPublicKey,
-} from "../src/protocol/checkout-spark-pricing-authority-server"
+} from "./fixtures/checkout-spark-pricing-authority"
 import type { CheckoutSparkCommerceQuote } from "../src/protocol/checkout-spark-reconciliation"
 import { buildProductListingEventDraft } from "../src/protocol/products"
 import {

@@ -95,31 +95,37 @@ describe("pricing policy rollout", () => {
         )
       ).toBe(checkoutSparkPublicTrustDigest(profile.quantumRouterTrust))
     }
-    expect(preview.quantumRouterTrust.pricingUrl).not.toBe("")
+    expect(preview.quantumRouterTrust.pricingUrl).toBe("")
+    expect(production.quantumRouterTrust.pricingUrl).toBe("")
     expect(production.quantumRouterTrust.pricingPublicKeys).not.toBe("")
   })
 
-  it("can roll back new production issuance without changing legacy verification trust", () => {
-    const env = { CONDUIT_DEPLOYMENT_PROFILE: "production" }
-    const active = resolveDeploymentProfile(env)
-    const rollbackProfiles = loadPagesProfiles()
-    rollbackProfiles.quantumRouterTrust.production.pricingPolicy = "signed-v1"
-    const rollback = resolveDeploymentProfile(env, rollbackProfiles)
-
-    expect(rollback.quantumRouterTrust.pricingPolicy).toBe("signed-v1")
-    expect(rollback.quantumRouterTrustDigest).not.toBe(
-      active.quantumRouterTrustDigest
-    )
-    expect(rollback.configDigest).not.toBe(active.configDigest)
-    expect(rollback.quantumRouterTrust.pricingUrl).toBe(
-      active.quantumRouterTrust.pricingUrl
-    )
-    expect(rollback.quantumRouterTrust.pricingPublicKeys).toBe(
-      active.quantumRouterTrust.pricingPublicKeys
-    )
-    expect(rollback.quantumRouterTrust.receiverContracts).toBe(
-      active.quantumRouterTrust.receiverContracts
-    )
+  it("retains verification keyrings without managed issuance endpoints", () => {
+    const profiles = loadPagesProfiles()
+    for (const name of ["preview", "production"] as const) {
+      expect(profiles.quantumRouterTrust[name].pricingUrl).toBeNull()
+      const profile = resolveDeploymentProfile({
+        CONDUIT_DEPLOYMENT_PROFILE: name,
+      })
+      const definitions = defineCheckoutSparkDeploymentTrust(profile)
+      expect(profile.quantumRouterTrust.pricingUrl).toBe("")
+      expect(profile.quantumRouterTrust.pricingPolicy).toBe(
+        "invoice-historical-1pct-v1"
+      )
+      expect(
+        JSON.parse(
+          definitions["import.meta.env.VITE_CHECKOUT_SPARK_PRICING_URL"]!
+        )
+      ).toBe("")
+      expect(
+        JSON.parse(
+          definitions[
+            "import.meta.env.VITE_CHECKOUT_SPARK_PRICING_PUBLIC_KEYS"
+          ]!
+        )
+      ).toBe(profile.quantumRouterTrust.pricingPublicKeys)
+      expect(profile.quantumRouterTrust.pricingPublicKeys).not.toBe("")
+    }
   })
 
   for (const policy of ["signed-v1", "invoice-historical-1pct-v1"] as const) {

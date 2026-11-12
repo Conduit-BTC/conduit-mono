@@ -9,6 +9,8 @@ import {
   fetchBtcUsdRate,
   fetchDisplayBtcUsdRate,
   getBtcUsdRateQueryKey,
+  getConfiguredBtcUsdRate,
+  getConfiguredPricingRateQuote,
   useBtcUsdRate,
   useDisplayBtcUsdRate,
 } from "../src/pricing/rates"
@@ -17,7 +19,7 @@ import { verifyCheckoutSparkPricingRateAttestation } from "../src/protocol/check
 import {
   createCheckoutSparkPricingRateAttestation,
   getCheckoutSparkPricingAuthorityPublicKey,
-} from "../src/protocol/checkout-spark-pricing-authority-server"
+} from "./fixtures/checkout-spark-pricing-authority"
 import { freezeCheckoutSparkCommercePricing } from "../src/protocol/checkout-spark-commerce-pricing"
 import type { BtcUsdRateQuote } from "../src/pricing"
 
@@ -144,7 +146,7 @@ function signedSnapshot(fetchedAt = Date.now() - 100) {
 }
 
 describe("display-only currency estimates", () => {
-  it("uses public rates even when economic checkout has a signed Worker configured", async () => {
+  it("uses public rates even with obsolete signed issuance settings", async () => {
     publicPrices()
     const result = await fetchDisplayBtcUsdRate()
     expect(result.rate).toBe(80_000)
@@ -211,17 +213,15 @@ describe("display-only currency estimates", () => {
     expect(calls).not.toContain(WORKER)
   })
 
-  it("retains signed economic pricing and original-attestation recovery", async () => {
-    const live = signedSnapshot()
+  it("ignores obsolete issuance settings while retaining original-attestation recovery", async () => {
     process.env.VITE_BTC_USD_RATE = "100000"
-    globalThis.fetch = (async (input) => {
-      calls.push(String(input))
-      return Response.json(live)
-    }) as typeof fetch
-    expect((await fetchBtcUsdRate()).rate).toBe(90_000)
-    expect(calls).toEqual([WORKER])
+    publicPrices()
+    expect((await fetchBtcUsdRate()).source).toBe("env")
     expect((await fetchDisplayBtcUsdRate()).source).toBe("env")
-    expect(calls).toEqual([WORKER])
+    expect(calls).toEqual([])
+    delete process.env.VITE_BTC_USD_RATE
+    expect((await fetchBtcUsdRate()).rate).toBe(80_000)
+    expect(calls).not.toContain(WORKER)
 
     const original = signedSnapshot(Date.now() - 86_400_000)
     expect(
@@ -235,13 +235,15 @@ describe("display-only currency estimates", () => {
     expect(original.pricing.rate.fetchedAt).toBe(
       original.pricingAuthority.rate.fetchedAt
     )
-    expect(calls).toEqual([WORKER])
+    expect(calls).not.toContain(WORKER)
   })
 
   it("uses current public observations for historical pricing while display overrides remain display-only", async () => {
     config.checkoutSparkPricingPolicy = "invoice-historical-1pct-v1"
     process.env.VITE_BTC_USD_RATE = "100000"
     publicPrices()
+    expect(getConfiguredBtcUsdRate()).toBeNull()
+    expect(getConfiguredPricingRateQuote()).toBeNull()
     const observed = await fetchBtcUsdRate()
     expect(observed.rate).toBe(80_000)
     expect(observed.source).toBe("mempool")
@@ -265,6 +267,7 @@ describe("display-only currency estimates", () => {
       "btc-usd-rate",
       "invoice-historical-1pct-v1",
     ])
+    process.env.VITE_BTC_USD_RATE = "100000"
     publicPrices()
     expect(renderRate(queries, useBtcUsdRate).data).toEqual(historical)
     queries.setQueryData(historicalKey, historical)
@@ -279,6 +282,7 @@ describe("display-only currency estimates", () => {
     )
     expect(JSON.parse(stored.get(ECONOMIC_STORAGE)!)).toEqual(signed)
     expect(JSON.parse(stored.get(DISPLAY_STORAGE)!)).toEqual(display)
+    delete process.env.VITE_BTC_USD_RATE
     config.checkoutSparkPricingPolicy = "signed-v1"
     expect(getBtcUsdRateQueryKey()).toBe(BTC_USD_RATE_QUERY_KEY)
     expect(renderRate(queries, useBtcUsdRate).data).toEqual(signed)

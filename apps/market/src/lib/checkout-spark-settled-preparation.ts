@@ -64,6 +64,8 @@ import {
 
 import { buildCheckoutSparkCommerceEvidence } from "./checkout-spark-commerce-evidence"
 import { assertCheckoutSparkPrefundingPricingAuthority } from "./checkout-spark-prefunding-pricing-authority"
+import { assertCheckoutSparkNewFiatPricingPolicy } from "./checkout-spark-new-fiat-pricing"
+import { getCheckoutSparkRequiredFiatCurrencies } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { isCurrentGuestOrderSigningIdentity } from "./guest-order-identity"
 import { assertMarketCheckoutSparkDispatchPlan } from "./checkout-spark-dispatch-policy"
 import { acquireCheckoutSparkWalletRetentionLock } from "./checkout-spark-wallet-retention-lock"
@@ -635,6 +637,16 @@ export async function prepareCheckoutSparkSettledFunding(
     merchantPubkey,
     { allowZeroTotal: eventMarket !== undefined }
   )
+  const assertNewFiatPricing = () => {
+    if (getCheckoutSparkRequiredFiatCurrencies(commerceQuote).length) {
+      assertCheckoutSparkNewFiatPricingPolicy()
+      if (commerceQuote.pricing?.version !== 2)
+        throw new Error(
+          "New currency checkout requires historical pricing. Review checkout before paying."
+        )
+    }
+  }
+  assertNewFiatPricing()
   if (
     organizerOrder &&
     (organizerOrder.id !== orderId ||
@@ -908,6 +920,7 @@ export async function prepareCheckoutSparkSettledFunding(
     await openWallet(wallet)
     assertCurrent()
     preparationStep = "funding_invoice"
+    assertNewFiatPricing()
     const receive = await createReceive(wallet, {
       description: "Conduit checkout funding",
       requiredNetSats: grossFundingSats,

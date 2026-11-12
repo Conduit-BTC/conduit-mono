@@ -40,17 +40,6 @@
         "@typescript/native": "npm:typescript@^7.0.2",
       },
     },
-    "apps/checkout-pricing": {
-      "name": "@conduit/checkout-pricing",
-      "version": "0.0.1",
-      "dependencies": {
-        "@conduit/core": "workspace:*",
-        "nostr-tools": "2.25.5",
-      },
-      "devDependencies": {
-        "@typescript/native": "npm:typescript@^7.0.2",
-      },
-    },
     "apps/market": {
       "name": "@conduit/market",
       "version": "0.0.1",
@@ -239,8 +228,6 @@
     "@codesandbox/sandpack-client": ["@codesandbox/sandpack-client@2.19.8", "", { "dependencies": { "@codesandbox/nodebox": "0.1.8", "buffer": "^6.0.3", "dequal": "^2.0.2", "mime-db": "^1.52.0", "outvariant": "1.4.0", "static-browser-server": "1.0.3" } }, "sha512-CMV4nr1zgKzVpx4I3FYvGRM5YT0VaQhALMW9vy4wZRhEyWAtJITQIqZzrTGWqB1JvV7V72dVEUCUPLfYz5hgJQ=="],
 
     "@conduit/address-gateway": ["@conduit/address-gateway@workspace:apps/address-gateway"],
-
-    "@conduit/checkout-pricing": ["@conduit/checkout-pricing@workspace:apps/checkout-pricing"],
 
     "@conduit/core": ["@conduit/core@workspace:packages/core"],
 

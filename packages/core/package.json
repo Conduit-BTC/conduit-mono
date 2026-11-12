@@ -16,7 +16,6 @@
     "./pricing/trusted-rate-provider": "./src/pricing/trusted-rate-provider.ts",
     "./pricing/common-rate-provider": "./src/pricing/common-rate-provider.ts",
     "./pricing/historical-rate-provider": "./src/pricing/historical-rate-provider.ts",
-    "./pricing/signed-rate-client": "./src/pricing/signed-rate-client.ts",
     "./wallets": "./src/wallets/index.ts",
     "./schemas": "./src/schemas/index.ts",
     "./utils": "./src/utils/index.ts",

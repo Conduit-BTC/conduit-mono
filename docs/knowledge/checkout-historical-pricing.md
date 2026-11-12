@@ -78,13 +78,21 @@ Missing/invalid selection never opts into historical pricing. Publish the
 production selector change only after the dual-version reader release is
 served by both apps and the older-client refresh/grace gate is satisfied.
 
-Both Workers, their URLs and legacy public keys remain during activation.
-Rollback changes only the new-order production selector to `signed-v1` and
-retains the dual-version readers: funded version 2 orders still require their
-original historical policy. Never restore a pre-reader release or downgrade
-funded terms. Removing the issuance footprint and the two Workers is a later
-step, after deployed supported flows and outstanding-order recovery no longer
-depend on issuance. This document does not establish live payment settlement.
+The retired pricing Workers are no longer an issuance dependency. Managed
+profiles retain public verification keyrings with no issuance URL. New fiat
+preparation requires the explicit historical policy; legacy, missing or invalid
+selection fails before creating a funding invoice. Sats-only terms are unchanged.
+
+A rollback target must retain historical new-order pricing and both
+evidence-version readers.
+Changing the selector to `signed-v1` cannot restore issuance after the Workers
+are removed. Use a known-good historical/dual-reader release or forward-fix the
+historical path while new fiat preparation remains paused. Funded version 1
+orders still verify against the retained keys; funded version 2 orders retain
+their original historical policy. Never restore a pre-reader release, downgrade
+funded terms or resend an uncertain payment. Restoring signed issuance would
+require a separate service deployment and qualified configuration. This document
+does not establish live payment settlement or full router completion.
 
 Sources: [Coinbase candles](https://docs.cdp.coinbase.com/api-reference/exchange-api/rest-api/products/get-product-candles),
 [Frankfurter API](https://api.frankfurter.dev/v2/openapi.json),
