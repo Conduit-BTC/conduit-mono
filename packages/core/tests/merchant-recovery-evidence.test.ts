@@ -31,6 +31,7 @@ import {
   describe,
   expect,
   it,
+  spyOn,
 } from "bun:test"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
@@ -884,16 +885,42 @@ describe("unwrap failure", () => {
           return new Promise(() => {})
         },
       })
-      const result = await h.check(candidate)
-      expect(summary(result)).toEqual({
-        status: "incomplete",
-        coverage: "partial",
-        candidate: false,
-      })
-      expect(exactOpenAttempts).toBe(1)
-      expect(exactStarted).toBeDefined()
-      expect(performance.now() - exactStarted!).toBeGreaterThanOrEqual(3_900)
-      expect(h.consumed.count).toBe(0)
+      // The deadline starts when opening begins, before awaited signer work
+      // reaches giftUnwrap. Measure that same phase on slow runners, without
+      // replacing the real scheduler or shortening the four-second wait.
+      const nativeSetTimeout = globalThis.setTimeout
+      const firedDeadlines: number[] = []
+      const timer = spyOn(globalThis, "setTimeout").mockImplementation(((
+        ...args: Parameters<typeof setTimeout>
+      ) => {
+        const [callback, delay, ...rest] = args
+        if (delay !== 4_000 || h.relays.exactReads === 0)
+          return nativeSetTimeout(...args)
+        const started = performance.now()
+        return nativeSetTimeout(
+          (...callbackArgs: unknown[]) => {
+            firedDeadlines.push(performance.now() - started)
+            callback(...callbackArgs)
+          },
+          delay,
+          ...rest
+        )
+      }) as typeof setTimeout)
+      try {
+        const result = await h.check(candidate)
+        expect(summary(result)).toEqual({
+          status: "incomplete",
+          coverage: "partial",
+          candidate: false,
+        })
+        expect(exactOpenAttempts).toBe(1)
+        expect(exactStarted).toBeDefined()
+        expect(firedDeadlines).toHaveLength(1)
+        expect(firedDeadlines[0]).toBeGreaterThanOrEqual(3_900)
+        expect(h.consumed.count).toBe(0)
+      } finally {
+        timer.mockRestore()
+      }
     })
   }, 15_000)
 })
