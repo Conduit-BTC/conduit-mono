@@ -7,8 +7,6 @@ import {
 } from "./index"
 import { fetchTrustedPricingRateQuote } from "./trusted-rate-provider"
 import { fetchCommonPricingRateQuote } from "./common-rate-provider"
-import { getCheckoutSparkPricingConfiguration } from "../protocol/checkout-spark-pricing-config"
-import { fetchCheckoutSparkPricingRate } from "./signed-rate-client"
 import { config } from "../config"
 
 const STORAGE_KEY = "conduit:btc-usd-rate"
@@ -76,9 +74,6 @@ export function getBtcUsdRateQueryKey() {
 export async function fetchBtcUsdRate(): Promise<BtcUsdRateQuote> {
   if (config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1")
     return fetchCurrentPublicRate()
-  const configuration = getCheckoutSparkPricingConfiguration()
-  if (configuration)
-    return (await fetchCheckoutSparkPricingRate({ configuration })).pricing.rate
   const env = parseEnvRate()
   if (env) return env
   return fetchTrustedPricingRateQuote({ includeFiatRates: true })
@@ -147,12 +142,14 @@ function readStoredRate(
 }
 
 export function getConfiguredBtcUsdRate(): number | null {
-  if (getCheckoutSparkPricingConfiguration()) return null
+  if (config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1")
+    return null
   return parseEnvRate()?.rate ?? null
 }
 
 export function getConfiguredPricingRateQuote(): BtcUsdRateQuote | null {
-  if (getCheckoutSparkPricingConfiguration()) return null
+  if (config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1")
+    return null
   return parseEnvRate()
 }
 
@@ -168,18 +165,14 @@ function useRateQuery(displayOnly: boolean) {
   const historical =
     !displayOnly &&
     config.checkoutSparkPricingPolicy === "invoice-historical-1pct-v1"
-  const signedFeed =
-    !displayOnly && !historical && getCheckoutSparkPricingConfiguration()
-  const env = signedFeed || historical ? null : parseEnvRate()
+  const env = historical ? null : parseEnvRate()
   const storageKey = displayOnly
     ? DISPLAY_STORAGE_KEY
     : historical
       ? HISTORICAL_STORAGE_KEY
       : STORAGE_KEY
-  // Legacy storage is display-only and must not suppress the authenticated feed.
-  const stored = signedFeed
-    ? null
-    : (env ?? readStoredRate(storageKey, !historical))
+  // Historical observations never borrow environment or legacy display storage.
+  const stored = env ?? readStoredRate(storageKey, !historical)
 
   return useQuery({
     queryKey: displayOnly
@@ -208,7 +201,7 @@ function useRateQuery(displayOnly: boolean) {
   })
 }
 
-/** Current economic feed selected by the explicit new-order pricing policy. */
+/** Current observations; new fiat preparation independently enforces its policy. */
 export function useBtcUsdRate() {
   return useRateQuery(false)
 }

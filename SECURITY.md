@@ -16,8 +16,7 @@ it, including:
 - Nostr event, relay, signer, and identity handling.
 - Lightning and payment-adjacent client flows.
 - Privacy-sensitive data handling in Market and Merchant.
-- Deployable code in `apps/`, including `@conduit/checkout-pricing` and
-  `@conduit/posthog-proxy`.
+- Deployable code in `apps/`, including `@conduit/posthog-proxy`.
 - `functions/api`, `@conduit/core`, and `@conduit/ui`.
 - Dependency integrity, GitHub Actions, build provenance, and release inputs.
 

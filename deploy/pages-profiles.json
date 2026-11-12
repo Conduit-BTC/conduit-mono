@@ -31,7 +31,7 @@
           "binding": "metadata_hash"
         }
       ],
-      "pricingUrl": "https://conduit-checkout-pricing-preview.conduithodlings.workers.dev/api/checkout-spark-pricing",
+      "pricingUrl": null,
       "pricingPublicKeys": [
         {
           "keyId": "preview-20261007-01",
@@ -65,7 +65,7 @@
           "binding": "metadata_hash"
         }
       ],
-      "pricingUrl": "https://conduit-checkout-pricing.conduithodlings.workers.dev/api/checkout-spark-pricing",
+      "pricingUrl": null,
       "pricingPublicKeys": [
         {
           "keyId": "production-20261021-01",

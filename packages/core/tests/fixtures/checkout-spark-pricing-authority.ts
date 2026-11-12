@@ -4,15 +4,15 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js"
 import {
   DEFAULT_PRICING_RATE_MAX_AGE_MS,
   type BtcUsdRateQuote,
-} from "../pricing"
+} from "../../src/pricing"
 import {
   CHECKOUT_SPARK_PRICING_AUTHORITY_PURPOSE,
   checkoutSparkPricingRateAttestationSigningValue,
   freezeCheckoutSparkPricingRateAttestation,
   type CheckoutSparkPricingRateAttestation,
-} from "./checkout-spark-pricing-authority"
+} from "../../src/protocol/checkout-spark-pricing-authority"
 
-/** Server-only signing helper; do not export this from the browser core barrel. */
+/** Synthetic signatures for legacy verification tests; never shipped as an issuer. */
 export function getCheckoutSparkPricingAuthorityPublicKey(
   privateKeyHex: string
 ): string | null {

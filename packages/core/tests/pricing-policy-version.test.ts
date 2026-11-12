@@ -12,7 +12,7 @@ import {
 import {
   createCheckoutSparkPricingRateAttestation,
   getCheckoutSparkPricingAuthorityPublicKey,
-} from "../src/protocol/checkout-spark-pricing-authority-server"
+} from "./fixtures/checkout-spark-pricing-authority"
 
 const rate = {
   rate: 80_000,

@@ -268,8 +268,7 @@ import {
   retryStoredEventMarketFreePurchaseDelivery,
   type EventMarketFreePurchaseDelivery,
 } from "../lib/event-market-free-purchase-delivery"
-import { fetchCheckoutSparkAuthorizedPricing } from "../lib/checkout-spark-authorized-pricing"
-import { fetchCommonPricingRateQuote } from "@conduit/core/pricing/common-rate-provider"
+import { fetchCheckoutSparkNewFiatPricing } from "../lib/checkout-spark-new-fiat-pricing"
 import { CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
 import { getCheckoutSparkRequiredFiatCurrencies } from "@conduit/core/protocol/checkout-spark-commerce-pricing-authority"
 import { withCheckoutSparkRouterPreparationLock } from "../lib/checkout-spark-router-preparation-lock"
@@ -2972,21 +2971,10 @@ function CheckoutPage() {
             buildCheckoutSparkCommerceEvidence(quoteAuthority)
           )
           if (fiatCurrencies.length) {
-            const historical =
-              config.checkoutSparkPricingPolicy ===
-              CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY
-            const authorizedPricing = historical
-              ? null
-              : await fetchCheckoutSparkAuthorizedPricing({
-                  currencies: fiatCurrencies,
-                  shouldContinue: canContinueSettledPreparation,
-                })
-            rateInput = historical
-              ? await fetchCommonPricingRateQuote({
-                  requiredFiatCurrencies: fiatCurrencies,
-                  includeFiatRates: true,
-                })
-              : authorizedPricing!.pricing.rate
+            rateInput = await fetchCheckoutSparkNewFiatPricing({
+              currencies: fiatCurrencies,
+              shouldContinue: canContinueSettledPreparation,
+            })
             if (!canContinueSettledPreparation())
               throw new Error(
                 "Buyer session changed while checking currency pricing."
@@ -2999,9 +2987,7 @@ function CheckoutPage() {
             quoteAuthority = buildCheckoutSparkQuoteAuthority({
               authorization,
               rateInput,
-              ...(historical
-                ? { pricingPolicy: CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY }
-                : { pricingAuthority: authorizedPricing!.pricingAuthority }),
+              pricingPolicy: CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY,
             })
           }
           const purchaseClaim = await cart.capturePurchase(

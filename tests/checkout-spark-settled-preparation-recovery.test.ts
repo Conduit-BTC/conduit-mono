@@ -5,11 +5,13 @@ import {
   DexieCheckoutSparkSettledRepository,
   fetchLnurlPayMetadata,
 } from "@conduit/core"
+import { config } from "@conduit/core/config"
+import { resolveCheckoutSparkPricingPolicy } from "../packages/core/src/checkout-spark-deployment-trust"
 import { ConduitDB } from "@conduit/core/db"
 import { CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY } from "@conduit/core/protocol/checkout-spark-commerce-pricing"
 import { parseCheckoutSparkSignedProductFields } from "@conduit/core/protocol/checkout-spark-product-fields"
 import { NDKPrivateKeySigner } from "@nostr-dev-kit/ndk"
-import { describe, expect, it, spyOn } from "bun:test"
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test"
 import { IDBKeyRange, indexedDB } from "fake-indexeddb"
 import {
   finalizeEvent,
@@ -322,6 +324,52 @@ function historicalProviderFixture(now: () => number, onRead?: () => void) {
 }
 
 describe("settled preparation phase recovery", () => {
+  const originalPolicy = config.checkoutSparkPricingPolicy
+  beforeEach(() => {
+    config.checkoutSparkPricingPolicy = CHECKOUT_SPARK_HISTORICAL_PRICING_POLICY
+  })
+  afterEach(() => {
+    config.checkoutSparkPricingPolicy = originalPolicy
+  })
+
+  it.each([undefined, "", "invalid", "signed-v1"])(
+    "rejects unsupported new-fiat selector %s before any receive, wallet, or HTTP",
+    async (policy) => {
+      const storage = new MemoryStorage()
+      const { input, options, calls } = fiatFixture(storage, () => NOW)
+      const originalUrl = config.checkoutSparkPricingUrl
+      config.checkoutSparkPricingUrl =
+        "https://obsolete.example.test/api/checkout-spark-pricing"
+      config.checkoutSparkPricingPolicy =
+        resolveCheckoutSparkPricingPolicy(policy)
+      const http = spyOn(globalThis, "fetch").mockImplementation(async () => {
+        throw new Error("No HTTP is allowed for an unsupported new-fiat policy")
+      })
+      try {
+        await expect(
+          prepareCheckoutSparkSettledFunding(input, options)
+        ).rejects.toThrow("New currency checkout is unavailable")
+        expect(calls).toEqual({ open: 0, close: 0, invoice: 0, transport: 0 })
+        expect(http).not.toHaveBeenCalled()
+        expect(storage.values.size).toBe(0)
+      } finally {
+        config.checkoutSparkPricingUrl = originalUrl
+        http.mockRestore()
+      }
+    }
+  )
+
+  it("rejects new legacy fiat terms even under the historical selector before receive creation", async () => {
+    const { input, options, calls } = fiatFixture(
+      new MemoryStorage(),
+      () => NOW
+    )
+    delete input.quoteAuthority.pricingPolicy
+    await expect(
+      prepareCheckoutSparkSettledFunding(input, options)
+    ).rejects.toThrow("New currency checkout requires historical pricing")
+    expect(calls).toEqual({ open: 0, close: 0, invoice: 0, transport: 0 })
+  })
   it.each([2_000, 2_500])(
     "waits for the full provider precision of a fiat invoice %i ms ahead before verifying or exposing funding",
     async (lead) => {
