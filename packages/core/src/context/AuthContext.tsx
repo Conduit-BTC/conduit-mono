@@ -14,6 +14,8 @@ import {
   pasteLocalKeyFromClipboard,
   restoreLocalKeySigner,
   reconcileLocalKeyRecord,
+  inspectLocalKeyRecords,
+  purgeLocalKeyRecords,
   LOCAL_KEY_CAPABILITIES,
   type LocalKeyImport,
   type LocalKeyReference,
@@ -100,6 +102,10 @@ export interface AuthContextValue {
   isGuestGenerationCurrent: (generation: number) => boolean
   method: AuthMethod | null
   rememberedMethod: AuthMethod | null
+  /** True when unclaimed local-key records exist in browser storage. */
+  storedLocalKeyPresent: boolean
+  /** Explicitly delete every stored local-key record not claimed by a session. */
+  removeStoredLocalKey: () => Promise<void>
   status: AuthStatus
   error: string | null
   remoteSignerRecovery: RemoteSignerRecoveryState | null
@@ -613,6 +619,9 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
   const [rememberedMethod, setRememberedMethod] = useState<AuthMethod | null>(
     () => initialRemoval ? "local" : initialSessionRef.current?.type ?? null
   )
+  // Local-key records no live session claims. Surfaced so anyone holding an
+  // insecurely stored key can remove it even without session metadata.
+  const [storedLocalKeyPresent, setStoredLocalKeyPresent] = useState(false)
   const [status, setStatus] = useState<AuthStatus>(() =>
     initialRemoval ? "error" : initialSessionRef.current ? "restoring" : "disconnected"
   )
@@ -1266,6 +1275,7 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       setPubkey(pk)
       setMethod(session.type)
       setRememberedMethod(session.type)
+      if (session.type === "local") setStoredLocalKeyPresent(false)
       recoverySession.current = null
       exactDeliveryRetryRevision.current = null
       authorityDisplacedSession.current = null
@@ -1832,11 +1842,34 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
       return
     }
     const stored = initialSessionRef.current
+    const claimedRevision = stored?.type === "local" ? stored.localKeyRevision : undefined
+    void inspectLocalKeyRecords()
+      .then((records) => {
+        setStoredLocalKeyPresent(
+          (records.active !== null && records.active !== claimedRevision) ||
+            (records.candidate !== null && records.candidate !== claimedRevision)
+        )
+      })
+      .catch(() => setStoredLocalKeyPresent(false))
     if (!stored) return
 
     // Don't crash the app on auto-reconnect failure; surface state via `error`.
     void connect({ mode: "restore" }).catch(() => undefined)
   }, [connect])
+
+  const removeStoredLocalKey = useCallback(async () => {
+    try {
+      const session = readAuthSession()
+      const retain = session?.type === "local" ? session.localKeyRevision : undefined
+      await withBrowserAuthOperationLock(() => purgeLocalKeyRecords(retain))
+      setStoredLocalKeyPresent(false)
+    } catch (cause) {
+      const message = "The saved local signer could not be removed. Retry removal when site storage is available."
+      setStatus("error")
+      setError(message)
+      throw new Error(message, { cause })
+    }
+  }, [])
 
   useEffect(
     () => () => {
@@ -2038,6 +2071,8 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
         isGuestGenerationCurrent,
         method,
         rememberedMethod,
+        storedLocalKeyPresent,
+        removeStoredLocalKey,
         status,
         error,
         remoteSignerRecovery,

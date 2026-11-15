@@ -49,7 +49,7 @@ export async function pasteLocalKeyFromClipboard(
   signal: AbortSignal
 ): Promise<boolean> {
   if (signal.aborted || !input.isConnected || input.disabled) return false
-  let text = ""
+  let text: string
   try {
     const clipboard = input.ownerDocument.defaultView?.navigator.clipboard
     if (!clipboard?.readText) throw new Error()
@@ -62,8 +62,6 @@ export async function pasteLocalKeyFromClipboard(
     if (signal.aborted) return false
     // Never propagate a browser exception that could contain clipboard data.
     throw new Error("Clipboard paste unavailable")
-  } finally {
-    text = ""
   }
 }
 
@@ -322,4 +320,27 @@ export function reconcileLocalKeyRecord(
   options: LocalKeyStorageOptions = {}
 ): Promise<void> {
   return new LocalKeyStorage(options).reconcile(reference?.localKeyRevision)
+}
+
+export interface LocalKeyRecordRevisions {
+  active: string | null
+  candidate: string | null
+}
+
+/** Presence metadata only. Secret bytes never leave the storage layer. */
+export function inspectLocalKeyRecords(
+  options: LocalKeyStorageOptions = {}
+): Promise<LocalKeyRecordRevisions> {
+  return new LocalKeyStorage(options).inspect()
+}
+
+/**
+ * Explicit user removal of every stored record except an optionally retained
+ * revision claimed by a live session.
+ */
+export function purgeLocalKeyRecords(
+  retainRevision?: string,
+  options: LocalKeyStorageOptions = {}
+): Promise<void> {
+  return new LocalKeyStorage(options).purge(retainRevision)
 }

@@ -41,6 +41,9 @@ export interface SignerSwitchProps {
   authUrl?: string | null
   signerMethod?: "nip07" | "nip46" | "local" | null
   rememberedMethod?: "nip07" | "nip46" | "local" | null
+  /** True when unclaimed local-key records exist in browser storage. */
+  storedLocalKeyPresent?: boolean
+  onRemoveStoredLocalKey?: () => Promise<void> | void
   localKeyEnabled?: boolean
   onImportLocalKey?: (input: HTMLInputElement) => Promise<void> | void
   onPasteLocalKey?: (
@@ -73,6 +76,8 @@ export interface SignerConnectPanelProps {
   error?: string | null
   authUrl?: string | null
   rememberedMethod?: "nip07" | "nip46" | "local" | null
+  storedLocalKeyPresent?: boolean
+  onRemoveStoredLocalKey?: () => Promise<void> | void
   connectingMethod?: "nip07" | "nip46" | "local" | null
   pendingSwitch?: boolean
   extensionNotice?: string | null
@@ -255,6 +260,8 @@ function SignerDisconnectedContent({
   onCancelConnect,
   onReconnect,
   onForget,
+  storedLocalKeyPresent,
+  onRemoveStoredLocalKey,
 }: Omit<SignerConnectPanelProps, "title" | "description" | "className">) {
   const errorId = useId()
   const platform =
@@ -333,6 +340,30 @@ function SignerDisconnectedContent({
                 ? "Remove saved local signer"
                 : "Forget remote signer"}
             </Button>
+          )}
+
+        {rememberedMethod !== "local" &&
+          storedLocalKeyPresent &&
+          onRemoveStoredLocalKey && (
+            <div className="space-y-2">
+              <p className="text-center text-sm text-pretty text-[var(--text-secondary)]">
+                A signing key is stored unencrypted in this browser. Remove it
+                to keep your account secure.
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() =>
+                  void Promise.resolve(onRemoveStoredLocalKey()).catch(
+                    () => undefined
+                  )
+                }
+                disabled={connectDisabled}
+                className="h-10 w-full justify-center"
+              >
+                Remove saved local signer
+              </Button>
+            </div>
           )}
 
         {localAvailable && onImportLocalKey && (
@@ -424,6 +455,8 @@ export function SignerConnectPanel({
   error,
   authUrl,
   rememberedMethod,
+  storedLocalKeyPresent,
+  onRemoveStoredLocalKey,
   connectingMethod,
   pendingSwitch,
   extensionNotice,
@@ -478,6 +511,8 @@ export function SignerConnectPanel({
           error={error}
           authUrl={authUrl}
           rememberedMethod={rememberedMethod}
+          storedLocalKeyPresent={storedLocalKeyPresent}
+          onRemoveStoredLocalKey={onRemoveStoredLocalKey}
           connectingMethod={connectingMethod}
           pendingSwitch={pendingSwitch}
           extensionNotice={extensionNotice}
@@ -512,6 +547,8 @@ export function SignerSwitch({
   authUrl,
   signerMethod,
   rememberedMethod,
+  storedLocalKeyPresent,
+  onRemoveStoredLocalKey,
   localKeyEnabled,
   onImportLocalKey,
   onPasteLocalKey,
@@ -575,6 +612,18 @@ export function SignerSwitch({
     }
   }
 
+  async function handleRemoveStoredLocalKey(): Promise<void> {
+    if (isWorking) return
+    setIsWorking(true)
+    try {
+      await onRemoveStoredLocalKey?.()
+    } catch {
+      // The auth error state carries the cleanup failure; keep the dialog open.
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
   async function handleDisconnect(): Promise<void> {
     if (isWorking) return
     setIsWorking(true)
@@ -628,6 +677,12 @@ export function SignerSwitch({
                   authUrl={authUrl}
                   error={error}
                   isWorking={isWorking}
+                  storedLocalKeyPresent={storedLocalKeyPresent}
+                  onRemoveStoredLocalKey={
+                    storedLocalKeyPresent
+                      ? handleRemoveStoredLocalKey
+                      : undefined
+                  }
                   onDisconnect={handleDisconnect}
                   onSwitchSigner={handleSwitchSigner}
                 />
@@ -655,6 +710,8 @@ export function SignerSwitch({
                     error={error}
                     authUrl={authUrl}
                     rememberedMethod={rememberedMethod}
+                    storedLocalKeyPresent={storedLocalKeyPresent}
+                    onRemoveStoredLocalKey={onRemoveStoredLocalKey}
                     connectingMethod={
                       status === "restoring" ? null : signerMethod
                     }

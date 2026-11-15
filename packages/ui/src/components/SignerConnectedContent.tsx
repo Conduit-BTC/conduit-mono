@@ -11,6 +11,8 @@ export function SignerConnectedContent({
   authUrl,
   error,
   isWorking,
+  storedLocalKeyPresent,
+  onRemoveStoredLocalKey,
   onDisconnect,
   onSwitchSigner,
 }: {
@@ -21,6 +23,8 @@ export function SignerConnectedContent({
   authUrl?: string | null
   error?: string | null
   isWorking: boolean
+  storedLocalKeyPresent?: boolean
+  onRemoveStoredLocalKey?: () => Promise<void>
   onDisconnect: () => Promise<void>
   onSwitchSigner: () => Promise<void>
 }) {
@@ -63,6 +67,29 @@ export function SignerConnectedContent({
                 Open signer approval
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </a>
+            </Button>
+          </div>
+        )}
+
+        {storedLocalKeyPresent && onRemoveStoredLocalKey && (
+          <div className="rounded-[var(--radius-md)] border border-warning/30 bg-warning/10 p-4">
+            <p className="text-[15px] leading-6 text-[var(--text-secondary)]">
+              A signing key is stored unencrypted in this browser. Remove it to
+              keep your account secure.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              onClick={() =>
+                void Promise.resolve(onRemoveStoredLocalKey()).catch(
+                  () => undefined
+                )
+              }
+              disabled={isWorking}
+            >
+              Remove saved local signer
             </Button>
           </div>
         )}
