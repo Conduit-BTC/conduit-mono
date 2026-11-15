@@ -1098,7 +1098,12 @@ export function AuthProvider({ children, signerClientIcon }: AuthProviderProps) 
           userPubkey: result.pubkey,
         }
       } else if (requestedMethod === "local") {
-        if (!localKeyEnabled) throw new Error("Local key sign-in is not enabled in this build.")
+        if (!localKeyEnabled) {
+          // Restore can follow a lifecycle reset. Keep explicit removal reachable.
+          if (mode === "restore" && storedSession?.type === "local")
+            setRememberedMethod("local")
+          throw new Error("Local key sign-in is not enabled in this build.")
+        }
         const snapshot = inspectAuthSessionStorage()
         const selected = snapshot.status === "session" ? snapshot.session : null
         if (!authSessionsEqual(selected, storedSession))
