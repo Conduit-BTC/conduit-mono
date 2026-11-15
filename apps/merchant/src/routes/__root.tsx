@@ -346,6 +346,8 @@ function ConnectGate() {
     authUrl,
     nostrConnectUri,
     rememberedMethod,
+    storedLocalKeyPresent,
+    removeStoredLocalKey,
   } = useAuth()
   const connectGateRef = useRef<HTMLElement | null>(null)
   const extensionAvailable = useNip07Availability()
@@ -385,6 +387,8 @@ function ConnectGate() {
           authUrl={authUrl}
           nostrConnectUri={nostrConnectUri}
           rememberedMethod={rememberedMethod}
+          storedLocalKeyPresent={storedLocalKeyPresent}
+          onRemoveStoredLocalKey={removeStoredLocalKey}
           connectingMethod={status === "restoring" ? null : method}
           extensionNotice={extensionNotice}
           mobile={isProbablyMobileBrowser}

@@ -97,7 +97,7 @@
         "quantumRouterEnabled": true,
         "quantumRouterExecutionEnabled": true,
         "breezLightningAddressEnabled": true,
-        "localKeySignerEnabled": true
+        "localKeySignerEnabled": false
       }
     },
     "production": {
@@ -108,7 +108,7 @@
         "quantumRouterEnabled": true,
         "quantumRouterExecutionEnabled": true,
         "breezLightningAddressEnabled": true,
-        "localKeySignerEnabled": true
+        "localKeySignerEnabled": false
       }
     },
     "staging": {
@@ -119,7 +119,7 @@
         "quantumRouterEnabled": false,
         "quantumRouterExecutionEnabled": false,
         "breezLightningAddressEnabled": false,
-        "localKeySignerEnabled": true
+        "localKeySignerEnabled": false
       }
     }
   }
