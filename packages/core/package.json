@@ -31,7 +31,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@getalby/sdk": "^8.1.1",
+    "@getalby/sdk": "^9.0.0",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
@@ -40,7 +40,7 @@
     "country-list": "^2.4.1",
     "dexie": "^4.4.7",
     "libphonenumber-js": "^1.13.15",
-    "nostr-tools": "2.25.5",
+    "nostr-tools": "2.26.0",
     "tailwind-merge": "^3.7.0",
     "tldts": "7.4.19",
     "zod": "^4.6.7",
