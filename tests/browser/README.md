@@ -79,17 +79,3 @@ negative evidence with 120 advertised sources. Unscoped payment/exact and
 organizer-action controls still contact their advertised sources, establishing
 that feed policy is not a global relay cap. These are API/hook journeys, not
 full production-route or live-network qualification.
-
-## Local-key containment
-
-On Linux, run `CONDUIT_DEPLOYMENT_PROFILE=preview bunx playwright test --config playwright.auth.config.ts`,
-then repeat with `CONDUIT_DEPLOYMENT_PROFILE=production`.
-This configuration serves the actual Market and Merchant apps with their managed
-build policy. Disposable browser-generated records exercise blocked automatic
-restore, explicit removal of active and staged keys, failed deletion and retry
-after reload. Both apps also complete extension and bunker sign-in and verify a
-signature through the installed shared signer. External HTTP is blocked and relay
-WebSockets are simulated, including real encrypted NIP-46 request/response events.
-These checks cover the application integration. Installed extension permissions,
-physical mobile handoffs, live signers and deployed-client refresh remain release QA.
-Secret-bearing traces, screenshots and video are disabled.

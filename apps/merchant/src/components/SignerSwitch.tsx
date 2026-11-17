@@ -12,8 +12,6 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
     pubkey,
     method,
     rememberedMethod,
-    storedLocalKeyPresent,
-    removeStoredLocalKey,
     status,
     error,
     authUrl,
@@ -38,8 +36,6 @@ export function SignerSwitch(props: SignerSwitchProps = {}) {
       nostrConnectUri={nostrConnectUri}
       signerMethod={method}
       rememberedMethod={rememberedMethod}
-      storedLocalKeyPresent={storedLocalKeyPresent}
-      onRemoveStoredLocalKey={removeStoredLocalKey}
       localKeyEnabled={localKeyEnabled}
       onPasteLocalKey={pasteLocalKey}
       onImportLocalKey={(localKeyInput) =>
