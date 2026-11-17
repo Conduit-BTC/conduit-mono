@@ -321,26 +321,3 @@ export function reconcileLocalKeyRecord(
 ): Promise<void> {
   return new LocalKeyStorage(options).reconcile(reference?.localKeyRevision)
 }
-
-export interface LocalKeyRecordRevisions {
-  active: string | null
-  candidate: string | null
-}
-
-/** Presence metadata only. Secret bytes never leave the storage layer. */
-export function inspectLocalKeyRecords(
-  options: LocalKeyStorageOptions = {}
-): Promise<LocalKeyRecordRevisions> {
-  return new LocalKeyStorage(options).inspect()
-}
-
-/**
- * Explicit user removal of every stored record except an optionally retained
- * revision claimed by a live session.
- */
-export function purgeLocalKeyRecords(
-  retainRevision?: string,
-  options: LocalKeyStorageOptions = {}
-): Promise<void> {
-  return new LocalKeyStorage(options).purge(retainRevision)
-}

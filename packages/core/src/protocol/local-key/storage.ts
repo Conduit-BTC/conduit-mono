@@ -323,40 +323,4 @@ export class LocalKeyStorage {
       }
     })
   }
-
-  /** Revision metadata only. Secret bytes are read transiently and cleared. */
-  inspect(): Promise<{ active: string | null; candidate: string | null }> {
-    return this.#transaction("readonly", (active, _store, candidate) => {
-      try {
-        return {
-          active: recordRevision(active) ?? null,
-          candidate: recordRevision(candidate) ?? null,
-        }
-      } finally {
-        clearRecord(active)
-        clearRecord(candidate)
-      }
-    })
-  }
-
-  /**
-   * Explicit user removal of stored records. Every record is deleted except
-   * one whose revision is retained for a live session. Unlike remove(), this
-   * does not negotiate import lineage: the caller is the signed-in user
-   * asking for every unclaimed key to be destroyed.
-   */
-  purge(retainRevision?: string): Promise<void> {
-    return this.#transaction("readwrite", (active, store, candidate) => {
-      try {
-        const keep = (revision: string | undefined) =>
-          retainRevision !== undefined && revision === retainRevision
-        if (!keep(recordRevision(active))) store.delete(RECORD)
-        if (candidate !== undefined && !keep(recordRevision(candidate)))
-          store.delete(CANDIDATE)
-      } finally {
-        clearRecord(active)
-        clearRecord(candidate)
-      }
-    })
-  }
 }
