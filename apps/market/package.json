@@ -15,7 +15,7 @@
     "preview:ui": "vite preview --config vite.ui.config.ts"
   },
   "dependencies": {
-    "@buildonspark/spark-sdk": "0.14.0",
+    "@buildonspark/spark-sdk": "0.15.0",
     "@conduit/core": "workspace:*",
     "@conduit/ui": "workspace:*",
     "@nostr-dev-kit/ndk": "^3.0.3",
