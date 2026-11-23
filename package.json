@@ -79,7 +79,7 @@
     "@playwright/test": "1.65.0",
     "@types/node": "26.6.6",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "dependency-cruiser": "18.7.2",
+    "dependency-cruiser": "18.8.0",
     "dexie": "^4.4.7",
     "eslint": "^10.14.0",
     "eslint-plugin-react": "^7.37.4",
