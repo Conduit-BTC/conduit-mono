@@ -76,7 +76,7 @@
     "@eslint/js": "^10.0.1",
     "@getalby/sdk": "^8.1.1",
     "@nostr-dev-kit/ndk": "^3.0.3",
-    "@playwright/test": "1.65.0",
+    "@playwright/test": "1.65.1",
     "@types/node": "26.6.6",
     "@typescript/native": "npm:typescript@^7.0.2",
     "dependency-cruiser": "18.7.2",
